@@ -1,0 +1,16 @@
+workspace/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.DS_Store
+client/android/local.properties
+.rivo-attachments/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.jks
+*.keystore

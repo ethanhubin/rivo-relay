@@ -1,0 +1,99 @@
+{
+  "origin": "Real native 0.159.0 isolated structured-input validation",
+  "threadId": "01a1839a-1d27-7801-871d-d9c764bae4c6",
+  "receipt": {
+    "threadId": "01a1839a-1d27-7801-871d-d9c764bae4c6",
+    "turnId": "01a183aa-326b-7372-8e2a-8264cb9c8cc4"
+  },
+  "input": [
+    {
+      "type": "text",
+      "text": "This isolated protocol test provides two copies of the same image. Identify its solid color. Reply exactly RED if it is red. Do not use tools or modify any files.",
+      "text_elements": []
+    },
+    {
+      "type": "image",
+      "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAb0lEQVR4nO3PAQkAAAyEwO9feoshgnABdLep8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3IPanc8OLDQitxAAAAAElFTkSuQmCC"
+    },
+    {
+      "type": "localImage",
+      "path": "/Users/e2/Documents/Rivo-Relay-Validation-20261029/red-square.png"
+    },
+    {
+      "type": "mention",
+      "name": "preview.txt",
+      "path": "/Users/e2/Documents/Rivo-Relay-Validation-20261029/preview.txt"
+    },
+    {
+      "type": "skill",
+      "name": "native-wire-check",
+      "path": "/Users/e2/Documents/Rivo-Relay-Validation-20261029/skills/native-wire-check/SKILL.md"
+    }
+  ],
+  "turn": {
+    "id": "01a183aa-326b-7372-8e2a-8264cb9c8cc4",
+    "items": [
+      {
+        "type": "userMessage",
+        "id": "01a183aa-3817-7381-9b0c-42bd14010b30",
+        "clientId": "rivo-native-structured-input-20261029",
+        "content": [
+          {
+            "type": "text",
+            "text": "This isolated protocol test provides two copies of the same image. Identify its solid color. Reply exactly RED if it is red. Do not use tools or modify any files.",
+            "text_elements": []
+          },
+          {
+            "type": "image",
+            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAb0lEQVR4nO3PAQkAAAyEwO9feoshgnABdLep8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3IPanc8OLDQitxAAAAAElFTkSuQmCC",
+            "detail": null
+          },
+          {
+            "type": "localImage",
+            "detail": null,
+            "path": "/Users/e2/Documents/Rivo-Relay-Validation-20261029/red-square.png"
+          },
+          {
+            "type": "mention",
+            "name": "preview.txt",
+            "path": "/Users/e2/Documents/Rivo-Relay-Validation-20261029/preview.txt"
+          },
+          {
+            "type": "skill",
+            "name": "native-wire-check",
+            "path": "/Users/e2/Documents/Rivo-Relay-Validation-20261029/skills/native-wire-check/SKILL.md"
+          }
+        ]
+      },
+      {
+        "type": "agentMessage",
+        "id": "msg_02c4f4d78dcb6ce0016ae237e824f4819897858ce08d05b38b",
+        "text": "RED",
+        "phase": "final_answer",
+        "memoryCitation": null,
+        "delivery": null,
+        "questions": null
+      }
+    ],
+    "itemsView": "full",
+    "status": "completed",
+    "error": null,
+    "startedAt": 1793210331,
+    "completedAt": 1793210344,
+    "durationMs": 12629
+  },
+  "filePreview": {
+    "path": "/Users/e2/Documents/Rivo-Relay-Validation-20261029/preview.txt",
+    "size": 53,
+    "mimeType": "text/plain",
+    "encoding": "utf-8",
+    "text": "RIVO_NATIVE_FILE_PREVIEW\n原生文件读取验证。\n"
+  },
+  "imagePreview": {
+    "path": "/Users/e2/Documents/Rivo-Relay-Validation-20261029/red-square.png",
+    "size": 168,
+    "mimeType": "image/png",
+    "encoding": "base64",
+    "dataBase64": "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAb0lEQVR4nO3PAQkAAAyEwO9feoshgnABdLep8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3IPanc8OLDQitxAAAAAElFTkSuQmCC"
+  }
+}

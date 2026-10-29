@@ -1,0 +1,199 @@
+{
+  "sourceRepository": "/Users/ethan/Documents/QiGuang-Next",
+  "sourceHead": "f31333c248b862827a0179260ce5d9c571f441be",
+  "files": [
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/theme/Color.kt",
+      "sha256": "57d8d14f8e4ce41e990d3a5976976a68c450465800856cfb74c6532ad130fcf5",
+      "target": "app/src/main/java/dev/rivo/relay/ui/theme/Color.kt",
+      "adjustment": "Package and brand names only; Moonlight tokens retained.",
+      "sourceWorktreeModified": false
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/theme/Type.kt",
+      "sha256": "bc721c21194b12e58a334abcecf16f744ceab069706ae0697b321df1d681e36b",
+      "target": "app/src/main/java/dev/rivo/relay/ui/theme/Type.kt",
+      "adjustment": "Package and brand names only; Moonlight tokens retained.",
+      "sourceWorktreeModified": false
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/theme/UiTokens.kt",
+      "sha256": "db49702ba6a127a2becb6d8137a2ae0fdac78ff89489810104f0e4260ed21e69",
+      "target": "app/src/main/java/dev/rivo/relay/ui/theme/UiTokens.kt",
+      "adjustment": "Package and brand names only; Moonlight tokens retained.",
+      "sourceWorktreeModified": false
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/theme/Theme.kt",
+      "sha256": "fe7f4ff21d70de1be40582c2fe5f7765cb97537552fd45b7d904bf86bdd1bad5",
+      "target": "app/src/main/java/dev/rivo/relay/ui/theme/Theme.kt",
+      "adjustment": "Only Moonlight light/dark schemes retained; removed optional palettes and unrelated configuration.",
+      "sourceWorktreeModified": false
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/MarkdownRenderer.kt",
+      "sha256": "9ca8d11d6d035214a868ebf8dfa127df2fe14e6f2ba08c1208b2fb339871198f",
+      "target": "app/src/main/java/dev/rivo/relay/ui/chat/MarkdownRenderer.kt",
+      "adjustment": "Package renamed; pure Markdown/native file-citation parsing retained.",
+      "sourceWorktreeModified": false
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexFileCitation.kt",
+      "sha256": "3175d48d2271d402b7534367611ad8eee147a7aa39a25015722cd70cf1eaacbd",
+      "target": "app/src/main/java/dev/rivo/relay/ui/chat/CodexFileCitation.kt",
+      "adjustment": "Package renamed; pure Markdown/native file-citation parsing retained.",
+      "sourceWorktreeModified": false
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/ChatWebLinks.kt",
+      "sha256": "b7cb002ce16d238b93daae6ec80787b8f2661b9f6825fea0492e63f9450f1436",
+      "target": "app/src/main/java/dev/rivo/relay/ui/chat/ChatWebLinks.kt",
+      "adjustment": "Only pure URL recognition retained; removed unrelated sharing/media UI.",
+      "sourceWorktreeModified": false
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/HomeScreen.kt",
+      "sha256": "5f2dccbf4d75566cd3f8291c698347578244d84cbc6054c88f4ee6739bb95007",
+      "target": "app/src/main/java/dev/rivo/relay/ui/projects/ProjectsScreen.kt",
+      "adjustment": "Migrated project row layout and CodexProjectRunningBorder: outstandingWorkCount > 0 gates a 1800ms linear 2dp sweep-gradient border using primary/tertiary colors. Simplified to one connected node and removed Agent coupling.",
+      "sourceWorktreeModified": true
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexSubmissionCoordinator.kt",
+      "sha256": "fd1543a5b7357f21b1a85c7cfbffc3e9eaed37b8972696c98b031b682fe58e34",
+      "target": "app/src/main/java/dev/rivo/relay/codex/SubmissionCoordinator.kt",
+      "adjustment": "Adapted stable submission IDs and immutable targets; removed old queue and retry semantics.",
+      "sourceWorktreeModified": false
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexCatalogStateHolder.kt",
+      "sha256": "30a460e44ffb6f317856ea5ad51b6bf06d056597a9c08914df3d0a6c581677f1",
+      "target": "app/src/main/java/dev/rivo/relay/codex/CatalogState.kt",
+      "adjustment": "Adapted catalog/list ownership and target-generation guards.",
+      "sourceWorktreeModified": false
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexHistoryController.kt",
+      "sha256": "8d633c1d2d8d9c5a901138822703bfcff03d4856164a79ea601496d3198e8ce2",
+      "target": "app/src/main/java/dev/rivo/relay/codex/SessionController.kt",
+      "adjustment": "Adapted cancellation/late-response ownership; Rivo uses full native snapshots triggered by SSE.",
+      "sourceWorktreeModified": false
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/TodoScreen.kt",
+      "sha256": "fb424041f86970b1be5a47b3319de1c2bc7c3fa2fd5ebdf2d649b50d9ff31218",
+      "target": "app/src/main/java/dev/rivo/relay/ui/todos/TodosScreen.kt",
+      "adjustment": "Adapted compact card/check/edit interaction; removed categories/subtasks/reminders/attachments and offline sync.",
+      "sourceWorktreeModified": false
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/data/HttpTransport.kt",
+      "sha256": "21fadb4a5432c599a83bf808d44d13acb7aa6e8452c2f0e4431614e0a7683b4c",
+      "target": "app/src/main/java/dev/rivo/relay/data/RelayApi.kt",
+      "adjustment": "Adapted cancellable callbacks and SSE flow, replaced response envelopes, added Bearer and disabled automatic retries/redirects.",
+      "sourceWorktreeModified": false
+    },
+    {
+      "source": "qiguang/server/qiguang_codex.py",
+      "sha256": "b2a933ce83d20d41cc6e4c05d513d25204a6492ff39a7ac12bed28259eb3058b",
+      "target": "app/src/main/java/dev/rivo/relay/data/VisibleUserText.kt",
+      "adjustment": "Adapted _visible_user_text and _visible_session_text. Strict known-envelope JSON parsing preserves malformed/code text; compact and multiline native replies share QiGuang question + answer display.",
+      "sourceWorktreeModified": true
+    },
+    {
+      "source": "qiguang/server/qiguang_codex.py",
+      "sha256": "b2a933ce83d20d41cc6e4c05d513d25204a6492ff39a7ac12bed28259eb3058b",
+      "target": "app/src/main/java/dev/rivo/relay/data/NativeActivity.kt",
+      "adjustment": "Adapted native activity names, summaries, status and readable function output; raw native items remain unchanged. Hook diagnostics stay outside the conversation.",
+      "sourceWorktreeModified": true
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexExecutionProjection.kt",
+      "sha256": "5a9772581f6b6d20b6355f34bc53e5512c0400ddde511b0f3700bda64092786c",
+      "target": "app/src/main/java/dev/rivo/relay/data/NativeActivity.kt",
+      "adjustment": "Adapted adjacent same-turn activity grouping; process/user/final messages remain ordering boundaries without text deduplication.",
+      "sourceWorktreeModified": false
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexActivityContent.kt",
+      "sha256": "45c76e6b33a177a94c84c065accaabc1f321bbb17a784c6dc22f25c7f145a0ca",
+      "target": "app/src/main/java/dev/rivo/relay/ui/chat/NativeActivityGroup.kt",
+      "adjustment": "Adapted compact collapsed summary rows and indented expandable outputs, replacing one padded card per command.",
+      "sourceWorktreeModified": false
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/ChatTimelineContent.kt",
+      "sha256": "94eaf2e0ccf822f83d5abdfe838c8f3d6f8c443fb3e66d7e975ea9811d0f88af",
+      "target": "app/src/main/java/dev/rivo/relay/ui/chat/ChatScreen.kt",
+      "adjustment": "Adapted 326dp user bubble and shared Markdown rendering; projected display content replaces direct raw protocol text rendering.",
+      "sourceWorktreeModified": false
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/ChatTimelineContent.kt",
+      "sha256": "94eaf2e0ccf822f83d5abdfe838c8f3d6f8c443fb3e66d7e975ea9811d0f88af",
+      "target": "app/src/main/java/dev/rivo/relay/ui/chat/MessageContent.kt",
+      "adjustment": "Adapted narrow long-text table cards versus aligned horizontally scrollable data grids; kept Rivo native file preview callbacks.",
+      "sourceWorktreeModified": false
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/ChatComposerContent.kt",
+      "sha256": "b8704d7ac4e0d1d6b957d39ea9705dd90d977d561766f7b40300646f1f8e86c7",
+      "target": "app/src/main/java/dev/rivo/relay/ui/chat/MessageComposer.kt",
+      "adjustment": "Adapted 52dp-minimum/max-three-line input, divider and single compact action row; no writer mode, queue or voice subsystem.",
+      "sourceWorktreeModified": false
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/AttachmentAddIcon.kt",
+      "sha256": "5ff96cf5071a833525ac8065e6f5a56521d82c728fb9765417f1d59af6bf904c",
+      "target": "app/src/main/java/dev/rivo/relay/ui/chat/MessageComposer.kt",
+      "adjustment": "Retained two round-cap strokes for attachment plus; image/reference actions share its popup menu.",
+      "sourceWorktreeModified": false
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/SessionScreens.kt",
+      "sha256": "d36e203a768da013f799a5be5fe5ee70bd3912686cb460b825a40c3871035856",
+      "target": "app/src/main/java/dev/rivo/relay/ui/chat/MessageComposer.kt",
+      "adjustment": "Adapted compact settings control; Rivo keeps 44dp touch targets and an 80dp send button.",
+      "sourceWorktreeModified": false
+    },
+    {
+      "source": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/AttachmentImageEditor.kt",
+      "sha256": "faea1825f46fb006631c13a1c74a7520db7670968fff2ce9734c3d014f79d658",
+      "target": "app/src/main/java/dev/rivo/relay/ui/chat/AttachmentImageEditor.kt",
+      "adjustment": "Preserve crop, arrow, rectangle, circle, color palette and normalized rendering. Decode in-memory DraftImage; compress edited output to <=1 MiB in memory; replace the same draft ID. Omit Coil, URI export and FileProvider.",
+      "sourceWorktreeModified": false
+    }
+  ],
+  "rivoAdditions": [
+    {
+      "target": "app/src/main/java/dev/rivo/relay/connection",
+      "purpose": "Shared QR/manual pairing parser and Android Keystore encrypted node credentials."
+    },
+    {
+      "target": "app/src/main/java/dev/rivo/relay/ui/login/QrScanner.kt",
+      "purpose": "Real ZXing camera capture; no predecoded test entry point."
+    },
+    {
+      "target": "app/src/main/java/dev/rivo/relay/ui/chat/NativeRequestPanel.kt",
+      "purpose": "Known native approvals, permission requests, secret questions and MCP URL requests; explicit Desktop fallback for unsupported protocols."
+    },
+    {
+      "target": "app/src/main/java/dev/rivo/relay/ui/chat/McpForm.kt",
+      "purpose": "Typed native MCP primitive and enum form rendering/validation without a JSON editor."
+    },
+    {
+      "target": "app/src/main/java/dev/rivo/relay/ui/chat/Attachments.kt",
+      "purpose": "Android system Photo Picker preparation, native image/mention/skill inputs and node file-path resolution."
+    },
+    {
+      "target": "app/src/main/java/dev/rivo/relay/ui/chat/FilePreview.kt",
+      "purpose": "Read-only native node file/image previews and native message image rendering."
+    },
+    {
+      "target": "app/src/androidTest/java/dev/rivo/relay",
+      "purpose": "UI/Keystore/recovery invariants and separately coordinated real-node camera, conversation, todo, file, photo, offline and revocation verification."
+    }
+  ],
+  "scope": "One app module. QiGuang MainScreen, extra agents, authority management, offline queues, reminder/category systems and attachment services were not migrated.",
+  "licenseNote": "No repository LICENSE/NOTICE found; provenance retained without assigning an open-source license."
+}

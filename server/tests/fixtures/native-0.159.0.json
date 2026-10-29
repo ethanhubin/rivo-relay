@@ -1,0 +1,161 @@
+{
+  "origin": "Captured from an isolated native Codex 0.159.0 validation thread; no user conversation data.",
+  "runtime": {
+    "processId": 92543,
+    "version": "0.159.0"
+  },
+  "threadId": "01a1839a-1d27-7801-871d-d9c764bae4c6",
+  "projectId": "01a18395-9695-7313-bebc-12a2516c8126",
+  "historyResponse": {
+    "data": [
+      {
+        "id": "01a1839f-8399-75c2-9249-3a1b69b9d80a",
+        "items": [
+          {
+            "type": "userMessage",
+            "id": "01a1839f-83d5-7eb1-9ac9-03071d0b0509",
+            "clientId": "rivo-native-question-20261029",
+            "content": [
+              {
+                "type": "text",
+                "text": "This is an isolated native question protocol test. Immediately call request_user_input with exactly one question: Which validation result should be recorded? Options PASS and RETRY. Do not use any other tool. Wait for the answer, then reply exactly with the selected option.",
+                "text_elements": []
+              }
+            ]
+          },
+          {
+            "type": "agentMessage",
+            "id": "msg_02c4f4d78dcb6ce0016ae2352b9598819886283ca8e07f8f68",
+            "text": "PASS",
+            "phase": "final_answer",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        ],
+        "itemsView": "full",
+        "status": "completed",
+        "error": null,
+        "startedAt": 1793209631,
+        "completedAt": 1793209644,
+        "durationMs": 12541
+      },
+      {
+        "id": "01a1839d-c8fa-7e00-9d59-ba6939a1fb23",
+        "items": [
+          {
+            "type": "userMessage",
+            "id": "01a1839d-cedd-75f1-9412-bf9fbb1d710e",
+            "clientId": "rivo-native-approval-20261029",
+            "content": [
+              {
+                "type": "text",
+                "text": "This is an isolated approval protocol test. Use the exec command tool exactly once to run python3 -c 'print(\"RIVO_APPROVAL\")'. Do not modify any file. If approval is declined, stop and reply DECLINED.",
+                "text_elements": []
+              }
+            ]
+          },
+          {
+            "type": "agentMessage",
+            "id": "msg_02c4f4d78dcb6ce0016ae234ba9a848198a7fde4b9d26c0fdf",
+            "text": "I’ll run the requested command once.\n",
+            "phase": "commentary",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        ],
+        "itemsView": "full",
+        "status": "interrupted",
+        "error": null,
+        "startedAt": 1793209518,
+        "completedAt": 1793209531,
+        "durationMs": 13432
+      },
+      {
+        "id": "01a1839d-1107-7091-adb6-652d8c3e1d0d",
+        "items": [],
+        "itemsView": "full",
+        "status": "interrupted",
+        "error": null,
+        "startedAt": 1793209471,
+        "completedAt": 1793209471,
+        "durationMs": 433
+      },
+      {
+        "id": "01a1839a-2b05-7ee3-b9c6-f30e5cc448e7",
+        "items": [
+          {
+            "type": "userMessage",
+            "id": "01a1839a-3008-7680-b938-0bca8bca8959",
+            "clientId": "rivo-validation-ready-20261029-v2",
+            "content": [
+              {
+                "type": "text",
+                "text": "This is an isolated Rivo Relay protocol validation. Reply exactly READY. Do not use tools or change files.",
+                "text_elements": []
+              }
+            ]
+          },
+          {
+            "type": "agentMessage",
+            "id": "msg_02c4f4d78dcb6ce0016ae233d18cb481988f43bae1d644a9ff",
+            "text": "READY",
+            "phase": "final_answer",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        ],
+        "itemsView": "full",
+        "status": "completed",
+        "error": null,
+        "startedAt": 1793209281,
+        "completedAt": 1793209298,
+        "durationMs": 16779
+      }
+    ],
+    "nextCursor": null,
+    "backwardsCursor": "{\"requestedThreadId\":\"01a1839a-1d27-7801-871d-d9c764bae4c6\",\"rolloutOrdinal\":37,\"includeAnchor\":true,\"scope\":{\"kind\":\"turns\"}}"
+  },
+  "settings": {
+    "model": "gpt-6-astra",
+    "reasoningEffort": "medium",
+    "approvalPolicy": "on-request",
+    "sandbox": {
+      "type": "dangerFullAccess"
+    },
+    "cwd": "/Users/e2/Documents/Rivo-Relay-Validation-20261029"
+  },
+  "observedRequestShapes": [
+    {
+      "method": "item/commandExecution/requestApproval",
+      "parameterKeys": [
+        "kind",
+        "threadId",
+        "turnId",
+        "itemId",
+        "startedAtMs",
+        "environmentId",
+        "command",
+        "cwd",
+        "commandActions",
+        "proposedExecpolicyAmendment",
+        "availableDecisions"
+      ]
+    },
+    {
+      "method": "item/tool/requestUserInput",
+      "observedQuestionId": "validation_result",
+      "response": {
+        "answers": {
+          "validation_result": {
+            "answers": [
+              "PASS"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

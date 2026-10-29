@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rivo-relay"
+version = "0.1.0"
+description = "Mobile continuation of Codex Desktop"
+requires-python = ">=3.11"
+dependencies = ["websockets==15.0.1", "qrcode[pil]==8.2"]
+
+[project.optional-dependencies]
+# Development-only authenticated Android Emulator camera control.
+emulator = ["grpcio==1.85.0", "grpcio-tools==1.85.0", "PyJWT==2.15.1", "cryptography==50.0.2", "protobuf==7.36.2"]
+
+[project.scripts]
+rivo-relay = "rivo_relay.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["rivo_relay*"]
