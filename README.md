@@ -1,6 +1,6 @@
 # Rivo Relay
 
-当前测试包：[Android 0.1.10](workspace/artifacts/rivo-relay-0.1.10-debug.apk)。单文件上传和下载支持 1 GiB（1024 MiB），手机与节点全程分块处理；节点已同步更新，保留登录。验证见 [记录](docs/validation.md)。
+当前测试包：[下载 Android 0.1.10 APK](https://github.com/ethanhubin/rivo-relay/releases/download/v0.1.10/rivo-relay-0.1.10-debug.apk)（[Release 页面](https://github.com/ethanhubin/rivo-relay/releases/tag/v0.1.10)，debug 测试版）。单文件上传和下载支持 1 GiB（1024 MiB），手机与节点全程分块处理；节点已同步更新，保留登录。验证见 [记录](docs/validation.md)。
 
 Rivo Relay 的目标是让 Android 成为 Codex Desktop 的完整延续，围绕 Codex 会话与待办工作。App 复用原生登录、项目、会话和运行设置，不增加项目白名单、设备权限等级或额外审批；原生要求的提问与审批仍由用户处理。
 
