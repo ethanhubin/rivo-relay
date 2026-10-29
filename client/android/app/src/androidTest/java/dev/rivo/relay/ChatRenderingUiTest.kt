@@ -123,7 +123,9 @@ class ChatRenderingUiTest {
         compose.onNodeWithTag("message_input").performTextInput("新的输入")
         compose.onNodeWithTag("send_message").assertIsEnabled()
         compose.onNodeWithText("↑ 排队").assertIsDisplayed()
-        compose.onNodeWithTag("stop_turn").assertIsNotEnabled()
+        compose.onNodeWithTag("stop_turn").assertDoesNotExist()
+        compose.onNodeWithTag("conversation_more_button").performClick()
+        compose.onNodeWithTag("header_stop_turn").assertIsNotEnabled()
     }
 
 }

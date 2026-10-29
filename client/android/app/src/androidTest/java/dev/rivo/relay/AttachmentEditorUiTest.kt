@@ -26,12 +26,12 @@ class AttachmentEditorUiTest {
                 {}, {}, {}, {}, {}, onEditImage = { editing = true })
             if (editing) AttachmentImageEditor(current, { editing = false }, { current = it; editing = false })
         } }
-        compose.onNodeWithTag("draft_image").performClick()
+        compose.onNodeWithTag("draft_image", useUnmergedTree = true).performTouchInput { click() }
         compose.waitUntil(5000) { compose.onAllNodesWithTag("attachment_editor_toolbar").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("attachment_editor_tool_crop").performClick()
         compose.onNodeWithTag("attachment_editor_close").performClick()
         compose.runOnIdle { assertSame(original, current) }
-        compose.onNodeWithTag("draft_image").performClick()
+        compose.onNodeWithTag("draft_image", useUnmergedTree = true).performTouchInput { click() }
         compose.waitUntil(5000) { compose.onAllNodesWithTag("attachment_editor_toolbar").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("attachment_editor_tool_crop").performClick()
         compose.onNodeWithTag("attachment_editor_tool_arrow").performClick()
@@ -46,6 +46,6 @@ class AttachmentEditorUiTest {
             assertEquals(840, decoded.height)
             decoded.recycle()
         }
-        compose.onNodeWithTag("draft_image").assertIsDisplayed()
+        compose.onNodeWithTag("draft_image", useUnmergedTree = true).assertIsDisplayed()
     }
 }

@@ -1,5 +1,6 @@
 package dev.rivo.relay.ui.chat
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -7,8 +8,10 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -37,7 +40,6 @@ internal fun DeveloperToolsDialog(
     var error by remember(threadId, tab, generation) { mutableStateOf<String?>(null) }
     var cleanupConfirm by remember { mutableStateOf(false) }
     var discardConfirm by remember { mutableStateOf(false) }
-    var selectedFile by remember(threadId) { mutableStateOf<String?>(null) }
     LaunchedEffect(threadId, tab, generation) {
         try {
             when (tab) {
@@ -67,20 +69,7 @@ internal fun DeveloperToolsDialog(
                     0 -> if (loaded && error == null) {
                         val current = diff
                         if (current != null) {
-                            val files = current.objects("files")
-                            if (files.isNotEmpty()) Text("${files.size} 个文件 · +${files.sumOf { it.optInt("added") }} / −${files.sumOf { it.optInt("removed") }}", Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.labelMedium)
-                            if (files.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                FilterChip(selectedFile == null, { selectedFile = null }, label = { Text("全部文件") })
-                                files.forEach { changed ->
-                                    val path = changed.string("path")
-                                    FilterChip(selectedFile == path, { selectedFile = path }, label = { Text(path + if (changed.optBoolean("binary")) " · 二进制" else "") })
-                                }
-                            }
-                            if (current.optBoolean("truncated")) Text("差异较大，节点仅返回部分内容。", Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            val patch = selectedFile?.takeIf { selected -> files.any { it.string("path") == selected } }?.let { selected -> diffForFile(current.string("patch"), selected) } ?: current.string("patch")
-                            if (patch.isBlank()) Text("没有未提交的文本差异。", Modifier.padding(20.dp))
-                            else SourceCodePreview(patch, "changes.diff", Modifier.weight(1f).fillMaxWidth().testTag("diff_preview"), diff = true)
-                            if (files.any { it.optBoolean("binary") }) Text("二进制文件仅展示变更记录，无法显示文本差异。", Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall)
+                            DeveloperDiffContent(current, Modifier.weight(1f).fillMaxWidth())
                         }
                     }
                     1 -> if (loaded && error == null && context != null) ReviewControls(context!!, busy) { target ->
@@ -120,6 +109,60 @@ internal fun DeveloperToolsDialog(
             workspace?.let { current -> submit("$base/workspace/cleanup", JSONObject().put("discard", true).put("revision", current.string("revision"))) { discardConfirm = false; generation++ } }
         }, enabled = !busy, modifier = Modifier.testTag("confirm_discard_workspace")) { Text("归档并清理") } },
         dismissButton = { TextButton(onClick = { discardConfirm = false }) { Text("保留工作树") } })
+}
+
+/** QiGuang CodexReviewScreen's unified/file controls and metadata placeholders. */
+@Composable
+internal fun DeveloperDiffContent(diff: JSONObject, modifier: Modifier = Modifier) {
+    var unified by remember { mutableStateOf(true) }
+    var selectedFile by remember { mutableStateOf<String?>(null) }
+    val files = diff.objects("files")
+    val selected = files.firstOrNull { it.string("path") == selectedFile } ?: files.firstOrNull()
+    val patch = diff.string("patch")
+    val visiblePatch = if (unified) {
+        if (files.isEmpty()) patch else files.filterNot { it.optBoolean("binary") }.joinToString("") { diffForFile(patch, it.string("path")) }
+    } else selected?.let { diffForFile(patch, it.string("path")) }.orEmpty()
+    val hasHunks = remember(visiblePatch) { diffDisplayLines(visiblePatch).any { it.kind == "hunk" } }
+    Column(modifier) {
+        Row(Modifier.fillMaxWidth().padding(10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            DiffModeButton("统一", unified, { unified = true }, "codex_diff_unified")
+            DiffModeButton("文件", !unified, { unified = false }, "codex_diff_files")
+            Spacer(Modifier.weight(1f))
+            Text("${files.size} 个文件", Modifier.align(Alignment.CenterVertically), style = MaterialTheme.typography.labelMedium)
+        }
+        if (!unified) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            files.forEach { file ->
+                val path = file.string("path")
+                DiffModeButton(path.substringAfterLast('/'), selected?.string("path") == path, { selectedFile = path }, "codex_diff_file_$path")
+            }
+        }
+        if (diff.optBoolean("truncated")) Text("内容超过上限，已展示节点返回的部分差异。", Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        when {
+            files.isEmpty() && patch.isBlank() -> Text("当前工作空间没有未提交改动", Modifier.fillMaxWidth().padding(24.dp).testTag("codex_diff_empty"), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            !unified && selected?.optBoolean("binary") == true -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("二进制文件只显示元数据，不加载内容", Modifier.padding(24.dp).testTag("codex_diff_placeholder"), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            hasHunks || (unified && files.any { it.optBoolean("binary") }) -> DiffPatchPreview(visiblePatch,
+                Modifier.weight(1f).fillMaxWidth().testTag("diff_preview"),
+                metadataFiles = if (unified) files.filter { it.optBoolean("binary") }.map { it.string("path") } else emptyList(),
+                copyPatch = if (unified) patch else visiblePatch)
+            !unified && selected != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(if (diff.optBoolean("truncated")) "此文件的文本内容未包含在节点返回的部分差异中。" else "重命名或类型变化没有文本内容",
+                    Modifier.padding(24.dp).testTag("codex_diff_placeholder"), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            files.any { !it.optBoolean("binary") } -> Text("文件包含元数据变化，没有可显示的文本块。", Modifier.padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun DiffModeButton(label: String, selected: Boolean, onClick: () -> Unit, tag: String) {
+    OutlinedButton(onClick = onClick, modifier = Modifier.testTag(tag),
+        border = BorderStroke(1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant)) {
+        Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
 }
 
 @Composable

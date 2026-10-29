@@ -1,6 +1,12 @@
 package dev.rivo.relay
 
 import dev.rivo.relay.codex.CatalogController
+import dev.rivo.relay.codex.CatalogState
+import dev.rivo.relay.codex.pinnedThreadsToObserve
+import dev.rivo.relay.data.ConversationStore
+import dev.rivo.relay.data.ThreadSummary
+import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicBoolean
 import dev.rivo.relay.data.RelayApi
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
@@ -22,6 +28,59 @@ class CatalogControllerTest {
         """{"projects":[{"id":"p","name":"Isolated fixture","path":"/fixture","threadCount":8,"outstandingWorkCount":$count}]}""")
     private suspend fun await(latch: CountDownLatch) = withContext(Dispatchers.IO) {
         assertTrue(latch.await(5, TimeUnit.SECONDS))
+    }
+
+    @Test fun cachedCatalogsRemainUnwritableUntilTheirOwnNetworkReadsSucceed() = runBlocking {
+        val directory = java.nio.file.Files.createTempDirectory("relay-catalog-cache").toFile()
+        val store = ConversationStore(directory)
+        store.putMetadata("selectedProjectId", "p")
+        store.saveCatalog("projects", JSONObject("""{"projects":[{"id":"p","name":"Cached project","path":"/fixture"}]}"""))
+        store.saveCatalog("threads:p:false", JSONObject("""{"threads":[{"id":"t","name":"Cached thread","pinned":true}]}"""))
+        val healthy = AtomicBoolean(false)
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when {
+                !healthy.get() -> MockResponse().setResponseCode(503).setBody("""{"error":{"message":"offline"}}""")
+                request.path == "/v1/projects" -> projects(0)
+                else -> MockResponse().setBody("""{"threads":[{"id":"t","name":"Fresh thread","pinned":true}]}""")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = CatalogController(api(server), scope, {}, store)
+        try {
+            controller.refreshProjects().join()
+            assertEquals("Cached project", controller.state.value.projects.single().name)
+            assertFalse(controller.state.value.projectsFresh)
+            controller.refreshThreads()
+            withTimeout(5_000) { controller.state.first { !it.threadsLoading && it.threads.isNotEmpty() } }
+            assertEquals("Cached thread", controller.state.value.threads.single().name)
+            assertFalse(controller.state.value.threadsFresh)
+            assertTrue(pinnedThreadsToObserve(controller.state.value).isEmpty())
+            healthy.set(true)
+            controller.refreshProjects().join()
+            assertTrue(controller.state.value.projectsFresh)
+            assertFalse(controller.state.value.threadsFresh)
+            controller.refreshThreads()
+            withTimeout(5_000) { controller.state.first { it.threadsFresh } }
+            assertEquals(setOf("t"), pinnedThreadsToObserve(controller.state.value))
+            healthy.set(false)
+            controller.refreshThreads()
+            withTimeout(5_000) { controller.state.first { !it.threadsLoading && !it.threadsFresh } }
+            controller.refreshProjects().join()
+            assertFalse(controller.state.value.projectsFresh)
+            assertTrue(pinnedThreadsToObserve(controller.state.value).isEmpty())
+        } finally { scope.cancel(); server.shutdown(); directory.deleteRecursively() }
+    }
+
+    @Test fun restoredPinObservationKeysIgnoreRefreshTimestampsAndExcludeArchivedOrCachedLists() {
+        val thread = ThreadSummary("pinned", "Pinned", "", "idle", "/fixture", "p", pinned = true, updatedAt = 10)
+        val state = CatalogState(threads = listOf(thread), threadsFresh = true)
+        assertEquals(setOf("pinned"), pinnedThreadsToObserve(state))
+        assertEquals(pinnedThreadsToObserve(state), pinnedThreadsToObserve(state.copy(threads = listOf(thread.copy(updatedAt = 20)))))
+        assertTrue(pinnedThreadsToObserve(state.copy(threadsFresh = false)).isEmpty())
+        assertTrue(pinnedThreadsToObserve(state.copy(archived = true)).isEmpty())
+        assertEquals(12, pinnedThreadsToObserve(state.copy(threads = (1..20).map { thread.copy(id = "$it") })).size)
     }
 
     @Test fun projectActivityCountIsProjectedAndMissingOrInvalidCountsAreIdle() = runBlocking {

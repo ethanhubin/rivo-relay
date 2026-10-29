@@ -27,6 +27,36 @@ class SessionControllerTest {
         .setBody("""{"error":{"code":"native_rejected","message":"读取暂时失败"}}""")
     private suspend fun await(latch: CountDownLatch) = withContext(Dispatchers.IO) { assertTrue(latch.await(5, TimeUnit.SECONDS)) }
 
+    @Test fun cachedHistoryStaysReadOnlyUntilAnAuthoritativeReadSucceeds() = runBlocking {
+        val directory = java.nio.file.Files.createTempDirectory("relay-history-test").toFile()
+        val store = ConversationStore(directory)
+        store.saveSnapshot("t", JSONObject("""{"thread":{"id":"t","name":"cached","turns":[]},"requests":[{"key":"old-approval","method":"approval"}],"nextCursor":"old-cursor","settings":{}}"""))
+        val server = MockWebServer()
+        val healthy = AtomicBoolean(false)
+        val pages = AtomicInteger()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                if (request.path!!.contains("cursor=")) pages.incrementAndGet()
+                return if (healthy.get()) snapshot("t", "fresh", "fresh-cursor") else error(503)
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = SessionController(api(server), scope, store = store) { fail(it.message) }
+        try {
+            controller.open("t")
+            val cached = withTimeout(5_000) { controller.state.first { it.snapshot?.name == "cached" && it.readError != null } }
+            assertTrue(cached.stale)
+            assertTrue(cached.snapshot!!.requests.isEmpty())
+            controller.loadEarlier()
+            assertEquals(0, pages.get())
+            healthy.set(true); controller.refresh()
+            val fresh = withTimeout(5_000) { controller.state.first { it.snapshot?.name == "fresh" && !it.stale } }
+            assertEquals("fresh-cursor", fresh.historyCursor)
+        } finally { controller.close(); scope.cancel(); server.shutdown(); directory.deleteRecursively() }
+    }
+
     @Test fun recoveredSnapshotClearsReadErrorWithoutClearingUnrelatedWriteFailure() = runBlocking {
         val server = MockWebServer()
         val healthy = AtomicBoolean(false)

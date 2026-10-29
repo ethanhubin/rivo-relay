@@ -21,36 +21,21 @@ import org.json.JSONObject
 @Composable
 fun NativeRequestPanel(request: NativeRequest, enabled: Boolean, onRespond: (JSONObject) -> Unit) {
     var expanded by remember(request.key) { mutableStateOf(true) }
+    val answers = remember(request.key) { mutableStateMapOf<String, String>() }
+    var questionIndex by remember(request.key) { mutableIntStateOf(0) }
     Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = MaterialTheme.shapes.medium,
         modifier = Modifier.fillMaxWidth().testTag("native_request")) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp)) { Text(if (expanded) "Codex 需要你的回应 ▴" else "Codex 需要你的回应 ▾") }
+            TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("toggle_native_request")) { Text(if (expanded) "Codex 需要你的回应 ▴" else "Codex 需要你的回应 ▾") }
             if (expanded) {
                 val params = request.params
                 when {
                     request.method.endsWith("requestUserInput") -> {
                         val questions = params.objects("questions")
-                        val answers = remember(request.key) { mutableStateMapOf<String, String>() }
-                        for (question in questions) {
-                            val id = question.string("id")
-                            Text(question.string("question").ifBlank { question.string("header") }, style = MaterialTheme.typography.titleMedium)
-                            question.objects("options").forEach { option ->
-                                val label = option.string("label")
-                                OutlinedButton(onClick = { answers[id] = label }, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
-                                    Column { Text((if (answers[id] == label) "✓ " else "") + label); option.string("description").takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodySmall) } }
-                                }
-                            }
-                            if (question.optBoolean("isOther") || question.objects("options").isEmpty() || question.optBoolean("isSecret")) {
-                                OutlinedTextField(answers[id].orEmpty(), { answers[id] = it }, label = { Text("你的回答") }, enabled = enabled,
-                                    visualTransformation = if (question.optBoolean("isSecret")) PasswordVisualTransformation() else VisualTransformation.None,
-                                    keyboardOptions = KeyboardOptions(keyboardType = if (question.optBoolean("isSecret")) KeyboardType.Password else KeyboardType.Text),
-                                    modifier = Modifier.fillMaxWidth())
-                            }
-                        }
-                        Button(onClick = {
+                        NativeQuestionCard(questions, answers, questionIndex, enabled, { questionIndex = it }, { id, value -> answers[id] = value }) {
                             val results = JSONObject(); questions.forEach { q -> results.put(q.string("id"), JSONObject().put("answers", JSONArray().put(answers[q.string("id")]))) }
                             onRespond(JSONObject().put("answers", results))
-                        }, enabled = enabled && questions.all { !answers[it.string("id")].isNullOrBlank() }, modifier = Modifier.testTag("answer_questions")) { Text("提交回答") }
+                        }
                     }
                     request.method in setOf("item/commandExecution/requestApproval", "item/fileChange/requestApproval", "execCommandApproval", "applyPatchApproval") -> {
                         params.string("reason").takeIf { it.isNotBlank() }?.let { Text(it) }

@@ -116,11 +116,11 @@ class TodoStore:
         self.db = db
         self.clock = clock
 
-    def create(self, title: str, notes: str = "", todo_id: str | None = None, details: Any = None) -> dict:
+    def create(self, title: str, notes: str = "", todo_id: str | None = None, details: Any = _UNSET) -> dict:
         title = _text(title, "title", 200)
         notes = _text(notes, "notes", 4000, empty=True)
         todo_id = uuid.uuid4().hex if todo_id is None else _text(todo_id, "todo_id", 128)
-        details = _details({} if details is None else details)
+        details = _details({} if details is _UNSET else details)
         extra = json.dumps(details, ensure_ascii=False, sort_keys=True)
         now = self.clock()
         with self.db.transaction() as connection:

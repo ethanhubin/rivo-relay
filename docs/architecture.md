@@ -39,7 +39,7 @@ server/
     app.py               # 依赖组装、提交和待办交付协调
     api.py               # JSON 路由、认证、SSE
     http_server.py       # 有界 HTTP/TLS worker 和关闭
-    database.py          # 五表 schema、v1→v2 迁移、事务与版本校验
+    database.py          # 七表 schema 4、旧版本迁移、事务与版本校验
     pairing.py           # 一次性配对、摘要令牌、限流、撤销
     submissions.py       # 持久 claim、身份 checkpoint、去重和核对
     todos.py             # CRUD、完成状态与原生 thread 关联
@@ -84,11 +84,11 @@ App 用 Keystore 保护连接凭据，重启后直接恢复项目页。普通离
 
 `NativeConnection` 初始化已有 daemon 并读取 diagnostics，使用独立 JSON-RPC reader 和通知 dispatcher；关闭 Relay 仅关闭自己的连接。没有启动 runtime、杀 writer、修写 rollout 或接管用户进程的代码。QiGuang Desktop bridge 缺少宿主，未作为产品入口迁入。
 
-项目读取使用 `project/list`、`project/read`，新项目使用 `project/create`；会话依据原生 `projectId` 和精确根路径归属，无会话项目仍展示。resume 不覆盖模型、工作目录、审批或 sandbox；新建只传项目及其原生根路径，发送只在用户选择时传 model/effort。节点的原生权限与信任行为保持生效。
+项目读取使用 `project/list`、`project/read`，新项目使用 `project/create`；会话依据原生 `projectId` 和精确根路径归属，无会话项目仍展示。resume 不覆盖模型、工作目录、审批或 sandbox；新建传项目根路径或用户选择 ref 后创建的独立工作树路径。发送在用户选择时传 model/effort；0.2.0 的讨论模式显式选择原生 Plan 并降低为只读 sandbox，退出该模式时恢复先前记录的权限。审批策略仍沿用原生设置。
 
-thread/turn/item 身份与已完成历史来自 Codex 分页。未落盘的新建空会话暂保留 `thread/start` 元数据，首轮必须由创建连接发送；结果不确定后不会继续伪装为空会话。临时运行中通知只在内存，与已有原生 ID 合并，不成为第二份历史数据库。
+thread/turn/item 身份与已完成历史来自 Codex 分页。未落盘的新建空会话暂保留 `thread/start` 元数据，首轮必须由创建连接发送；结果不确定后不会继续伪装为空会话。首轮已有原生接受回执、但 rollout 尚为空时，最多 30 秒用创建元数据与真实 turn 回执/通知展示执行状态，随后以原生分页为准。临时消息通知只在内存；计划、用量、变更摘要和已观察的模型设置单独保存为有界派生数据，不成为第二份原生历史。
 
-提问与审批 key 绑定连接 generation 和原生 request ID；断连、turn 结束或 `serverRequest/resolved` 使其失效。回答前先移除本地 pending，避免丢失回执后重发。手机目前提供提问、命令/文件审批、原生权限请求和部分 MCP 表单/URL 交互；当前 0.159.x 的复杂 OpenAI 表单、userVerification 签名挑战和音频采集 UI 仍有差异；不支持的请求明确提示回 Desktop，不把未知结构误当已处理。
+提问与审批 key 绑定连接 generation 和原生 request ID；断连、turn 结束或 `serverRequest/resolved` 使其失效。回答前先移除本地 pending，避免丢失回执后重发。手机提供提问、命令/文件审批、原生权限请求和常见嵌套 MCP 表单/URL 交互；未知 schema 与 userVerification 签名挑战仍需 Desktop。语音输入按用户要求排除。
 
 `GET /v1/files` 经该 daemon 的 FS RPC 读取节点文件，不用 Relay 本机打开远端路径。它属于原生节点级文件访问，没有 thread sandbox 参数，也没有 Rivo 额外项目白名单。预览解码后上限 4 MiB；当前协议没有范围读取，这只是响应大小限制。服务接收原生 text/image/localImage/mention/skill 输入，HTTP JSON 上限 8 MiB；`content://` 不是节点路径。
 
@@ -98,11 +98,11 @@ App 写入前生成稳定 `submissionId`，持久保存 ID 和固定目标；OkH
 
 SSE 是有界内存通知，事件 cursor 带服务 epoch；首连、无效 cursor、缓冲缺口或重启返回 `reset`，客户端重新读取原生快照。当前 Android 启动订阅并用通知触发合并后的快照读取，也定时刷新；并非每条 delta 直接绘制到 UI。切换会话取消旧任务，分页结果按当前 generation 检查，消息按原生 ID 合并。SSE 目前为已认证节点的事件流，服务不按 `threadId` query 过滤；客户端通过选定会话快照保持目标一致。
 
-待办只有基础 CRUD、手动完成和可选 project/thread 关联。新会话交付顺序为 `claim → create → checkpoint(threadId) → link → send`。新提交若该 todo 已有关联或已有未确认/已接受交付，则拒绝重复交付；失败前没有创建 thread 才允许显式新提交。发送已有会话前核对其属于选定项目。关联回执不丢弃，turn 完成不自动完成待办。
+待办支持 CRUD、子任务、截止日期、重复、节点文件引用与 Android 本机提醒，离线修改进入手机持久 outbox；派发前先同步成功。新会话交付顺序为 `claim → create → checkpoint(threadId) → link → send`。已完成事项或已有关联/未确认/已接受交付时，拒绝新派发；失败前没有创建 thread 才允许显式新提交。发送已有会话前核对其属于选定项目。关联回执不丢弃，turn 完成不自动完成待办。
 
 ## 数据和验收边界
 
-SQLite 仅有配对码、连接、提交、待办四类记录。没有聊天正文、OpenAI 密钥、权限矩阵或持久事件流；提交仅保留摘要与轻量身份，不按时间自动清理去重记录。运行目录和验证附件被忽略，QiGuang 的库、sidecar、缓存和部署配置没有迁入。
+SQLite schema 4 保存配对码、连接、提交、待办、待执行队列、原生观察与 Relay 工作树登记。待发队列保存输入，提交去重表仅保留摘要与轻量身份；没有复制原生已完成聊天数据库、OpenAI 密钥或持久事件流。Android 私有文件另存草稿、有界显示缓存与待办 outbox；缓存历史不保留过期审批或可重用分页身份，未联网确认的缓存页禁用原生写操作。运行目录和验证附件被忽略，QiGuang 的库、sidecar 与部署配置没有迁入。
 
 服务/协议测试、模拟器真实相机与原生执行、Desktop UI 人工验收分别记录，不能互相替代。Desktop UI 自动化受工具明确限制，剩余双向交接需用户协助；正式发布、签名、后台驻留和升级另行处理。
 

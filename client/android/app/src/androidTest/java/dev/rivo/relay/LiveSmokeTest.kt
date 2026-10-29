@@ -75,12 +75,12 @@ class LiveSmokeTest {
         waitForText("置顶与队列验收 0.1.4")
         compose.onNodeWithText("置顶与队列验收 0.1.4").performTouchInput { longClick() }
         compose.onNodeWithTag("pin_session").performClick()
-        waitForText("置顶")
+        compose.waitUntil(30_000) { compose.onAllNodesWithContentDescription("已置顶").fetchSemanticsNodes().isNotEmpty() }
         saveEvidence("native-pin-0.1.4")
         compose.onNodeWithText("置顶与队列验收 0.1.4").performTouchInput { longClick() }
         compose.onNodeWithText("取消置顶").assertIsDisplayed()
         compose.onNodeWithTag("pin_session").performClick()
-        compose.waitUntil(30000) { compose.onAllNodesWithText("置顶", substring=false).fetchSemanticsNodes().isEmpty() }
+        compose.waitUntil(30000) { compose.onAllNodesWithContentDescription("已置顶").fetchSemanticsNodes().isEmpty() }
         compose.onNodeWithText("置顶与队列验收 0.1.4").performClick()
         waitForText("QUEUE_SECOND")
         compose.onNodeWithTag("app_error").assertDoesNotExist()
@@ -129,25 +129,28 @@ class LiveSmokeTest {
         compose.onNodeWithTag("nav_todos").performClick()
         waitForTag("new_todo")
         compose.onNodeWithTag("new_todo").performClick()
-        waitForTag("todo_title")
-        compose.onNodeWithTag("todo_title").performTextInput(title)
+        waitForTag("todo_subtask_input_0")
+        compose.onNodeWithTag("todo_subtask_input_0").performTextInput(title)
         compose.onNodeWithTag("todo_notes").performTextInput("Reply with exactly RIVO_TODO_OK. Do not read or modify files or use tools.")
-        compose.onNodeWithTag("save_todo").performClick()
+        compose.onNodeWithTag("save_todo").performScrollTo().performClick()
         waitForNoTag("save_todo")
         waitForText(title)
         compose.onNodeWithTag("todo_search").performTextReplacement(title)
         compose.onNodeWithTag("todo_search").performImeAction()
         scrollTodoTo(title)
         compose.onNode(hasText(title, substring = false) and !hasSetTextAction()).assertHasClickAction().performClick()
-        waitForTag("todo_title")
-        compose.onNodeWithTag("todo_title").performTextReplacement(edited)
-        compose.onNodeWithTag("save_todo").performClick()
+        waitForTag("todo_subtask_input_0")
+        compose.onNodeWithTag("todo_subtask_input_0").performTextReplacement(edited)
+        compose.onNodeWithTag("save_todo").performScrollTo().performClick()
         waitForNoTag("save_todo")
         waitForText(edited)
         compose.onNodeWithTag("todo_search").performTextInput(edited)
         compose.onNodeWithTag("todo_search").performImeAction()
-        scrollTodoTo("交给 Codex")
-        compose.onNodeWithText("交给 Codex").performClick()
+        scrollTodoTo(edited)
+        compose.onNode(hasText(edited, substring = false) and !hasSetTextAction()).performClick()
+        waitForEnabled("todo_start_codex")
+        compose.onNodeWithTag("todo_start_codex").performScrollTo().performClick()
+        waitForTag("dispatch_project")
         compose.onNodeWithTag("dispatch_project").performClick()
         val projectChoice = hasText(projectName, substring = false) and hasAnyAncestor(hasTestTag("dispatch_project_menu"))
         compose.waitUntil(30_000) { compose.onAllNodes(projectChoice).fetchSemanticsNodes().isNotEmpty() }
@@ -157,7 +160,7 @@ class LiveSmokeTest {
         waitForTag("chat_page", 60_000)
         waitForText("RIVO_TODO_OK", 180_000)
         saveEvidence("todo-native-dispatch")
-        compose.onNodeWithText("‹ 返回").performClick()
+        compose.onNodeWithTag("back_sessions").performClick()
         waitForTag("todo_search")
         compose.onNodeWithTag("todo_search").performTextReplacement(edited)
         compose.onNodeWithTag("todo_search").performImeAction()
@@ -165,11 +168,11 @@ class LiveSmokeTest {
         waitForText(edited)
         compose.onNode(isToggleable() and isOff()).performClick()
         compose.waitUntil(10_000) { compose.onAllNodesWithText("已完成", substring = true).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText("已完成", substring = true).performClick()
+        // QiGuang expands the completed section when an item is completed.
         scrollTodoTo(edited)
         compose.onNode(hasText(edited, substring = false) and !hasSetTextAction()).assertHasClickAction().performClick()
         waitForTag("todo_title")
-        compose.onNodeWithText("删除待办").performClick()
+        compose.onNodeWithText("删除待办").performScrollTo().performClick()
         waitForText("删除这条待办？")
         compose.onNodeWithText("删除", substring = false).performClick()
         compose.waitUntil(10_000) { compose.onAllNodes(hasText(edited, substring = false) and !hasSetTextAction()).fetchSemanticsNodes().isEmpty() }
@@ -188,11 +191,11 @@ class LiveSmokeTest {
             try { compose.waitUntil(30_000) { clickVisibleRedPickerPhoto() } }
             catch (e: Throwable) { savePickerEvidence(); throw e }
             compose.waitUntil(30_000) {
-                val attached = runCatching { compose.onAllNodesWithTag("draft_image").fetchSemanticsNodes().isNotEmpty() }.getOrDefault(false)
+                val attached = runCatching { compose.onAllNodesWithTag("draft_image", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }.getOrDefault(false)
                 if (!attached) confirmPickerSelectionIfPresent()
                 attached
             }
-            compose.onNodeWithTag("draft_image").assertIsDisplayed()
+            compose.onNodeWithTag("draft_image", useUnmergedTree = true).assertIsDisplayed()
             waitForEnabled("send_message", 60_000)
             saveEvidence("system-photo-selected")
             compose.onNodeWithTag("send_message").performClick()
@@ -209,6 +212,7 @@ class LiveSmokeTest {
         val expected = args.getString("previewExpected") ?: "RIVO_NATIVE_FILE_PREVIEW"
         newValidationConversation()
         compose.onNodeWithTag("add_attachment").performClick()
+        compose.onNodeWithTag("attachment_tab_node").performClick()
         waitForTag("add_workspace_file")
         compose.onNodeWithTag("add_workspace_file").performClick()
         waitForTag("workspace_files")
@@ -254,9 +258,11 @@ class LiveSmokeTest {
         waitForTag("todo_search")
         compose.onNodeWithTag("todo_search").performTextReplacement(title)
         compose.onNodeWithTag("todo_search").performImeAction()
-        scrollTodoTo("查看会话")
-        compose.onNodeWithText("交给 Codex").assertDoesNotExist()
-        compose.onNodeWithText("查看会话").performClick()
+        scrollTodoTo(title)
+        compose.onNode(hasText(title, substring = false) and !hasSetTextAction()).performClick()
+        waitForTag("todo_editor")
+        compose.onNodeWithTag("todo_start_codex").assertDoesNotExist()
+        compose.onNodeWithText("会话", substring = false).performScrollTo().performClick()
         waitForTag("chat_page", 60_000)
         waitForText("RIVO_TODO_OK", 60_000)
         compose.onNodeWithText("RIVO_TODO_OK").assertIsDisplayed()

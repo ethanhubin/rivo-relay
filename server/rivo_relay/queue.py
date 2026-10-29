@@ -52,13 +52,14 @@ class ExecutionQueue:
 
     def enqueue(self, thread_id, item_id, connection_id, payload):
         # Read metadata only: queuing never acquires a writer or starts a turn.
-        with self.lock, getattr(self.codex, "_operations", self.lock), self.db.transaction() as c:
+        with self.lock, getattr(self.codex, "_operations", self.lock):
             self.codex.validate_queue_target(thread_id)
-            if c.execute("SELECT count(*) FROM queued_tasks WHERE status NOT IN ('done','cancelled')").fetchone()[0] >= 100:
-                raise QueueConflict('Queue is full')
-            position = c.execute('SELECT COALESCE(MAX(position),0)+1 FROM queued_tasks WHERE thread_id=?', (thread_id,)).fetchone()[0]
-            c.execute('INSERT INTO queued_tasks(id,connection_id,thread_id,payload_json,status,position,revision,created_at) VALUES(?,?,?,?,?,?,0,?)',
-                      (item_id, connection_id, thread_id, json.dumps(payload, ensure_ascii=False), 'waiting', position, time.time()))
+            with self.db.transaction() as c:
+                if c.execute("SELECT count(*) FROM queued_tasks WHERE status NOT IN ('done','cancelled')").fetchone()[0] >= 100:
+                    raise QueueConflict('Queue is full')
+                position = c.execute('SELECT COALESCE(MAX(position),0)+1 FROM queued_tasks WHERE thread_id=?', (thread_id,)).fetchone()[0]
+                c.execute('INSERT INTO queued_tasks(id,connection_id,thread_id,payload_json,status,position,revision,created_at) VALUES(?,?,?,?,?,?,0,?)',
+                          (item_id, connection_id, thread_id, json.dumps(payload, ensure_ascii=False), 'waiting', position, time.time()))
         self._notify(thread_id)
         return {'threadId': thread_id, 'itemId': item_id}
 

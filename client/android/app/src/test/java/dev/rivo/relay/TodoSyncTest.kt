@@ -16,6 +16,41 @@ import java.util.concurrent.atomic.AtomicReference
 class TodoSyncTest {
     private fun api(server: MockWebServer) = RelayApi(server.url("/").newBuilder().host("127.0.0.1").build().toString())
 
+    @Test fun selectedDeletesCanChainAfterEachDurableLocalCommit() = runBlocking {
+        val folder = Files.createTempDirectory("rivo-todo-batch-delete").toFile()
+        val server = MockWebServer()
+        val remaining = mutableMapOf("one" to JSONObject().put("id", "one").put("title", "One"),
+            "two" to JSONObject().put("id", "two").put("title", "Two"))
+        val deleted = mutableListOf<String>()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = synchronized(remaining) {
+                if (request.method == "DELETE") {
+                    val id = request.path!!.substringAfterLast('/')
+                    remaining.remove(id); deleted += id
+                    MockResponse().setBody("""{"deleted":true}""")
+                } else MockResponse().setBody(JSONObject().put("todos", JSONArray(remaining.values.toList())).toString())
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        try {
+            val store = ConversationStore(folder)
+            store.saveTodoState(JSONObject().put("version", 1).put("items", JSONArray(remaining.values.toList())).put("operations", JSONArray()))
+            val controller = TodosController(api(server), scope, { throw it }, store)
+            withTimeout(5_000) { controller.state.first { it.items.size == 2 } }
+            val items = controller.state.value.items.associateBy { it.id }
+            val finished = CompletableDeferred<Unit>()
+            controller.delete(items.getValue("one")) {
+                assertFalse(controller.state.value.mutating)
+                controller.delete(items.getValue("two")) { finished.complete(Unit) }
+            }
+            withTimeout(5_000) { finished.await(); controller.refresh().join() }
+            assertTrue(controller.state.value.items.isEmpty())
+            assertEquals(0, controller.state.value.pendingCount)
+            assertEquals(listOf("one", "two"), synchronized(remaining) { deleted.toList() })
+        } finally { scope.cancel(); server.shutdown(); folder.deleteRecursively() }
+    }
+
     @Test fun lostCreateResponsePersistsOutboxAndRestartReplaysTheSameTodoId() = runBlocking {
         val folder = Files.createTempDirectory("rivo-todo-test").toFile()
         val server = MockWebServer()

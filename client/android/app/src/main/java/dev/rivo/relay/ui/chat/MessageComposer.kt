@@ -4,9 +4,9 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.*
@@ -26,10 +26,20 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import dev.rivo.relay.data.string
 import dev.rivo.relay.ui.theme.RivoSize
 import org.json.JSONObject
@@ -38,8 +48,8 @@ import org.json.JSONObject
  * QiGuang Codex Composer layout: a 52dp-minimum, three-line BasicTextField,
  * divider, and one compact action row (8x6dp insets, 6dp spacing).
  * Source: QiGuang ui/main/ChatComposerContent.kt and AttachmentAddIcon.kt.
- * Rivo keeps input ownership, picker/IME handling, settings and confirmation
- * dialogs in ChatScreen. This component only renders and forwards actions.
+ * Rivo keeps draft ownership and native submission in ChatScreen. Mode icons,
+ * attachment cards and the non-focusable settings popup follow the source UI.
  */
 @Composable
 fun MessageComposer(
@@ -65,9 +75,23 @@ fun MessageComposer(
     queueing: Boolean = false,
     onEditImage: (DraftImage) -> Unit = {},
     onAddFile: () -> Unit = {},
-    onVoice: (() -> Unit)? = null,
+    onAddVideo: () -> Unit = onAddFile,
+    onOpenFile: (JSONObject) -> Unit = {},
+    discussionMode: Boolean = false,
+    onToggleMode: () -> Unit = {},
+    focusRequest: Int = 0,
+    onPasteImages: (List<android.net.Uri>) -> Unit = {},
+    settingsExpanded: Boolean = false,
+    onDismissSettings: () -> Unit = {},
+    settingsContent: (@Composable () -> Unit)? = null,
 ) {
     var attachmentsOpen by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focusRequester = remember { FocusRequester() }
+    var inputValue by remember { mutableStateOf(TextFieldValue(text, selection = TextRange(text.length))) }
+    LaunchedEffect(text) { if (inputValue.text != text) inputValue = TextFieldValue(text, selection = TextRange(text.length)) }
+    LaunchedEffect(focusRequest) { if (focusRequest > 0) { focusRequester.requestFocus(); keyboard?.show() } }
     LaunchedEffect(enabled) { if (!enabled) attachmentsOpen = false }
     // QiGuang uses 42dp visible controls; preserve Rivo's 44dp touch target.
     CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides RivoSize.MinTouchTarget) {
@@ -77,32 +101,38 @@ fun MessageComposer(
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             if (images.isNotEmpty() || files.isNotEmpty()) {
-                Row(
-                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+                Column(Modifier.fillMaxWidth().heightIn(max = 164.dp).verticalScroll(rememberScrollState()).testTag("draft_attachments"),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     images.forEach { image ->
                         val bitmap = remember(image) {
                             android.graphics.BitmapFactory.decodeByteArray(image.bytes, 0, image.bytes.size)?.asImageBitmap()
                         }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(Modifier.fillMaxWidth().clickable(enabled = enabled && !preparing) { onEditImage(image) },
+                            shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+                        Row(Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             bitmap?.let {
-                                Image(it, "编辑待发送图片", Modifier.size(56.dp).clip(RoundedCornerShape(10.dp))
-                                    .clickable(enabled = enabled && !preparing) { onEditImage(image) }
+                                Image(it, "编辑待发送图片", Modifier.size(48.dp).clip(RoundedCornerShape(11.dp))
                                     .testTag("draft_image"), contentScale = ContentScale.Crop)
                             }
-                            IconButton(onClick = { onRemoveImage(image) }, enabled = enabled,
-                                modifier = Modifier.size(44.dp).semantics { contentDescription = "移除图片" }) {
-                                Text("×", style = MaterialTheme.typography.titleLarge)
-                            }
-                        }
+                            Column(Modifier.weight(1f)) { Text("图片已准备好", style = MaterialTheme.typography.bodySmall)
+                                Text("点击查看与编辑", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                            TextButton(onClick = { onRemoveImage(image) }, enabled = enabled,
+                                modifier = Modifier.semantics { contentDescription = "移除图片" }) { Text("移除") }
+                        } }
                     }
                     files.forEach { file ->
-                        InputChip(selected = false, onClick = { onRemoveFile(file) }, enabled = enabled,
-                            label = { Text(file.string("name") + " ×", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            modifier = Modifier.widthIn(max = 200.dp)
-                                .semantics { contentDescription = "移除文件：" + file.string("name") })
+                        Surface(Modifier.fillMaxWidth().clickable { onOpenFile(file) }.testTag("draft_file_" + file.string("name")),
+                            shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+                            Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text("附", style = MaterialTheme.typography.labelLarge)
+                                Column(Modifier.weight(1f)) {
+                                    Text(file.string("name"), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text("点击查看", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                TextButton(onClick = { onRemoveFile(file) }, enabled = enabled,
+                                    modifier = Modifier.semantics { contentDescription = "移除文件：" + file.string("name") }) { Text("移除") }
+                            }
+                        }
                     }
                 }
             }
@@ -118,10 +148,11 @@ fun MessageComposer(
             ) {
                 Column {
                     BasicTextField(
-                        value = text,
-                        onValueChange = onTextChange,
+                        value = inputValue,
+                        onValueChange = { inputValue = it; onTextChange(it.text) },
                         enabled = enabled,
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)
+                        modifier = Modifier.fillMaxWidth().pasteImageAttachments(context, enabled && !preparing, onPasteImages)
+                            .focusRequester(focusRequester).heightIn(min = 52.dp)
                             .padding(horizontal = 16.dp, vertical = 14.dp).testTag("message_input"),
                         textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.onSurface),
@@ -130,7 +161,7 @@ fun MessageComposer(
                         decorationBox = { inner ->
                             Box {
                                 if (text.isEmpty()) Text(
-                                    if (isRunning) "补充当前任务…" else "描述要完成的工作…",
+                                    when { isRunning -> "输入下一项任务或实时引导"; discussionMode -> "输入想讨论的方案或问题"; else -> "描述要实现或修改的功能" },
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -148,35 +179,33 @@ fun MessageComposer(
                         Box {
                             ComposerToolButton({ attachmentsOpen = true }, enabled && !preparing,
                                 "添加附件", "add_attachment") { ComposerAddIcon() }
-                            DropdownMenu(expanded = attachmentsOpen, onDismissRequest = { attachmentsOpen = false }) {
-                                DropdownMenuItem(text = { Text("图片") },
-                                    onClick = { attachmentsOpen = false; onAddImage() },
-                                    enabled = enabled && !preparing && images.size < 3,
-                                    modifier = Modifier.testTag("add_image"))
-                                DropdownMenuItem(text = { Text("手机文件") },
-                                    onClick = { attachmentsOpen = false; onAddFile() },
-                                    enabled = enabled && !preparing && files.size < 16,
-                                    modifier = Modifier.testTag("add_file"))
-                                DropdownMenuItem(text = { Text("节点工作区文件") },
-                                    onClick = { attachmentsOpen = false; onAddWorkspaceFile() },
-                                    enabled = enabled && !preparing && files.size < 16,
-                                    modifier = Modifier.testTag("add_workspace_file"))
-                                Text("手机文件将上传至节点，单个最多 1 GiB",
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                                    style = MaterialTheme.typography.labelSmall)
+                        }
+                        OutlinedButton(onClick = onToggleMode, enabled = enabled,
+                            modifier = Modifier.height(36.dp).focusProperties { canFocus = false }.testTag("codex_task_mode"),
+                            contentPadding = PaddingValues(horizontal = 8.dp)) {
+                            ComposerModeIcon(discussionMode)
+                            Spacer(Modifier.width(5.dp))
+                            Text(if (discussionMode) "讨论模式" else "普通模式", style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                        }
+                        Spacer(Modifier.weight(1f))
+                        Box {
+                            ComposerToolButton(onSettings, true, "运行设置", "composer_settings") {
+                                Text("⚙", style = MaterialTheme.typography.titleMedium)
+                            }
+                            val gap = with(LocalDensity.current) { 8.dp.roundToPx() }
+                            if (settingsExpanded && settingsContent != null) Popup(
+                                popupPositionProvider = remember(gap) { ComposerSettingsPositionProvider(gap) }, onDismissRequest = onDismissSettings,
+                                properties = PopupProperties(focusable = false, dismissOnBackPress = true, dismissOnClickOutside = true)) {
+                                Surface(Modifier.widthIn(min = 240.dp, max = 280.dp).heightIn(max = 440.dp).testTag("composer_settings_panel"),
+                                    shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), shadowElevation = 10.dp, tonalElevation = 4.dp) { settingsContent() }
                             }
                         }
-                        if (onVoice != null) ComposerToolButton(onVoice, enabled && !preparing, "语音输入", "voice_input") { Text("语音", style = MaterialTheme.typography.labelMedium) }
-                        Spacer(Modifier.weight(1f))
-                        ComposerToolButton(onSettings, true, "运行设置", "composer_settings") {
-                            Text("⚙", style = MaterialTheme.typography.titleMedium)
-                        }
-                        if (isRunning) ComposerToolButton(onStop, canStop, "停止当前任务", "stop_turn") {
-                            Text("停止", style = MaterialTheme.typography.labelMedium,
-                                color = if (canStop) MaterialTheme.colorScheme.error else LocalContentColor.current,
-                                maxLines = 1)
-                        }
-                        Button(
+                        if (isRunning && text.isBlank() && images.isEmpty() && files.isEmpty()) OutlinedButton(
+                            onClick = onStop, enabled = canStop,
+                            modifier = Modifier.width(80.dp).height(44.dp).testTag("stop_turn"), shape = RoundedCornerShape(22.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp)) { Text("■ 停止", style = MaterialTheme.typography.labelLarge) }
+                        else Button(
                             onClick = onSend,
                             enabled = enabled && canSend && !preparing,
                             modifier = Modifier.width(80.dp).height(44.dp).testTag("send_message"),
@@ -191,6 +220,9 @@ fun MessageComposer(
             }
         }
     }
+    if (attachmentsOpen) AttachmentSourceDialog(3 - images.size, 16 - files.size, onDismiss = { attachmentsOpen = false },
+        onImage = { attachmentsOpen = false; onAddImage() }, onFile = { attachmentsOpen = false; onAddFile() },
+        onVideo = { attachmentsOpen = false; onAddVideo() }, onWorkspace = { attachmentsOpen = false; onAddWorkspaceFile() })
 }
 
 @Composable
@@ -202,7 +234,7 @@ private fun ComposerToolButton(
     content: @Composable RowScope.() -> Unit,
 ) {
     OutlinedButton(onClick, enabled = enabled,
-        modifier = Modifier.size(44.dp).semantics { contentDescription = description }.testTag(tag),
+        modifier = Modifier.size(44.dp).focusProperties { canFocus = false }.semantics { contentDescription = description }.testTag(tag),
         shape = RoundedCornerShape(22.dp), contentPadding = PaddingValues(0.dp), content = content)
 }
 

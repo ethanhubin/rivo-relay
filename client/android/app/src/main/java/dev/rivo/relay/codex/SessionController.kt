@@ -75,7 +75,8 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                     require(snapshot.id == id) { "节点返回了其他会话，请重新同步" }
                     if (isCurrent(id, targetGeneration) && requestHistoryEpoch == historyEpoch) {
                         mutable.update { current ->
-                            current.copy(snapshot = if (current.earlierLoaded) snapshot.copy(messages = mergeLatestMessages(current.snapshot?.messages.orEmpty(), snapshot.messages)) else snapshot,
+                            current.copy(snapshot = if (current.earlierLoaded) snapshot.copy(messages = mergeLatestMessages(current.snapshot?.messages.orEmpty(), snapshot.messages),
+                                turnSettings = mergeLatestTurnSettings(current.snapshot?.turnSettings.orEmpty(), snapshot.turnSettings)) else snapshot,
                                 loading = false, stale = false, readError = null,
                                 historyCursor = if (current.earlierLoaded) current.historyCursor else snapshot.historyCursor)
                         }
@@ -114,7 +115,8 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                 val page = sessionSnapshot(api.call("/v1/threads/${encoded(id)}?cursor=${encoded(cursor)}&limit=30"))
                 require(page.id == id) { "节点返回了其他会话，请重新同步" }
                 if (isCurrent(id, requestGeneration) && historyEpoch == requestHistoryEpoch) mutable.update { latest -> latest.copy(
-                    snapshot = latest.snapshot?.copy(messages = prependNativePage(page.messages, latest.snapshot.messages)),
+                    snapshot = latest.snapshot?.copy(messages = prependNativePage(page.messages, latest.snapshot.messages),
+                        turnSettings = prependTurnSettings(page.turnSettings, latest.snapshot.turnSettings)),
                     historyCursor = page.historyCursor?.takeUnless { it == cursor }, earlierLoaded = true, loadingEarlier = false, historyError = null) }
             } catch (e: Exception) {
                 if (e !is CancellationException && isCurrent(id, requestGeneration) && historyEpoch == requestHistoryEpoch) {

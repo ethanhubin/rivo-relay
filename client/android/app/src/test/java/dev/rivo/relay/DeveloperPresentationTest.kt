@@ -48,4 +48,22 @@ class DeveloperPresentationTest {
         assertEquals("", diffForFile(patch, "absent.kt"))
         assertTrue(diffForFile("diff --git a/new file.txt b/new file.txt\n+++ b/new file.txt\t\n@@ -0,0 +1 @@\n+text\n", "new file.txt").contains("+text"))
     }
+    @Test fun diffRowsKeepNewOldLinesAndTreatHeaderLikeTextInsideHunkAsContent() {
+        val patch = "diff --git a/src/a.kt b/src/a.kt\n--- a/src/a.kt\n+++ b/src/a.kt\n@@ -10,2 +20,2 @@\n context\n-removed\n+++content\n\\ No newline at end of file\n"
+        val lines = diffDisplayLines(patch)
+        assertEquals("src/a.kt", lines.first().text)
+        assertEquals(DiffDisplayLine("context", "context", 10, 20), lines[2])
+        assertEquals(DiffDisplayLine("deletion", "removed", 11, null), lines[3])
+        assertEquals(DiffDisplayLine("addition", "++content", null, 21), lines[4])
+        assertEquals("metadata", lines.last().kind)
+    }
+
+    @Test fun deletedAndGitQuotedFilePathsStillSelectTheCorrectPatch() {
+        val deleted = "diff --git a/deleted.txt b/deleted.txt\n--- a/deleted.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n"
+        assertEquals(deleted, diffForFile(deleted, "deleted.txt"))
+        val quoted = "diff --git \"a/a\\tname.txt\" \"b/a\\tname.txt\"\n--- \"a/a\\tname.txt\"\n+++ \"b/a\\tname.txt\"\n@@ -1 +1 @@\n-old\n+new\n"
+        assertEquals(quoted, diffForFile(quoted, "a\tname.txt"))
+        assertEquals("a\tname.txt", diffDisplayLines(quoted).first().text)
+        assertEquals("café.txt", gitDiffHeaderPath("\"b/caf\\303\\251.txt\""))
+    }
 }
