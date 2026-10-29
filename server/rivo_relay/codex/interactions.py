@@ -18,6 +18,11 @@ class Interactions:
             method = event.get("method", "")
             if method == "relay/nativeDisconnected":
                 self._pending.clear()
+            elif method == "item/tool/call":
+                # Desktop executes dynamic tools. This RPC is not a human
+                # approval/question and Relay must neither display it as one
+                # nor answer it on behalf of the tool's owning client.
+                return
             elif "id" in event:
                 generation = event.get("connectionId", self.connection.generation)
                 request_id = event["id"]

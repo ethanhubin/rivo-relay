@@ -282,6 +282,32 @@ class NativeSemanticsTests(unittest.TestCase):
         pending.receive({"method": "serverRequest/resolved", "params": {"threadId": "thread", "requestId": "r"}})
         self.assertEqual([], pending.list("thread"))
 
+    def test_desktop_tool_call_does_not_require_user_response(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        service.start()
+        service._event({"method": "turn/started", "params": {
+            "threadId": "thread", "turn": {"id": "turn", "status": "inProgress", "items": []}}})
+        service._event({"id": "tool-rpc", "method": "item/tool/call", "params": {
+            "threadId": "thread", "turnId": "turn", "callId": "call", "tool": "exec"}})
+        snapshot = service.get_session("thread")
+        self.assertEqual([], snapshot["requests"])
+        self.assertEqual("running", snapshot["status"])
+        self.assertEqual([], native.replies)
+
+    def test_tool_calls_preserve_real_questions_and_unknown_requests(self):
+        native = FakeNative()
+        pending = Interactions(native)
+        for request_id, method in [("question", "item/tool/requestUserInput"),
+                                   ("extension", "extension/request"),
+                                   ("tool", "item/tool/call")]:
+            pending.receive({"id": request_id, "method": method,
+                             "params": {"threadId": "thread", "turnId": "turn"}})
+        self.assertEqual(["question", "extension"], [r["id"] for r in pending.list("thread")])
+        pending.receive({"method": "serverRequest/resolved", "params": {"requestId": "tool"}})
+        self.assertEqual(2, len(pending.list("thread")))
+        self.assertEqual([], native.replies)
+
     def test_late_turn_completion_does_not_clear_new_active_turn(self):
         service = CodexService(connection=FakeNative())
         for tid in ["older", "newer"]:
