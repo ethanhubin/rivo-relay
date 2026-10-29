@@ -9,6 +9,7 @@ import java.util.UUID
 
 data class PendingSubmission(val id: String, val path: String, val label: String, val threadId: String? = null)
 data class SubmissionState(val busy: Boolean = false, val pending: PendingSubmission? = null, val notice: String? = null)
+data class BatchSubmission(val path: String, val body: JSONObject, val label: String)
 
 /** Stable identity and frozen target adapted from QiGuang submission coordinator, without replay/outbox/queue. */
 class SubmissionCoordinator(private val api: RelayApi, private val scope: CoroutineScope, private val vault: CredentialStore,
@@ -42,11 +43,12 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
         afterAccepted = accepted
         mutable.update { it.copy(busy = true, notice = null) }
         scope.launch {
+            var completed: JSONObject? = null
             try {
                 save(pending)
                 val response = api.call(path, "POST", JSONObject(body.toString()).put("submissionId", pending.id))
                 when (response.string("status")) {
-                    "accepted" -> { save(null); afterAccepted = null; mutable.update { it.copy(notice = null) }; accepted(response.optJSONObject("receipt") ?: JSONObject()) }
+                    "accepted" -> { save(null); afterAccepted = null; mutable.update { it.copy(notice = null) }; completed = response.optJSONObject("receipt") ?: JSONObject() }
                     "failed" -> { save(null); afterAccepted = null; failure(ApiException(422, "submission_failed", response.optJSONObject("error")?.string("message").orEmpty().ifBlank { "$label 未完成" })) }
                     else -> { retainReceipt(pending, response); mutable.update { it.copy(notice = "$label 结果待核对，不会自动重发") } }
                 }
@@ -54,7 +56,18 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
                 if (e is ApiException && e.status in 400..499 && e.status != 408) { save(null); afterAccepted = null }
                 if (e !is CancellationException) failure(e)
             } finally { mutable.update { it.copy(busy = false) } }
+            completed?.let(accepted)
         }
+    }
+    /** Each write has a durable ID. Stop the batch on failure or uncertainty. */
+    fun submitBatch(operations: List<BatchSubmission>, onChanged: () -> Unit = {}) {
+        val frozen = operations.map { it.copy(body = JSONObject(it.body.toString())) }
+        fun next(index: Int) {
+            if (index >= frozen.size) return
+            val item = frozen[index]
+            submit(item.path, item.body, item.label) { onChanged(); next(index + 1) }
+        }
+        next(0)
     }
     fun reconcile() {
         val pending = mutable.value.pending ?: return

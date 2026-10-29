@@ -156,7 +156,7 @@ private fun McpRequest(params: JSONObject, enabled: Boolean, onRespond: (JSONObj
             if (schema != null && supportedMcpForm(schema)) McpForm(schema, enabled) { respond("accept", it) }
             else Text("此表单包含手机暂不支持的字段，请回到 Desktop 完成。", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        "openai/userVerification" -> { Text(params.string("title"), style = MaterialTheme.typography.titleMedium); Text("请在 Desktop 完成身份验证，手机不会代替验证。") }
+        "openai/userVerification" -> { Text(params.string("title"), style = MaterialTheme.typography.titleMedium); Text("此请求需要 Desktop 已注册的签名凭据。请在 Desktop 完成身份验证，手机会保留此请求等待结果。") }
         else -> Text("此原生交互暂不支持在手机处理，请回到 Desktop 完成。")
     }
     error?.let { Text(it, color = MaterialTheme.colorScheme.error) }

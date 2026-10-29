@@ -15,9 +15,14 @@ from typing import Iterator
 import uuid
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 _V1_TABLES = {"pairing_codes", "connections", "submissions", "todos"}
-_TABLES = _V1_TABLES | {"queued_tasks"}
+_V2_TABLES = _V1_TABLES | {"queued_tasks"}
+_TABLES = _V2_TABLES | {"native_observations", "workspaces"}
+_EXTRA_SCHEMA = (
+    "CREATE TABLE native_observations(thread_id TEXT NOT NULL,kind TEXT NOT NULL,turn_id TEXT NOT NULL DEFAULT '',payload_json TEXT NOT NULL,updated_at REAL NOT NULL,PRIMARY KEY(thread_id,kind,turn_id))",
+    "CREATE TABLE workspaces(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,thread_id TEXT UNIQUE,source_path TEXT NOT NULL,path TEXT NOT NULL,commit_id TEXT NOT NULL,status TEXT NOT NULL,archive_path TEXT,created_at REAL NOT NULL)",
+)
 _QUEUE_SCHEMA = """CREATE TABLE queued_tasks (id TEXT PRIMARY KEY, connection_id TEXT NOT NULL REFERENCES connections(id), thread_id TEXT NOT NULL, payload_json TEXT NOT NULL, status TEXT NOT NULL, position INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0, turn_id TEXT, error TEXT, created_at REAL NOT NULL)"""
 _SCHEMA = (
     """CREATE TABLE pairing_codes (
@@ -42,11 +47,12 @@ _SCHEMA = (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '',
         completed INTEGER NOT NULL DEFAULT 0 CHECK(completed IN (0,1)),
         project_id TEXT, thread_id TEXT,
-        created_at REAL NOT NULL, updated_at REAL NOT NULL, completed_at REAL,
+        created_at REAL NOT NULL, updated_at REAL NOT NULL, completed_at REAL, extra_json TEXT NOT NULL DEFAULT '{}',
         CHECK((project_id IS NULL AND thread_id IS NULL)
            OR (project_id IS NOT NULL AND thread_id IS NOT NULL))
     )""",
     _QUEUE_SCHEMA,
+    *_EXTRA_SCHEMA,
     "CREATE INDEX todos_order ON todos(completed, created_at DESC, id)",
     "CREATE INDEX submissions_connection ON submissions(connection_id, created_at DESC)",
 )
@@ -112,7 +118,18 @@ class Database:
                         connection.execute(statement)
                     connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 elif current == 1 and tables == _V1_TABLES:
+                    connection.execute("ALTER TABLE todos ADD COLUMN extra_json TEXT NOT NULL DEFAULT '{}'")
                     connection.execute(_QUEUE_SCHEMA)
+                    for statement in _EXTRA_SCHEMA:
+                        connection.execute(statement)
+                    connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                elif current == 2 and tables == _V2_TABLES:
+                    connection.execute("ALTER TABLE todos ADD COLUMN extra_json TEXT NOT NULL DEFAULT '{}'")
+                    for statement in _EXTRA_SCHEMA:
+                        connection.execute(statement)
+                    connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                elif current == 3 and tables == _TABLES:
+                    connection.execute("ALTER TABLE todos ADD COLUMN extra_json TEXT NOT NULL DEFAULT '{}'")
                     connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 elif current != SCHEMA_VERSION or tables != _TABLES:
                     raise RuntimeError("Not a compatible Rivo Relay database; existing data was not migrated")
@@ -134,4 +151,3 @@ class Database:
     def close(self) -> None:
         with self._lock:
             self._connection.close()
-

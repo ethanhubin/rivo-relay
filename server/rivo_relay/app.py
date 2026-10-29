@@ -30,6 +30,8 @@ class RelayApp:
         self.codex = codex
         self.events = events or EventBus()
         self.db = Database(config.database_path)
+        if hasattr(codex, 'configure_storage'):
+            codex.configure_storage(self.db)
         self.pairing = PairingStore(self.db)
         self.submissions = SubmissionStore(self.db)
         self.todos = TodoStore(self.db)
@@ -76,7 +78,7 @@ class RelayApp:
         project_id = payload["projectId"]
         supplied_thread = payload.get("threadId")
         submission_id = payload["submissionId"]
-        submitted_payload = {**payload, "title": todo["title"], "notes": todo["notes"]}
+        submitted_payload = {**payload, "title": todo["title"], "notes": todo["notes"], "details": todo.get("details", {})}
         try:
             self.submissions.get(submission_id, connection_id)
         except SubmissionNotFound:
@@ -98,7 +100,16 @@ class RelayApp:
                 self.submissions.checkpoint(submission_id, {"threadId": thread_id})
             self.todos.link(todo_id, project_id, thread_id)
             text = todo["title"] + ("\n\n" + todo["notes"] if todo["notes"] else "")
-            receipt = self.codex.send(thread_id, text, client_message_id=submission_id)
+            details = todo.get('details', {})
+            subtasks = details.get('subtasks', [])
+            if subtasks:
+                text += '\n\n事项：\n' + '\n'.join(('[x] ' if item['completed'] else '[ ] ') + item['title'] for item in subtasks)
+            attachments = details.get('attachments', [])
+            if attachments:
+                inputs = [{'type': 'text', 'text': text, 'text_elements': []}] + [dict(item) for item in attachments]
+                receipt = self.codex.send(thread_id, text, client_message_id=submission_id, input_items=inputs)
+            else:
+                receipt = self.codex.send(thread_id, text, client_message_id=submission_id)
             return {**receipt, "threadId": thread_id, "todoId": todo_id}
 
         return self.submit(connection_id, submission_id, "todo.dispatch", todo_id,

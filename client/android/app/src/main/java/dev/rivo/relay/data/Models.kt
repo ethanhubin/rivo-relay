@@ -2,17 +2,17 @@ package dev.rivo.relay.data
 
 import org.json.JSONObject
 
-data class ThreadSummary(val id: String, val name: String, val preview: String, val status: String, val cwd: String, val projectId: String, val pinned: Boolean = false)
-fun threadSummary(json: JSONObject) = ThreadSummary(json.string("id"), visibleSessionText(json.string("name")).ifBlank { "新会话" }, visibleSessionText(json.string("preview")), json.string("status"), json.string("cwd"), json.string("projectId"), json.optBoolean("pinned", false))
-data class Todo(val id: String, val title: String, val notes: String, val completed: Boolean, val projectId: String, val threadId: String)
-fun todo(json: JSONObject) = Todo(json.string("id"), json.string("title"), json.string("notes"), json.optBoolean("completed"), json.string("projectId"), json.string("threadId"))
+data class ThreadSummary(val id: String, val name: String, val preview: String, val status: String, val cwd: String, val projectId: String, val pinned: Boolean = false, val updatedAt: Long = 0)
+fun threadSummary(json: JSONObject) = ThreadSummary(json.string("id"), visibleSessionText(json.string("name")).ifBlank { "新会话" }, visibleSessionText(json.string("preview")), json.string("status"), json.string("cwd"), json.string("projectId"), json.optBoolean("pinned", false), json.optLong("updatedAt", 0))
+data class Todo(val id: String, val title: String, val notes: String, val completed: Boolean, val projectId: String, val threadId: String, val details: JSONObject = JSONObject())
+fun todo(json: JSONObject) = Todo(json.string("id"), json.string("title"), json.string("notes"), json.optBoolean("completed"), json.string("projectId"), json.string("threadId"), json.optJSONObject("details") ?: JSONObject())
 data class NativeMessage(val id: String, val turnId: String, val type: String, val text: String, val raw: JSONObject,
     val content: List<JSONObject> = emptyList(), val activity: NativeActivity? = null)
 data class NativeRequest(val key: String, val method: String, val params: JSONObject)
 data class QueueTask(val id: String, val text: String, val status: String, val revision: Int, val error: String, val raw: JSONObject)
 fun queueTask(j: JSONObject) = QueueTask(j.string("id"), j.string("text"), j.string("status"), j.optInt("revision"), j.string("error"), j)
 data class SessionSnapshot(val id: String, val name: String, val status: String, val activeTurnId: String,
-    val messages: List<NativeMessage>, val requests: List<NativeRequest>, val settings: JSONObject, val historyCursor: String? = null, val readOnly: Boolean = false, val queue: List<QueueTask> = emptyList())
+    val messages: List<NativeMessage>, val requests: List<NativeRequest>, val settings: JSONObject, val historyCursor: String? = null, val readOnly: Boolean = false, val queue: List<QueueTask> = emptyList(), val plan: JSONObject? = null, val tokenUsage: JSONObject? = null, val changes: List<JSONObject> = emptyList())
 
 /** Project native items by IDs, never by text matching or by duplicating a local history. */
 fun sessionSnapshot(json: JSONObject): SessionSnapshot {
@@ -40,7 +40,7 @@ fun sessionSnapshot(json: JSONObject): SessionSnapshot {
     }
     val requests = json.objects("requests").map { NativeRequest(it.string("key"), it.string("method"), it.optJSONObject("params") ?: JSONObject()) }
     return SessionSnapshot(thread.string("id"), visibleSessionText(thread.string("name")).ifBlank { "新会话" }, json.string("status"), json.string("activeTurnId"), messages, requests, json.optJSONObject("settings") ?: JSONObject(),
-        json.string("nextCursor").takeIf { it.isNotBlank() }, json.optBoolean("readOnly", false), json.objects("queue").map(::queueTask))
+        json.string("nextCursor").takeIf { it.isNotBlank() }, json.optBoolean("readOnly", false), json.objects("queue").map(::queueTask), json.optJSONObject("plan"), json.optJSONObject("tokenUsage"), json.objects("changes"))
 }
 
 fun mergeLatestMessages(previous: List<NativeMessage>, latest: List<NativeMessage>): List<NativeMessage> {

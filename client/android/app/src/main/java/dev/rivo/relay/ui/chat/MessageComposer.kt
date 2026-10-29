@@ -65,6 +65,7 @@ fun MessageComposer(
     queueing: Boolean = false,
     onEditImage: (DraftImage) -> Unit = {},
     onAddFile: () -> Unit = {},
+    onVoice: (() -> Unit)? = null,
 ) {
     var attachmentsOpen by remember { mutableStateOf(false) }
     LaunchedEffect(enabled) { if (!enabled) attachmentsOpen = false }
@@ -165,6 +166,7 @@ fun MessageComposer(
                                     style = MaterialTheme.typography.labelSmall)
                             }
                         }
+                        if (onVoice != null) ComposerToolButton(onVoice, enabled && !preparing, "语音输入", "voice_input") { Text("语音", style = MaterialTheme.typography.labelMedium) }
                         Spacer(Modifier.weight(1f))
                         ComposerToolButton(onSettings, true, "运行设置", "composer_settings") {
                             Text("⚙", style = MaterialTheme.typography.titleMedium)

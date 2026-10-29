@@ -39,9 +39,11 @@ def native_input(body: dict) -> list[dict] | None:
         elif kind == "image":
             if not (isinstance(item.get("url"), str) and item["url"] or isinstance(item.get("fileId"), str) and item["fileId"]):
                 raise ApiError(400, "invalid_input", "Image needs a URL or native file ID")
-        elif kind in {"localImage", "mention", "skill"}:
+        elif kind == "audio":
+            required(item, "url", 8 * 1024 * 1024)
+        elif kind in {"localImage", "localAudio", "mention", "skill"}:
             required(item, "path", 4096)
-            if kind != "localImage":
+            if kind not in {"localImage", "localAudio"}:
                 required(item, "name", 1000)
         else:
             raise ApiError(400, "invalid_input", "Unknown native input type")
@@ -249,6 +251,12 @@ class Handler(BaseHTTPRequestHandler):
             return {"url": self.app.config.public_url.rstrip("/") + "/v1/download-links/" + key, "expiresAt": expiry}
         if path == ["v1", "models"] and method == "GET":
             return {"models": codex.models()}
+        if path == ['v1', 'usage'] and method == 'GET':
+            return {'usage': codex.usage()}
+        if path == ['v1', 'project-directories'] and method == 'GET':
+            return codex.project_directory(query.get('path', [None])[0])
+        if len(path) == 4 and path[:2] == ['v1', 'projects'] and path[3] == 'git' and method == 'GET':
+            return {'git': codex.project_git(path[2])}
         if path == ["v1", "files"] and method == "GET":
             file_path = required({"path": query.get("path", [None])[0]}, "path", 4096)
             return codex.read_file(file_path)
@@ -263,17 +271,20 @@ class Handler(BaseHTTPRequestHandler):
                 project_path = required(body, "path", 4096)
                 sid = required(body, "submissionId")
                 return self.app.submit(connection_id, sid, "project.add", project_path, body,
-                    lambda: codex.add_project(project_path))
+                    lambda: codex.add_project(project_path, idempotency_key=sid, folder_name=body.get('folderName')))
         if path == ["v1", "threads"]:
             if method == "GET":
                 project = query.get("projectId", [""])[0]
                 if not project:
                     raise ApiError(400, "invalid_request", "projectId is required")
-                return {"threads": codex.list_sessions(project)}
+                archived = query.get('archived', ['false'])[0]
+                if archived not in ('true', 'false'):
+                    raise ApiError(400, 'invalid_request', 'archived must be true or false')
+                return {"threads": codex.list_sessions(project, archived=True) if archived == 'true' else codex.list_sessions(project)}
             if method == "POST":
                 project, sid = required(body, "projectId"), required(body, "submissionId")
                 return self.app.submit(connection_id, sid, "thread.create", project, body,
-                    lambda: codex.create_session(project))
+                    lambda: codex.create_session(project, worktree_ref=body['worktreeRef']) if body.get('worktreeRef') else codex.create_session(project))
         if len(path) >= 3 and path[:2] == ["v1", "threads"]:
             thread_id = path[2]
             if len(path) == 3 and method == "GET":
@@ -283,6 +294,22 @@ class Handler(BaseHTTPRequestHandler):
             if len(path) == 4 and path[3] == "history" and method == "GET":
                 return codex.history(thread_id, cursor=query.get("cursor", [None])[0],
                                      limit=int(query.get("limit", ["30"])[0]))
+            if len(path) == 4 and method == 'GET':
+                if path[3] == 'diff':
+                    return {'diff': codex.diff(thread_id)}
+                if path[3] == 'review-context':
+                    return codex.review_context(thread_id)
+                if path[3] == 'workspace':
+                    return {'workspace': codex.workspaces.inspect(thread_id) if codex.workspaces else None}
+            if len(path) == 5 and path[3:] == ['workspace', 'cleanup'] and method == 'POST':
+                sid, revision = required(body, 'submissionId'), required(body, 'revision')
+                discard = body.get('discard', False)
+                if not isinstance(discard, bool):
+                    raise ApiError(400, 'invalid_request', 'discard must be boolean')
+                if self.app.queue.list(thread_id):
+                    raise ApiError(409, 'workspace_busy', '请先处理此会话的执行队列')
+                return self.app.submit(connection_id, sid, 'workspace.cleanup', thread_id, body,
+                    lambda: codex.workspaces.cleanup(thread_id, revision, discard))
             if len(path) == 4 and path[3] == "queue" and method == "POST":
                 sid, operation = required(body, "submissionId"), required(body, "operation")
                 if operation == "enqueue":
@@ -291,7 +318,9 @@ class Handler(BaseHTTPRequestHandler):
                     for key in ("model", "effort"):
                         if body.get(key) is not None and (not isinstance(body[key], str) or len(body[key]) > 200):
                             raise ApiError(400, "invalid_request", "Invalid model settings")
-                    fn = lambda: self.app.queue.enqueue(thread_id, sid, connection_id, {"input": items, "model": body.get("model"), "effort": body.get("effort")})
+                    if body.get('mode') not in (None, 'default', 'plan'):
+                        raise ApiError(400, 'invalid_request', 'Invalid mode')
+                    fn = lambda: self.app.queue.enqueue(thread_id, sid, connection_id, {"input": items, "model": body.get("model"), "effort": body.get("effort"), 'mode': body.get('mode')})
                 elif operation == "reorder":
                     ids = body.get("ids")
                     if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
@@ -316,6 +345,17 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(body.get("pinned"), bool):
                         raise ApiError(400, "invalid_request", "pinned must be boolean")
                     fn = lambda: codex.pin_session(thread_id, body["pinned"])
+                elif action == 'archive':
+                    if not isinstance(body.get('archived'), bool):
+                        raise ApiError(400, 'invalid_request', 'archived must be boolean')
+                    if body['archived'] and self.app.queue.list(thread_id):
+                        raise ApiError(409, 'thread_busy', '请先处理此会话的执行队列')
+                    fn = lambda: codex.archive_session(thread_id, body['archived'])
+                elif action == 'review':
+                    from .codex.developer import validate_review
+                    target = validate_review(body.get('target'))
+                    fn = lambda: self.app.queue.enqueue(thread_id, sid, connection_id,
+                        {'input': [{'type': 'text', 'text': '代码审查 · ' + target['type']}], 'review': target})
                 elif action == "turns":
                     items = native_input(body)
                     text = required(body, "text", 200000) if items is None else body.get("text", "")
@@ -323,6 +363,10 @@ class Handler(BaseHTTPRequestHandler):
                         if key in body and body[key] is not None and (not isinstance(body[key], str) or len(body[key]) > 200):
                             raise ApiError(400, "invalid_request", f"Invalid {key}")
                     kwargs = {"model": body.get("model"), "effort": body.get("effort"), "client_message_id": sid}
+                    if body.get('mode') not in (None, 'default', 'plan'):
+                        raise ApiError(400, 'invalid_request', 'Invalid mode')
+                    if body.get('mode') is not None:
+                        kwargs['mode'] = body['mode']
                     if items is not None:
                         kwargs["input_items"] = items
                     fn = lambda: codex.send(thread_id, text, **kwargs)
@@ -354,7 +398,7 @@ class Handler(BaseHTTPRequestHandler):
                 return {"todos": [public_todo(todo) for todo in self.app.todos.list()]}
             if method == "POST":
                 todo = self.app.todos.create(required(body, "title", 1000),
-                    notes=body.get("notes", ""), todo_id=body.get("id"))
+                    notes=body.get("notes", ""), todo_id=body.get("id"), details=body.get("details", {}))
                 self.app.events.publish({"method": "relay/todos", "params": {}})
                 return {"todo": public_todo(todo)}
         if len(path) >= 3 and path[:2] == ["v1", "todos"]:
@@ -369,7 +413,7 @@ class Handler(BaseHTTPRequestHandler):
                 if method == "GET":
                     return {"todo": public_todo(self.app.todos.get(todo_id))}
                 if method == "PATCH":
-                    allowed = {"title", "notes", "completed"}
+                    allowed = {"title", "notes", "completed", "details"}
                     if not body or not set(body) <= allowed:
                         raise ApiError(400, "invalid_request", "Unknown or empty todo fields")
                     todo = self.app.todos.update(todo_id, **body)

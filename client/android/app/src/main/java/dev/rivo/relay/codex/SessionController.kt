@@ -10,7 +10,11 @@ data class SessionState(val id: String? = null, val snapshot: SessionSnapshot? =
     val readError: String? = null, val historyError: String? = null)
 
 /** One active thread owns reads and subscription; switch cancels both and rejects late snapshots. */
-class SessionController(private val api: RelayApi, private val scope: CoroutineScope, private val failure: (Throwable) -> Unit) {
+class SessionController(private val api: RelayApi, private val scope: CoroutineScope,
+    private val store: ConversationStore? = null,
+    private val onSnapshot: (String, org.json.JSONObject) -> Unit = { _, _ -> },
+    private val onVisible: (String?) -> Unit = {},
+    private val failure: (Throwable) -> Unit) {
     private val mutable = MutableStateFlow(SessionState())
     val state = mutable.asStateFlow()
     private var activeJob: Job? = null
@@ -18,6 +22,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
     private var generation = 0L
     private var historyEpoch = 0L
     private var historyJob: Job? = null
+    private var viewportPages = 0
     private fun isCurrent(id: String, targetGeneration: Long) = mutable.value.id == id && generation == targetGeneration
     private fun message(error: Exception) = if (error is ApiException) error.message else "无法读取会话，正在重新连接。"
     private fun invalidateHistory() { historyEpoch++; historyJob?.cancel(); historyJob = null }
@@ -25,8 +30,10 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
     fun open(id: String) {
         pause()
         val targetGeneration = generation
+        viewportPages = 0
         val previous = mutable.value
         mutable.value = if (previous.id == id) previous.copy(loading = true, stale = true) else SessionState(id = id, loading = true)
+        onVisible(id)
         val signals = Channel<Unit>(Channel.CONFLATED); updates = signals
         activeJob = scope.launch {
             // Subscribe before first snapshot. Buffered notifications coalesce into another authoritative read.
@@ -53,15 +60,27 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                 }
             }
             launch { while (isActive) { delay(5000); signals.trySend(Unit) } }
+            if (mutable.value.snapshot == null) {
+                try {
+                    val cached = store?.loadSnapshot(id)?.let(::sessionSnapshot)
+                    if (cached != null && isCurrent(id, targetGeneration)) mutable.update { it.copy(snapshot = cached, stale = true) }
+                } catch (e: Exception) { if (e is CancellationException) throw e }
+            }
             signals.trySend(Unit)
             for (ignored in signals) {
                 val requestHistoryEpoch = historyEpoch
                 try {
-                    val snapshot = sessionSnapshot(api.call("/v1/threads/" + encoded(id)))
-                    if (isCurrent(id, targetGeneration) && requestHistoryEpoch == historyEpoch) mutable.update { current ->
-                        current.copy(snapshot = if (current.earlierLoaded) snapshot.copy(messages = mergeLatestMessages(current.snapshot?.messages.orEmpty(), snapshot.messages)) else snapshot,
-                            loading = false, stale = false, readError = null,
-                            historyCursor = if (current.earlierLoaded) current.historyCursor else snapshot.historyCursor)
+                    val json = api.call("/v1/threads/" + encoded(id))
+                    val snapshot = sessionSnapshot(json)
+                    require(snapshot.id == id) { "节点返回了其他会话，请重新同步" }
+                    if (isCurrent(id, targetGeneration) && requestHistoryEpoch == historyEpoch) {
+                        mutable.update { current ->
+                            current.copy(snapshot = if (current.earlierLoaded) snapshot.copy(messages = mergeLatestMessages(current.snapshot?.messages.orEmpty(), snapshot.messages)) else snapshot,
+                                loading = false, stale = false, readError = null,
+                                historyCursor = if (current.earlierLoaded) current.historyCursor else snapshot.historyCursor)
+                        }
+                        onSnapshot(id, json)
+                        try { store?.saveSnapshot(id, json) } catch (e: Exception) { if (e is CancellationException) throw e }
                     }
                 } catch (e: Exception) {
                     if (e is CancellationException) throw e
@@ -75,17 +94,25 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         }
     }
     fun refresh() { updates?.trySend(Unit) }
+    /** UI calls this only when the laid-out timeline still does not fill its viewport. */
+    fun ensureVisibleHistory() {
+        val current = mutable.value
+        if (viewportPages >= 3 || current.loading || current.loadingEarlier || current.stale || current.historyError != null || current.historyCursor == null) return
+        viewportPages++
+        loadEarlier()
+    }
     fun loadEarlier() {
         val current = mutable.value
         val id = current.id ?: return
         val cursor = current.historyCursor ?: return
         val requestGeneration = generation
         val requestHistoryEpoch = historyEpoch
-        if (current.loadingEarlier) return
+        if (current.loadingEarlier || current.stale) return
         mutable.update { it.copy(loadingEarlier = true, historyError = null) }
         historyJob = scope.launch {
             try {
                 val page = sessionSnapshot(api.call("/v1/threads/${encoded(id)}?cursor=${encoded(cursor)}&limit=30"))
+                require(page.id == id) { "节点返回了其他会话，请重新同步" }
                 if (isCurrent(id, requestGeneration) && historyEpoch == requestHistoryEpoch) mutable.update { latest -> latest.copy(
                     snapshot = latest.snapshot?.copy(messages = prependNativePage(page.messages, latest.snapshot.messages)),
                     historyCursor = page.historyCursor?.takeUnless { it == cursor }, earlierLoaded = true, loadingEarlier = false, historyError = null) }
@@ -103,6 +130,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         }
     }
     fun pause() {
+        onVisible(null)
         generation++; activeJob?.cancel(); activeJob = null; updates?.close(); updates = null
         invalidateHistory()
         mutable.update { it.copy(stale = it.id != null, loadingEarlier = false) }

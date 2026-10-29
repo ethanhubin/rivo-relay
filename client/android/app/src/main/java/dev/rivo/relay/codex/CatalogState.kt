@@ -4,42 +4,60 @@ import dev.rivo.relay.data.*
 import dev.rivo.relay.ui.projects.ProjectSummary
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import org.json.JSONObject
 
-data class CatalogState(val projects: List<ProjectSummary> = emptyList(), val threads: List<ThreadSummary> = emptyList(),
-    val selectedProject: ProjectSummary? = null, val loading: Boolean = false, val models: List<org.json.JSONObject> = emptyList())
+data class CatalogState(
+    val projects: List<ProjectSummary> = emptyList(), val threads: List<ThreadSummary> = emptyList(),
+    val selectedProject: ProjectSummary? = null, val projectsLoading: Boolean = false, val threadsLoading: Boolean = false,
+    val models: List<JSONObject> = emptyList(), val archived: Boolean = false,
+    val unreadThreadIds: Set<String> = emptySet(), val usage: CodexUsage? = null,
+    val usageLoading: Boolean = false, val usageError: String? = null,
+) { val loading: Boolean get() = projectsLoading || threadsLoading }
 
-/** Separate catalog/list owner, adapted from QiGuang state holders; stale targets never overwrite a new project. */
-class CatalogController(private val api: RelayApi, private val scope: CoroutineScope, private val failure: (Throwable) -> Unit) {
+/** Separate catalog/list owner; stale requests cannot overwrite another project or archive filter. */
+class CatalogController(private val api: RelayApi, private val scope: CoroutineScope, private val failure: (Throwable) -> Unit,
+    private val store: ConversationStore? = null) {
     private val mutable = MutableStateFlow(CatalogState())
     val state = mutable.asStateFlow()
     private var projectsJob: Job? = null
     private var listJob: Job? = null
+    private var usageJob: Job? = null
+    private var usageUpdatedAt = 0L
     private var generation = 0
+    private val readVersions = mutableMapOf<String, Long>()
 
     /** Manual refresh, node startup and visible-home polling share one read. */
     @Synchronized
     fun refreshProjects(): Job {
         projectsJob?.takeUnless { it.isCompleted }?.let { return it }
         val job = scope.launch(start = CoroutineStart.LAZY) {
-            mutable.update { it.copy(loading = true) }
+            mutable.update { it.copy(projectsLoading = true) }
             try {
-                val projects = api.call("/v1/projects").objects("projects").map {
-                    ProjectSummary(it.string("id"), it.string("name"), it.string("path"), it.optInt("threadCount"),
-                        outstandingWorkCount = it.optInt("outstandingWorkCount", 0).coerceAtLeast(0))
-                }
-                mutable.update { it.copy(projects = projects) }
+                if (mutable.value.projects.isEmpty()) store?.loadCatalog("projects")?.let { applyProjects(it) }
+                val response = api.call("/v1/projects")
+                applyProjects(response)
+                store?.saveCatalog("projects", response)
             } catch (e: Exception) {
                 if (e !is CancellationException) failure(e)
-            } finally { mutable.update { it.copy(loading = false) } }
+            } finally { mutable.update { it.copy(projectsLoading = false) } }
         }
         projectsJob = job
         job.start()
         return job
     }
 
-    /** Call only while the project home is STARTED; cancellation ends polling.
-     * A shared in-flight read may finish, but no subsequent poll is scheduled.
-     */
+    private fun applyProjects(response: JSONObject) {
+        val projects = response.objects("projects").map {
+            ProjectSummary(it.string("id"), it.string("name"), it.string("path"), it.optInt("threadCount"),
+                outstandingWorkCount = it.optInt("outstandingWorkCount", 0).coerceAtLeast(0))
+        }
+        mutable.update { current ->
+            val selectedId = current.selectedProject?.id ?: store?.getMetadata("selectedProjectId")
+            current.copy(projects = projects, selectedProject = projects.firstOrNull { it.id == selectedId })
+        }
+    }
+
+    /** Call only while the project home is STARTED; cancellation ends polling. */
     suspend fun observeProjects(pollIntervalMillis: Long = 5_000) {
         require(pollIntervalMillis > 0)
         while (currentCoroutineContext().isActive) {
@@ -47,19 +65,82 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
             delay(pollIntervalMillis)
         }
     }
-    fun project(project: ProjectSummary) { mutable.update { it.copy(selectedProject = project, threads = emptyList()) }; refreshThreads() }
+
+    fun project(project: ProjectSummary) {
+        store?.putMetadata("selectedProjectId", project.id)
+        mutable.update { it.copy(selectedProject = project, threads = emptyList(), archived = false, unreadThreadIds = emptySet()) }
+        refreshThreads()
+    }
+
+    fun setArchived(archived: Boolean) {
+        if (mutable.value.archived == archived) return
+        mutable.update { it.copy(archived = archived, threads = emptyList(), unreadThreadIds = emptySet()) }
+        refreshThreads()
+    }
+
     fun refreshThreads() {
         val project = mutable.value.selectedProject ?: return
-        listJob?.cancel(); val targetGeneration = ++generation
+        val archived = mutable.value.archived
+        val cacheKey = "threads:${project.id}:$archived"
+        listJob?.cancel()
+        val targetGeneration = ++generation
         listJob = scope.launch {
-            mutable.update { it.copy(loading = true) }
+            mutable.update { it.copy(threadsLoading = true) }
             try {
-                val threads = threadsFor(project.id)
-                if (generation == targetGeneration) mutable.update { it.copy(threads = threads) }
-            } catch (e: Exception) { if (e !is CancellationException) failure(e) }
-            finally { if (generation == targetGeneration) mutable.update { it.copy(loading = false) } }
+                if (mutable.value.threads.isEmpty()) store?.loadCatalog(cacheKey)?.let {
+                    if (generation == targetGeneration) applyThreads(it.objects("threads").map(::threadSummary))
+                }
+                val response = api.call(threadsPath(project.id, archived))
+                if (generation == targetGeneration) applyThreads(response.objects("threads").map(::threadSummary))
+                store?.saveCatalog(cacheKey, response)
+            } catch (e: Exception) { if (e !is CancellationException && generation == targetGeneration) failure(e) }
+            finally { if (generation == targetGeneration) mutable.update { it.copy(threadsLoading = false) } }
         }
     }
-    suspend fun threadsFor(projectId: String) = api.call("/v1/threads?projectId=" + encoded(projectId)).objects("threads").map(::threadSummary)
-    fun loadModels() = scope.launch { try { val models = api.call("/v1/models").objects("models"); mutable.update { it.copy(models = models) } } catch (e: Exception) { if (e !is CancellationException) failure(e) } }
+
+    private fun applyThreads(threads: List<ThreadSummary>) {
+        mutable.update { it.copy(threads = threads, unreadThreadIds = unread(threads)) }
+    }
+
+    private fun unread(threads: List<ThreadSummary>) = threads.filter { thread ->
+        val readAt = readVersions.getOrPut(thread.id) { store?.getMetadata("read:${thread.id}")?.toLongOrNull() ?: 0L }
+        thread.updatedAt > readAt && !threadIsActive(thread)
+    }.mapTo(mutableSetOf()) { it.id }
+
+    /** Call only after the selected thread's fresh history was successfully displayed. */
+    fun markRead(threadId: String, updatedAt: Long = 0) {
+        val version = maxOf(updatedAt, mutable.value.threads.firstOrNull { it.id == threadId }?.updatedAt ?: 0L)
+        val prior = readVersions[threadId] ?: store?.getMetadata("read:$threadId")?.toLongOrNull() ?: 0L
+        readVersions[threadId] = maxOf(prior, version)
+        store?.putMetadata("read:$threadId", readVersions.getValue(threadId).toString())
+        mutable.update { it.copy(unreadThreadIds = unread(it.threads)) }
+    }
+
+    suspend fun threadsFor(projectId: String): List<ThreadSummary> =
+        api.call(threadsPath(projectId, false)).objects("threads").map(::threadSummary)
+
+    fun refreshUsage(force: Boolean = false): Job? {
+        usageJob?.takeUnless { it.isCompleted }?.let { return it }
+        if (!force && usageUpdatedAt > 0 && System.currentTimeMillis() - usageUpdatedAt < 300_000) return null
+        return scope.launch {
+            mutable.update { it.copy(usageLoading = true, usageError = null) }
+            try {
+                val usage = catalogUsage(api.call("/v1/usage"))
+                usageUpdatedAt = System.currentTimeMillis()
+                mutable.update { it.copy(usage = usage) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                if (e is ApiException && e.status == 401) failure(e)
+                mutable.update { it.copy(usageError = "暂时无法读取额度，保留上次结果") }
+            } finally { mutable.update { it.copy(usageLoading = false) } }
+        }.also { usageJob = it }
+    }
+
+    fun loadModels() = scope.launch {
+        try { val models = api.call("/v1/models").objects("models"); mutable.update { it.copy(models = models) } }
+        catch (e: Exception) { if (e !is CancellationException) failure(e) }
+    }
 }
+
+private fun threadsPath(projectId: String, archived: Boolean) = "/v1/threads?projectId=${encoded(projectId)}&archived=$archived"
+fun threadIsActive(thread: ThreadSummary): Boolean = thread.status in setOf("running", "inProgress", "active", "waiting", "queued", "starting")

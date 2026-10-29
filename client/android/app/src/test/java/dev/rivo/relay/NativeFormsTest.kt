@@ -13,11 +13,34 @@ class NativeFormsTest {
         assertEquals("b", response.getJSONArray("choices").getString(0))
         assertThrows(IllegalArgumentException::class.java) { mcpFormContent(schema, mapOf("name" to "Rivo", "count" to "7", "confirm" to "true"), mapOf("choices" to setOf("a"))) }
     }
-    @Test fun unknownNestedFormIsNotSubmittedAsJsonGuess() {
-        assertFalse(supportedMcpForm(JSONObject("""{"type":"object","properties":{"nested":{"type":"object","properties":{}}}}""")))
+    @Test fun unknownConstraintsAreNotSubmittedAsJsonGuess() {
+        assertFalse(supportedMcpForm(JSONObject("""{"type":"object","properties":{"nested":{"${'$'}ref":"#/${'$'}defs/SomeObject"}}}""")))
         assertFalse(supportedMcpForm(JSONObject("""{"type":"object","properties":{"number":{"type":"integer","enum":[1,2]}}}""")))
         assertFalse(supportedMcpForm(JSONObject("""{"type":"object","properties":{"name":{"type":"string","pattern":"[a-z]+"}}}""")))
         assertFalse(supportedMcpForm(JSONObject("""{"type":"object","properties":{"bad":{"type":"string","enum":[1]}}}""")))
+    }
+    @Test fun nestedObjectsAndObjectArraysPreserveTypesAndValidateChildren() {
+        val schema = JSONObject("""{"type":"object","required":["profile","rows"],"properties":{"profile":{"type":"object","required":["email"],"properties":{"email":{"type":"string","format":"email"},"active":{"type":"boolean"}}},"rows":{"type":"array","minItems":1,"items":{"type":"object","required":["count"],"properties":{"count":{"type":"integer","minimum":1}}}}}}""")
+        assertTrue(supportedMcpForm(schema))
+        val values = mapOf("profile/email" to "a@example.com", "profile/active" to "false", "rows/@count" to "1", "rows/0/count" to "2")
+        val result = mcpFormContent(schema, values, emptyMap())
+        assertFalse(result.getJSONObject("profile").getBoolean("active"))
+        assertEquals(2, result.getJSONArray("rows").getJSONObject(0).getInt("count"))
+        assertThrows(IllegalArgumentException::class.java) { mcpFormContent(schema, values + ("rows/0/count" to "0"), emptyMap()) }
+        assertThrows(IllegalArgumentException::class.java) { mcpFormContent(schema, values - "profile/email", emptyMap()) }
+    }
+    @Test fun optionalNestedObjectAndEscapedKeysAreUnambiguous() {
+        val schema = JSONObject("""{"type":"object","properties":{"a/b":{"type":"string"},"a":{"type":"object","properties":{"b":{"type":"integer"}}}}}""")
+        val omitted = mcpFormContent(schema, mapOf("a~1b" to "separate"), emptyMap())
+        assertEquals("separate", omitted.getString("a/b")); assertFalse(omitted.has("a"))
+        val filled = mcpFormContent(schema, mapOf("a~1b" to "separate", "a/b" to "3"), emptyMap())
+        assertEquals(3, filled.getJSONObject("a").getInt("b"))
+    }
+    @Test fun uniqueNumericArraysCompareValuesAndNumbersDoNotOverflow() {
+        val schema = JSONObject("""{"type":"object","properties":{"rows":{"type":"array","uniqueItems":true,"items":{"type":"number"}},"big":{"type":"integer"}}}""")
+        assertThrows(IllegalArgumentException::class.java) { mcpFormContent(schema, mapOf("rows/@count" to "2", "rows/0" to "1.0", "rows/1" to "1.00"), emptyMap()) }
+        assertEquals("9223372036854775808", mcpFormContent(schema, mapOf("big" to "9223372036854775808"), emptyMap()).get("big").toString())
+        assertThrows(IllegalArgumentException::class.java) { mcpFormContent(schema, mapOf("big" to "1e99999999"), emptyMap()) }
     }
     @Test fun nativeDecisionAmendmentsHaveExplicitActionLabels() {
         val decision = JSONObject("""{"applyNetworkPolicyAmendment":{"network_policy_amendment":{"host":"example.com","action":"allow"}}}""")

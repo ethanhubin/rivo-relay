@@ -16,12 +16,37 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 fun MessageContent(markdown: String, cwd: String = "", onFile: (String) -> Unit = {}) {
-    val blocks = remember(markdown) { parseChatMarkdownBlocks(markdown) }
+    val parts = remember(markdown) { reviewMessageParts(markdown) }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        blocks.forEach { block -> when (block) {
-            is ChatMarkdownBlock.Text -> MessageText(block.markdown, cwd, onFile)
-            is ChatMarkdownBlock.Table -> MessageTable(block, cwd, onFile)
+        parts.forEach { part -> when (part) {
+            is ReviewMessagePart.Text -> {
+                val blocks = remember(part.value) { parseChatMarkdownBlocks(part.value) }
+                blocks.forEach { block -> when (block) {
+                    is ChatMarkdownBlock.Text -> MessageText(block.markdown, cwd, onFile)
+                    is ChatMarkdownBlock.Table -> MessageTable(block, cwd, onFile)
+                } }
+            }
+            is ReviewMessagePart.Finding -> ReviewFindingCard(part.comment, cwd, onFile)
         } }
+    }
+}
+
+@Composable
+private fun ReviewFindingCard(comment: ReviewComment, cwd: String, onFile: (String) -> Unit) {
+    Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
+                comment.priority?.let { priority -> Surface(color = if (priority <= 1) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer,
+                    shape = MaterialTheme.shapes.small) { Text("P$priority", Modifier.padding(horizontal = 6.dp, vertical = 3.dp), style = MaterialTheme.typography.labelMedium) } }
+                Text(comment.title, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+            }
+            MessageText(comment.body, cwd, onFile, style = MaterialTheme.typography.bodyMedium)
+            val path = nativeFilePath(comment.file, cwd)
+            TextButton(onClick = { path?.let { onFile(it + comment.start?.let { line -> ":$line" }.orEmpty()) } }, enabled = path != null, contentPadding = PaddingValues(0.dp)) {
+                Text(comment.file + comment.start?.let { start -> ":$start" + comment.end?.takeIf { it != start }?.let { "–$it" }.orEmpty() }.orEmpty(), style = MaterialTheme.typography.labelMedium)
+            }
+        }
     }
 }
 

@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from rivo_relay.database import Database
+from rivo_relay.database import Database, SCHEMA_VERSION
 from rivo_relay.events import EventBus
 from rivo_relay.queue import ExecutionQueue, QueueConflict
 from rivo_relay.codex.sessions import CodexService
@@ -110,11 +110,11 @@ class PinAndMigrationTests(unittest.TestCase):
             path=Path(d)/'old.sqlite3'; db=Database(path)
             with db.transaction() as c:
                 c.execute("INSERT INTO connections VALUES ('phone','keep-hash','Keep',1,NULL)")
-                c.execute('DROP TABLE queued_tasks'); c.execute('PRAGMA user_version=1')
+                c.execute('DROP TABLE queued_tasks'); c.execute('DROP TABLE native_observations'); c.execute('DROP TABLE workspaces'); c.execute('ALTER TABLE todos DROP COLUMN extra_json'); c.execute('PRAGMA user_version=1')
             db.close(); db=Database(path)
             try:
                 with db.read() as c:
                     self.assertEqual('keep-hash',c.execute('SELECT token_hash FROM connections').fetchone()[0])
-                    self.assertEqual(2,c.execute('PRAGMA user_version').fetchone()[0])
+                    self.assertEqual(SCHEMA_VERSION,c.execute('PRAGMA user_version').fetchone()[0])
                     self.assertEqual(0,c.execute('SELECT COUNT(*) FROM queued_tasks').fetchone()[0])
             finally: db.close()

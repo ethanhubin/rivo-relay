@@ -3,6 +3,8 @@ package dev.rivo.relay
 import dev.rivo.relay.codex.CatalogController
 import dev.rivo.relay.data.RelayApi
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.first
+import dev.rivo.relay.ui.projects.ProjectSummary
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -111,5 +113,62 @@ class CatalogControllerTest {
             }
             assertNull(failure.get())
         } finally { releaseSecond.countDown(); observer.cancel(); scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun archivedFilterUsesSeparateReadAndOldProjectReplyCannotReplaceIt() = runBlocking {
+        val server = MockWebServer()
+        val recentStarted = CountDownLatch(1)
+        val releaseRecent = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val archived = request.requestUrl?.queryParameter("archived") == "true"
+                if (!archived) { recentStarted.countDown(); releaseRecent.await(5, TimeUnit.SECONDS) }
+                val id = if (archived) "archived" else "recent"
+                return MockResponse().setBody("""{"threads":[{"id":"$id","name":"$id","updatedAt":100}]}""")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val failure = AtomicReference<Throwable?>()
+        val controller = CatalogController(api(server), scope, failure::set)
+        try {
+            controller.project(ProjectSummary("p", "Project", "/project"))
+            await(recentStarted)
+            controller.setArchived(true)
+            withTimeout(5_000) { controller.state.first { !it.loading && it.threads.singleOrNull()?.id == "archived" } }
+            releaseRecent.countDown()
+            delay(80)
+            assertTrue(controller.state.value.archived)
+            assertEquals("archived", controller.state.value.threads.single().id)
+            assertNull(failure.get())
+            assertEquals("/v1/threads?projectId=p&archived=false", server.takeRequest().path)
+            assertEquals("/v1/threads?projectId=p&archived=true", server.takeRequest().path)
+        } finally { releaseRecent.countDown(); scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun readVersionRemainsReadUntilANewerCompletedUpdate() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setBody("""{"threads":[{"id":"t","name":"Thread","status":"idle","updatedAt":100}]}"""))
+        server.enqueue(MockResponse().setBody("""{"threads":[{"id":"t","name":"Thread","status":"running","updatedAt":200}]}"""))
+        server.enqueue(MockResponse().setBody("""{"threads":[{"id":"t","name":"Thread","status":"idle","updatedAt":201}]}"""))
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = CatalogController(api(server), scope, { throw it })
+        try {
+            controller.project(ProjectSummary("p", "Project", "/project"))
+            withTimeout(5_000) { controller.state.first { !it.loading && it.threads.isNotEmpty() } }
+            assertEquals(setOf("t"), controller.state.value.unreadThreadIds)
+            controller.markRead("t", 100)
+            assertTrue(controller.state.value.unreadThreadIds.isEmpty())
+            controller.refreshThreads()
+            withTimeout(5_000) { controller.state.first { it.threads.firstOrNull()?.updatedAt == 200L } }
+            assertTrue(controller.state.value.unreadThreadIds.isEmpty())
+            controller.refreshThreads()
+            withTimeout(5_000) { controller.state.first { it.threads.firstOrNull()?.updatedAt == 201L } }
+            assertEquals(setOf("t"), controller.state.value.unreadThreadIds)
+            controller.markRead("t", 201)
+            controller.markRead("t", 100)
+            assertTrue(controller.state.value.unreadThreadIds.isEmpty())
+        } finally { scope.cancel(); server.shutdown() }
     }
 }

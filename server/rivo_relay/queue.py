@@ -16,6 +16,7 @@ class ExecutionQueue:
     def __init__(self, db, codex, events):
         self.db, self.codex, self.events = db, codex, events
         self.lock = threading.RLock()
+        self.codex.queue_lock = self.lock
         self.stopping = threading.Event()
         self.worker = None
 
@@ -43,7 +44,7 @@ class ExecutionQueue:
         return {'id': row['id'], 'threadId': row['thread_id'], 'status': row['status'],
                 'position': row['position'], 'revision': row['revision'], 'turnId': row['turn_id'],
                 'error': row['error'], 'input': payload['input'], 'model': payload.get('model'),
-                'effort': payload.get('effort'), 'text': '\n'.join(i.get('text', '') for i in payload['input'] if i.get('type') == 'text')}
+                'effort': payload.get('effort'), 'mode': payload.get('mode'), 'review': payload.get('review'), 'text': '\n'.join(i.get('text', '') for i in payload['input'] if i.get('type') == 'text')}
 
     def list(self, thread_id):
         with self.db.read() as c:
@@ -51,8 +52,8 @@ class ExecutionQueue:
 
     def enqueue(self, thread_id, item_id, connection_id, payload):
         # Read metadata only: queuing never acquires a writer or starts a turn.
-        self.codex.validate_queue_target(thread_id)
-        with self.lock, self.db.transaction() as c:
+        with self.lock, getattr(self.codex, "_operations", self.lock), self.db.transaction() as c:
+            self.codex.validate_queue_target(thread_id)
             if c.execute("SELECT count(*) FROM queued_tasks WHERE status NOT IN ('done','cancelled')").fetchone()[0] >= 100:
                 raise QueueConflict('Queue is full')
             position = c.execute('SELECT COALESCE(MAX(position),0)+1 FROM queued_tasks WHERE thread_id=?', (thread_id,)).fetchone()[0]
@@ -72,6 +73,8 @@ class ExecutionQueue:
                 if not isinstance(text, str) or not text.strip() or len(text) > 200000:
                     raise QueueConflict('Message text required')
                 payload = json.loads(row['payload_json'])
+                if payload.get('review'):
+                    raise QueueConflict('审查任务请撤回后重新选择审查范围')
                 payload['input'] = [{'type': 'text', 'text': text, 'text_elements': []}] + [i for i in payload['input'] if i.get('type') != 'text']
                 c.execute("UPDATE queued_tasks SET payload_json=?,status='waiting',error=NULL,revision=revision+1 WHERE id=?", (json.dumps(payload, ensure_ascii=False), item_id))
             else:
@@ -100,6 +103,9 @@ class ExecutionQueue:
             with self.db.transaction() as c:
                 row = c.execute("SELECT * FROM queued_tasks WHERE id=? AND thread_id=? AND status='waiting' AND revision=?", (item_id, thread_id, revision)).fetchone()
                 if row is None: raise QueueConflict('Queue item changed')
+                payload = json.loads(row['payload_json'])
+                if payload.get('review') or payload.get('mode') == 'plan':
+                    raise QueueConflict('审查和讨论任务不能转为当前任务的引导')
                 c.execute("UPDATE queued_tasks SET status='dispatching',revision=revision+1 WHERE id=?", (item_id,))
             payload = json.loads(row['payload_json'])
             try:
@@ -145,7 +151,12 @@ class ExecutionQueue:
                     # Commit before dispatch. Restart and uncertain results never replay this item.
                     self._set(first['id'], 'dispatching')
                     try:
-                        receipt = self.codex.send_queued(thread_id, model=first['model'], effort=first['effort'], client_message_id=first['id'], input_items=first['input'])
+                        if first.get('review'):
+                            receipt = self.codex.review(thread_id, first['review'])
+                        else:
+                            kwargs = {'model': first['model'], 'effort': first['effort'], 'client_message_id': first['id'], 'input_items': first['input']}
+                            if first.get('mode') is not None: kwargs['mode'] = first['mode']
+                            receipt = self.codex.send_queued(thread_id, **kwargs)
                         self._set(first['id'], 'running', turn_id=receipt['turnId']) if receipt else self._set(first['id'], 'waiting')
                     except Exception as e:
                         definite = isinstance(e, CodexError) and e.definite

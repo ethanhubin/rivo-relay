@@ -27,6 +27,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.ui.theme.*
+import dev.rivo.relay.data.CodexUsage
+import dev.rivo.relay.ui.common.UsageIndicator
 import kotlin.math.abs
 import kotlin.math.min
 
@@ -41,7 +43,8 @@ data class ProjectSummary(
 /** Project row geometry migrated from QiGuang HomeScreen.CodexProjectRow; no Agent or node registry coupling. */
 @Composable
 fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Boolean,
-    onProject: (ProjectSummary) -> Unit, onConnection: () -> Unit, onRefresh: () -> Unit, onAdd: (() -> Unit)? = null) {
+    onProject: (ProjectSummary) -> Unit, onConnection: () -> Unit, onRefresh: () -> Unit, onAdd: (() -> Unit)? = null,
+    usage: CodexUsage? = null, usageLoading: Boolean = false, usageError: String? = null, onRefreshUsage: (() -> Unit)? = null) {
     LazyColumn(Modifier.fillMaxSize().testTag("projects_page"), contentPadding = PaddingValues(horizontal = RivoSpacing.Page, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(RivoSpacing.Sm)) {
         item {
@@ -54,6 +57,7 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                     modifier = Modifier.size(44.dp).testTag("add_project"), shape = RoundedCornerShape(50)) { Text("＋") }
             }
         }
+        item { UsageIndicator(usage, loading = usageLoading, error = usageError, onRefresh = onRefreshUsage) }
         if (loading && projects.isEmpty()) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
         if (!loading && projects.isEmpty()) item {
             Column(Modifier.fillMaxWidth().padding(vertical = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {

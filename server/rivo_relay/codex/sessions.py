@@ -14,6 +14,9 @@ from .history import NativeHistoryAdapter, NativeHistoryProtocolError
 from .interactions import Interactions
 from .projects import ProjectCatalog, pages
 from .files import read_file, read_directory, upload_attachment, download_file, upload_attachment_stream, stream_download
+from .developer import (project_directory, project_git, review_context, workspace_diff,
+                        diff_summary, validate_review, Workspaces)
+from .observations import Observations
 
 
 def thread_status(thread):
@@ -38,12 +41,31 @@ class CodexService:
         self._created = {}
         self._joined = set()
         self._generation = None
+        self.observations = None
+        self.workspaces = None
+        self._observed = OrderedDict()
         self.connection = connection or NativeConnection(socket_path, self._event, codex_home)
         if connection is not None:
             connection.on_event = self._event
         self.projects = ProjectCatalog(self.connection)
         self.interactions = Interactions(self.connection)
         self.history_adapter = NativeHistoryAdapter()
+
+    def configure_storage(self, db):
+        self.observations = Observations(db)
+        self.workspaces = Workspaces(db, self)
+
+    def _observe(self, thread_id, kind, turn_id, payload):
+        self._observed[(thread_id, kind, turn_id or '')] = copy.deepcopy(payload)
+        while len(self._observed) > 1000:
+            self._observed.popitem(last=False)
+        if self.observations:
+            self.observations.put(thread_id, kind, turn_id, payload)
+
+    def observations_for(self, thread_id):
+        values = self.observations.get(thread_id) if self.observations else {}
+        values.update({(kind, turn): copy.deepcopy(value) for (tid, kind, turn), value in self._observed.items() if tid == thread_id})
+        return values
 
     def start(self):
         status = self.connection.start()
@@ -68,25 +90,31 @@ class CodexService:
         self.start()
         return self.projects.list()
 
-    def add_project(self, path, name=None, idempotency_key=None):
+    def add_project(self, path, name=None, idempotency_key=None, folder_name=None):
         self.start()
+        if folder_name is not None:
+            import posixpath
+            if not isinstance(folder_name, str) or not folder_name.strip() or folder_name in ('.', '..') or any(c in folder_name for c in '/\\\0'):
+                raise CodexError('目录名称无效', code='invalid_path', http_status=400)
+            path = posixpath.join(path, folder_name)
+            self.connection.request('fs/createDirectory', {'path': path, 'recursive': False})
         project = self.projects.add(path, name=name, idempotency_key=idempotency_key)
         return {"projectId": project["id"]}
 
-    def list_sessions(self, project_id):
+    def list_sessions(self, project_id, archived=False):
         self.start()
         project = self.projects.get(project_id)
         roots = [r["path"] for r in project.get("roots", [])]
         # Older Desktop threads may lack projectId. Exact root matching adds them
         # without assigning or rewriting their native metadata.
         threads = list(pages(self.connection, "thread/list", {
-            "cwd": roots, "archived": False, "modelProviders": [],
+            "cwd": roots, "archived": archived, "modelProviders": [],
             "sortKey": "updated_at", "sortDirection": "desc",
         })) if roots else []
         by_id = {t["id"]: t for t in threads
                  if t.get("projectId") in (None, project_id)}
         for thread in pages(self.connection, "thread/list", {
-            "projectId": project_id, "archived": False, "modelProviders": [],
+            "projectId": project_id, "archived": archived, "modelProviders": [],
             "sortKey": "updated_at", "sortDirection": "desc",
         }):
             by_id[thread["id"]] = thread
@@ -109,6 +137,18 @@ class CodexService:
             "sectionId": section_id, "beforeThreadId": None})
         return {"threadId": thread_id}
 
+    def archive_session(self, thread_id, archived):
+        self.start()
+        with self._operations:
+            if archived:
+                thread = self.connection.request('thread/read', {'threadId': thread_id, 'includeTurns': False})['thread']
+                if thread_status(thread) == 'running' or self.interactions.list(thread_id):
+                    raise CodexError('运行中或等待回答的会话不能归档', code='thread_busy', http_status=409)
+            self.connection.request('thread/archive' if archived else 'thread/unarchive', {'threadId': thread_id})
+            with self._lock:
+                self._joined.discard(thread_id)
+            return {'threadId': thread_id}
+
     @staticmethod
     def _settings_from(response):
         keys = ("model", "modelProvider", "reasoningEffort", "serviceTier", "cwd",
@@ -121,6 +161,11 @@ class CodexService:
         if "sandboxPolicy" in response:
             settings["sandbox"] = copy.deepcopy(response["sandboxPolicy"])
         return settings
+
+    def _assert_workspace(self, thread_id):
+        row = self.workspaces.row(thread_id) if self.workspaces else None
+        if row and row['status'] != 'ready':
+            raise CodexError('工作树已清理或状态待核对，不能在来源项目中继续执行', code='workspace_unavailable', http_status=409)
 
     def _resume(self, thread_id):
         with self._subscriptions:
@@ -172,7 +217,15 @@ class CodexService:
             active = next((t["id"] for t in reversed(thread["turns"])
                            if t.get("status") == "inProgress"), None)
         status = "waiting" if requests else ("running" if active else thread_status(thread))
-        return {"thread": thread, "requests": requests, "settings": settings,
+        observations = self.observations_for(thread_id)
+        latest_turn = thread['turns'][-1] if thread['turns'] else {}
+        plan = observations.get(('plan', active or latest_turn.get('id', '')))
+        if plan:
+            plan = {**plan, 'status': next((t.get('status') for t in thread['turns'] if t['id'] == plan.get('turnId')), 'inProgress' if active else 'unknown')}
+        usage = next((value for (kind, _), value in reversed(list(observations.items())) if kind == 'usage'), None)
+        changes = [{'turnId': turn_id, **value} for (kind, turn_id), value in observations.items() if kind == 'changes']
+        return {"thread": thread, "requests": requests, "settings": settings, 'plan': plan,
+                'tokenUsage': usage, 'changes': changes,
                 "activeTurnId": active, "status": status, "readOnly": read_only, "nextCursor": history["nextCursor"],
                 "backwardsCursor": history["backwardsCursor"]}
 
@@ -198,15 +251,20 @@ class CodexService:
             result["turns"] = self._merge_live(thread_id, result["turns"])
         return result
 
-    def create_session(self, project_id, title=""):
+    def create_session(self, project_id, title="", worktree_ref=None):
         self.start()
         project = self.projects.get(project_id)
         roots = [r["path"] for r in project.get("roots", [])]
         if not roots:
             raise CodexError("此项目没有原生工作目录", http_status=409)
         with self._operations:
+            workspace_id, cwd = None, roots[0]
+            if worktree_ref is not None:
+                if self.workspaces is None:
+                    raise CodexError('工作树存储不可用')
+                workspace_id, cwd = self.workspaces.create(project_id, cwd, worktree_ref)
             result = self.connection.request("thread/start", {
-                "cwd": roots[0], "projectId": project_id, "historyMode": "paginated",
+                "cwd": cwd, "projectId": project_id, "historyMode": "paginated",
             })
             thread_id = result["thread"]["id"]
             with self._lock:
@@ -214,6 +272,8 @@ class CodexService:
                 self._joined.add(thread_id)
                 self._settings[thread_id] = self._settings_from(result)
             receipt = {"threadId": thread_id}
+            if workspace_id:
+                self.workspaces.link(workspace_id, thread_id)
             if title:
                 try:
                     self.connection.request("thread/name/set", {"threadId": thread_id, "name": title})
@@ -229,9 +289,10 @@ class CodexService:
             raise CodexError("请输入消息", code="invalid_message", http_status=400)
         return [{"type": "text", "text": text, "text_elements": []}]
 
-    def send(self, thread_id, text, model=None, effort=None, client_message_id=None, *, input_items=None):
+    def send(self, thread_id, text, model=None, effort=None, client_message_id=None, *, input_items=None, mode=None):
         self.start()
         with self._operations:
+            self._assert_workspace(thread_id)
             self._resume(thread_id)
             params = {"threadId": thread_id, "input": input_items if input_items is not None else self._input(text)}
             if model is not None:
@@ -240,6 +301,23 @@ class CodexService:
                 params["effort"] = effort
             if client_message_id is not None:
                 params["clientUserMessageId"] = client_message_id
+            if mode is not None:
+                if mode not in ('plan', 'default'):
+                    raise CodexError('讨论模式无效', code='invalid_mode', http_status=400)
+                settings = self._settings.get(thread_id, {})
+                selected_model = model or settings.get('model')
+                if not selected_model:
+                    raise CodexError('请先选择可用模型', code='model_required', http_status=409)
+                params['collaborationMode'] = {'mode': mode, 'settings': {'model': selected_model,
+                    'reasoning_effort': effort or settings.get('reasoningEffort'), 'developer_instructions': None}}
+                sandbox = settings.get('sandbox', {})
+                baseline = self.observations_for(thread_id).get(('modeBaseline', ''))
+                if mode == 'plan':
+                    if sandbox.get('type') != 'readOnly' and not baseline:
+                        self._observe(thread_id, 'modeBaseline', '', {'sandbox': sandbox})
+                    params['sandboxPolicy'] = {'type': 'readOnly', 'networkAccess': sandbox.get('networkAccess') is True}
+                elif baseline and sandbox.get('type') == 'readOnly' and baseline.get('sandbox'):
+                    params['sandboxPolicy'] = baseline['sandbox']
             try:
                 result = self.connection.request("turn/start", params)
             except CodexError as error:
@@ -256,6 +334,7 @@ class CodexService:
 
     def validate_queue_target(self, thread_id):
         self.start()
+        self._assert_workspace(thread_id)
         with self._lock:
             if thread_id in self._created:
                 return
@@ -271,6 +350,7 @@ class CodexService:
     def steer(self, thread_id, text, expected_turn_id, client_message_id=None, *, input_items=None):
         self.start()
         with self._operations:
+            self._assert_workspace(thread_id)
             self._resume(thread_id)
             params = {"threadId": thread_id,
                       "input": input_items if input_items is not None else self._input(text),
@@ -297,6 +377,43 @@ class CodexService:
     def models(self):
         self.start()
         return list(pages(self.connection, "model/list", {"includeHidden": False}))
+
+    def usage(self):
+        self.start()
+        result = self.connection.request('account/rateLimits/read', {})
+        return {key: result[key] for key in ('rateLimits', 'rateLimitsByLimitId', 'ordinaryUsageAllowed') if key in result}
+
+    def project_directory(self, path=None):
+        self.start()
+        return project_directory(self.connection, path)
+
+    def project_git(self, project_id):
+        self.start()
+        project = self.projects.get(project_id)
+        roots = project.get('roots') or []
+        if not roots:
+            raise CodexError('项目没有工作目录', code='invalid_project', http_status=409)
+        return project_git(self.connection, roots[0]['path'])
+
+    def diff(self, thread_id):
+        return workspace_diff(self.connection, self._attachment_cwd(thread_id))
+
+    def review_context(self, thread_id):
+        return review_context(self.connection, self._attachment_cwd(thread_id))
+
+    def review(self, thread_id, target):
+        target = validate_review(target)
+        self.start()
+        with self._operations:
+            snapshot = self.get_session(thread_id)
+            if snapshot.get('readOnly') or snapshot.get('activeTurnId') or snapshot.get('requests'):
+                return None
+            result = self.connection.request('review/start', {'threadId': thread_id, 'target': target, 'delivery': 'inline'})
+            turn_id = (result.get('turn') or {}).get('id')
+            if not turn_id:
+                raise CodexError('原生审查没有返回执行身份', code='native_protocol', request_sent=True)
+            self._created.pop(thread_id, None)
+            return {'threadId': thread_id, 'turnId': turn_id}
 
     def read_file(self, path):
         self.start()
@@ -341,6 +458,12 @@ class CodexService:
         method, params = event.get("method"), event.get("params", {})
         thread_id, turn_id = params.get("threadId"), params.get("turnId")
         with self._lock:
+            if thread_id and turn_id and method == 'turn/plan/updated':
+                self._observe(thread_id, 'plan', turn_id, {'turnId': turn_id, 'plan': params.get('plan', []), 'explanation': params.get('explanation')})
+            elif thread_id and turn_id and method == 'turn/diff/updated':
+                self._observe(thread_id, 'changes', turn_id, {'files': diff_summary(params.get('diff', ''))})
+            elif thread_id and method == 'thread/tokenUsage/updated':
+                self._observe(thread_id, 'usage', turn_id, params.get('tokenUsage', {}))
             if method == "relay/nativeDisconnected":
                 self._active.clear()
                 self._live.clear()

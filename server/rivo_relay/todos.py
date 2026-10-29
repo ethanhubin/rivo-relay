@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import time
+import calendar
+import copy
+from datetime import date, timedelta
+import json
 from typing import Any, Callable
 import uuid
 
@@ -32,7 +36,79 @@ def _text(value: Any, name: str, maximum: int, *, empty: bool = False) -> str:
 
 
 def _public(row) -> dict:
-    return {**dict(row), "completed": bool(row["completed"])}
+    result = dict(row)
+    result["details"] = json.loads(result.pop("extra_json", "{}"))
+    return {**result, "completed": bool(row["completed"])}
+
+
+def _details(value: Any) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError("details must be an object")
+    if set(value) - {"dueDate", "reminderAt", "repeatRule", "subtasks", "attachments"}:
+        raise ValueError("Unsupported todo details field")
+    due = value.get("dueDate", "")
+    if not isinstance(due, str):
+        raise ValueError("dueDate must be YYYY-MM-DD")
+    if due:
+        try:
+            parsed = date.fromisoformat(due)
+        except ValueError as error:
+            raise ValueError("dueDate must be YYYY-MM-DD") from error
+        if parsed.isoformat() != due:
+            raise ValueError("dueDate must be YYYY-MM-DD")
+    reminder = value.get("reminderAt", 0)
+    if isinstance(reminder, bool) or not isinstance(reminder, int) or reminder < 0 or reminder > 253402300799000:
+        raise ValueError("reminderAt must be a non-negative epoch millisecond value")
+    repeat = value.get("repeatRule", "none")
+    if not isinstance(repeat, str) or repeat not in {"none", "daily", "weekly", "monthly", "yearly"} or (repeat != "none" and not due):
+        raise ValueError("A repeating todo requires a due date and supported repeatRule")
+    if repeat != "none" and date.fromisoformat(due).year >= 9999:
+        raise ValueError("Repeating todo dueDate must leave room for the next occurrence")
+    subtasks = value.get("subtasks", [])
+    attachments = value.get("attachments", [])
+    if not isinstance(subtasks, list) or len(subtasks) > 64:
+        raise ValueError("subtasks must contain at most 64 items")
+    if not isinstance(attachments, list) or len(attachments) > 16:
+        raise ValueError("attachments must contain at most 16 items")
+    checked_tasks, checked_attachments = [], []
+    ids = set()
+    for task in subtasks:
+        if not isinstance(task, dict) or set(task) - {"id", "title", "completed"}:
+            raise ValueError("Invalid subtask")
+        task_id = _text(task.get("id"), "subtask id", 128)
+        if task_id in ids or not isinstance(task.get("completed", False), bool):
+            raise ValueError("Duplicate subtask ID or invalid completed state")
+        ids.add(task_id)
+        checked_tasks.append({"id": task_id, "title": _text(task.get("title"), "subtask title", 500), "completed": task.get("completed", False)})
+    for attachment in attachments:
+        if not isinstance(attachment, dict) or set(attachment) - {"name", "path", "type"}:
+            raise ValueError("Invalid attachment reference")
+        checked_attachments.append({"name": _text(attachment.get("name"), "attachment name", 300),
+            "path": _text(attachment.get("path"), "attachment path", 4096),
+            "type": _text(attachment.get("type", "file"), "attachment type", 50)})
+    return {"dueDate": due, "reminderAt": reminder, "repeatRule": repeat,
+            "subtasks": checked_tasks, "attachments": checked_attachments}
+
+
+def _next_details(details: dict) -> dict | None:
+    rule = details.get("repeatRule", "none")
+    if rule == "none" or not details.get("dueDate"):
+        return None
+    previous = date.fromisoformat(details["dueDate"])
+    if rule in {"daily", "weekly"}:
+        following = previous + timedelta(days=1 if rule == "daily" else 7)
+    else:
+        month = previous.month + (1 if rule == "monthly" else 12)
+        year = previous.year + (month - 1) // 12
+        month = (month - 1) % 12 + 1
+        following = date(year, month, min(previous.day, calendar.monthrange(year, month)[1]))
+    result = copy.deepcopy(details)
+    result["dueDate"] = following.isoformat()
+    if result.get("reminderAt", 0):
+        result["reminderAt"] += (following - previous).days * 86400000
+    for subtask in result.get("subtasks", []):
+        subtask["completed"] = False
+    return result
 
 
 class TodoStore:
@@ -40,20 +116,22 @@ class TodoStore:
         self.db = db
         self.clock = clock
 
-    def create(self, title: str, notes: str = "", todo_id: str | None = None) -> dict:
+    def create(self, title: str, notes: str = "", todo_id: str | None = None, details: Any = None) -> dict:
         title = _text(title, "title", 200)
         notes = _text(notes, "notes", 4000, empty=True)
         todo_id = uuid.uuid4().hex if todo_id is None else _text(todo_id, "todo_id", 128)
+        details = _details({} if details is None else details)
+        extra = json.dumps(details, ensure_ascii=False, sort_keys=True)
         now = self.clock()
         with self.db.transaction() as connection:
             existing = connection.execute("SELECT * FROM todos WHERE id=?", (todo_id,)).fetchone()
             if existing:
-                if existing["title"] != title or existing["notes"] != notes:
+                if existing["title"] != title or existing["notes"] != notes or _details(json.loads(existing["extra_json"])) != details:
                     raise TodoConflictError("Todo ID already exists with different content")
                 return _public(existing)
             connection.execute(
-                "INSERT INTO todos(id,title,notes,created_at,updated_at) VALUES (?,?,?,?,?)",
-                (todo_id, title, notes, now, now),
+                "INSERT INTO todos(id,title,notes,extra_json,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+                (todo_id, title, notes, extra, now, now),
             )
             return _public(connection.execute("SELECT * FROM todos WHERE id=?", (todo_id,)).fetchone())
 
@@ -75,7 +153,7 @@ class TodoStore:
             )]
 
     def update(self, todo_id: str, *, title: Any = _UNSET, notes: Any = _UNSET,
-               completed: Any = _UNSET) -> dict:
+               completed: Any = _UNSET, details: Any = _UNSET) -> dict:
         updates = {}
         if title is not _UNSET:
             updates["title"] = _text(title, "title", 200)
@@ -85,6 +163,8 @@ class TodoStore:
             if not isinstance(completed, bool):
                 raise ValueError("completed must be a boolean")
             updates["completed"] = int(completed)
+        if details is not _UNSET:
+            updates["extra_json"] = json.dumps(_details(details), ensure_ascii=False, sort_keys=True)
         if not updates:
             raise ValueError("At least one update field is required")
         now = self.clock()
@@ -94,6 +174,15 @@ class TodoStore:
                 raise TodoNotFoundError(todo_id)
             if "completed" in updates and updates["completed"] != row["completed"]:
                 updates["completed_at"] = now if completed else None
+                if completed:
+                    next_details = _next_details(json.loads(updates.get("extra_json", row["extra_json"])))
+                    if next_details is not None:
+                        next_id = uuid.uuid5(uuid.NAMESPACE_URL, f"rivo-todo:{todo_id}:{next_details['dueDate']}").hex
+                        connection.execute(
+                            "INSERT OR IGNORE INTO todos(id,title,notes,extra_json,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+                            (next_id, updates.get("title", row["title"]), updates.get("notes", row["notes"]),
+                             json.dumps(next_details, ensure_ascii=False, sort_keys=True), now, now),
+                        )
             updates["updated_at"] = now
             columns = ", ".join(f"{name}=?" for name in updates)  # Fixed field names above.
             connection.execute(f"UPDATE todos SET {columns} WHERE id=?", (*updates.values(), todo_id))
