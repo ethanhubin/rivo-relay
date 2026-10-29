@@ -16,6 +16,7 @@ from rivo_relay.codex.developer import (
     validate_review, workspace_diff,
 )
 from rivo_relay.database import Database
+from rivo_relay.codex.sessions import CodexService
 
 
 class LocalNative:
@@ -26,6 +27,10 @@ class LocalNative:
         self.after_archive = None
         self.fail_archive = False
         self.fail_remove = False
+        self.fail_add = False
+        self.fail_add_after_success = False
+        self.unknown_add_after_success = False
+        self.unknown_remove_after_success = False
         self.environment = dict(os.environ, GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
                                 GIT_AUTHOR_NAME='Relay Test', GIT_AUTHOR_EMAIL='relay@example.invalid',
                                 GIT_COMMITTER_NAME='Relay Test', GIT_COMMITTER_EMAIL='relay@example.invalid')
@@ -47,9 +52,17 @@ class LocalNative:
         if method != 'command/exec':
             raise AssertionError(method)
         argv = params['command']
-        if self.fail_archive and argv[0] == 'tar' or self.fail_remove and 'worktree' in argv and 'remove' in argv:
+        if (self.fail_archive and argv[0] == 'tar' or self.fail_remove and 'worktree' in argv and 'remove' in argv
+                or self.fail_add and 'worktree' in argv and 'add' in argv):
             return {'exitCode': 1, 'stdout': '', 'stderr': 'injected test command failure'}
         result = self.run(argv, params.get('cwd') or self.root)
+        if 'worktree' in argv and 'add' in argv and result.returncode == 0:
+            if self.unknown_add_after_success:
+                raise CodexError('lost add reply', request_sent=True)
+            if self.fail_add_after_success:
+                return {'exitCode': 1, 'stdout': '', 'stderr': 'injected post-checkout failure'}
+        if 'worktree' in argv and 'remove' in argv and result.returncode == 0 and self.unknown_remove_after_success:
+            raise CodexError('lost remove reply', request_sent=True)
         if argv[0] == 'tar' and result.returncode == 0 and self.after_archive:
             self.after_archive()
         cap = params.get('outputBytesCap', 2 * 1024 * 1024)
@@ -109,6 +122,29 @@ class DeveloperTests(unittest.TestCase):
             fn()
         self.assertEqual(code, raised.exception.code)
 
+    def session_service(self, outcome):
+        self.native.generation = 'developer-test-runtime'
+        self.native.start = lambda: {'connected': True}
+        native_request = self.native.request
+
+        def request(method, params, **kwargs):
+            if method == 'project/read':
+                self.native.calls.append((method, copy.deepcopy(params)))
+                return {'project': {'id': 'project', 'roots': [{'path': str(self.source)}]}}
+            if method == 'thread/start':
+                self.native.calls.append((method, copy.deepcopy(params)))
+                if outcome == 'reject':
+                    raise CodexError('native thread rejected', code='native_rejected', http_status=409)
+                if outcome == 'lost':
+                    raise CodexError('lost thread reply', request_sent=True)
+                return {'thread': {}}
+            return native_request(method, params, **kwargs)
+
+        self.native.request = request
+        service = CodexService(connection=self.native)
+        service.configure_storage(self.db)
+        return service
+
     def test_diff_includes_tracked_and_untracked_without_staging(self):
         (self.source / 'tracked.txt').write_text('after\n', encoding='utf-8')
         (self.source / 'new file.txt').write_text('new content\n', encoding='utf-8')
@@ -138,6 +174,92 @@ class DeveloperTests(unittest.TestCase):
         with self.db.read() as connection:
             self.assertEqual(0, connection.execute('SELECT COUNT(*) FROM workspaces').fetchone()[0])
         self.assertFalse((self.root / '.rivo-worktrees').exists())
+
+    def test_failed_add_with_no_checkout_leaves_no_live_workspace(self):
+        self.native.fail_add = True
+        self.assert_code('git_operation_failed', lambda: self.workspaces.create('project', str(self.source), self.head))
+        with self.db.read() as connection:
+            row = connection.execute('SELECT * FROM workspaces').fetchone()
+        self.assertEqual('removed', row['status'])
+        self.assertFalse(Path(row['path']).exists())
+
+    def test_partial_add_failure_reclaims_only_clean_checkout(self):
+        self.native.fail_add_after_success = True
+        self.assert_code('git_operation_failed', lambda: self.workspaces.create('project', str(self.source), self.head))
+        with self.db.read() as connection:
+            row = connection.execute('SELECT * FROM workspaces').fetchone()
+        self.assertEqual('removed', row['status'])
+        self.assertFalse(Path(row['path']).exists())
+        removes = [params['command'] for method, params in self.native.calls if method == 'command/exec' and 'remove' in params['command']]
+        self.assertEqual(1, len(removes))
+        self.assertNotIn('--force', removes[0])
+
+    def test_unknown_add_result_preserves_checkout_without_replay(self):
+        self.native.unknown_add_after_success = True
+        self.assert_code('workspace_create_unknown', lambda: self.workspaces.create('project', str(self.source), self.head))
+        with self.db.read() as connection:
+            row = connection.execute('SELECT * FROM workspaces').fetchone()
+        self.assertEqual('creation_unknown', row['status'])
+        self.assertTrue(Path(row['path']).is_dir())
+        self.assertFalse(any(method == 'command/exec' and 'remove' in params['command'] for method, params in self.native.calls))
+
+    def test_definite_thread_start_failure_reclaims_unlinked_workspace(self):
+        identity, path = self.workspaces.create('project', str(self.source), self.head)
+        result = self.workspaces.abandon(identity)
+        self.assertEqual('removed', result['status'])
+        self.assertFalse(Path(path).exists())
+
+    def test_uncertain_thread_start_or_changed_unlinked_workspace_is_retained(self):
+        for kind in ('uncertain', 'dirty', 'ignored', 'new_commit'):
+            with self.subTest(kind=kind):
+                identity, raw_path = self.workspaces.create('project', str(self.source), self.head)
+                path = Path(raw_path)
+                if kind == 'dirty':
+                    (path / 'tracked.txt').write_text('keep this edit')
+                elif kind == 'ignored':
+                    (path / 'ignored-local.txt').write_text('keep ignored data')
+                elif kind == 'new_commit':
+                    (path / 'tracked.txt').write_text('new work')
+                    self.assertEqual(0, self.native.run(['git', 'add', '.'], path).returncode)
+                    self.assertEqual(0, self.native.run(['git', '-c', 'commit.gpgsign=false', 'commit', '-m', 'Unlinked work'], path).returncode)
+                result = self.workspaces.abandon(identity, uncertain=kind == 'uncertain')
+                self.assertEqual('creation_unknown' if kind == 'uncertain' else 'orphaned', result['status'])
+                self.assertTrue(path.is_dir())
+
+    def test_abandon_never_removes_a_linked_thread_workspace(self):
+        path = self.create()
+        row = self.workspaces.row('thread')
+        self.assertEqual('ready', self.workspaces.abandon(row['id'])['status'])
+        self.assertTrue(path.is_dir())
+        self.assertEqual('thread', self.workspaces.row('thread')['thread_id'])
+
+    def test_native_thread_start_rejection_reclaims_checkout_without_thread_identity(self):
+        service = self.session_service('reject')
+        self.assert_code('native_rejected', lambda: service.create_session('project', worktree_ref=self.head))
+        with self.db.read() as connection:
+            row = connection.execute('SELECT * FROM workspaces').fetchone()
+        self.assertEqual('removed', row['status'])
+        self.assertIsNone(row['thread_id'])
+        self.assertFalse(Path(row['path']).exists())
+        self.assertEqual(1, sum(method == 'thread/start' for method, _ in self.native.calls))
+        self.assertEqual({}, service._created)
+
+    def test_native_thread_start_unknown_or_missing_identity_retains_checkout(self):
+        for outcome in ('lost', 'missing'):
+            with self.subTest(outcome=outcome):
+                service = self.session_service(outcome)
+                with self.assertRaises(CodexError) as raised:
+                    service.create_session('project', worktree_ref=self.head)
+                self.assertEqual('workspace_thread_unknown', raised.exception.code)
+                self.assertFalse(raised.exception.definite)
+                with self.db.read() as connection:
+                    rows = [dict(row) for row in connection.execute('SELECT * FROM workspaces')]
+                self.assertTrue(all(row['status'] == 'creation_unknown' and row['thread_id'] is None for row in rows))
+                self.assertTrue(all(Path(row['path']).is_dir() for row in rows))
+                self.assertTrue(any(row['path'] in str(raised.exception) for row in rows))
+                self.assertEqual({}, service._created)
+        self.assertEqual(2, sum(method == 'thread/start' for method, _ in self.native.calls))
+        self.assertFalse(any(method == 'command/exec' and 'remove' in params['command'] for method, params in self.native.calls))
 
     def test_clean_worktree_create_and_cleanup_preserve_source(self):
         path = self.create()
@@ -242,6 +364,30 @@ class DeveloperTests(unittest.TestCase):
         latest = self.workspaces.inspect('thread')
         self.workspaces.cleanup('thread', latest['revision'], False)
         self.assertFalse(path.exists())
+
+    def test_lost_remove_reply_reconciles_by_reading_without_second_remove(self):
+        path = self.create()
+        current = self.workspaces.inspect('thread')
+        self.native.unknown_remove_after_success = True
+        self.assert_code('native_unavailable', lambda: self.workspaces.cleanup('thread', current['revision'], False))
+        self.assertEqual('removing', self.workspaces.row('thread')['status'])
+        self.assertFalse(path.exists())
+        self.assertEqual('removed', self.workspaces.inspect('thread')['status'])
+        removes = [params for method, params in self.native.calls if method == 'command/exec' and 'remove' in params['command']]
+        self.assertEqual(1, len(removes))
+
+    def test_failure_state_compensation_keeps_operation_lock_held(self):
+        path = self.create()
+        (path / 'notes.txt').write_text('dirty')
+        current = self.workspaces.inspect('thread')
+        self.native.fail_archive = True
+        compensation_ownership = []
+        self.db._connection.set_trace_callback(lambda sql: compensation_ownership.append(self.service._operations._is_owned())
+            if "SET status='ready'" in sql else None)
+        self.addCleanup(lambda: self.db._connection.set_trace_callback(None))
+        self.assert_code('git_operation_failed', lambda: self.workspaces.cleanup('thread', current['revision'], True))
+        self.assertTrue(compensation_ownership)
+        self.assertTrue(all(compensation_ownership))
 
     def test_queued_work_blocks_cleanup_inside_workspace_operation(self):
         path = self.create()

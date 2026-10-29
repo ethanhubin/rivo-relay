@@ -1,6 +1,7 @@
 package dev.rivo.relay.ui.common
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.progressSemantics
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -12,6 +13,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.data.*
+import dev.rivo.relay.ui.theme.MoonlightDanger
+import dev.rivo.relay.ui.theme.MoonlightSuccess
 import java.text.DateFormat
 import java.util.Date
 
@@ -29,7 +32,7 @@ fun UsageIndicator(usage: CodexUsage?, modifier: Modifier = Modifier, contextPer
             } else if (loading) Text("正在读取额度…", style = MaterialTheme.typography.labelSmall)
             contextPercent?.let { Text("上下文 ${it.coerceIn(0, 100)}%", Modifier.padding(vertical = 12.dp).testTag("context_usage"), style = MaterialTheme.typography.labelSmall) }
         }
-        window?.let { QuotaProgress(it) }
+        window?.let { CodexQuotaProgressBar(it, Modifier.fillMaxWidth().height(3.dp)) }
     }
     if (details) AlertDialog(onDismissRequest = { details = false }, title = { Text("Codex 用量") }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -51,14 +54,13 @@ fun UsageIndicator(usage: CodexUsage?, modifier: Modifier = Modifier, contextPer
 }
 
 @Composable
-private fun QuotaProgress(window: CodexUsageWindow) {
+fun CodexQuotaProgressBar(window: CodexUsageWindow, modifier: Modifier = Modifier,
+    contentDescription: String = "Codex 周额度与本周时间进度") {
     val remaining = window.remainingPercent / 100f
     val time = quotaTimeRemaining(window, System.currentTimeMillis() / 1000)
-    val track = MaterialTheme.colorScheme.surfaceContainerHighest
+    val track = MaterialTheme.colorScheme.secondaryContainer
     val fill = MaterialTheme.colorScheme.primary
-    val ahead = MaterialTheme.colorScheme.tertiary
-    val behind = MaterialTheme.colorScheme.error
-    Canvas(Modifier.fillMaxWidth().height(3.dp).semantics { contentDescription = "额度剩余 ${window.remainingPercent}%" }) {
+    Canvas(modifier.progressSemantics(remaining).semantics { this.contentDescription = contentDescription }) {
         val count = 7
         val gap = 1.dp.toPx().coerceAtMost(size.width / (count - 1))
         val width = (size.width - gap * (count - 1)) / count
@@ -69,7 +71,7 @@ private fun QuotaProgress(window: CodexUsageWindow) {
             time?.let {
                 val start = maxOf(left, minOf(remaining, it) * size.width)
                 val end = minOf(left + width, maxOf(remaining, it) * size.width)
-                if (end > start) drawRect(if (remaining >= it) ahead else behind, Offset(start, 0f), Size(end - start, size.height))
+                if (end > start) drawRect(if (remaining >= it) MoonlightSuccess else MoonlightDanger, Offset(start, 0f), Size(end - start, size.height))
             }
         }
     }

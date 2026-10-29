@@ -26,7 +26,7 @@ class TodosController(private val api: RelayApi, private val scope: CoroutineSco
     private val stateLock = Mutex()
     private val syncLock = Mutex()
     private var loaded = false
-    private var outbox = emptyList<TodoOperation>()
+    @Volatile private var outbox = emptyList<TodoOperation>()
 
     init { scope.launch { runCatching { stateLock.withLock { restore() } }.onFailure(failure) } }
 
@@ -57,6 +57,13 @@ class TodosController(private val api: RelayApi, private val scope: CoroutineSco
 
     fun refresh() = scope.launch { synchronize() }
     fun synchronizeNow() { scope.launch { synchronize() } }
+    suspend fun observe(pollIntervalMillis: Long = 30_000) {
+        require(pollIntervalMillis > 0)
+        while (currentCoroutineContext().isActive) {
+            synchronize()
+            delay(pollIntervalMillis)
+        }
+    }
 
     private suspend fun synchronize(): Boolean = syncLock.withLock {
         mutable.update { it.copy(loading = it.items.isEmpty(), syncing = true, syncError = null) }
@@ -110,6 +117,7 @@ class TodosController(private val api: RelayApi, private val scope: CoroutineSco
         if (mutable.value.mutating) return
         mutable.update { it.copy(mutating = true) }
         scope.launch {
+            var committed = false
             try {
                 stateLock.withLock {
                     restore()
@@ -117,21 +125,31 @@ class TodosController(private val api: RelayApi, private val scope: CoroutineSco
                     require(outbox.size < 1000) { "待同步更改过多，请先联网同步" }
                     commit(applyOperation(mutable.value.items, operation), outbox + operation)
                 }
-                finished()
+                committed = true
                 scope.launch { synchronize() }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { failure(e) }
             finally { mutable.update { it.copy(mutating = false) } }
+            // A successful callback may enqueue the next selected deletion.
+            // Release the local mutation guard first so that next edit is not dropped.
+            if (committed) finished()
         }
     }
 
     /** Explicit recovery for a rejected outbox; callers must confirm losing unsynchronized edits first. */
     fun discardLocalChanges() {
+        val discardedIds = outbox.mapTo(mutableSetOf()) { it.id }
         scope.launch {
             syncLock.withLock {
                 try {
                     val remote = api.call("/v1/todos").objects("todos").map(::todo)
-                    stateLock.withLock { restore(); commit(remote, emptyList()) }
+                    stateLock.withLock {
+                        restore()
+                        val remaining = outbox.filterNot { it.id in discardedIds }
+                        var merged = remote
+                        remaining.forEach { merged = applyOperation(merged, it) }
+                        commit(merged, remaining)
+                    }
                     mutable.update { it.copy(online = true, syncError = null) }
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) { failure(e) }

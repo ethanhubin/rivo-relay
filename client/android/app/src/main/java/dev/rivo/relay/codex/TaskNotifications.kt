@@ -79,9 +79,10 @@ data class TaskNotificationTarget(val base: String, val threadId: String) {
 class TaskNotifications(private val context: Context, private val api: RelayApi, private val scope: CoroutineScope,
     private val nodeBase: String, private val nodeName: String, private val requestPermission: () -> Unit,
     private val failure: (Throwable) -> Unit) {
-    private data class Watch(val tracker: TaskChangeTracker, val job: Job, val signal: Channel<Unit>)
+    private data class Watch(val tracker: TaskChangeTracker, val job: Job, val signal: Channel<Unit>, var busy: Boolean = false, var lastReadNanos: Long = 0)
     private val watches = linkedMapOf<String, Watch>()
     private var visibleThread: String? = null
+    private var streamJob: Job? = null
     private val manager = NotificationManagerCompat.from(context)
     init {
         context.getSystemService(NotificationManager::class.java).createNotificationChannel(
@@ -101,7 +102,9 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
         if (requestPermission) this.requestPermission()
         val existing = watches[id]
         if (existing != null) {
-            turnId?.let(existing.tracker::expectTurn)
+            watches.remove(id); watches[id] = existing
+            turnId?.let { existing.tracker.expectTurn(it); existing.busy = true }
+            if (requestPermission) existing.busy = true
             existing.signal.trySend(Unit)
             return
         }
@@ -110,15 +113,12 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
         val job = scope.launch(start = CoroutineStart.LAZY) {
             launch {
                 while (isActive) {
-                    try { api.events(id).collect { signals.trySend(Unit) } }
-                    catch (e: Exception) {
-                        if (e is CancellationException) throw e
-                        if (e is ApiException && e.status == 401) failure(e)
-                    }
-                    delay(2_000); signals.trySend(Unit)
+                    delay(8_000)
+                    val current = watches[id]
+                    if (current?.busy == true || current != null && System.nanoTime() - current.lastReadNanos >= 60_000_000_000L)
+                        signals.trySend(Unit)
                 }
             }
-            launch { while (isActive) { delay(8_000); signals.trySend(Unit) } }
             signals.trySend(Unit)
             for (ignored in signals) {
                 try { observe(id, api.call("/v1/threads/${encoded(id)}")) }
@@ -129,17 +129,48 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
                 delay(350)
             }
         }
-        watches[id] = Watch(tracker, job, signals)
-        // Bound live socket subscriptions; recent opened/sent or pinned conversations stay observed.
+        watches[id] = Watch(tracker, job, signals, busy = !turnId.isNullOrBlank())
+        // Bound read/cache state. All watched conversations share one node-level event stream.
         while (watches.size > 12) {
             val oldest = watches.keys.firstOrNull { it != visibleThread && it != id } ?: break
             watches.remove(oldest)?.let { it.job.cancel(); it.signal.close() }
         }
         job.start()
+        ensureSharedStream()
+    }
+    private fun ensureSharedStream() {
+        if (streamJob?.isActive == true) return
+        streamJob = scope.launch {
+            while (isActive) {
+                try {
+                    // Relay currently broadcasts the node event bus; one socket serves every watched thread.
+                    api.events("").collect { event ->
+                        if (event.type == "revoked") {
+                            failure(ApiException(401, "revoked", "节点授权已失效"))
+                            return@collect
+                        }
+                        val method = event.payload.string("method")
+                        // Text/tool output deltas cannot complete a turn or create a user request.
+                        if (event.type == "native" && method.startsWith("item/") && !event.payload.has("id")) return@collect
+                        val params = event.payload.optJSONObject("params")
+                        val id = params?.string("threadId").orEmpty().ifBlank { params?.string("conversationId").orEmpty() }
+                        if (event.type in setOf("reset", "connected") || id.isBlank()) watches.values.forEach { it.signal.trySend(Unit) }
+                        else watches[id]?.signal?.trySend(Unit)
+                    }
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    if (e is ApiException && e.status == 401) failure(e)
+                }
+                delay(3_000)
+            }
+        }
     }
     fun observe(id: String, json: JSONObject) {
         val watch = watches[id] ?: return
         if (json.optJSONObject("thread")?.string("id") != id) return
+        watch.lastReadNanos = System.nanoTime()
+        watch.busy = json.string("activeTurnId").isNotBlank() || json.string("status") in setOf("running", "waiting") ||
+            json.objects("requests").isNotEmpty() || json.objects("queue").any { it.string("status") in setOf("queued", "pending", "waiting", "running") }
         val title = visibleSessionText(json.getJSONObject("thread").string("name")).ifBlank { "Codex 会话" }
         watch.tracker.observe(json).forEach { notice -> if (visibleThread != id) notify(id, title, notice) }
     }

@@ -1,6 +1,7 @@
 package dev.rivo.relay
 
 import androidx.compose.ui.test.*
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -93,21 +94,21 @@ class ClientUiTest {
     @Test fun fileCitationLoadsNodeReadOnlyPreview() {
         var path: String? = null
         compose.setContent { RivoTheme { MessageContent("[design.md](/project/design.md:12)", "/project") { path = it } } }
-        compose.onNodeWithText("design.md").performClick()
-        compose.runOnIdle { assertEquals("/project/design.md", path) }
+        compose.onNodeWithTag("message_text").performTouchInput { click(Offset(18f, 18f)) }
+        compose.runOnIdle { assertEquals("/project/design.md:12", path) }
     }
 
     @Test fun apkOffersDownloadWithoutTryingInlinePreview() {
-        compose.setContent { RivoTheme { FilePreviewDialog("/project/app.apk", { error("APK should not be previewed") }, { _, _, _ -> }, {}) } }
+        compose.setContent { RivoTheme { FilePreviewDialog("/project/app.apk", { error("APK should not be previewed") }, { _, _, _ -> }, onDismiss = {}) } }
         compose.onNodeWithTag("save_file").assertIsDisplayed().assertIsEnabled()
-        compose.onNodeWithText("此文件可保存到手机后打开。").assertIsDisplayed()
+        compose.onNodeWithText("选择保存到本机或打开 APK。").assertIsDisplayed()
     }
 
     @Test fun filePreviewShowsNativeFileTextWithoutAnEditor() {
         var requested: String? = null
         compose.setContent { RivoTheme { FilePreviewDialog("/project/design.md", { path ->
             requested = path; JSONObject().put("path", path).put("encoding", "utf-8").put("text", "Native file preview").put("mimeType", "text/markdown").put("size", 19)
-        }, { _, _, _ -> }, {}) } }
+        }, { _, _, _ -> }, onDismiss = {}) } }
         compose.waitUntil(10_000) { compose.onAllNodesWithText("Native file preview").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Native file preview").assertIsDisplayed()
         compose.onAllNodes(hasSetTextAction()).assertCountEquals(0)

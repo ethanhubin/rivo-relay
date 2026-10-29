@@ -20,3 +20,7 @@ class Observations:
         with self.db.read() as c:
             return {(r['kind'], r['turn_id']): json.loads(r['payload_json']) for r in
                     c.execute("SELECT * FROM native_observations WHERE thread_id=? ORDER BY updated_at", (thread_id,))}
+
+    def delete(self, thread_id, kind, turn_id=''):
+        with self.db.transaction() as c:
+            c.execute('DELETE FROM native_observations WHERE thread_id=? AND kind=? AND turn_id=?', (thread_id, kind, turn_id))

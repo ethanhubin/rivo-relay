@@ -64,7 +64,7 @@ Desktop UI 自动化工具明确禁止操作当前应用，当前没有绕过限
 - [x] 服务支持 text/image/localImage/mention/skill 输入；Android 系统选图、内存压缩、节点引用、图片展示和文件预览已实现。
 - [x] 在隔离原生任务中验证五类结构化输入、文本/图片文件读取与权限设置前后一致；Android 真实文本 roundtrip 已整例通过。
 - [x] Android 系统 Photo Picker → 图片提交 → 原生返回 `RED` 整例通过；文件引用 → 原生 mention → `/v1/files` → `RIVO_NATIVE_FILE_PREVIEW` 展示整例通过。
-- [ ] 处理当前 0.159.x 已知差异：`openai/userVerification` 原生签名挑战、`openai/form` 超出标准扁平表单子集的 schema，以及 audio/localAudio 采集 UI。当前不支持的结构明确回 Desktop，不承诺覆盖未来未知协议。
+- [ ] 处理当前 0.159.x 已知差异：`openai/userVerification` 原生签名挑战与仍不支持的 `openai/form` schema。0.2.0 已支持常见嵌套对象/数组子集，未知结构明确回 Desktop；语音输入按用户要求排除，不列为后续必做项。
 - [ ] Desktop UI 双向同时打开、提问/审批竞争与执行中交接。
 
 这些待办是能力缺口，不是 App 权限政策。不能因为有“请回 Desktop”提示就把完整延续标记为通过。`accepted` 只代表原生接受操作；网络不确定时保留待核对状态，不给用户暗示可以自动重发。目前核对接口只查询持久记录，unknown 不会自动比对原生历史并补写接受结果。

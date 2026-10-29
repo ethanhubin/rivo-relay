@@ -1,17 +1,14 @@
 package dev.rivo.relay.ui.chat
 
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.*
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -25,9 +22,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.codex.SessionState
 import dev.rivo.relay.data.*
@@ -48,15 +43,16 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     onSendWithMode: ((JSONArray, String?, String?, String?, () -> Unit) -> Unit)? = null,
     readTool: suspend (String) -> JSONObject = { error("节点工具不可用") },
     submitTool: (String, JSONObject, () -> Unit) -> Unit = { _, _, _ -> },
-    usage: CodexUsage? = null) {
+    usage: CodexUsage? = null, onFillHistory: () -> Unit = {}, pinned: Boolean = false, canManage: Boolean = false,
+    onPin: ((Boolean) -> Unit)? = null, onArchive: (() -> Unit)? = null) {
     val snapshot = state.snapshot
     var editingQueue by remember(state.id) { mutableStateOf<QueueTask?>(null) }
     var removingQueue by remember(state.id) { mutableStateOf<QueueTask?>(null) }
     var draft by rememberSaveable(state.id) { mutableStateOf("") }
     var stopConfirm by remember { mutableStateOf(false) }
     var settingsOpen by remember { mutableStateOf(false) }
+    BackHandler(settingsOpen) { settingsOpen = false }
     var developerOpen by remember(state.id) { mutableStateOf(false) }
-    var voiceOpen by remember(state.id) { mutableStateOf(false) }
     var selectedMode by rememberSaveable(state.id) { mutableStateOf<String?>(null) }
     var draftLoaded by remember(state.id, draftStore) { mutableStateOf(draftStore == null) }
     var selectedModel by rememberSaveable(state.id) { mutableStateOf<String?>(null) }
@@ -68,17 +64,31 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     var attachmentError by remember { mutableStateOf<String?>(null) }
     var workspaceFileDialog by remember { mutableStateOf(false) }
     var filePath by remember { mutableStateOf<String?>(null) }
+    var fileAction by remember { mutableStateOf<FileAction?>(null) }
+    var inputFocusRequest by remember(state.id) { mutableIntStateOf(0) }
     val context = LocalContext.current
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val scope = rememberCoroutineScope()
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) scope.launch {
+    val currentSessionId by rememberUpdatedState(state.id)
+    fun openFile(path: String) { fileAction = null; filePath = path }
+    fun addImages(uris: List<android.net.Uri>) {
+        val targetId = state.id
+        if (preparing || !draftLoaded || busy || blocked) return
+        scope.launch {
             preparing = true; attachmentError = null
-            try { val image = prepareImage(context, uri); if (images.size < 3) images = images + image }
-            catch (e: Exception) { attachmentError = e.message ?: "无法添加图片" }
+            val available = (3 - images.size).coerceAtLeast(0)
+            try { uris.take(available).forEach { uri ->
+                val image = prepareImage(context, uri)
+                if (currentSessionId == targetId && images.size < 3) images = images + image
+            }; if (uris.size > available && currentSessionId == targetId) attachmentError = "最多添加 3 张图片，其余图片未添加" }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { if (currentSessionId == targetId) attachmentError = e.message ?: "无法添加图片" }
             finally { preparing = false }
         }
+    }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(3)) { uris ->
+        if (uris.isNotEmpty()) addImages(uris)
     }
     LaunchedEffect(state.id, draftStore) {
         val id = state.id
@@ -100,16 +110,20 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         val id = state.id
         onDispose { if (id != null && loadedDraft) persistDraft(id, latestDraft) }
     }
-    val currentSessionId by rememberUpdatedState(state.id)
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null && files.size < 16) scope.launch {
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty() && files.size < 16 && !preparing) scope.launch {
             val sessionId = state.id ?: return@launch
             preparing = true; attachmentError = null
             try {
+                val available = (16 - files.size).coerceAtLeast(0)
+                for (uri in uris.take(available)) {
+                if (currentSessionId != sessionId) break
                 val prepared = prepareFile(context, uri)
                 val uploaded = try { uploadFile(sessionId, prepared.name, prepared.file) } finally { prepared.file.delete() }
                 if (currentSessionId == sessionId) files = files + JSONObject().put("type", "mention")
                     .put("name", uploaded.getString("name")).put("path", uploaded.getString("path"))
+                }
+                if (uris.size > available && currentSessionId == sessionId) attachmentError = "最多添加 16 个文件，其余文件未上传"
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) { if (currentSessionId == sessionId) attachmentError = e.message ?: "文件上传失败" }
             finally { preparing = false }
@@ -118,6 +132,14 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val list = key(state.id) { rememberLazyListState() }
     var followLatest by remember(state.id) { mutableStateOf(true) }
     val timeline = remember(snapshot?.messages) { nativeTimelineRows(snapshot?.messages.orEmpty()) }
+    val modelChangeRows = remember(timeline, snapshot?.turnSettings) {
+        val changes = nativeModelChanges(snapshot?.turnSettings.orEmpty())
+        val seen = mutableSetOf<String>()
+        timeline.mapNotNull { row ->
+            val turnId = when (row) { is NativeTimelineRow.Message -> row.message.turnId; is NativeTimelineRow.Activities -> row.messages.first().turnId }
+            if (seen.add(turnId)) changes[turnId]?.let { row.key to it } else null
+        }.toMap()
+    }
     val scrollConnection = remember(list) { object : NestedScrollConnection {
         override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
             if (source == NestedScrollSource.UserInput && available.y > 0f) followLatest = false
@@ -139,22 +161,24 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 layout.visibleItemsInfo.lastOrNull()?.let { it.offset + it.size })
         }.collect {
             if (followLatest && !list.isScrollInProgress && list.canScrollForward && list.layoutInfo.totalItemsCount > 0)
-                list.scrollToItem(list.layoutInfo.totalItemsCount - 1)
+                // Layout snapshots can be delivered while LazyColumn is placing/discarding items.
+                // Request the next measurement instead of forcing a nested synchronous remeasure.
+                list.requestScrollToItem(list.layoutInfo.totalItemsCount - 1)
         }
     }
+    LaunchedEffect(list, state.id, state.historyCursor, state.loading, state.loadingEarlier, state.stale) {
+        snapshotFlow { list.layoutInfo.visibleItemsInfo.size > 0 && !list.canScrollForward && !list.canScrollBackward }
+            .collect { unfilled -> if (unfilled && !state.loading && !state.loadingEarlier && !state.stale && state.historyCursor != null) onFillHistory() }
+    }
     val showLatest by remember(list) { derivedStateOf { list.canScrollForward } }
+    val quoteText: ((String) -> Unit)? = if (!busy && !blocked && draftLoaded) ({ text ->
+        draft = appendQuoteToDraft(draft, text); inputFocusRequest++
+    }) else null
+    val saveFile: (String) -> Unit = { fileAction = FileAction.SAVE; filePath = it }
+    fun openSettings() { settingsOpen = !settingsOpen; if (settingsOpen) onLoadModels() }
     Column(Modifier.fillMaxSize().imePadding().testTag("chat_page")) {
-        Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onBack) { Text("‹ 返回") }
-            Column(Modifier.weight(1f)) {
-                Text(snapshot?.name ?: if (state.readError != null && !state.loading) "会话读取失败" else "正在读取会话…", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(when { state.loading -> "正在同步会话…"; state.stale -> "连接中断 · 内容可能已过期"; snapshot?.activeTurnId?.isNotBlank() == true -> "Codex 正在执行"; else -> "Codex 原生会话" },
-                    style = MaterialTheme.typography.bodySmall, color = if (state.stale && !state.loading) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            TextButton(onClick = { developerOpen = true }, enabled = snapshot != null) { Text("改动") }
-            TextButton(onRefresh) { Text("刷新") }
-        }
-        dev.rivo.relay.ui.common.UsageIndicator(usage, contextPercent = contextPercent(snapshot?.tokenUsage))
+        NativeChatHeader(state, usage, onBack, ::openSettings, onRefresh, { developerOpen = true }, { stopConfirm = true },
+            !busy && !blocked && !state.stale && snapshot?.readOnly != true, pinned, canManage, onPin, onArchive)
         if (snapshot?.readOnly == true) Text("此会话由另一运行时持有，可查看历史或保存待发任务。队列等待会话可执行后继续。",
             Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).testTag("external_writer_notice"),
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -166,7 +190,10 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 Text("继续这个项目中的工作", Modifier.padding(vertical = 24.dp), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             items(timeline, key = { it.key }) { row ->
-                if (row is NativeTimelineRow.Activities) NativeActivityGroup(row) { path -> filePath = nativeFilePath(path, snapshot?.settings?.string("cwd").orEmpty()) }
+                modelChangeRows[row.key]?.let { label -> Text(label,
+                    Modifier.fillMaxWidth().padding(bottom = 10.dp).testTag("model_change_notice"),
+                    style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                if (row is NativeTimelineRow.Activities) NativeActivityGroup(row) { path -> nativeFilePath(path, snapshot?.settings?.string("cwd").orEmpty())?.let(::openFile) }
                 else if (row is NativeTimelineRow.Message) {
                 val message = row.message
                 val user = message.type in setOf("userMessage", "user_message")
@@ -177,22 +204,22 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                         shape = MaterialTheme.shapes.large, modifier = Modifier.widthIn(max = 326.dp)) {
                         Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             val content = message.content
-                            if (content.isEmpty()) MessageContent(message.text, snapshot?.settings?.string("cwd").orEmpty()) { filePath = it }
+                            if (content.isEmpty()) MessageContent(message.text, snapshot?.settings?.string("cwd").orEmpty(), onQuoteText = quoteText, onSaveFile = saveFile, onFile = ::openFile)
                             content.forEach { part -> when (part.string("type")) {
-                                "text" -> MessageContent(part.string("text"), snapshot?.settings?.string("cwd").orEmpty()) { filePath = it }
-                                "image" -> part.string("url").takeIf { it.isNotBlank() }?.let { NativeImage(it, readFile) } ?: Text("图片引用：${part.string("fileId")}")
-                                "localImage" -> NativeImage(nativeFilePath(part.string("path"), snapshot?.settings?.string("cwd").orEmpty()) ?: part.string("path"), readFile)
-                                "mention", "skill" -> TextButton(onClick = { filePath = nativeFilePath(part.string("path"), snapshot?.settings?.string("cwd").orEmpty()) }) { Text((if (part.string("type") == "skill") "技能：" else "文件：") + part.string("name")) }
+                                "text" -> MessageContent(part.string("text"), snapshot?.settings?.string("cwd").orEmpty(), onQuoteText = quoteText, onSaveFile = saveFile, onFile = ::openFile)
+                                "image" -> part.string("url").takeIf { it.isNotBlank() }?.let { NativeImage(it, readFile, downloadFile = downloadFile) } ?: Text("图片引用：${part.string("fileId")}")
+                                "localImage" -> NativeImage(nativeFilePath(part.string("path"), snapshot?.settings?.string("cwd").orEmpty()) ?: part.string("path"), readFile, downloadFile = downloadFile)
+                                "mention", "skill" -> TextButton(onClick = { nativeFilePath(part.string("path"), snapshot?.settings?.string("cwd").orEmpty())?.let(::openFile) }) { Text((if (part.string("type") == "skill") "技能：" else "文件：") + part.string("name")) }
                                 else -> Text(part.toString(2), style = MaterialTheme.typography.bodySmall)
                             } }
                         }
                     } else if (assistant) {
-                        MessageContent(message.text, snapshot?.settings?.string("cwd").orEmpty()) { filePath = it }
+                        MessageContent(message.text, snapshot?.settings?.string("cwd").orEmpty(), onQuoteText = quoteText, onSaveFile = saveFile, onFile = ::openFile)
                         if (snapshot?.messages?.lastOrNull { it.turnId == message.turnId && it.type in setOf("agentMessage", "agent_message", "exitedReviewMode") }?.id == message.id)
                             ChangeSummary(snapshot.changes.firstOrNull { it.string("turnId") == message.turnId }) { developerOpen = true }
                     }
                     else if (message.type == "imageGeneration" && (message.raw.string("savedPath").isNotBlank() || message.raw.string("result").isNotBlank())) {
-                        NativeImage(message.raw.string("savedPath").ifBlank { "data:image/png;base64," + message.raw.string("result") }, readFile)
+                        NativeImage(message.raw.string("savedPath").ifBlank { "data:image/png;base64," + message.raw.string("result") }, readFile, downloadFile = downloadFile)
                     }
                     else Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = MaterialTheme.shapes.small) {
                         Column(Modifier.fillMaxWidth().padding(12.dp)) {
@@ -228,25 +255,36 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             onEditImage = { focus.clearFocus(); keyboard?.hide(); editingImage = it },
             onRemoveImage = { image -> images = images.filterNot { it.id == image.id } },
             files = files, onRemoveFile = { reference -> files = files.filterNot { it === reference } },
+            onOpenFile = { reference -> nativeFilePath(reference.string("path"), snapshot?.settings?.string("cwd").orEmpty())?.let(::openFile) },
             preparing = preparing, error = attachmentError, enabled = !busy && !blocked && draftLoaded,
             canSend = (draft.isNotBlank() || images.isNotEmpty() || files.isNotEmpty()) && !state.stale && snapshot != null,
             isRunning = snapshot?.activeTurnId?.isNotBlank() == true, canStop = !busy && !blocked && !state.stale && snapshot?.readOnly != true, busy = busy,
             onAddImage = { focus.clearFocus(); keyboard?.hide(); picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
             onAddFile = { focus.clearFocus(); keyboard?.hide(); filePicker.launch(arrayOf("*/*")) },
-            onAddWorkspaceFile = { focus.clearFocus(); keyboard?.hide(); workspaceFileDialog = true }, onSettings = { settingsOpen = true; onLoadModels() },
+            onAddVideo = { focus.clearFocus(); keyboard?.hide(); filePicker.launch(arrayOf("video/*")) },
+            onAddWorkspaceFile = { focus.clearFocus(); keyboard?.hide(); workspaceFileDialog = true }, onSettings = ::openSettings,
+            discussionMode = (selectedMode ?: snapshot?.settings?.optJSONObject("collaborationMode")?.string("mode")) == "plan",
+            onToggleMode = { selectedMode = if ((selectedMode ?: snapshot?.settings?.optJSONObject("collaborationMode")?.string("mode")) == "plan") "default" else "plan" },
+            focusRequest = inputFocusRequest, onPasteImages = ::addImages,
+            settingsExpanded = settingsOpen, onDismissSettings = { settingsOpen = false }, settingsContent = {
+                NativeComposerSettings(snapshot?.settings, models, selectedModel, selectedEffort, selectedMode, !busy && !blocked && draftLoaded,
+                    onModel = { modelId ->
+                        selectedModel = modelId
+                        val capability = models.firstOrNull { it.string("model").ifBlank { it.string("id") } == modelId }
+                        val supported = capability?.objects("supportedReasoningEfforts").orEmpty().map { it.string("reasoningEffort") }
+                        selectedEffort = capability?.string("defaultReasoningEffort")?.takeIf { it in supported }
+                    }, onEffort = { selectedEffort = it }, onInheritMode = { selectedMode = null })
+            },
             onSend = {
                 val accepted = { followLatest = true; draft = ""; images = emptyList<DraftImage>(); files = emptyList<JSONObject>();
                     state.id?.let { onPersistDraft(it, ConversationDraft(model = selectedModel, effort = selectedEffort, mode = selectedMode)) }; Unit }
                 if (onSendWithMode != null) onSendWithMode(nativeInputs(draft, images, files), selectedModel, selectedEffort, selectedMode, accepted)
                 else onSend(nativeInputs(draft, images, files), selectedModel, selectedEffort, accepted)
             },
-            onStop = { stopConfirm = true }, onVoice = { voiceOpen = true },
+            onStop = { stopConfirm = true },
             queueing = snapshot != null && (snapshot.readOnly || snapshot.activeTurnId.isNotBlank() || snapshot.requests.isNotEmpty() || snapshot.queue.isNotEmpty()),
         )
     }
-    if (voiceOpen) SpeechInputDialog(onDismiss = { voiceOpen = false }, onResult = { text ->
-        draft = listOf(draft, text).filter { it.isNotBlank() }.joinToString(" "); voiceOpen = false
-    })
     if (developerOpen && state.id != null) DeveloperToolsDialog(state.id, readTool, submitTool, busy || blocked || state.stale, onDismiss = { developerOpen = false })
     editingImage?.let { image ->
         key(image) {
@@ -270,7 +308,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         text = { Text(if (task.status == "unknown") "仅移除此队列记录，不会停止或重新发送原任务。请先核对会话历史。" else "该任务将从等待队列移除，不再执行。") },
         confirmButton = { TextButton(onClick = { onQueue(JSONObject().put("operation", "remove").put("itemId", task.id).put("revision", task.revision)) { removingQueue = null } }, enabled = !busy && !blocked, modifier = Modifier.testTag("queue_remove")) { Text("确认撤回") } },
         dismissButton = { TextButton(onClick = { removingQueue = null }) { Text("取消") } }) }
-    filePath?.let { FilePreviewDialog(it, readFile, downloadFile) { filePath = null } }
+    filePath?.let { FilePreviewDialog(it, readFile, downloadFile, initialAction = fileAction) { filePath = null; fileAction = null } }
     if (workspaceFileDialog) WorkspaceFilePicker(snapshot?.settings?.string("cwd").orEmpty(), readDirectory,
         onDismiss = { workspaceFileDialog = false }, onSelect = { file ->
             if (files.size < 16 && files.none { it.string("path") == file.string("path") }) files = files + file
@@ -280,36 +318,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         text = { Text("将中断当前 Codex 执行。已产生的内容和改动会保留。") },
         confirmButton = { Button(onClick = { stopConfirm = false; onStop() }) { Text("停止任务") } },
         dismissButton = { TextButton(onClick = { stopConfirm = false }) { Text("取消") } })
-    if (settingsOpen) AlertDialog(onDismissRequest = { settingsOpen = false }, title = { Text("运行设置") },
-        text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("当前会话沿用 Desktop 的设置", style = MaterialTheme.typography.bodySmall)
-            snapshot?.settings?.let { settings ->
-                Text("模型：${settings.string("model").ifBlank { "继承 Desktop" }}", style = MaterialTheme.typography.bodySmall)
-                Text("思考强度：${settings.string("reasoningEffort").ifBlank { "模型默认" }}", style = MaterialTheme.typography.bodySmall)
-                settings.string("cwd").takeIf { it.isNotBlank() }?.let { Text("工作目录：$it", style = MaterialTheme.typography.bodySmall) }
-                Text(nativePermissionSummary(settings), style = MaterialTheme.typography.bodySmall)
-            }
-            var menu by remember { mutableStateOf(false) }
-            Box { OutlinedButton(onClick = { menu = true }) { Text(selectedModel ?: "继承当前模型") }
-                DropdownMenu(menu, { menu = false }) {
-                    DropdownMenuItem(text = { Text("继承当前模型") }, onClick = { selectedModel = null; selectedEffort = null; menu = false })
-                    models.forEach { model -> val id = model.string("model").ifBlank { model.string("id") }; DropdownMenuItem(text = { Text(model.string("displayName").ifBlank { id }) }, onClick = { selectedModel = id; selectedEffort = null; menu = false }) }
-                }
-            }
-            val model = models.firstOrNull { it.string("model").ifBlank { it.string("id") } == selectedModel }
-            model?.objects("supportedReasoningEfforts")?.forEach { effort ->
-                val value = effort.string("reasoningEffort")
-                TextButton(onClick = { selectedEffort = value }) { Text((if (selectedEffort == value) "✓ " else "") + value) }
-            }
-            Text("协作模式", style = MaterialTheme.typography.titleSmall)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(null to "继承", "default" to "普通", "plan" to "讨论").forEach { (mode, label) ->
-                    FilterChip(selected = selectedMode == mode, onClick = { selectedMode = mode }, label = { Text(label) })
-                }
-            }
-            if (selectedMode == "plan") Text("讨论任务以只读模式执行；切回普通时恢复进入讨论前的权限。", style = MaterialTheme.typography.bodySmall)
-            Text("模型选择用于下一条新任务；执行中的补充沿用当前任务设置。", style = MaterialTheme.typography.bodySmall)
-        } }, confirmButton = { TextButton(onClick = { settingsOpen = false }) { Text("完成") } })
+
 }
 
 internal fun nativePermissionSummary(settings: JSONObject): String {

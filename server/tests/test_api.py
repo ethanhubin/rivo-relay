@@ -379,6 +379,67 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(len(self.native.created), 1)
         self.assertEqual(len(self.native.sent), 1)
 
+    def test_todo_details_round_trip_and_dispatch_native_mentions(self):
+        details = {"dueDate": "2026-11-05", "repeatRule": "weekly", "reminderAt": 1793869200000,
+                   "subtasks": [{"id": "subtask-a", "title": "Inspect the changes", "completed": False}],
+                   "attachments": [{"type": "file", "name": "设计稿.md", "path": "/remote/project/设计稿.md"}]}
+        status, created, _ = self.request("POST", "/v1/todos", {"id": "details-todo", "title": "Review files", "notes": "Read carefully", "details": details}, token=self.token)
+        self.assertEqual(status, 200)
+        self.assertEqual(created["todo"]["details"], details)
+        status, loaded, _ = self.request("GET", "/v1/todos/details-todo", token=self.token)
+        self.assertEqual(status, 200)
+        self.assertEqual(loaded["todo"]["details"], details)
+        payload = {"projectId": "project-1", "submissionId": "dispatch-details"}
+        status, receipt, _ = self.request("POST", "/v1/todos/details-todo/dispatch", payload, token=self.token)
+        self.assertEqual(status, 200)
+        self.assertEqual(receipt["status"], "accepted")
+        _, text, kwargs = self.native.sent[-1]
+        self.assertIn("[ ] Inspect the changes", text)
+        self.assertEqual(kwargs["input_items"][0]["text"], text)
+        self.assertEqual(kwargs["input_items"][1], {"type": "mention", "name": "设计稿.md", "path": "/remote/project/设计稿.md"})
+        self.assertFalse(self.app.todos.get("details-todo")["completed"])
+        self.assertEqual(len(self.app.todos.list()), 1)
+        self.request("POST", "/v1/todos/details-todo/dispatch", payload, token=self.token)
+        self.assertEqual(len(self.native.sent), 1)
+        status, _, _ = self.request("PATCH", "/v1/todos/details-todo", {"details": {"dueDate": "2026-02-30"}}, token=self.token)
+        self.assertEqual(status, 400)
+        self.assertEqual(self.app.todos.get("details-todo")["details"], details)
+
+    def test_completed_todo_cannot_start_a_new_dispatch_but_existing_receipt_can_be_read(self):
+        self.create_todo()
+        self.request("PATCH", "/v1/todos/todo-1", {"completed": True}, token=self.token)
+        payload = {"projectId": "project-1", "submissionId": "completed-dispatch"}
+        status, _, _ = self.request("POST", "/v1/todos/todo-1/dispatch", payload, token=self.token)
+        self.assertEqual(status, 409)
+        self.assertEqual(self.native.created, [])
+        self.assertEqual(self.native.sent, [])
+        self.request("PATCH", "/v1/todos/todo-1", {"completed": False}, token=self.token)
+        status, original, _ = self.request("POST", "/v1/todos/todo-1/dispatch", payload, token=self.token)
+        self.assertEqual(status, 200)
+        self.request("PATCH", "/v1/todos/todo-1", {"completed": True}, token=self.token)
+        status, replay, _ = self.request("POST", "/v1/todos/todo-1/dispatch", payload, token=self.token)
+        self.assertEqual(status, 200)
+        self.assertEqual(replay, original)
+        self.assertEqual(len(self.native.sent), 1)
+
+    def test_legacy_todo_dispatch_digest_replays_only_with_empty_details_and_identical_text(self):
+        self.create_todo()
+        todo = self.app.todos.get("todo-1")
+        payload = {"projectId": "project-1", "submissionId": "pre-upgrade-dispatch"}
+        legacy = {**payload, "title": todo["title"], "notes": todo["notes"]}
+        self.app.submissions.claim(payload["submissionId"], self.paired["deviceId"], "todo.dispatch", "todo-1", legacy)
+        self.app.submissions.mark_accepted(payload["submissionId"], {"threadId": "old-native-thread", "turnId": "old-native-turn"})
+        status, receipt, _ = self.request("POST", "/v1/todos/todo-1/dispatch", payload, token=self.token)
+        self.assertEqual(status, 200)
+        self.assertEqual(receipt["receipt"]["threadId"], "old-native-thread")
+        self.assertEqual(self.native.sent, [])
+        self.app.todos.update("todo-1", notes="Different content")
+        self.assertEqual(self.request("POST", "/v1/todos/todo-1/dispatch", payload, token=self.token)[0], 409)
+        self.app.todos.update("todo-1", notes=todo["notes"], details={"dueDate": "2026-11-01"})
+        self.assertEqual(self.request("POST", "/v1/todos/todo-1/dispatch", payload, token=self.token)[0], 409)
+        self.assertEqual(self.native.created, [])
+        self.assertEqual(self.native.sent, [])
+
     def test_unknown_dispatch_after_restart_blocks_new_id_even_before_todo_link(self):
         self.create_todo()
         self.app.submissions.claim("crashed-dispatch", self.paired["deviceId"], "todo.dispatch", "todo-1", {"test": "crash"})

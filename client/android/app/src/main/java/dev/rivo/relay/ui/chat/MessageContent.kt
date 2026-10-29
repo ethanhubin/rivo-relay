@@ -1,38 +1,55 @@
 package dev.rivo.relay.ui.chat
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.*
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
+/** QiGuang's selectable message rendering, using Relay's existing native file boundary. */
 @Composable
-fun MessageContent(markdown: String, cwd: String = "", onFile: (String) -> Unit = {}) {
+fun MessageContent(
+    markdown: String,
+    cwd: String = "",
+    onQuoteText: ((String) -> Unit)? = null,
+    onSaveFile: ((String) -> Unit)? = null,
+    onFile: (String) -> Unit = {},
+) {
+    val clipboard = LocalClipboardManager.current
+    val onCopyText: (String) -> Unit = { clipboard.setText(AnnotatedString(it)) }
+    val openExternalLink = rememberConfirmedWebLinkOpener(markdown, onSaveFile)
+    val openRegularLink: (String) -> Unit = { target ->
+        when {
+            isMessageFileWebLink(target) -> onFile(target)
+            isHttpWebLink(target) -> openExternalLink(target)
+            else -> messageFileTarget(target, cwd)?.let(onFile)
+        }
+    }
+    val openImage: (String) -> Unit = { target ->
+        if (isHttpWebLink(target)) onFile(target)
+        else messageFileTarget(target, cwd)?.let(onFile)
+    }
     val parts = remember(markdown) { reviewMessageParts(markdown) }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        parts.forEach { part -> when (part) {
+        parts.forEachIndexed { partIndex, part -> key(partIndex) { when (part) {
             is ReviewMessagePart.Text -> {
                 val blocks = remember(part.value) { parseChatMarkdownBlocks(part.value) }
-                blocks.forEach { block -> when (block) {
-                    is ChatMarkdownBlock.Text -> MessageText(block.markdown, cwd, onFile)
-                    is ChatMarkdownBlock.Table -> MessageTable(block, cwd, onFile)
-                } }
+                blocks.forEachIndexed { blockIndex, block -> key(blockIndex) { when (block) {
+                    is ChatMarkdownBlock.Text -> MessageText(block.markdown, onCopyText, onQuoteText, openRegularLink, openImage)
+                    is ChatMarkdownBlock.Table -> ChatMarkdownTable(block, "message_$partIndex", blockIndex, onCopyText, onQuoteText, openRegularLink, openImage)
+                } } }
             }
-            is ReviewMessagePart.Finding -> ReviewFindingCard(part.comment, cwd, onFile)
-        } }
+            is ReviewMessagePart.Finding -> ReviewFindingCard(part.comment, cwd, onFile, onQuoteText, onCopyText, openRegularLink, openImage)
+        } } }
     }
 }
 
 @Composable
-private fun ReviewFindingCard(comment: ReviewComment, cwd: String, onFile: (String) -> Unit) {
+private fun ReviewFindingCard(comment: ReviewComment, cwd: String, onFile: (String) -> Unit, onQuoteText: ((String) -> Unit)?, onCopyText: (String) -> Unit, onOpenLink: (String) -> Unit, onOpenImage: (String) -> Unit) {
     Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLow,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -41,7 +58,7 @@ private fun ReviewFindingCard(comment: ReviewComment, cwd: String, onFile: (Stri
                     shape = MaterialTheme.shapes.small) { Text("P$priority", Modifier.padding(horizontal = 6.dp, vertical = 3.dp), style = MaterialTheme.typography.labelMedium) } }
                 Text(comment.title, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
             }
-            MessageText(comment.body, cwd, onFile, style = MaterialTheme.typography.bodyMedium)
+            MessageText(comment.body, onCopyText, onQuoteText, onOpenLink, onOpenImage, style = MaterialTheme.typography.bodyMedium)
             val path = nativeFilePath(comment.file, cwd)
             TextButton(onClick = { path?.let { onFile(it + comment.start?.let { line -> ":$line" }.orEmpty()) } }, enabled = path != null, contentPadding = PaddingValues(0.dp)) {
                 Text(comment.file + comment.start?.let { start -> ":$start" + comment.end?.takeIf { it != start }?.let { "–$it" }.orEmpty() }.orEmpty(), style = MaterialTheme.typography.labelMedium)
@@ -51,60 +68,43 @@ private fun ReviewFindingCard(comment: ReviewComment, cwd: String, onFile: (Stri
 }
 
 @Composable
-private fun MessageText(markdown: String, cwd: String, onFile: (String) -> Unit, modifier: Modifier = Modifier,
-    style: TextStyle = MaterialTheme.typography.bodyLarge) {
+private fun MessageText(
+    markdown: String,
+    onCopyText: (String) -> Unit,
+    onQuoteText: ((String) -> Unit)?,
+    onOpenLink: (String) -> Unit,
+    onOpenImage: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    style: TextStyle = MaterialTheme.typography.bodyLarge,
+) {
     val colors = MaterialTheme.colorScheme
-    val styled = remember(markdown, colors, cwd, onFile) {
-        val rendered = renderChatMarkdown(markdown, colors.primary, colors.surfaceContainerHighest, colors.onSurfaceVariant)
-        AnnotatedString.Builder(rendered).apply {
-            rendered.getStringAnnotations(0, rendered.length).forEach { link ->
-                if (isHttpWebLink(link.item)) addLink(LinkAnnotation.Url(link.item, TextLinkStyles(style = SpanStyle(color = colors.primary))), link.start, link.end)
-                else nativeFilePath(link.item, cwd)?.let { path ->
-                    addLink(LinkAnnotation.Clickable(path, TextLinkStyles(style = SpanStyle(color = colors.primary))) { onFile(path) }, link.start, link.end)
-                }
-            }
-        }.toAnnotatedString()
+    val rendered = remember(markdown, colors.primary, colors.surfaceContainerHighest, colors.onSurfaceVariant) {
+        renderChatMarkdown(markdown, colors.primary, colors.surfaceContainerHighest, colors.onSurfaceVariant)
     }
-    SelectionContainer(modifier = modifier) { Text(styled, style = style) }
+    SelectableReadOnlyText(
+        rendered = rendered,
+        modifier = modifier,
+        testTag = "message_text",
+        onCopyText = onCopyText,
+        onQuoteText = onQuoteText,
+        onOpenLink = onOpenLink,
+        onOpenImageLink = onOpenImage,
+        textStyle = style.copy(color = LocalContentColor.current),
+    )
 }
 
-/** QiGuang table rule: short/wide data stay a grid; narrow long-text tables become labelled cards. */
-@Composable
-private fun MessageTable(table: ChatMarkdownBlock.Table, cwd: String, onFile: (String) -> Unit) {
-    val colors = MaterialTheme.colorScheme
-    if (shouldRenderMarkdownTableAsCards(table)) Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        table.rows.forEach { row ->
-            val statusIndex = row.lastIndex.takeIf { row.size >= 3 && row[it].replace(Regex("[\\\\`*_~]"), "").length <= 8 }
-            Surface(shape = MaterialTheme.shapes.medium, color = colors.surfaceContainerLow, border = BorderStroke(.5.dp, colors.outlineVariant)) {
-                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        MessageText(row.first(), cwd, onFile, Modifier.weight(1f), MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold))
-                        statusIndex?.let { index -> Surface(color = colors.secondaryContainer, shape = MaterialTheme.shapes.extraLarge, modifier = Modifier.widthIn(max = 112.dp)) {
-                            MessageText(row[index], cwd, onFile, Modifier.padding(horizontal = 9.dp, vertical = 3.dp), MaterialTheme.typography.labelMedium)
-                        } }
-                    }
-                    row.indices.drop(1).filter { it != statusIndex }.forEach { index -> Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(table.headers[index], style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
-                        MessageText(row[index], cwd, onFile, style = MaterialTheme.typography.bodyMedium)
-                    } }
-                }
-            }
-        }
-    } else Surface(shape = MaterialTheme.shapes.small, border = BorderStroke(.5.dp, colors.outlineVariant), color = colors.surface) {
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            val width = maxOf(maxWidth.value, table.headers.size * 136f).dp
-            Box(Modifier.horizontalScroll(rememberScrollState())) { Column(Modifier.width(width)) {
-                (listOf(table.headers) + table.rows).forEachIndexed { rowIndex, cells ->
-                    if (rowIndex > 0) HorizontalDivider(thickness = .5.dp, color = colors.outlineVariant)
-                    Surface(color = if (rowIndex == 0) colors.surfaceContainerLow else colors.surface) {
-                        Row(Modifier.fillMaxWidth()) { cells.forEachIndexed { index, cell ->
-                            MessageText(cell, cwd, onFile, Modifier.weight(1f).padding(horizontal = 10.dp, vertical = 9.dp),
-                                MaterialTheme.typography.bodySmall.copy(fontWeight = if (rowIndex == 0) FontWeight.SemiBold else FontWeight.Normal,
-                                    textAlign = when (table.alignments.getOrNull(index)) { MarkdownTableAlignment.CENTER -> TextAlign.Center; MarkdownTableAlignment.END -> TextAlign.End; else -> TextAlign.Start }))
-                        } }
-                    }
-                }
-            } }
-        }
-    }
+/** Preserve source locations while nativeFilePath resolves and validates the native path. */
+internal fun messageFileTarget(target: String, cwd: String): String? {
+    // Do not reinterpret web/app schemes as relative native paths.
+    val withoutLocation = target.replace(Regex(""":\d+(?::\d+)?$"""), "")
+    val scheme = Regex("^[A-Za-z][A-Za-z0-9+.-]*:").find(withoutLocation)?.value
+    if (scheme != null && !scheme.equals("file:", true) && !Regex("^[A-Za-z]:[\\\\/]").containsMatchIn(target)) return null
+    val path = nativeFilePath(target, cwd) ?: return null
+    val location = Regex("""(?:#L|:)(\d+)(?::\d+|(?:C\d+)?(?:-L?\d+(?:C\d+)?)?)?$""")
+        .find(target)?.groupValues?.get(1)?.toIntOrNull()?.takeIf { it > 0 }
+    return path + location?.let { ":$it" }.orEmpty()
 }
+
+/** QiGuang resolves file links before offering the external webpage menu. */
+internal fun isMessageFileWebLink(target: String): Boolean =
+    isHttpWebLink(target) && fileMimeType(target) !in setOf("application/octet-stream", "text/html")

@@ -188,3 +188,31 @@ APK：`workspace/artifacts/rivo-relay-0.1.9-debug.apk`，versionCode 10，SHA-25
 102 项服务端测试通过，包含整整 1 GiB 的有界读取测试与超限拒绝；Android 单元测试、APK/测试包构建和 lint 通过。真实 Tailscale HTTPS 测试上传 1,073,741,824 字节用时 18.81 秒，下载用时 34.75 秒，SHA-256 一致。验证进程最高 RSS 约 52 MiB；下载过程中 Relay RSS 单点采样约 295 MiB，此采样不代表峰值。节点已加载更新，既有登录保留，测试文件和临时认证凭据已清理，浏览器 APK 下载校验通过。记录：`workspace/local-node/transfer-deployment-0.1.10.json`。暂无手机端真机测试。
 
 APK：`workspace/artifacts/rivo-relay-0.1.10-debug.apk`，versionCode 11，SHA-256：`b4d1a881486a349f696d610f64ca1e58cdde2fe723953c0a49cf7cea58b730d8`。
+
+## 0.2.0：本轮功能补齐（2026-10-29）
+
+按用户确认，仅扩展现有 Android 与 Relay 接口，不新增服务、模型或部署依赖；语音输入、录音权限和识别入口已移除。实现范围与保留边界见[功能记录](feature-parity.md)：批量会话整理、未读、额度/上下文、按会话草稿、显示缓存、模型变化提示、完成/待回应通知、目录与工作树、Plan/Review/diff、文件预览及待办详情/本机提醒/离线 CRUD。
+
+- 服务端 **143 项**回归通过，包括 schema 升级、权限恢复、首轮历史窗口、Review 队列、待办旧摘要兼容及 **23 项**真实临时 Git 工作树检查。
+- Android **73 项 JVM 测试**通过；debug APK、测试 APK 与 lint 通过，lint 无错误（保留 27 项警告，主要为依赖更新和既有 API/风格建议）。
+- 现有 `medium_phone` 模拟器覆盖安装保留数据；**21 项 UI/集成测试**通过，覆盖草稿、归档/批量目标、目录选择、额度/计划、diff、模型变化/未知边界、缓存写保护、共享 SSE、提交核对恢复及原有消息/队列/输入/文件选择。截图与日志在 `workspace/artifacts/parity-0.2.0/`。
+- 现有 Relay 已平滑重启加载代码；升级前 SQLite 在线备份，schema **2→4**，原有 **2 个有效连接保留**。没有重启原生 Codex，runtime ID 仍为 **906**。
+- 通过现有 Tailscale HTTPS 入口实测：额度、项目目录、已归档列表、Git ref、Todo 详情往返；独立工作树创建、干净 diff、Review 范围读取；两轮实际原生执行验证 Plan 为只读、普通模式恢复原 sandbox，并观察到轮次模型信息；最后成功归档测试会话并移除工作树。
+- 真实首次读取暴露原生 rollout 已建立但元数据仍为空的窗口。现仅对已有接受回执的新会话在最多 30 秒内使用创建元数据与真实 live turn，既不自动重发，也不隐藏其它历史失败；修复后上述完整原生流程通过。
+- 所有本次测试工作树均已移除，验证凭据已撤销并确认 401；脱敏结果见 `workspace/local-node/parity-deployment-0.2.0.json`。
+
+本轮未实际发起原生 Review 执行：四种目标和队列行为经回归测试，真实节点验证到 Review 范围读取。系统提醒准时送达、进程被杀后的通知与 Windows 节点尚无实机保证；复杂身份签名挑战和 Desktop UI 双向接续未因此完成。通知不新增远程推送服务。
+
+APK：[`rivo-relay-0.2.0-debug.apk`](../workspace/artifacts/rivo-relay-0.2.0-debug.apk)，versionCode **12**，13,308,975 字节，SHA-256：`97e27aaed1541e0e1359fd80fb56fc8aa1d86c285a65e1e1a2e25f238e7920fd`。摘要见 `workspace/artifacts/build-summary-0.2.0.json`。本地包与模拟器已更新，尚未上传 GitHub Release。
+
+
+## 0.2.1：同类 UI 源码核对与迁移（2026-10-29）
+
+- 按栖光实际源码和用户截图核对会话/项目、聊天/设置、正文选择/链接、APK/文件、附件、问答/计划/队列、diff、待办和目录流程。详细对应关系及结构差异见[核对记录](feature-parity.md#021按栖光源码核对现有-ui)。图片编辑器及工具活动主体已有同源实现，保留原生审批、writer、队列 revision 和未知提交核对。
+- Android 单元测试 **90/90** 通过；`assembleDebug`、`assembleDebugAndroidTest`、`lintDebug` 通过，lint **0 errors / 30 warnings / 1 hint**。构建日志见 `workspace/artifacts/ui-parity-0.2.1/build.log`。
+- 已运行的 `medium_phone` 模拟器覆盖安装 0.2.1（versionCode 13），保留 App 数据。**76 项不重复的 UI/集成回归最终通过**，分批日志、首次失败及修复后重跑均保留；不把单元测试类误记为设备测试。初次完整 74 项中发现设置跨窗口测试方式、历史跟随布局重入及附件节点合并问题；后续 23 项回归验证滚动崩溃修复、最新目录/待办及新增媒体失败重试、Markdown 内行号导航，最后 2 项以系统级实际触摸验证浮层关闭和发送参数/草稿清空。
+- 修复的实际问题还包括：取消后旧下载进度重建弹窗；Markdown 内文件行号混入节点路径；媒体初始化异常未释放、重试复用旧播放器及后台准备完成后继续播放；批删前一项完成时 mutating 未释放导致下一项被丢弃。
+- 已检查模拟器浅色截图：`workspace/artifacts/ui-parity-0.2.1/sessions.png`、`apk-actions.png`；其它交互证据位于同目录 `verification/`。截图使用本地固定数据，不包含节点凭据。
+- 本轮没有更新或重启 Relay 节点，也没有新增服务、模型或客户端库；无需额外部署。不支持语音。系统保存选择器的名称/MIME、文件 Intent 的只读授权、下载取消及类型分流有定向测试；未将模拟器结果当成实际手机的 APK 安装器、第三方分享接收或全部媒体格式验收。
+
+APK：[`rivo-relay-0.2.1-debug.apk`](../workspace/artifacts/rivo-relay-0.2.1-debug.apk)，versionCode **13**，**13,791,737** 字节，SHA-256：`f1c61e941097bce718f6090b7f280301ee0f37fb1d918b23a66e70fd2cd4bc08`。摘要见 `workspace/artifacts/build-summary-0.2.1.json`。本地包与模拟器已更新；Git 提交与 PR 状态以仓库记录为准，尚未发布 GitHub Release。

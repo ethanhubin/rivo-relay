@@ -74,6 +74,7 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
         if (mutable.value.busy) return
         mutable.update { it.copy(busy = true) }
         scope.launch {
+            var completed: Pair<(JSONObject) -> Unit, JSONObject>? = null
             try {
                 val response = api.call("/v1/submissions/" + encoded(pending.id))
                 when (response.string("status")) {
@@ -82,7 +83,8 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
                         val completion = afterAccepted; afterAccepted = null
                         val succeeded = response.string("status") == "accepted"
                         mutable.update { it.copy(notice = if (succeeded) "已确认节点接受该操作" else "节点确认操作失败") }
-                        if (succeeded) completion?.invoke(response.optJSONObject("receipt") ?: JSONObject())
+                        if (succeeded && completion != null)
+                            completed = completion to (response.optJSONObject("receipt") ?: JSONObject())
                     }
                     else -> { retainReceipt(pending, response); mutable.update { it.copy(notice = "节点仍未确认该操作结果，请稍后核对。") } }
                 }
@@ -91,6 +93,9 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
                 else if (e !is CancellationException) failure(e)
             }
             finally { mutable.update { it.copy(busy = false) } }
+            // Clear the old owner before invoking a continuation. A batch may synchronously
+            // start its next submission, whose busy flag/callback must not be reset by this read.
+            completed?.let { (completion, receipt) -> completion(receipt) }
         }
     }
 }

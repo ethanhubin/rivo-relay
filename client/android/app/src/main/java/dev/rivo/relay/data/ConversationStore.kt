@@ -48,7 +48,7 @@ class ConversationStore(private val directory: File) {
                     else (key to waiting.remove(key)!!).also { currentWrite = it }
                 } ?: break
                 try { next.second.store.saveDraft(next.second.id, next.second.draft) }
-                catch (e: Exception) { next.second.failed(e) }
+                catch (e: Exception) { runCatching { next.second.failed(e) } }
                 finally { synchronized(writerLock) { currentWrite = null } }
             }
         }
@@ -93,8 +93,8 @@ class ConversationStore(private val directory: File) {
                 }))
             val text = json.toString()
             require(text.toByteArray().size <= DRAFT_LIMIT) { "草稿过大，无法保存在手机" }
+            // Unsent user work is durable data, never evicted by the bounded history cache.
             write(name, text)
-            prune("draft-", 32)
         }
     }
     suspend fun loadSnapshot(threadId: String): JSONObject? = withContext(Dispatchers.IO) {

@@ -6,7 +6,9 @@ stored separately; no writer takeover, history database or permission override.
 from __future__ import annotations
 
 import copy
+import logging
 import threading
+import time
 from collections import OrderedDict
 
 from .connection import CodexError, NativeConnection
@@ -29,6 +31,12 @@ def thread_status(thread):
     return "unknown"
 
 
+def awaiting_rollout(error):
+    text = str(error).lower()
+    return error.code == 'native_rejected' and (any(phrase in text for phrase in
+        ('not materialized', 'no rollout', 'missing source rollout')) or ('rollout' in text and 'is empty' in text))
+
+
 class CodexService:
     def __init__(self, socket_path=None, on_event=None, codex_home=None, *, connection=None):
         self.on_event = on_event or (lambda event: None)
@@ -39,6 +47,7 @@ class CodexService:
         self._active = {}
         self._settings = {}
         self._created = {}
+        self._materializing = {}
         self._joined = set()
         self._generation = None
         self.observations = None
@@ -56,16 +65,34 @@ class CodexService:
         self.workspaces = Workspaces(db, self)
 
     def _observe(self, thread_id, kind, turn_id, payload):
-        self._observed[(thread_id, kind, turn_id or '')] = copy.deepcopy(payload)
-        while len(self._observed) > 1000:
-            self._observed.popitem(last=False)
-        if self.observations:
-            self.observations.put(thread_id, kind, turn_id, payload)
+        with self._lock:
+            key = (thread_id, kind, turn_id or '')
+            self._observed[key] = copy.deepcopy(payload)
+            self._observed.move_to_end(key)
+            while len(self._observed) > 1000:
+                self._observed.popitem(last=False)
+            if self.observations:
+                try:
+                    self.observations.put(thread_id, kind, turn_id, payload)
+                except Exception:
+                    # Derived display metadata must not hide native acceptance
+                    # or stop processing the rest of a native notification.
+                    logging.getLogger(__name__).warning('Native observation persistence unavailable')
+
+    def _forget_observation(self, thread_id, kind, turn_id=''):
+        with self._lock:
+            self._observed.pop((thread_id, kind, turn_id), None)
+            if self.observations:
+                try:
+                    self.observations.delete(thread_id, kind, turn_id)
+                except Exception:
+                    logging.getLogger(__name__).warning('Native observation cleanup unavailable')
 
     def observations_for(self, thread_id):
-        values = self.observations.get(thread_id) if self.observations else {}
-        values.update({(kind, turn): copy.deepcopy(value) for (tid, kind, turn), value in self._observed.items() if tid == thread_id})
-        return values
+        with self._lock:
+            values = self.observations.get(thread_id) if self.observations else {}
+            values.update({(kind, turn): copy.deepcopy(value) for (tid, kind, turn), value in self._observed.items() if tid == thread_id})
+            return values
 
     def start(self):
         status = self.connection.start()
@@ -73,6 +100,7 @@ class CodexService:
             if self._generation != self.connection.generation:
                 self._settings.clear()
                 self._created.clear()
+                self._materializing.clear()
                 self._joined.clear()
                 self._active.clear()
                 self._live.clear()
@@ -139,8 +167,13 @@ class CodexService:
 
     def archive_session(self, thread_id, archived):
         self.start()
-        with self._operations:
+        with getattr(self, 'queue_lock', self._operations), self._operations:
             if archived:
+                if self.workspaces:
+                    with self.workspaces.db.read() as c:
+                        queued = c.execute("SELECT 1 FROM queued_tasks WHERE thread_id=? AND status NOT IN ('done','cancelled') LIMIT 1", (thread_id,)).fetchone()
+                    if queued:
+                        raise CodexError('请先处理此会话的执行队列', code='thread_busy', http_status=409)
                 thread = self.connection.request('thread/read', {'threadId': thread_id, 'includeTurns': False})['thread']
                 if thread_status(thread) == 'running' or self.interactions.list(thread_id):
                     raise CodexError('运行中或等待回答的会话不能归档', code='thread_busy', http_status=409)
@@ -167,6 +200,14 @@ class CodexService:
         if row and row['status'] != 'ready':
             raise CodexError('工作树已清理或状态待核对，不能在来源项目中继续执行', code='workspace_unavailable', http_status=409)
 
+    def _materializing_thread(self, thread_id):
+        with self._lock:
+            pending = self._materializing.get(thread_id)
+            if pending and pending[1] >= time.monotonic():
+                return copy.deepcopy(pending[0])
+            self._materializing.pop(thread_id, None)
+            return None
+
     def _resume(self, thread_id):
         with self._subscriptions:
             with self._lock:
@@ -177,9 +218,15 @@ class CodexService:
                     return copy.deepcopy(self._created[thread_id])
                 joined = thread_id in self._joined
             if joined:
-                thread = self.connection.request("thread/read", {
-                    "threadId": thread_id, "includeTurns": False,
-                })["thread"]
+                try:
+                    thread = self.connection.request("thread/read", {
+                        "threadId": thread_id, "includeTurns": False,
+                    })["thread"]
+                except CodexError as error:
+                    creating = self._materializing_thread(thread_id)
+                    if creating is not None and awaiting_rollout(error):
+                        return creating
+                    raise
                 if thread.get("status", {}).get("type") != "notLoaded":
                     return thread
                 with self._lock:
@@ -211,6 +258,9 @@ class CodexService:
         with self._lock:
             settings = copy.deepcopy(self._settings.get(thread_id, {}))
             active = self._active.get(thread_id)
+            if active and any(t['id'] == active and t.get('status') in ('completed', 'failed', 'interrupted', 'canceled') for t in thread['turns']):
+                self._active.pop(thread_id, None)
+                active = None
         if thread.get("cwd"):
             settings.setdefault("cwd", thread["cwd"])
         if active is None:
@@ -224,8 +274,9 @@ class CodexService:
             plan = {**plan, 'status': next((t.get('status') for t in thread['turns'] if t['id'] == plan.get('turnId')), 'inProgress' if active else 'unknown')}
         usage = next((value for (kind, _), value in reversed(list(observations.items())) if kind == 'usage'), None)
         changes = [{'turnId': turn_id, **value} for (kind, turn_id), value in observations.items() if kind == 'changes']
+        turn_settings = [{'turnId': turn_id, **value} for (kind, turn_id), value in observations.items() if kind == 'turnSettings']
         return {"thread": thread, "requests": requests, "settings": settings, 'plan': plan,
-                'tokenUsage': usage, 'changes': changes,
+                'tokenUsage': usage, 'changes': changes, 'turnSettings': turn_settings,
                 "activeTurnId": active, "status": status, "readOnly": read_only, "nextCursor": history["nextCursor"],
                 "backwardsCursor": history["backwardsCursor"]}
 
@@ -239,9 +290,11 @@ class CodexService:
                     limit=max(1, min(100, int(limit))), cursor=cursor)
             turns = copy.deepcopy(list(page.turns))
             result = {"turns": turns, "nextCursor": page.next_cursor, "backwardsCursor": page.backwards_cursor}
+            if turns:
+                with self._lock:
+                    self._materializing.pop(thread_id, None)
         except CodexError as error:
-            if thread_id in self._created and ("not materialized" in str(error).lower() or
-                                                "no rollout" in str(error).lower()):
+            if self._materializing_thread(thread_id) is not None and awaiting_rollout(error):
                 result = {"turns": [], "nextCursor": None, "backwardsCursor": None}
             else:
                 raise
@@ -263,10 +316,22 @@ class CodexService:
                 if self.workspaces is None:
                     raise CodexError('工作树存储不可用')
                 workspace_id, cwd = self.workspaces.create(project_id, cwd, worktree_ref)
-            result = self.connection.request("thread/start", {
-                "cwd": cwd, "projectId": project_id, "historyMode": "paginated",
-            })
-            thread_id = result["thread"]["id"]
+            try:
+                result = self.connection.request("thread/start", {
+                    "cwd": cwd, "projectId": project_id, "historyMode": "paginated",
+                })
+                thread_id = (result.get('thread') or {}).get('id')
+                if not isinstance(thread_id, str) or not thread_id:
+                    raise CodexError('原生没有返回可核对的会话身份', code='native_protocol', request_sent=True)
+            except Exception as error:
+                if workspace_id:
+                    uncertain = not isinstance(error, CodexError) or not error.definite
+                    retained = self.workspaces.abandon(workspace_id, uncertain=uncertain)
+                    if retained.get('status') != 'removed':
+                        raise CodexError('会话创建未确认，工作树已保留：' + cwd,
+                            code='workspace_thread_unknown' if uncertain else 'workspace_thread_failed',
+                            http_status=409, request_sent=uncertain) from error
+                raise
             with self._lock:
                 self._created[thread_id] = copy.deepcopy(result["thread"])
                 self._joined.add(thread_id)
@@ -294,6 +359,8 @@ class CodexService:
         with self._operations:
             self._assert_workspace(thread_id)
             self._resume(thread_id)
+            with self._lock:
+                inherited_settings = copy.deepcopy(self._settings.get(thread_id, {}))
             params = {"threadId": thread_id, "input": input_items if input_items is not None else self._input(text)}
             if model is not None:
                 params["model"] = model
@@ -301,10 +368,12 @@ class CodexService:
                 params["effort"] = effort
             if client_message_id is not None:
                 params["clientUserMessageId"] = client_message_id
+            saved_baseline = False
             if mode is not None:
                 if mode not in ('plan', 'default'):
                     raise CodexError('讨论模式无效', code='invalid_mode', http_status=400)
-                settings = self._settings.get(thread_id, {})
+                with self._lock:
+                    settings = copy.deepcopy(self._settings.get(thread_id, {}))
                 selected_model = model or settings.get('model')
                 if not selected_model:
                     raise CodexError('请先选择可用模型', code='model_required', http_status=409)
@@ -313,23 +382,47 @@ class CodexService:
                 sandbox = settings.get('sandbox', {})
                 baseline = self.observations_for(thread_id).get(('modeBaseline', ''))
                 if mode == 'plan':
-                    if sandbox.get('type') != 'readOnly' and not baseline:
-                        self._observe(thread_id, 'modeBaseline', '', {'sandbox': sandbox})
-                    params['sandboxPolicy'] = {'type': 'readOnly', 'networkAccess': sandbox.get('networkAccess') is True}
-                elif baseline and sandbox.get('type') == 'readOnly' and baseline.get('sandbox'):
+                    network = sandbox.get('networkAccess') is True or sandbox.get('type') == 'dangerFullAccess'
+                    params['sandboxPolicy'] = {'type': 'readOnly', 'networkAccess': network}
+                    if sandbox.get('type') and sandbox.get('type') != 'readOnly':
+                        self._observe(thread_id, 'modeBaseline', '', {'sandbox': sandbox, 'planSandbox': params['sandboxPolicy']})
+                        saved_baseline = True
+                elif (baseline and sandbox.get('type') == 'readOnly' and baseline.get('sandbox')
+                      and (settings.get('collaborationMode') or {}).get('mode') == 'plan'):
                     params['sandboxPolicy'] = baseline['sandbox']
             try:
                 result = self.connection.request("turn/start", params)
             except CodexError as error:
+                if error.definite and saved_baseline:
+                    self._forget_observation(thread_id, 'modeBaseline')
                 if not error.definite:
                     with self._lock:
                         self._created.pop(thread_id, None)
                 raise
             turn = result.get("turn", {})
-            with self._lock:
-                self._created.pop(thread_id, None)
             if not isinstance(turn.get("id"), str) or not turn["id"]:
+                with self._lock:
+                    self._created.pop(thread_id, None)
                 raise CodexError("Codex 没有返回可核对的 turn ID", code="native_protocol", request_sent=True)
+            with self._lock:
+                created = self._created.pop(thread_id, None)
+                if created is not None:
+                    self._materializing[thread_id] = (created, time.monotonic() + 30)
+                key = (thread_id, turn['id'])
+                self._live.setdefault(key, copy.deepcopy(turn))
+                if self._live[key].get('status') == 'inProgress':
+                    self._active[thread_id] = turn['id']
+                settings = self._settings.setdefault(thread_id, {})
+                for key, source in (('sandbox', 'sandboxPolicy'), ('collaborationMode', 'collaborationMode'), ('model', 'model'), ('reasoningEffort', 'effort')):
+                    if source in params:
+                        settings[key] = copy.deepcopy(params[source])
+                selected_model = (params.get('collaborationMode') or {}).get('settings', {}).get('model') or model or inherited_settings.get('model')
+                observed = self.observations_for(thread_id).get(('turnSettings', turn['id']), {})
+                if selected_model and not observed.get('rerouted'):
+                    self._observe(thread_id, 'turnSettings', turn['id'], {'model': selected_model,
+                        'effort': effort if effort is not None else inherited_settings.get('reasoningEffort')})
+            if mode == 'default':
+                self._forget_observation(thread_id, 'modeBaseline')
             return {"threadId": thread_id, "turnId": turn.get("id")}
 
     def validate_queue_target(self, thread_id):
@@ -405,6 +498,7 @@ class CodexService:
         target = validate_review(target)
         self.start()
         with self._operations:
+            self._assert_workspace(thread_id)
             snapshot = self.get_session(thread_id)
             if snapshot.get('readOnly') or snapshot.get('activeTurnId') or snapshot.get('requests'):
                 return None
@@ -464,11 +558,15 @@ class CodexService:
                 self._observe(thread_id, 'changes', turn_id, {'files': diff_summary(params.get('diff', ''))})
             elif thread_id and method == 'thread/tokenUsage/updated':
                 self._observe(thread_id, 'usage', turn_id, params.get('tokenUsage', {}))
+            elif thread_id and turn_id and method == 'model/rerouted' and params.get('toModel'):
+                previous = self.observations_for(thread_id).get(('turnSettings', turn_id), {})
+                self._observe(thread_id, 'turnSettings', turn_id, {**previous, 'model': params['toModel'], 'rerouted': True})
             if method == "relay/nativeDisconnected":
                 self._active.clear()
                 self._live.clear()
                 self._settings.clear()
                 self._created.clear()
+                self._materializing.clear()
                 self._joined.clear()
             elif method == "thread/settings/updated" and thread_id:
                 settings = params.get("threadSettings")
@@ -483,6 +581,7 @@ class CodexService:
                                     params.get("status", {}).get("type") == "notLoaded")):
                 self._joined.discard(thread_id)
                 self._created.pop(thread_id, None)
+                self._materializing.pop(thread_id, None)
             elif method in {"turn/started", "turn/completed"} and thread_id:
                 turn = copy.deepcopy(params.get("turn", {}))
                 turn_id = turn.get("id")
@@ -515,7 +614,7 @@ class CodexService:
         # Account / remote-control notifications can carry personal account
         # metadata and do not belong in a chat event stream.
         if ("id" in event or method.startswith(("thread/", "turn/", "item/", "serverRequest/", "relay/"))
-                or (method in {"error", "warning"} and thread_id)):
+                or (method in {"error", "warning", "model/rerouted"} and thread_id)):
             self.on_event({k: v for k, v in event.items() if k != "connectionId"})
 
     def _merge_live(self, thread_id, turns):

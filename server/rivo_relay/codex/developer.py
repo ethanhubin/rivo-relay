@@ -149,11 +149,33 @@ print(digest.hexdigest())'''
     return command(connection, ['python3', '-c', script, path], path, cap=4096).strip()
 
 
+def worktree_presence(connection, source, path):
+    """Read registration and directory existence without changing Git metadata."""
+    listing = git(connection, source, 'worktree', 'list', '--porcelain', '-z')
+    # Git canonicalizes /var to /private/var on macOS and resolves parent
+    # symlinks. Normalize on the native host rather than the Relay machine.
+    raw = command(connection, ['python3', '-c',
+        'import json,os,sys; print(json.dumps({"path":os.path.realpath(sys.argv[1]),"exists":os.path.lexists(sys.argv[1])}))',
+        path], source, cap=40000)
+    try:
+        metadata = json.loads(raw)
+    except (TypeError, ValueError) as error:
+        raise CodexError('无法核对工作树目录状态', code='native_protocol') from error
+    if not isinstance(metadata, dict) or not isinstance(metadata.get('path'), str) or not isinstance(metadata.get('exists'), bool):
+        raise CodexError('无法核对工作树目录状态', code='native_protocol')
+    registered = metadata['path'] in [field[9:] for field in listing.split('\0') if field.startswith('worktree ')]
+    return registered, metadata['exists']
+
+
 class Workspaces:
     def __init__(self, db, service):
         self.db, self.service = db, service
 
     def create(self, project_id, source, ref):
+        with self.service._operations:
+            return self._create(project_id, source, ref)
+
+    def _create(self, project_id, source, ref):
         info = project_git(self.service.connection, source)
         if not any(r['id'] == ref for r in info['refs']):
             raise CodexError('来源版本已变化，请重新选择', code='invalid_worktree_ref', http_status=409)
@@ -164,14 +186,65 @@ class Workspaces:
         with self.db.transaction() as c:
             c.execute('INSERT INTO workspaces VALUES(?,?,NULL,?,?,?,?,NULL,?)',
                       (identity, project_id, source, path, ref, 'creating', time.time()))
-        git(self.service.connection, source, 'worktree', 'add', '--detach', '--', path, ref)
+        try:
+            git(self.service.connection, source, 'worktree', 'add', '--detach', '--', path, ref)
+        except Exception as error:
+            # A lost native reply may still be checking out files. Do not race
+            # that command or automatically replay it with another directory.
+            uncertain = not isinstance(error, CodexError) or not error.definite
+            retained = self.abandon(identity, uncertain=uncertain)
+            if retained['status'] != 'removed':
+                raise CodexError('工作树创建未完成，已保留目录待核对：' + path,
+                                 code='workspace_create_unknown' if uncertain else 'workspace_create_failed',
+                                 http_status=409, request_sent=uncertain) from error
+            raise
         with self.db.transaction() as c:
             c.execute("UPDATE workspaces SET status='ready' WHERE id=?", (identity,))
         return identity, path
 
     def link(self, identity, thread_id):
-        with self.db.transaction() as c:
+        with self.service._operations, self.db.transaction() as c:
+            row = c.execute('SELECT thread_id,status FROM workspaces WHERE id=?', (identity,)).fetchone()
+            if not row or row['status'] != 'ready' or row['thread_id'] not in (None, thread_id):
+                raise CodexError('工作树状态已变化，不能关联新会话', code='workspace_changed', http_status=409)
             c.execute('UPDATE workspaces SET thread_id=? WHERE id=?', (thread_id, identity))
+
+    def abandon(self, identity, *, uncertain=False):
+        """Compensate a failed thread/start, without deleting possible native work.
+
+        The caller must treat a missing/invalid thread ID or lost response as
+        uncertain. Linked, modified, or uncertain directories are retained.
+        Cleanup failure never replaces the original thread creation failure.
+        """
+        with self.service._operations:
+            with self.db.read() as c:
+                stored = c.execute('SELECT * FROM workspaces WHERE id=?', (identity,)).fetchone()
+                row = dict(stored) if stored else None
+            if row is None:
+                return {'id': identity, 'status': 'missing', 'path': None}
+            if row['thread_id'] is not None or row['status'] == 'removed':
+                return row
+            status = 'creation_unknown' if uncertain else 'orphaned'
+            with self.db.transaction() as c:
+                c.execute('UPDATE workspaces SET status=? WHERE id=?', (status, identity))
+            if not uncertain:
+                try:
+                    registered, exists = worktree_presence(self.service.connection, row['source_path'], row['path'])
+                    if not registered and not exists:
+                        status = 'removed'
+                    elif registered and exists:
+                        dirty = git(self.service.connection, row['path'], 'status', '--porcelain=v1', '--ignored=matching', '-z')
+                        head = git(self.service.connection, row['path'], 'rev-parse', '--verify', 'HEAD').strip()
+                        if not dirty and head == row['commit_id']:
+                            # Never use --force when rolling back creation.
+                            git(self.service.connection, row['source_path'], 'worktree', 'remove', '--', row['path'])
+                            status = 'removed'
+                except Exception:
+                    # Leave any partial checkout/edits available for recovery.
+                    status = 'orphaned'
+            with self.db.transaction() as c:
+                c.execute('UPDATE workspaces SET status=? WHERE id=?', (status, identity))
+            return {**row, 'status': status}
 
     def row(self, thread_id):
         with self.db.read() as c:
@@ -182,6 +255,20 @@ class Workspaces:
         row = self.row(thread_id)
         if row is None:
             return None
+        if row['status'] == 'removing':
+            # Read-only reconciliation for a lost remove reply. A directory
+            # that still exists stays blocked; never retry a destructive call.
+            with self.service._operations:
+                row = self.row(thread_id)
+                if row['status'] == 'removing':
+                    registered, exists = worktree_presence(self.service.connection, row['source_path'], row['path'])
+                    if not registered and not exists:
+                        with self.db.transaction() as c:
+                            c.execute("UPDATE workspaces SET status='removed' WHERE id=? AND status='removing'", (row['id'],))
+                        row['status'] = 'removed'
+                    else:
+                        return {'id': row['id'], 'path': row['path'], 'sourcePath': row['source_path'], 'commit': row['commit_id'],
+                                'status': 'removing', 'dirty': None, 'revision': '', 'archivePath': row['archive_path']}
         status = '' if row['status'] == 'removed' else git(self.service.connection, row['path'], 'status', '--porcelain=v1', '--ignored=matching', '-z')
         diff = '' if row['status'] == 'removed' else directory_fingerprint(self.service.connection, row['path'])
         revision = hashlib.sha256((row['id'] + status + diff).encode()).hexdigest()
@@ -189,57 +276,59 @@ class Workspaces:
                 'status': row['status'], 'dirty': bool(status), 'revision': revision, 'archivePath': row['archive_path']}
 
     def cleanup(self, thread_id, revision, discard):
-        try:
-            return self._cleanup(thread_id, revision, discard)
-        finally:
-            with self.db.transaction() as c:
-                c.execute("UPDATE workspaces SET status='ready' WHERE thread_id=? AND status='cleaning'", (thread_id,))
+        # Keep compensation inside the same lock lifetime. Otherwise a failed
+        # call can reset a later call's 'cleaning' state after it begins.
+        with getattr(self.service, "queue_lock", self.service._operations), self.service._operations:
+            try:
+                return self._cleanup(thread_id, revision, discard)
+            finally:
+                with self.db.transaction() as c:
+                    c.execute("UPDATE workspaces SET status='ready' WHERE thread_id=? AND status='cleaning'", (thread_id,))
 
     def _cleanup(self, thread_id, revision, discard):
-        with getattr(self.service, "queue_lock", self.service._operations), self.service._operations:
-            with self.db.read() as c:
-                queued = c.execute("SELECT 1 FROM queued_tasks WHERE thread_id=? AND status NOT IN ('done','cancelled') LIMIT 1", (thread_id,)).fetchone()
-            if queued:
-                raise CodexError('请先处理此会话的执行队列', code='workspace_busy', http_status=409)
-            row = self.row(thread_id)
-            if not row:
-                raise CodexError('此会话不是 Relay 创建的工作树', code='not_managed_worktree', http_status=409)
-            current = self.inspect(thread_id)
-            if current['revision'] != revision or current['status'] != 'ready':
-                raise CodexError('工作树状态已变化，请刷新', code='workspace_changed', http_status=409)
-            snapshot = self.service.get_session(thread_id)
-            if snapshot.get('readOnly') or snapshot.get('activeTurnId') or snapshot.get('requests'):
-                raise CodexError('会话仍在执行或被其他运行时占用', code='workspace_busy', http_status=409)
-            if current['dirty'] and not discard:
-                raise CodexError('工作树有未保存改动，请明确确认归档后清理', code='workspace_dirty', http_status=409)
+        with self.db.read() as c:
+            queued = c.execute("SELECT 1 FROM queued_tasks WHERE thread_id=? AND status NOT IN ('done','cancelled') LIMIT 1", (thread_id,)).fetchone()
+        if queued:
+            raise CodexError('请先处理此会话的执行队列', code='workspace_busy', http_status=409)
+        row = self.row(thread_id)
+        if not row:
+            raise CodexError('此会话不是 Relay 创建的工作树', code='not_managed_worktree', http_status=409)
+        current = self.inspect(thread_id)
+        if current['revision'] != revision or current['status'] != 'ready':
+            raise CodexError('工作树状态已变化，请刷新', code='workspace_changed', http_status=409)
+        snapshot = self.service.get_session(thread_id)
+        if snapshot.get('readOnly') or snapshot.get('activeTurnId') or snapshot.get('requests'):
+            raise CodexError('会话仍在执行或被其他运行时占用', code='workspace_busy', http_status=409)
+        if current['dirty'] and not discard:
+            raise CodexError('工作树有未保存改动，请明确确认归档后清理', code='workspace_dirty', http_status=409)
+        with self.db.transaction() as c:
+            c.execute("UPDATE workspaces SET status='cleaning' WHERE id=?", (row['id'],))
+        # Native archive closes our thread writer before removing its cwd.
+        try:
+            self.service.archive_session(thread_id, True)
+        except Exception:
             with self.db.transaction() as c:
-                c.execute("UPDATE workspaces SET status='cleaning' WHERE id=?", (row['id'],))
-            # Native archive closes our thread writer before removing its cwd.
-            try:
-                self.service.archive_session(thread_id, True)
-            except Exception:
+                c.execute("UPDATE workspaces SET status='ready' WHERE id=?", (row['id'],))
+            raise
+        archive = None
+        if current['dirty']:
+            archive = row['path'] + '-archive-' + uuid.uuid4().hex + '.tar.gz'
+            command(self.service.connection, ['tar', '-czf', archive, '-C', row['path'], '.'], row['source_path'])
+            with self.db.transaction() as c:
+                c.execute('UPDATE workspaces SET archive_path=? WHERE id=?', (archive, row['id']))
+        # Check again after archive creation. Never discard edits newer than consent.
+        if self.inspect(thread_id)['revision'] != revision:
+            raise CodexError('归档期间文件发生变化，已保留工作树', code='workspace_changed', http_status=409)
+        args = ['worktree', 'remove'] + (['--force'] if current['dirty'] else []) + ['--', row['path']]
+        with self.db.transaction() as c:
+            c.execute("UPDATE workspaces SET status='removing' WHERE id=?", (row['id'],))
+        try:
+            git(self.service.connection, row['source_path'], *args)
+        except CodexError as error:
+            if error.definite:
                 with self.db.transaction() as c:
                     c.execute("UPDATE workspaces SET status='ready' WHERE id=?", (row['id'],))
-                raise
-            archive = None
-            if current['dirty']:
-                archive = row['path'] + '-archive-' + uuid.uuid4().hex + '.tar.gz'
-                command(self.service.connection, ['tar', '-czf', archive, '-C', row['path'], '.'], row['source_path'])
-                with self.db.transaction() as c:
-                    c.execute('UPDATE workspaces SET archive_path=? WHERE id=?', (archive, row['id']))
-            # Check again after archive creation. Never discard edits newer than consent.
-            if self.inspect(thread_id)['revision'] != revision:
-                raise CodexError('归档期间文件发生变化，已保留工作树', code='workspace_changed', http_status=409)
-            args = ['worktree', 'remove'] + (['--force'] if current['dirty'] else []) + ['--', row['path']]
-            with self.db.transaction() as c:
-                c.execute("UPDATE workspaces SET status='removing' WHERE id=?", (row['id'],))
-            try:
-                git(self.service.connection, row['source_path'], *args)
-            except CodexError as error:
-                if error.definite:
-                    with self.db.transaction() as c:
-                        c.execute("UPDATE workspaces SET status='ready' WHERE id=?", (row['id'],))
-                raise
-            with self.db.transaction() as c:
-                c.execute("UPDATE workspaces SET status='removed' WHERE id=?", (row['id'],))
-            return {'threadId': thread_id}
+            raise
+        with self.db.transaction() as c:
+            c.execute("UPDATE workspaces SET status='removed' WHERE id=?", (row['id'],))
+        return {'threadId': thread_id}

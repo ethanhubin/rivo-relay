@@ -157,3 +157,9 @@ HTTP 层建议在现有带 submission ID 的发送/引导请求中传原生 `inp
 对应 15 项原生单测通过，新增覆盖重复快照不自激刷新、原生设置通知映射、重连/卸载重新订阅，以及首轮历史失败不伪装为空。此次适配器验证没有重启真机 Relay、SSH 转发或既有 daemon；正式服务由主流程在检查后统一载入。
 
 另已核对分页协议：`backwardsCursor` 用于反转 sortDirection 并重新包含 anchor，不是“更早一页”的后备游标。0.159.0 对单轮 backwardsCursor 配 desc 的实际结果是重复返回该轮，并非 409。客户端应只使用 nextCursor 加载更早历史，不能把此实测外推成已复现原生冲突。
+
+## 0.2.0 本机补充验证
+
+既有 runtime **906** 通过现有 Relay/Tailscale HTTPS 接口验证了 account quota、项目目录、Git refs、独立工作树与 diff、Review 范围读取，以及真实 Plan → Default 两轮执行：Plan 读取为 `readOnly`，Default 恢复进入 Plan 前的原生 sandbox。测试工作树已清理、会话已归档、临时凭据已撤销。未执行新的原生 Review 任务，也不将这些检查当作 Desktop UI 验收；完整结果见[0.2.0 验证记录](validation.md)。
+
+当前原生 `Turn` 不带 model/effort 字段。手机模型变化提示只使用 Relay 已观察的发送设置及 `model/rerouted`，未知轮次保持未知，不用当前设置补旧历史。收到首轮接受回执后、rollout 仍为空的短窗口已按真实节点行为修复并回归覆盖。

@@ -24,6 +24,21 @@ import org.junit.runner.RunWith
 class MessageComposerUiTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test fun attachmentCardOpensWithoutRemovingAndHasSeparateRemoval() {
+        val file = org.json.JSONObject().put("type", "mention").put("name", "report.pdf").put("path", "/workspace/report.pdf")
+        var opens = 0
+        var removes = 0
+        compose.setContent { RivoTheme {
+            MessageComposer("", {}, emptyList(), {}, listOf(file), { removes++ },
+                preparing = false, error = null, enabled = true, canSend = true, isRunning = false, canStop = false, busy = false,
+                onAddImage = {}, onAddWorkspaceFile = {}, onSettings = {}, onSend = {}, onStop = {}, onOpenFile = { opens++ })
+        } }
+        compose.onNodeWithTag("draft_file_report.pdf").performClick()
+        compose.runOnIdle { assertEquals(1, opens); assertEquals(0, removes) }
+        compose.onNodeWithContentDescription("移除文件：report.pdf").performClick()
+        compose.runOnIdle { assertEquals(1, opens); assertEquals(1, removes) }
+    }
+
     @Test fun emptyComposerIsCompactAndInputGrowsToThreeLines() {
         var density = 1f
         compose.setContent {
@@ -54,14 +69,18 @@ class MessageComposerUiTest {
     @Test fun attachmentMenuAndRunningActionsRemainAvailableWithoutExtraRows() {
         val calls = mutableListOf<String>()
         var enabled by mutableStateOf(true)
+        var draft by mutableStateOf("补充内容")
+        var discussion by mutableStateOf(false)
         compose.setContent {
             RivoTheme {
                 Box(Modifier.width(320.dp)) {
-                    MessageComposer("补充内容", {}, emptyList(), {}, emptyList(), {},
+                    MessageComposer(draft, { draft = it }, emptyList(), {}, emptyList(), {},
                         preparing = false, error = null, enabled = enabled, canSend = enabled,
                         isRunning = true, canStop = enabled, busy = false,
                         onAddFile = { calls += "file" }, onAddImage = { calls += "image" }, onAddWorkspaceFile = { calls += "workspace" },
-                        onSettings = { calls += "settings" }, onSend = { calls += "send" }, onStop = { calls += "stop" })
+                        onAddVideo = { calls += "video" },
+                        onSettings = { calls += "settings" }, onSend = { calls += "send" }, onStop = { calls += "stop" },
+                        discussionMode = discussion, onToggleMode = { discussion = !discussion })
                 }
             }
         }
@@ -72,17 +91,25 @@ class MessageComposerUiTest {
         compose.onNodeWithText("引用").assertDoesNotExist()
         compose.onNodeWithTag("add_file").assertIsDisplayed().performClick()
         compose.onNodeWithTag("add_attachment").performClick()
+        compose.onNodeWithTag("add_video").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("add_attachment").performClick()
+        compose.onNodeWithTag("attachment_tab_node").performClick()
         compose.onNodeWithTag("add_workspace_file").assertIsDisplayed().performClick()
         compose.onNodeWithTag("composer_settings").assertIsDisplayed().performClick()
-        compose.onNodeWithTag("stop_turn").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("codex_task_mode").assertIsDisplayed().performClick()
+        compose.onNodeWithText("讨论模式").assertIsDisplayed()
+        compose.onNodeWithTag("stop_turn").assertDoesNotExist()
         compose.onNodeWithTag("send_message").assertIsDisplayed().performClick()
+        compose.runOnIdle { draft = "" }
+        compose.onNodeWithTag("send_message").assertDoesNotExist()
+        compose.onNodeWithTag("stop_turn").assertIsDisplayed().performClick()
         compose.runOnIdle {
-            assertEquals(listOf("image", "file", "workspace", "settings", "stop", "send"), calls)
+            assertEquals(listOf("image", "file", "video", "workspace", "settings", "send", "stop"), calls)
             enabled = false
         }
         compose.onNodeWithTag("message_input").assertIsNotEnabled()
         compose.onNodeWithTag("add_attachment").assertIsNotEnabled()
-        compose.onNodeWithTag("send_message").assertIsNotEnabled()
+        compose.onNodeWithTag("codex_task_mode").assertIsNotEnabled()
         compose.onNodeWithTag("stop_turn").assertIsNotEnabled()
     }
 }

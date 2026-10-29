@@ -8,15 +8,23 @@ data class Todo(val id: String, val title: String, val notes: String, val comple
 fun todo(json: JSONObject) = Todo(json.string("id"), json.string("title"), json.string("notes"), json.optBoolean("completed"), json.string("projectId"), json.string("threadId"), json.optJSONObject("details") ?: JSONObject())
 data class NativeMessage(val id: String, val turnId: String, val type: String, val text: String, val raw: JSONObject,
     val content: List<JSONObject> = emptyList(), val activity: NativeActivity? = null)
+data class NativeTurnSettings(val turnId: String, val model: String? = null, val effort: String? = null)
 data class NativeRequest(val key: String, val method: String, val params: JSONObject)
 data class QueueTask(val id: String, val text: String, val status: String, val revision: Int, val error: String, val raw: JSONObject)
 fun queueTask(j: JSONObject) = QueueTask(j.string("id"), j.string("text"), j.string("status"), j.optInt("revision"), j.string("error"), j)
 data class SessionSnapshot(val id: String, val name: String, val status: String, val activeTurnId: String,
-    val messages: List<NativeMessage>, val requests: List<NativeRequest>, val settings: JSONObject, val historyCursor: String? = null, val readOnly: Boolean = false, val queue: List<QueueTask> = emptyList(), val plan: JSONObject? = null, val tokenUsage: JSONObject? = null, val changes: List<JSONObject> = emptyList())
+    val messages: List<NativeMessage>, val requests: List<NativeRequest>, val settings: JSONObject, val historyCursor: String? = null, val readOnly: Boolean = false, val queue: List<QueueTask> = emptyList(), val plan: JSONObject? = null, val tokenUsage: JSONObject? = null, val changes: List<JSONObject> = emptyList(), val updatedAt: Long = 0, val turnSettings: List<NativeTurnSettings> = emptyList())
 
 /** Project native items by IDs, never by text matching or by duplicating a local history. */
 fun sessionSnapshot(json: JSONObject): SessionSnapshot {
     val thread = json.getJSONObject("thread")
+    val observedSettings = json.objects("turnSettings").associateBy { it.string("turnId") }
+    val turnSettings = thread.objects("turns").map { turn ->
+        val id = turn.string("id")
+        val observed = observedSettings[id]
+        NativeTurnSettings(id, (observed?.opt("model") as? String)?.takeIf(String::isNotBlank),
+            (observed?.opt("effort") as? String)?.takeIf(String::isNotBlank))
+    }
     val messages = thread.objects("turns").flatMap { turn ->
         turn.objects("items").filterNot { it.string("type") == "hookPrompt" }.map { item ->
             val type = item.string("type")
@@ -40,7 +48,7 @@ fun sessionSnapshot(json: JSONObject): SessionSnapshot {
     }
     val requests = json.objects("requests").map { NativeRequest(it.string("key"), it.string("method"), it.optJSONObject("params") ?: JSONObject()) }
     return SessionSnapshot(thread.string("id"), visibleSessionText(thread.string("name")).ifBlank { "新会话" }, json.string("status"), json.string("activeTurnId"), messages, requests, json.optJSONObject("settings") ?: JSONObject(),
-        json.string("nextCursor").takeIf { it.isNotBlank() }, json.optBoolean("readOnly", false), json.objects("queue").map(::queueTask), json.optJSONObject("plan"), json.optJSONObject("tokenUsage"), json.objects("changes"))
+        json.string("nextCursor").takeIf { it.isNotBlank() }, json.optBoolean("readOnly", false), json.objects("queue").map(::queueTask), json.optJSONObject("plan"), json.optJSONObject("tokenUsage"), json.objects("changes"), thread.optLong("updatedAt", 0), turnSettings)
 }
 
 fun mergeLatestMessages(previous: List<NativeMessage>, latest: List<NativeMessage>): List<NativeMessage> {
@@ -52,4 +60,23 @@ fun mergeLatestMessages(previous: List<NativeMessage>, latest: List<NativeMessag
 fun prependNativePage(earlier: List<NativeMessage>, current: List<NativeMessage>): List<NativeMessage> {
     val currentIds = current.map { it.turnId to it.id }.toSet()
     return earlier.filterNot { (it.turnId to it.id) in currentIds }.distinctBy { it.turnId to it.id } + current
+}
+
+/** Unknown observations break adjacency; the current session model is never used as history. */
+fun nativeModelChanges(turns: List<NativeTurnSettings>): Map<String, String> = turns.zipWithNext().mapNotNull { (previous, next) ->
+    val before = previous.model
+    val after = next.model
+    if (before == null || after == null || before == after) null
+    else next.turnId to ("已切换至 $after" + next.effort?.let { " · $it" }.orEmpty())
+}.toMap()
+
+fun mergeLatestTurnSettings(previous: List<NativeTurnSettings>, latest: List<NativeTurnSettings>): List<NativeTurnSettings> {
+    val first = latest.firstOrNull()?.turnId ?: return latest
+    val start = previous.indexOfFirst { it.turnId == first }
+    return if (start >= 0) previous.take(start) + latest else latest
+}
+
+fun prependTurnSettings(earlier: List<NativeTurnSettings>, current: List<NativeTurnSettings>): List<NativeTurnSettings> {
+    val ids = current.map { it.turnId }.toSet()
+    return earlier.filterNot { it.turnId in ids }.distinctBy { it.turnId } + current
 }

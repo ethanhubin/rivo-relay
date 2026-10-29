@@ -39,11 +39,9 @@ def native_input(body: dict) -> list[dict] | None:
         elif kind == "image":
             if not (isinstance(item.get("url"), str) and item["url"] or isinstance(item.get("fileId"), str) and item["fileId"]):
                 raise ApiError(400, "invalid_input", "Image needs a URL or native file ID")
-        elif kind == "audio":
-            required(item, "url", 8 * 1024 * 1024)
-        elif kind in {"localImage", "localAudio", "mention", "skill"}:
+        elif kind in {"localImage", "mention", "skill"}:
             required(item, "path", 4096)
-            if kind not in {"localImage", "localAudio"}:
+            if kind != "localImage":
                 required(item, "name", 1000)
         else:
             raise ApiError(400, "invalid_input", "Unknown native input type")
@@ -300,6 +298,7 @@ class Handler(BaseHTTPRequestHandler):
                 if path[3] == 'review-context':
                     return codex.review_context(thread_id)
                 if path[3] == 'workspace':
+                    codex.start()
                     return {'workspace': codex.workspaces.inspect(thread_id) if codex.workspaces else None}
             if len(path) == 5 and path[3:] == ['workspace', 'cleanup'] and method == 'POST':
                 sid, revision = required(body, 'submissionId'), required(body, 'revision')
