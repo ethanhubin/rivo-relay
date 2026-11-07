@@ -18,14 +18,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.BuildConfig
 import dev.rivo.relay.data.AppRelease
 import dev.rivo.relay.data.NodeAppUpdates
 import androidx.compose.ui.platform.LocalContext
-import dev.rivo.relay.data.RELEASES_PAGE
 import android.text.format.Formatter
 
 @Composable
@@ -35,7 +33,6 @@ fun SettingsScreen(nodeName: String? = null, nodeAddress: String? = null,
     updates: UpdateViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
     val (themeMode, setThemeMode) = rememberThemePreference()
     val context = LocalContext.current
-    val uriHandler = LocalUriHandler.current
     val downloading = updates.downloading
     val downloadedBytes = updates.downloadedBytes
     val bytesPerSecond = updates.bytesPerSecond
@@ -44,9 +41,6 @@ fun SettingsScreen(nodeName: String? = null, nodeAddress: String? = null,
     val release = updates.release
     val error = updates.error
     var notesOpen by remember { mutableStateOf(false) }
-    fun open(url: String) {
-        try { uriHandler.openUri(url) } catch (_: Exception) { updates.error = "无法打开浏览器，请安装或启用浏览器后重试" }
-    }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp).testTag("settings_screen"),
         verticalArrangement = Arrangement.spacedBy(20.dp)) {
         Text("设置", style = MaterialTheme.typography.headlineMedium)
@@ -80,11 +74,29 @@ fun SettingsScreen(nodeName: String? = null, nodeAddress: String? = null,
             }
         }
 
+        if (nodeName != null) Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("当前节点", style = MaterialTheme.typography.titleMedium)
+                val ping by produceState("Ping …", nodeAddress) {
+                    value = "Ping …"
+                    val millis = nodeAddress?.let { measureNodePing(it) }
+                    value = millis?.let { "Ping $it ms" } ?: "Ping 不可用"
+                }
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(nodeName, Modifier.weight(1f))
+                    Text(ping, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("应用更新", style = MaterialTheme.typography.titleMedium)
                 Text("Rivo Relay ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyLarge)
-                Text("默认从 Tailscale 节点检查更新和下载安装包，校验通过后由系统确认安装。", style = MaterialTheme.typography.bodySmall)
                 Button(onClick = {
                     updates.check(checkUpdate)
                 }, enabled = !checking && !downloading, modifier = Modifier.testTag("check_updates")) {
@@ -110,15 +122,6 @@ fun SettingsScreen(nodeName: String? = null, nodeAddress: String? = null,
                     TextButton(onClick = { notesOpen = true }) { Text("查看更新说明") }
                 }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("update_error")) }
-                TextButton(onClick = { open(RELEASES_PAGE) }) { Text("打开 GitHub 发布页") }
-            }
-        }
-        if (nodeName != null) Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("当前节点", style = MaterialTheme.typography.titleMedium)
-                Text(nodeName)
-                nodeAddress?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-                Text("可在 Codex 页顶部菜单切换节点。连接凭据已加密保存在此设备。", style = MaterialTheme.typography.bodySmall)
             }
         }
     }
