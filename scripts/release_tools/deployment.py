@@ -75,6 +75,10 @@ def wait_deployment(path, timeout=150):
             raise RuntimeError('服务恢复失败，请检查 deployment.log 和 .rollback.plist；不会重复卸载服务')
         if 'rollback_complete' in observed:
             raise RuntimeError('服务切换失败，已回滚；排查后可 resume --retry-deploy')
+        if 'submission_failed' in observed:
+            raise RuntimeError('部署任务提交失败，请检查 deployment-submission.log；不会盲目重试')
+        if 'worker_failed' in observed:
+            raise RuntimeError('部署任务失败，请检查 deployment.log；不会重复卸载服务')
         if 'complete' in observed:
             return
         time.sleep(1)
@@ -140,7 +144,9 @@ def deploy(release):
         # resume waits for the detached worker; it never blindly submits again.
         release.record('deploying', deploymentRequested=True)
         release.command([release.python, root / 'scripts/restart-service.py',
-                         '--candidate', directory / 'candidate.plist', '--submit', '--log-dir', directory],
+                         '--candidate', directory / 'candidate.plist',
+                         '--expected-plist', directory / 'launchagent-before.plist',
+                         '--submit', '--log-dir', directory],
                         'deployment-submission.log')
     wait_deployment(log)
     require(plist.read_bytes() == (directory / 'candidate.plist').read_bytes(), '实际部署配置与候选配置不同')

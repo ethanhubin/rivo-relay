@@ -240,7 +240,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val timeline = remember(snapshot?.messages, snapshot?.turnSettings, state.pendingMessages, snapshot?.activeTurnId, state.stale) {
         nativeTimelineRows(projectedSessionMessages(snapshot, state.pendingMessages), snapshot?.activeTurnId?.takeUnless { state.stale }, snapshot?.turnSettings.orEmpty())
     }
-    val executionActive = !state.stale && snapshot?.isOngoing == true && snapshot.requests.isEmpty()
+    val executionActive = !state.stale && snapshot?.isOngoing == true && snapshot.status != "waiting" && snapshot.requests.isEmpty()
     val currentActivity = (timeline.lastOrNull() as? NativeTimelineRow.Activities)
         ?.takeIf { executionActive && it.messages.lastOrNull()?.turnId == snapshot?.activeTurnId }
     val modelChangeRows = remember(timeline, snapshot?.turnSettings) {
@@ -531,7 +531,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 else onSend(nativeInputs(draft, images, files), selectedModel, selectedEffort, accepted)
             },
             onStop = { stopConfirm = true },
-            queueing = snapshot != null && !snapshot.recoveryRequired && canOperate && (snapshot.isOngoing || snapshot.requests.isNotEmpty() || snapshot.queue.isNotEmpty()),
+            queueing = snapshot != null && canOperate && snapshot.shouldQueueInput,
         )
     }
     if (developerOpen && state.id != null) DeveloperToolsDialog(state.id, readTool, submitTool, busy || blocked || !canOperate, onDismiss = { developerOpen = false },

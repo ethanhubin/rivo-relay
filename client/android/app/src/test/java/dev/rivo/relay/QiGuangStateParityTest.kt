@@ -46,6 +46,17 @@ class QiGuangStateParityTest {
         assertEquals("失败", threadPendingLabel(queued.copy(deliveryState = "failed", queueDepth = 0)))
     }
 
+    @Test fun newRunningTurnQueuesInputWhileOldRecoveryRemains() {
+        val idle = sessionSnapshot(snapshot("r").put("recoveryRequired", true))
+        assertFalse(idle.shouldQueueInput)
+        assertTrue(idle.copy(status = "running", activeTurnId = "new").shouldQueueInput)
+        val externalWaiting = idle.copy(status = "waiting")
+        assertTrue(externalWaiting.isOngoing)
+        assertTrue(externalWaiting.shouldQueueInput)
+        assertTrue(idle.copy(goal = JSONObject().put("status", "active")).shouldQueueInput)
+        assertFalse(idle.copy(readOnly = true).shouldQueueInput)
+    }
+
     @Test fun convergenceKeepsLastReadyMessagesAndTransientControlsNeverEnterCache() = runBlocking {
         val directory = java.nio.file.Files.createTempDirectory("rivo-parity-cache").toFile()
         val store = ConversationStore(directory)

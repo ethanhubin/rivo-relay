@@ -104,6 +104,42 @@ class NativeSemanticsTests(unittest.TestCase):
                 self.assertEqual(state, snapshot['nativeExecution'])
                 self.assertIsNone(snapshot['activeTurnId'])
 
+    def test_native_waiting_flags_survive_missing_interaction_notification(self):
+        for flags, expected in [(['waitingOnApproval'], 'waiting'),
+                                (['waitingOnUserInput'], 'waiting'), ([], 'running')]:
+            with self.subTest(flags=flags):
+                native = FakeNative()
+                native.thread['status'] = {'type': 'active', 'activeFlags': flags}
+                service = CodexService(connection=native)
+                with patch.object(service.projects, 'get', return_value={'id': 'project', 'roots': []}), \
+                     patch('rivo_relay.codex.sessions.thread_pages', return_value=[native.thread]), \
+                     patch.object(service, 'read_goal', return_value={'goal': {'status': 'active'}}):
+                    listed = service.list_sessions('project')[0]
+                    detail = service.get_session('thread')
+                self.assertEqual([], detail['requests'])
+                for result in (listed, detail):
+                    self.assertEqual(expected, result['status'])
+                    self.assertEqual('waiting' if flags else 'executing', result['displayState'])
+                    self.assertEqual('running', result['nativeExecution'])
+
+    def test_archive_checks_external_execution_and_active_goal(self):
+        for execution, goal, blocked in [('running', None, True), ('idle', 'active', True),
+                                         ('idle', 'paused', False), ('idle', None, False)]:
+            with self.subTest(execution=execution, goal=goal):
+                native = FakeNative()
+                native.thread['status'] = {'type': 'notLoaded'}
+                service = CodexService(connection=native)
+                with patch.object(service, '_external_execution', return_value={'thread': execution}), \
+                     patch.object(service, 'read_goal', return_value={'goal': {'status': goal}}):
+                    if blocked:
+                        with self.assertRaises(CodexError) as caught:
+                            service.archive_session('thread', True)
+                        self.assertEqual('thread_busy', caught.exception.code)
+                        self.assertFalse(any(method == 'thread/archive' for method, _ in native.calls))
+                    else:
+                        service.archive_session('thread', True)
+                        self.assertIn(('thread/archive', {'threadId': 'thread'}), native.calls)
+
     def test_goal_unsupported_is_distinct_from_native_failure(self):
         native = FakeNative()
         service = CodexService(connection=native)

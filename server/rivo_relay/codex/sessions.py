@@ -49,6 +49,13 @@ def thread_status(thread):
     return "unknown"
 
 
+def thread_waiting(thread):
+    status = thread.get('status')
+    return (isinstance(status, dict) and status.get('type') == 'active'
+            and any(flag in ('waitingOnApproval', 'waitingOnUserInput')
+                    for flag in (status.get('activeFlags') or [])))
+
+
 def awaiting_rollout(error):
     text = str(error).lower()
     return error.code == 'native_rejected' and (any(phrase in text for phrase in
@@ -296,7 +303,7 @@ class CodexService:
             with self.workspaces.db.read() as c:
                 managed = {row['thread_id']: dict(row) for row in c.execute('SELECT * FROM workspaces WHERE project_id=?', (project_id,))}
         external = self._external_execution(list(by_id.values()))
-        statuses = {t["id"]: ("waiting" if self.interactions.list(t["id"]) else
+        statuses = {t["id"]: ("waiting" if self.interactions.list(t["id"]) or thread_waiting(t) else
                     "running" if (self.read_goal(t["id"]).get("goal") or {}).get("status") == "active"
                     else external.get(t['id'], thread_status(t))) for t in by_id.values()}
         return [{"id": t["id"], "name": t.get("name") or t.get("preview") or "新会话",
@@ -335,7 +342,9 @@ class CodexService:
                     if queued:
                         raise CodexError('请先处理此会话的执行队列', code='thread_busy', http_status=409)
                 thread = self.connection.request('thread/read', {'threadId': thread_id, 'includeTurns': False})['thread']
-                if thread_status(thread) == 'running' or self.interactions.list(thread_id):
+                execution = self._external_execution([thread]).get(thread_id, thread_status(thread))
+                goal_active = (self.read_goal(thread_id).get('goal') or {}).get('status') == 'active'
+                if execution == 'running' or goal_active or self.interactions.list(thread_id):
                     raise CodexError('运行中或等待回答的会话不能归档', code='thread_busy', http_status=409)
             self.connection.request('thread/archive' if archived else 'thread/unarchive', {'threadId': thread_id})
             with self._lock:
@@ -463,7 +472,7 @@ class CodexService:
         goal_state = self.read_goal(thread_id)
         goal_active = (goal_state.get("goal") or {}).get("status") == "active"
         external = self._external_execution([thread]) if not active and not goal_active else {}
-        status = "waiting" if requests else ("running" if active or goal_active else external.get(thread_id, thread_status(thread)))
+        status = "waiting" if requests or thread_waiting(thread) else ("running" if active or goal_active else external.get(thread_id, thread_status(thread)))
         observations = self.observations_for(thread_id)
         latest_turn = thread['turns'][-1] if thread['turns'] else {}
         plan = observations.get(('plan', active or latest_turn.get('id', '')))
@@ -778,7 +787,8 @@ class CodexService:
                 thread = self.connection.request('thread/read', {'threadId': thread_id, 'includeTurns': False})['thread']
                 with self._lock:
                     active = self._active.get(thread_id)
-                if thread_status(thread) == 'running' or active:
+                if (thread_status(thread) == 'running' or active
+                        or (self.read_goal(thread_id).get('goal') or {}).get('status') == 'active'):
                     return
             raise CodexError('请先继续或忽略待恢复任务', code='recovery_required', http_status=409)
 

@@ -72,6 +72,30 @@ class JournalHostTests(unittest.TestCase):
                 stream.write(b'{')
             self.assertEqual({}, dispatch(request)['states'])
 
+    def test_activity_isolates_missing_and_corrupt_rollouts(self):
+        broken = '01a04609-7917-7c73-ad6d-cae86ce70da9'
+        missing = self.home / 'sessions' / f'rollout-{broken}.jsonl'
+        with sqlite_connection(self.home / 'state_5.sqlite') as database:
+            database.execute('INSERT INTO threads VALUES(?,?,?,?)',
+                             (broken, str(missing), 'paginated', str(self.home)))
+        request = {'runtime': {}, 'operation': 'activity', 'threadIds': [broken, THREAD]}
+        with patch('rivo_relay.codex.native_history_host.verify_runtime', return_value=self.home):
+            for corrupt in (False, True):
+                with self.subTest(corrupt=corrupt):
+                    if corrupt:
+                        missing.write_text('not-json\n')
+                    result = dispatch(request)
+                    self.assertEqual({THREAD: 'idle'}, result['states'])
+                    self.assertFalse(result['inspections'][broken]['available'])
+                    self.assertTrue(result['inspections'][THREAD]['available'])
+
+    def test_activity_never_swallows_runtime_identity_change(self):
+        request = {'runtime': {}, 'operation': 'activity', 'threadIds': [THREAD]}
+        with patch('rivo_relay.codex.native_history_host.verify_runtime',
+                   side_effect=[self.home, NativeHistoryReprojectionError('runtime changed')]):
+            with self.assertRaisesRegex(NativeHistoryReprojectionError, 'runtime changed'):
+                dispatch(request)
+
     def test_inspection_only_returns_lifecycle_and_never_message_content(self):
         inspected = inspect_journal(self.home, THREAD)
         self.assertEqual({'turnId': TURN, 'status': 'completed'}, inspected['journal'])

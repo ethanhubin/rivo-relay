@@ -13,7 +13,7 @@ def execution_projection(status, queue=(), *, read_only=False, requests=(), owne
     failed = any(item.get('status') == 'failed' for item in queue)
     delivery = ('recovery' if recovery else 'dispatching' if dispatching else
                 'queued' if waiting else 'failed' if failed else 'idle')
-    display = ('waiting' if requests else 'executing_with_queue' if running and waiting else
+    display = ('waiting' if requests or status == 'waiting' else 'executing_with_queue' if running and waiting else
                'executing' if running else 'recovery' if recovery else
                'dispatching' if dispatching else 'queued' if waiting else
                'failed' if failed else 'unknown' if status == 'unknown' else 'idle')

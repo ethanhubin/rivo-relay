@@ -3,7 +3,7 @@ import copy
 import io
 import json
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from rivo_relay.codex.connection import CodexError
 from rivo_relay.codex.interactions import Interactions
@@ -165,6 +165,11 @@ class NativeParityTests(unittest.TestCase):
         queue.enqueue('thread', 'active-followup', 'phone', {'input': [{'type': 'text', 'text': 'new'}]})
         self.assertEqual(['old', 'active-followup'], [item['id'] for item in queue.list('thread')])
         self.assertTrue(queue.list('thread')[0]['recoveryRequired'])
+        native.thread['status'] = {'type': 'idle'}
+        with patch.object(service, 'read_goal', return_value={'goal': {'status': 'active'}}):
+            queue.enqueue('thread', 'goal-followup', 'phone', {'input': [{'type': 'text', 'text': 'next'}]})
+        self.assertEqual(['old', 'active-followup', 'goal-followup'], [item['id'] for item in queue.list('thread')])
+        self.assertTrue(queue.list('thread')[0]['recoveryRequired'])
         with self.assertRaises(CodexError):
             service.send('thread', 'cannot bypass recovery with new turn')
 
@@ -252,7 +257,7 @@ class NativeParityTests(unittest.TestCase):
         self.assertEqual('interaction_pending', raised.exception.code)
         self.assertFalse(any(method == 'turn/start' for method, _ in native.calls))
 
-    def test_history_convergence_keeps_live_items_and_disables_paging(self):
+    def test_live_head_deltas_preserve_verified_history_paging(self):
         native = FakeNative()
         original = native.request
         def request(method, params, **kwargs):
@@ -266,7 +271,8 @@ class NativeParityTests(unittest.TestCase):
         service._event({'method': 'item/agentMessage/delta', 'params': {'threadId': 'thread', 'turnId': 'turn', 'itemId': 'answer', 'delta': 'live text'}})
         result = service.history('thread')
         self.assertEqual('converging', result['nativeSync']['state'])
-        self.assertIsNone(result['nextCursor'])
+        self.assertEqual('older', result['nextCursor'])
+        self.assertTrue(result['nativeSync']['historyReady'])
         self.assertEqual('live text', result['turns'][0]['items'][0]['text'])
 
     def test_completion_ahead_of_persisted_history_does_not_publish_ready_empty_page(self):

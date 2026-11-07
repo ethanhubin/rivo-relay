@@ -255,6 +255,12 @@ class ReleaseCliTest(unittest.TestCase):
         with patch.object(d.time, 'monotonic', side_effect=[0, 151]):
             with self.assertRaisesRegex(RuntimeError, '不会重复重启'):
                 d.wait_deployment(path)
+        path.write_text('{"event":"submission_failed"}\n')
+        with self.assertRaisesRegex(RuntimeError, '部署任务提交失败'):
+            d.wait_deployment(path)
+        path.write_text('{"event":"worker_failed"}\n')
+        with self.assertRaisesRegex(RuntimeError, '部署任务失败'):
+            d.wait_deployment(path)
         path.write_text('{"event":"deployment_failed"}\n{"event":"rollback_complete"}\n')
         with self.assertRaisesRegex(RuntimeError, '已回滚'):
             d.wait_deployment(path)

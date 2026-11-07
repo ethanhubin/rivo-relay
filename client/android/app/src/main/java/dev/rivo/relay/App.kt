@@ -407,7 +407,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         val id = threadId
                         if (current != null && id != null && currentState.id == id && current.id == id && !currentState.stale &&
                             current.requests.isEmpty() && currentState.canCompose() && writable) {
-                            val queued = !current.recoveryRequired && currentState.control().canOperate && (current.isOngoing || current.requests.isNotEmpty() || current.queue.isNotEmpty())
+                            val queued = currentState.control().canOperate && current.shouldQueueInput
                             val body = JSONObject().put("input", input)
                             if (queued) body.put("operation", "enqueue")
                             model?.let { body.put("model", it) }; effort?.let { body.put("effort", it) }; mode?.let { body.put("mode", it) }; serviceTier?.let { body.put("serviceTier", it) }

@@ -40,7 +40,8 @@ data class SessionSnapshot(val id: String, val name: String, val status: String,
     val nativeRevision: String? = null, val nativeSyncState: String = "ready", val recoveryTask: QueueTask? = null,
     val recoveryRequired: Boolean = false, val nativeExecution: String = "", val deliveryState: String = "",
     val displayState: String = "", val writerOwner: String = "", val queueDepth: Int = 0, val reviewDiagnostics: List<JSONObject> = emptyList(), val nativeRuntime: JSONObject? = null, val goal: JSONObject? = null, val goalSupported: Boolean = false, val control: JSONObject? = null, val workspaceUnavailable: Boolean = false, val persistedHistoryReady: Boolean = false) {
-    val isOngoing: Boolean get() = activeTurnId.isNotBlank() || status == "running" || goal?.string("status") == "active"
+    val isOngoing: Boolean get() = activeTurnId.isNotBlank() || status in setOf("running", "waiting") || goal?.string("status") == "active"
+    val shouldQueueInput: Boolean get() = isOngoing || requests.isNotEmpty() || (!recoveryRequired && queue.isNotEmpty())
     val nativeReady: Boolean get() = nativeSyncState == "ready"
     val historyReady: Boolean get() = nativeReady || persistedHistoryReady
 }

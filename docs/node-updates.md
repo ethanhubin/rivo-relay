@@ -85,3 +85,9 @@ launchd 在 33.530 拒绝并记录 `37: Operation already in progress`；旧服�
 发布主任务和服务切换任务均由独立 launchd job 执行，避免 Relay 卸载时中断后续 APK 发布。提交失败直接报错；提交成功仅代表调度成功，仍须检查 status 和部署日志。发布 worker 在取得全局锁后重新读取状态，避免沿用过期步骤。
 
 一次性任务使用显式 `RunAtLoad=true / KeepAlive=false` 的临时 plist，通过 `launchctl bootstrap` 加载；不要使用 `launchctl submit`，本机实测该方式会重复拉起已完成任务，造成循环停服。验证需覆盖任务退出后至少两个重调度周期，不能只检查首次启动。
+
+服务切换前会同时检查候选配置和回滚配置的可执行文件、工作目录及服务快照；收到 SIGTERM 时进入回滚流程，任务异常退出会写入 `worker_failed`。SIGKILL、断电等无法由进程内异常处理恢复，不能据此保证自动回滚。
+
+可按需执行隔离的真实 launchd 演练：`RIVO_TEST_LAUNCHD=1 .venv/bin/python -m unittest discover -s server/tests -p test_restart_launchd_integration.py`。它使用随机测试服务名、临时目录和本地端口，验证成功切换及健康失败回滚；默认单元测试跳过该演练，不操作线上 Relay 或 Codex 原生运行时。
+
+CLI 传入 `--expected-plist launchagent-before.plist`，部署 worker 在重启锁内核对当前配置；准备后配置已变化时提前失败，不停服、不覆盖回滚基准。launchd 明确返回提交失败时会持久化 `submission_failed`，resume 立即报告提交失败，不再空等部署完成；结果不明的提交仍禁止盲目重试。

@@ -276,7 +276,13 @@ def dispatch(request):
         states, inspections = {}, {}
         known = request.get('known') or {}
         for thread_id in request['threadIds']:
-            inspected = inspect_journal(home, thread_id, known.get(thread_id))
+            try:
+                inspected = inspect_journal(home, thread_id, known.get(thread_id))
+            except (OSError, NativeHistoryReprojectionError):
+                # One missing/corrupt rollout must not discard healthy siblings.
+                # An unavailable result also evicts this thread's cached watermark.
+                inspections[thread_id] = {'available': False}
+                continue
             inspections[thread_id] = inspected
             journal = inspected.get('journal') or {}
             # A lock alone only proves ownership; idle Desktop sessions hold it too.

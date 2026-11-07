@@ -114,6 +114,7 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
         state.loading -> "同步中"
         state.stale -> if (snapshot != null) "离线缓存" else "连接中断"
         snapshot?.requests?.isNotEmpty() == true -> "等待回应"
+        snapshot?.status == "waiting" -> "等待回应，请在原会话处理"
         snapshot?.isOngoing == true -> "执行中"
         else -> null
     }
