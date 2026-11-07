@@ -153,6 +153,58 @@ class SessionControllerTest {
         }
     }
 
+    @Test fun runningStreamRefreshDoesNotCancelOlderPagesOrOverwriteNewOutput() = runBlocking {
+        val server = MockWebServer()
+        val pageStarted = CountDownLatch(1)
+        val releasePage = CountDownLatch(1)
+        val output = AtomicInteger(0)
+        val pages = Collections.synchronizedList(mutableListOf<String>())
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                val cursor = request.requestUrl!!.queryParameter("cursor")
+                val response = if (cursor != null) {
+                    pages += cursor
+                    if (cursor == "older-1") { pageStarted.countDown(); releasePage.await(5, TimeUnit.SECONDS) }
+                    revisionSnapshot("older", "stable", if (cursor == "older-1") "older-2" else null, cursor)
+                } else revisionSnapshot("head-${output.get()}", "stable", "older-1", "latest")
+                val json = JSONObject(response.getBody()!!.readUtf8())
+                json.put("status", "running").put("activeTurnId", "turn-latest")
+                    .put("nativeSync", JSONObject().put("state", "converging").put("historyReady", true))
+                if (cursor == null) json.getJSONObject("thread").getJSONArray("turns").getJSONObject(0)
+                    .put("status", "inProgress")
+                return response.setBody(json.toString())
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = SessionController(api(server), scope) { fail(it.message) }
+        try {
+            controller.open("t")
+            withTimeout(3000) { controller.state.first { !it.loading && !it.stale } }
+            assertTrue(controller.state.value.snapshot!!.isOngoing)
+            controller.loadEarlier()
+            await(pageStarted)
+            output.set(1); controller.refresh()
+            withTimeout(3000) { controller.state.first { it.snapshot?.name == "head-1" } }
+            assertTrue(controller.state.value.loadingEarlier)
+            releasePage.countDown()
+            val first = withTimeout(3000) { controller.state.first { it.earlierLoaded && !it.loadingEarlier } }
+            assertEquals(listOf("older-1", "latest"), first.snapshot!!.messages.map { it.id })
+            assertEquals("head-1", first.snapshot.messages.last().text)
+            assertEquals("older-2", first.historyCursor)
+            output.set(2); controller.refresh()
+            withTimeout(3000) { controller.state.first { it.snapshot?.name == "head-2" } }
+            controller.loadEarlier()
+            val second = withTimeout(3000) { controller.state.first { it.historyCursor == null && !it.loadingEarlier } }
+            assertEquals(listOf("older-2", "older-1", "latest"), second.snapshot!!.messages.map { it.id })
+            assertEquals("head-2", second.snapshot.messages.last().text)
+            assertEquals(listOf("older-1", "older-2"), pages)
+            assertTrue(second.snapshot.isOngoing)
+            assertNull(second.historyError)
+        } finally { releasePage.countDown(); controller.close(); scope.cancel(); server.shutdown() }
+    }
+
     @Test fun rapidThreadSwitchRestoresRecentViewImmediatelyButNeverItsPermission() = runBlocking {
         val server = MockWebServer()
         val block = AtomicBoolean(false)

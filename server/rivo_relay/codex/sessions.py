@@ -519,11 +519,14 @@ class CodexService:
                                        ownership_unverified=writer_owner == 'unknown')}
 
     def _history_revision(self, thread_id, turns, *, content=False):
-        # Active text changes do not relocate older native cursors. Structural
-        # edits, terminal corrections, repair/rollback and runtime changes do.
-        head = [turn if content or turn.get('status') not in ('inProgress', 'notStarted') else
-                {'id': turn['id'], 'status': turn['status'],
-                 'items': [{'id': item['id'], 'type': item['type']} for item in turn['items']]}
+        # Streaming text AND newly appended tool items stay within the same
+        # turn; neither relocates older turn cursors. Keep content in the head
+        # token only. Terminal corrections, turn boundaries and repair/rollback
+        # still invalidate pagination.
+        running_turn = self.native_journal.inspected_running_turn(thread_id) if not content else None
+        head = [turn if content or not (turn.get('status') in ('inProgress', 'notStarted') or
+                    turn['id'] == running_turn and turn.get('status') == 'interrupted') else
+                {'id': turn['id'], 'status': 'inProgress'}
                 for turn in turns[-2:]]
         encoded = json.dumps([self.connection.generation, self.native_journal.connection.generation,
             self.native_journal.generation(thread_id),
@@ -563,8 +566,6 @@ class CodexService:
                     revision = self._history_revision(thread_id, list(head.turns))
                     if native_revision is not None and native_revision != revision:
                         raise CodexError('原生历史已变化，请重新读取最近消息', code='history_changed', http_status=409)
-                    if not active_head_lag and self._merge_live(thread_id, copy.deepcopy(list(head.turns))) != list(head.turns):
-                        raise CodexError('原生历史正在同步，请稍后读取更早消息', code='history_converging', http_status=409)
                 page = self.history_adapter.read_page(self.native_journal.connection, thread_id,
                         limit=max(1, min(100, int(limit))), cursor=cursor)
                 canonical = list(page.turns)
@@ -600,7 +601,8 @@ class CodexService:
                             turn.pop(field, None)
                 result["turns"] = self._merge_live(thread_id, result["turns"])
                 converging = not native_state.ready or canonical != result['turns']
-                history_ready = history_ready and (not converging or active_head_lag)
+                # Live deltas may lead persisted items throughout a running
+                # turn. They affect head/control convergence, not old cursors.
                 if not history_ready:
                     result['nextCursor'] = None
                     result['backwardsCursor'] = None

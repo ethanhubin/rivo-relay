@@ -199,6 +199,49 @@ class ReadScopeTests(unittest.TestCase):
         self.assertNotEqual(first['nativeHeadRevision'], second['nativeHeadRevision'])
         self.assertEqual('old', service.history('thread', cursor='older', native_revision=first['nativeRevision'])['turns'][0]['id'])
 
+    def test_live_stream_keeps_older_cursor_and_native_control_convergence(self):
+        native, service = self.service(pinned=True)
+        first = service.history('thread', limit=2)
+        for index in range(4):
+            service._event({'method': 'item/agentMessage/delta', 'params': {
+                'threadId': 'thread', 'turnId': TURN, 'itemId': 'answer', 'delta': f' live {index}'}})
+            head = service.history('thread', limit=2)
+            self.assertEqual('converging', head['nativeSync']['state'])
+            self.assertTrue(head['nativeSync']['historyReady'])
+            self.assertEqual('older', head['nextCursor'])
+            self.assertEqual(first['nativeRevision'], head['nativeRevision'])
+            page = service.history('thread', cursor='older', native_revision=first['nativeRevision'])
+            self.assertEqual('old', page['turns'][0]['id'])
+            self.assertTrue(page['nativeSync']['historyReady'])
+
+    def test_running_tool_items_do_not_restart_older_pagination(self):
+        native, service = self.service()
+        first = service.history('thread', limit=2)
+        for index in range(4):
+            native.turn['items'].append({'id': f'tool-{index}', 'type': 'commandExecution',
+                'status': 'inProgress', 'command': 'test', 'aggregatedOutput': f'output {index}'})
+            head = service.history('thread', limit=2)
+            self.assertEqual(first['nativeRevision'], head['nativeRevision'])
+            self.assertNotEqual(first['nativeHeadRevision'], head['nativeHeadRevision'])
+            page = service.history('thread', cursor='older', native_revision=first['nativeRevision'])
+            self.assertEqual('old', page['turns'][0]['id'])
+
+    def test_external_running_turn_mislabel_does_not_churn_page_revision(self):
+        native, service = self.service()
+        native.turn['status'] = 'interrupted'
+        first = service.history('thread', limit=2)
+        self.assertEqual('converging', first['nativeSync']['state'])
+        self.assertTrue(first['nativeSync']['historyReady'])
+        native.turn['items'][0]['text'] += ' more output'
+        native.turn['items'].append({'id': 'new-tool', 'type': 'commandExecution', 'status': 'inProgress'})
+        second = service.history('thread', limit=2)
+        self.assertEqual(first['nativeRevision'], second['nativeRevision'])
+        self.assertNotEqual(first['nativeHeadRevision'], second['nativeHeadRevision'])
+        self.assertEqual('old', service.history('thread', cursor='older',
+            native_revision=first['nativeRevision'])['turns'][0]['id'])
+        native.turn['status'] = 'inProgress'
+        self.assertEqual(first['nativeRevision'], service.history('thread')['nativeRevision'])
+
     def test_live_body_changes_head_token_and_concurrent_repair_rejects_cached_page(self):
         native, service = self.service()
         first = service.history('thread')
@@ -216,15 +259,18 @@ class ReadScopeTests(unittest.TestCase):
         self.assertEqual('history_changed', raised.exception.code)
 
     def test_structure_terminal_body_repair_epoch_and_generation_invalidate(self):
-        for change in ('structure', 'terminal_body', 'epoch', 'generation', 'repair'):
+        for change in ('terminal_structure', 'terminal_body', 'epoch', 'generation', 'repair', 'completion'):
             with self.subTest(change=change):
                 native, service = self.service()
-                if change == 'terminal_body':
+                if change in ('terminal_body', 'terminal_structure'):
                     native.turn['status'] = 'completed'
                     service.native_journal._call.return_value['journal']['status'] = 'completed'
                 first = service.history('thread')
-                if change == 'structure':
+                if change == 'terminal_structure':
                     native.turn['items'].append({'id': 'new', 'type': 'reasoning', 'summary': []})
+                elif change == 'completion':
+                    native.turn['status'] = 'completed'
+                    service.native_journal._call.return_value['journal']['status'] = 'completed'
                 elif change == 'terminal_body':
                     native.turn['items'][0]['text'] = 'correction'
                 elif change == 'epoch':
