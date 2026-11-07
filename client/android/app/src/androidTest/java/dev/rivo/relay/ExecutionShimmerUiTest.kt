@@ -70,7 +70,8 @@ class ExecutionShimmerUiTest {
         compose.waitForIdle()
         compose.onNodeWithTag("activity_group_shimmer", useUnmergedTree = true).assertDoesNotExist()
         compose.onNodeWithTag("activity_group_summary", useUnmergedTree = true).assertIsDisplayed()
-        compose.runOnIdle { state.value = state.value.copy(stale = false, snapshot = snapshot.copy(activeTurnId = "", messages = listOf(activity))) }
+        compose.runOnIdle { state.value = state.value.copy(stale = false,
+            snapshot = snapshot.copy(status = "idle", activeTurnId = "", messages = listOf(activity))) }
         compose.mainClock.advanceTimeBy(64)
         compose.waitForIdle()
         compose.onNodeWithTag("activity_group_shimmer", useUnmergedTree = true).assertDoesNotExist()

@@ -97,12 +97,13 @@ internal fun ChangeSummary(changes: JSONObject?, onOpen: () -> Unit) {
     if (files.isEmpty()) return
     var expanded by rememberSaveable(changes?.string("turnId")) { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth()) {
-        TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("turn_change_summary")) {
-            Text("${files.size} 个文件 · ")
+        ChatTimelineSummaryRow(Modifier.testTag("turn_change_summary"), onClick = { expanded = !expanded }) {
+            val summaryColor = MaterialTheme.colorScheme.primary
+            Text("${files.size} 个文件 · ", color = summaryColor)
             Text("+${files.sumOf { it.optInt("added") }}", color = androidx.compose.ui.graphics.Color(0xFF34804A))
-            Text(" / ")
+            Text(" / ", color = summaryColor)
             Text("−${files.sumOf { it.optInt("removed") }}", color = MaterialTheme.colorScheme.error)
-            Text(if (expanded) " ▴" else " ▾")
+            Text(if (expanded) " ▴" else " ▾", color = summaryColor)
         }
         if (expanded) {
             files.forEach { file -> Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

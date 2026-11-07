@@ -6,7 +6,6 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -29,14 +28,17 @@ internal fun NativeActivityGroup(row: NativeTimelineRow.Activities, isCurrent: B
     val unknownCount = remember(detailMessages) { detailMessages.count { it.activity?.status == "unknown" } }
     val label = remember(row.messages) { nativeActivityGroupLabel(row.messages) }
     val imagePath = row.messages.singleOrNull()?.activity?.takeIf { it.kind == "image" }?.filePaths?.firstOrNull()
-    Column(Modifier.fillMaxWidth().padding(vertical = 3.dp).testTag("native_activity_group"), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Row(Modifier.fillMaxWidth().heightIn(min = if (canExpand) 32.dp else 24.dp).then(if (canExpand) Modifier.clickable(role = Role.Button) { if (imagePath != null) onFile(imagePath) else expanded = !expanded }.testTag("native_activity_toggle") else Modifier),
-            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.fillMaxWidth().testTag("native_activity_group"), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        ChatTimelineSummaryRow(
+            modifier = if (canExpand) Modifier.testTag("native_activity_toggle") else Modifier,
+            onClick = if (canExpand) ({ if (imagePath != null) onFile(imagePath) else expanded = !expanded }) else null,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             if (canExpand) Text(if (expanded) "▾" else "›", color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (isCurrent) ShimmeringStageText(label,
                 modifier = Modifier.weight(1f).testTag("activity_group_shimmer"), maxLines = if (canExpand) 1 else Int.MAX_VALUE, overflow = TextOverflow.Ellipsis)
             else Text(label, maxLines = if (canExpand) 1 else Int.MAX_VALUE, overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f).testTag("activity_group_summary"))
+                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f).testTag("activity_group_summary"))
             if (failedCount > 0) Text("${failedCount} 项未完成", style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("activity_failure_count"))
             if (unknownCount > 0) Text("${unknownCount} 项状态待核验", style = MaterialTheme.typography.labelSmall,

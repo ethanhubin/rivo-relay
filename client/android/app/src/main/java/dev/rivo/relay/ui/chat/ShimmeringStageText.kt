@@ -49,7 +49,7 @@ internal fun ShimmeringStageText(
   BasicText(
     text = text,
     modifier = modifier.onSizeChanged { widthPx = it.width },
-    style = MaterialTheme.typography.bodySmall.copy(brush = brush,
+    style = LocalTextStyle.current.copy(brush = brush,
       textAlign = textAlign ?: androidx.compose.ui.text.style.TextAlign.Unspecified),
     maxLines = maxLines,
     overflow = overflow,

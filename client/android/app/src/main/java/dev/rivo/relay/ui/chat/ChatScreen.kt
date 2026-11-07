@@ -12,7 +12,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
@@ -37,6 +37,9 @@ import kotlinx.coroutines.ensureActive
 
 private class ChatDraftPersistence(var draft: ConversationDraft, var loaded: Boolean,
     var persist: (String, ConversationDraft) -> Unit)
+
+private val chatActivitySpacing = 6.dp
+private val chatSectionSpacing = 12.dp
 
 @Composable
 fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: List<JSONObject>, onBack: () -> Unit,
@@ -323,7 +326,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         if (pendingTitle == null) NativeWriterStatus(state, nodeName, writerBusy || busy || blocked, onWriterAction, takeoverBlockedReason, onRefresh)
         if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         Box(Modifier.weight(1f).fillMaxWidth()) {
-        LazyColumn(state = list, modifier = Modifier.fillMaxSize().nestedScroll(scrollConnection).testTag("chat_history"), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        LazyColumn(state = list, modifier = Modifier.fillMaxSize().nestedScroll(scrollConnection).testTag("chat_history"), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(chatActivitySpacing)) {
             if (pendingTitle != null && timeline.isEmpty()) item {
                 Text("今天想从哪里开始？", Modifier.padding(vertical = 24.dp), style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -331,9 +334,15 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             if (!state.loading && snapshot != null && timeline.isEmpty()) item {
                 Text("继续这个项目中的工作", Modifier.padding(vertical = 24.dp), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            items(timeline, key = { it.key }) { row ->
-                modelChangeRows[row.key]?.let { label -> Text(label,
-                    Modifier.fillMaxWidth().padding(bottom = 10.dp).testTag("model_change_notice"),
+            itemsIndexed(timeline, key = { _, row -> row.key }) { index, row ->
+                val modelChange = modelChangeRows[row.key]
+                val consecutiveActivities = row is NativeTimelineRow.Activities &&
+                    timeline.getOrNull(index - 1) is NativeTimelineRow.Activities && modelChange == null
+                if ((index > 0 || state.historyCursor != null) && !consecutiveActivities) {
+                    Spacer(Modifier.height(chatSectionSpacing - chatActivitySpacing))
+                }
+                modelChange?.let { label -> Text(label,
+                    Modifier.fillMaxWidth().padding(bottom = chatActivitySpacing).testTag("model_change_notice"),
                     style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 if (row is NativeTimelineRow.Activities) NativeActivityGroup(row, isCurrent = row.key == currentActivity?.key) { path -> nativeFilePath(path, cwd)?.let(::openFile) }
                 else if (row is NativeTimelineRow.Notice) NativeTurnNotice(row.turn)
@@ -381,11 +390,13 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                         generatedImageSource(message, mediaIndex)?.let { NativeImage(it, readFile, downloadFile = downloadFile, identity = "${message.turnId}:${message.id}") }
                     }
                     else Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = MaterialTheme.shapes.small) {
-                        Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                            TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp)) {
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+                            ChatTimelineSummaryRow(onClick = { expanded = !expanded }) {
                                 Text((when (message.type) { "commandExecution" -> "执行命令"; "fileChange" -> "文件变更"; "reasoning" -> "思考摘要"; else -> message.type }) + if (expanded) " ▴" else " ▾")
                             }
-                            if (expanded) SelectionContainer { Text(message.text, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
+                            if (expanded) SelectionContainer(Modifier.padding(bottom = 8.dp)) {
+                                Text(message.text, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                            }
                         }
                     }
                 }
@@ -397,7 +408,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 }
             }?.forEach { diagnostic -> item(key = "review-diagnostic:${diagnostic.string("turnId")}") { ReviewDiagnostic(diagnostic) } }
             if (executionActive && currentActivity == null) item(key = "execution_stage") {
-                ShimmeringStageText("正在处理…", Modifier.padding(vertical = 3.dp).testTag("execution_stage_shimmer"))
+                ChatTimelineSummaryRow {
+                    ShimmeringStageText("正在处理…", Modifier.testTag("execution_stage_shimmer"))
+                }
             }
             item(key = "relay_latest_anchor") { Spacer(Modifier.fillMaxWidth().height(1.dp).testTag("latest_message_anchor")) }
         }
