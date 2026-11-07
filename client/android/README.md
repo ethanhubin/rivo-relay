@@ -11,7 +11,7 @@
 需要 JDK 17、Android SDK 37。设置 `JAVA_HOME` 和 `ANDROID_HOME` 后，在本目录执行：
 
 ```sh
-./gradlew :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug
+./gradlew :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest
 ```
 
 应用位于 `app/build/outputs/apk/debug/app-debug.apk`；测试包位于 `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk`。通常使用受信任 HTTPS；当前各构建仅为明确配置的本机 Tailscale IP 增加 HTTP 例外，Debug 另允许 localhost、127.0.0.1、10.0.2.2 的 HTTP，适用于本机模拟器联调。

@@ -1,6 +1,12 @@
 package dev.rivo.relay.ui.settings
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.ui.Alignment
@@ -44,25 +50,36 @@ fun SettingsScreen(nodeName: String? = null, nodeAddress: String? = null,
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp).testTag("settings_screen"),
         verticalArrangement = Arrangement.spacedBy(20.dp)) {
         Text("设置", style = MaterialTheme.typography.headlineMedium)
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(20.dp).selectableGroup()) {
-                Text("外观", style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(8.dp))
-                ThemeMode.entries.forEach { mode ->
-                    Row(
-                        Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                            .testTag("theme_${mode.name.lowercase()}")
-                            .selectable(selected = themeMode == mode, role = Role.RadioButton,
-                                onClick = { setThemeMode(mode) }),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        RadioButton(selected = themeMode == mode, onClick = null)
-                        Spacer(Modifier.width(12.dp))
-                        Text(mode.label)
+        Card(Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+            Column(Modifier.padding(20.dp)) {
+                Text("明暗", style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(20.dp))
+                Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ThemeMode.entries.forEach { mode ->
+                        val selected = themeMode == mode
+                        val shape = RoundedCornerShape(14.dp)
+                        Box(
+                            Modifier.weight(1f).heightIn(min = 48.dp)
+                                .clip(shape)
+                                .background(if (selected) MaterialTheme.colorScheme.primary else Color.Transparent)
+                                .then(if (selected) Modifier else Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape))
+                                .testTag("theme_${mode.name.lowercase()}")
+                                .selectable(selected = selected, role = Role.RadioButton,
+                                    onClick = { setThemeMode(mode) })
+                                .padding(horizontal = 4.dp, vertical = 12.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(mode.label, style = MaterialTheme.typography.titleSmall,
+                                textAlign = TextAlign.Center,
+                                color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
             }
         }
+
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("应用更新", style = MaterialTheme.typography.titleMedium)

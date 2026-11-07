@@ -6,7 +6,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
 
 enum class ThemeMode(val label: String) {
-    SYSTEM("跟随系统"), LIGHT("白天"), DARK("夜晚");
+    SYSTEM("跟随系统"), LIGHT("亮色"), DARK("暗色");
 }
 
 private const val THEME_MODE = "theme_mode"

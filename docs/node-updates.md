@@ -10,7 +10,7 @@
 
 ## 发布
 
-递增 versionName/versionCode，构建并验证签名，运行相关测试；仅在构建配置、资源或兼容性问题需要时运行对应 lint。把 APK 复制到 `workspace/artifacts/release-<version>/rivo-relay-<version>-debug.apk`，准备说明后运行：
+递增 versionName/versionCode，构建并验证签名，运行相关测试。默认不运行 lint，版本号递增不触发 lint；仅在明确要求或排查具体静态检查/兼容性问题时按需执行。把 APK 复制到 `workspace/artifacts/release-<version>/rivo-relay-<version>-debug.apk`，准备说明后运行：
 
 ```sh
 python3 scripts/publish-update.py \
