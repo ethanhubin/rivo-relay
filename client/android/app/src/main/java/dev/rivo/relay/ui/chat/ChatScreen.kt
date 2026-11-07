@@ -28,6 +28,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.codex.SessionState
 import dev.rivo.relay.codex.control
+import dev.rivo.relay.codex.canCompose
 import dev.rivo.relay.data.*
 import org.json.JSONObject
 import org.json.JSONArray
@@ -127,7 +128,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val currentSessionId by rememberUpdatedState(state.id)
     val recoveryTask = snapshot?.recoveryTask?.takeIf { snapshot.activeTurnId.isBlank() }
     val canOperate = state.control().canOperate
-    val inputLocked = blocked || busy || writerBusy || (pendingTitle == null && !canOperate) || snapshot?.requests?.isNotEmpty() == true || recoveryTask != null
+    val inputLocked = blocked || busy || writerBusy || (pendingTitle == null && !state.canCompose()) || snapshot?.requests?.isNotEmpty() == true || recoveryTask != null
     val latestInputLocked by rememberUpdatedState(inputLocked)
     LaunchedEffect(inputLocked) {
         if (inputLocked) {
@@ -458,7 +459,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             } } else null,
             focusRequest = inputFocusRequest, onPasteImages = ::addImages,
             settingsExpanded = settingsOpen, onDismissSettings = { settingsOpen = false }, settingsContent = {
-                NativeComposerSettings(snapshot?.settings, models, selectedModel, selectedEffort, selectedMode, !busy && !blocked && !state.stale && (canOperate || pendingTitle != null && pendingReady) && draftLoaded,
+                NativeComposerSettings(snapshot?.settings, models, selectedModel, selectedEffort, selectedMode, !busy && !blocked && !state.stale && (state.canCompose() || pendingTitle != null && pendingReady) && draftLoaded,
                     onModel = { modelId ->
                         selectedModel = modelId
                         val capability = models.firstOrNull { it.string("model").ifBlank { it.string("id") } == modelId }

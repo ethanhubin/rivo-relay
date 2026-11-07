@@ -347,3 +347,5 @@ for release as well as takeover. Changed/expired previews must be fetched again.
 `POST /v1/threads` 与 `POST /v1/threads/{id}/settings` 可分别传入 `sandbox`（`read-only`、`workspace-write`、`danger-full-access`）和 `approvalPolicy`（`on-request`、`untrusted`、`never`、兼容旧版的 `on-failure`）。省略表示沿用原生设置，两个选项互不隐式覆盖。新建传给原生 `thread/start`；已有会话映射为 `thread/settings/update` 的 `sandboxPolicy`，保留已有显式网络开关。讨论模式下拒绝修改已有会话的文件权限，避免覆盖退出讨论后的恢复基线；审批仍可修改。
 
 Android 输入框设置面板提供权限选择和“设为新会话默认”，默认值仅保存在当前手机的对应节点中，不修改 Desktop 全局配置。草稿保存明确的“沿用节点默认”选择，避免重开草稿时被手机默认值覆盖。会话创建已成功而首条发送尚未完成时，权限选择锁定至进入已创建会话，避免重试时显示未生效的选项。
+
+显式 `POST /v1/threads/{id}/turns` 在发送时允许正常获取已释放会话的写权限；获取失败不会启动 turn，也不结束外部进程。读取会话仍核验实际持有者（包括已释放会话），后台队列发送仍受主动释放标记约束。

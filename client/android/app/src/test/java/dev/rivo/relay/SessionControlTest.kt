@@ -66,14 +66,14 @@ class SessionControlTest {
         assertFalse(refreshing.control().canOperate)
         val external = session("external")
         assertTrue(external.showTakeover())
-        assertTrue(external.copy(stale = true, lastConfirmedControl = external.control()).showTakeover())
+        assertFalse(external.copy(stale = true, lastConfirmedControl = external.control()).showTakeover())
         assertFalse(writable.copy(lastConfirmedControl = external.control()).showTakeover())
     }
     @Test fun pendingReleaseIsNotReportedAsReleased() {
         val pending = session("release_pending")
         assertEquals(ControlState.RELEASE_PENDING, pending.control().state)
         assertFalse(pending.control().canOperate)
-        assertTrue(pending.showTakeover())
+        assertFalse(pending.showTakeover())
     }
 
     @Test fun unverifiedOwnershipDoesNotReuseOldWritableOrSuggestTakeover() {
@@ -87,4 +87,26 @@ class SessionControlTest {
             .put("readOnly", true).put("writerOwner", "unknown"))
         assertEquals(ControlState.UNVERIFIED, SessionState(snapshot = legacy).control().state)
     }
+    @Test fun onlyConfirmedOwnersHaveButtons() {
+        for (name in listOf("released", "release_pending", "workspace_unavailable", "ownership_unverified", "future_state")) {
+            assertFalse(session(name).showTakeover())
+            assertFalse(session(name).showRelease())
+        }
+        val own = session("writable", true).let { it.copy(snapshot = it.snapshot!!.copy(
+            control = JSONObject().put("state", "writable").put("canOperate", true).put("action", "release"))) }
+        assertTrue(own.showRelease())
+        assertFalse(own.copy(stale = true, lastConfirmedControl = own.control()).showRelease())
+        assertFalse(own.copy(loading = true).showRelease())
+    }
+
+    @Test fun releasedCanComposeWithoutClaimingOwnership() {
+        val released = session("released")
+        assertTrue(released.canCompose())
+        assertFalse(released.control().canOperate)
+        assertFalse(released.copy(stale = true).canCompose())
+        assertFalse(released.copy(loading = true).canCompose())
+        for (name in listOf("external", "release_pending", "workspace_unavailable", "ownership_unverified"))
+            assertFalse(session(name).canCompose())
+    }
+
 }

@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import dev.rivo.relay.codex.SessionState
 import dev.rivo.relay.codex.control
 import dev.rivo.relay.codex.displayControl
+import dev.rivo.relay.codex.showRelease
 import dev.rivo.relay.codex.showTakeover
 import dev.rivo.relay.codex.takeoverControl
 import dev.rivo.relay.codex.ControlState
@@ -67,14 +68,12 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
             }
             if (state.showTakeover()) TextButton(onClick = { onAction?.invoke("takeover") }, enabled = takeover.enabled,
                 modifier = Modifier.testTag("ownership_takeover")) { Text("强制接管", maxLines = 1) }
-            control.action?.takeUnless { it == "takeover" }?.let { action ->
-                if (onAction != null) TextButton(onClick = { onAction(action) }, enabled = !busy && confirmedNow && blockedReason == null && (action != "release" || releaseReason == null),
+            if (state.showRelease() && onAction != null) {
+                TextButton(onClick = { onAction("release") }, enabled = !busy && blockedReason == null && releaseReason == null,
                     modifier = Modifier.testTag("writer_action")) {
-                    Text(if (busy) "处理中…" else when (action) { "resume" -> "恢复操作"; "takeover" -> "强制接管"; else -> if (control.state == ControlState.RELEASE_PENDING) "继续释放" else if (runtime?.optBoolean("desktopShared") == true) "释放订阅" else "释放权限" })
+                    Text(if (busy) "处理中…" else "释放权限")
                 }
             }
-            if (control.state == ControlState.UNVERIFIED && onRefresh != null) TextButton(onClick = onRefresh,
-                enabled = !busy && !state.loading && blockedReason == null, modifier = Modifier.testTag("writer_recheck")) { Text("重新核验") }
         }
     }
     if (runtimeDetails) {
@@ -82,10 +81,6 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
             addAll(listOfNotNull(state.controlNotice, blockedReason,
                 releaseReason.takeIf { trusted }, control.reason.takeIf { trusted },
                 takeover.reason.takeIf { state.showTakeover() }))
-            if (confirmedNow && control.state == ControlState.RELEASED && control.action == "resume")
-                add(if (takeover.enabled) "可先尝试恢复操作；如需强制接管，仍会先核验并确认影响范围。" else "可先尝试恢复操作。")
-            if (confirmedNow && control.state == ControlState.WORKSPACE_UNAVAILABLE)
-                add(if (takeover.enabled) "请先恢复工作目录；若服务器支持重绑，可通过接管确认新的工作目录。" else "请先恢复工作目录后重新核验。")
             add(when {
                 !trusted -> "连接信息待刷新"
                 runtime == null -> "运行时连接信息尚未读取"

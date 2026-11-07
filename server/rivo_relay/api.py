@@ -630,7 +630,7 @@ class Handler(BaseHTTPRequestHandler):
                         kwargs['service_tier'] = body['serviceTier']
                     if items is not None:
                         kwargs["input_items"] = items
-                    fn = lambda: codex.send(thread_id, text, **kwargs)
+                    fn = lambda: codex.send(thread_id, text, acquire_released=True, **kwargs)
                 elif action == "steer":
                     items = native_input(body)
                     text = required(body, "text", 200000) if items is None else body.get("text", "")

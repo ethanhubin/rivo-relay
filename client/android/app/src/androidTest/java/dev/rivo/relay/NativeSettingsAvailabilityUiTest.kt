@@ -37,7 +37,7 @@ class NativeSettingsAvailabilityUiTest {
         compose.runOnIdle { assertEquals(1, actions) }
     }
 
-    @Test fun unverifiedOwnershipOffersReadRefreshWithoutTakeover() {
+    @Test fun unverifiedOwnershipHasNoActionButtons() {
         val state = SessionState(id = "t", snapshot = sessionSnapshot(JSONObject()
             .put("thread", JSONObject().put("id", "t")).put("readOnly", true)
             .put("control", JSONObject().put("state", "ownership_unverified").put("canOperate", false)
@@ -49,8 +49,8 @@ class NativeSettingsAvailabilityUiTest {
         compose.onNodeWithText("节点 · 操作权限暂无法核验").assertIsDisplayed()
         compose.onNodeWithTag("ownership_takeover").assertDoesNotExist()
         compose.onNodeWithTag("writer_action").assertDoesNotExist()
-        compose.onNodeWithTag("writer_recheck").performClick()
-        compose.runOnIdle { assertEquals(1, refreshed) }
+        compose.onNodeWithTag("writer_recheck").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(0, refreshed) }
     }
 
     @Test fun writerDetailsScrollThroughDistinctReasonsWithoutEnablingBlockedActions() {
@@ -69,17 +69,17 @@ class NativeSettingsAvailabilityUiTest {
         compose.setContent { RivoTheme { Surface {
             NativeWriterStatus(state, "节点", false, { actions++ }, blocked)
         } } }
-        compose.onNodeWithTag("writer_action").assertIsNotEnabled()
-        compose.onNodeWithTag("ownership_takeover").assertIsNotEnabled()
+        compose.onNodeWithTag("writer_action").assertDoesNotExist()
+        compose.onNodeWithTag("ownership_takeover").assertDoesNotExist()
         compose.onNodeWithTag("writer_status_details").performClick()
         val inDetails = hasAnyAncestor(hasTestTag("writer_runtime_details"))
-        listOf(notice, blocked, release, ownership, handoff).forEach { reason ->
+        listOf(notice, blocked, release, ownership).forEach { reason ->
             compose.onAllNodes(hasText(reason) and inDetails, useUnmergedTree = true).assertCountEquals(1)
             compose.onNode(hasText(reason) and inDetails, useUnmergedTree = true).performScrollTo().assertIsDisplayed()
         }
         compose.onNodeWithText("关闭").performClick()
-        compose.onNodeWithTag("writer_action").assertIsNotEnabled()
-        compose.onNodeWithTag("ownership_takeover").assertIsNotEnabled()
+        compose.onNodeWithTag("writer_action").assertDoesNotExist()
+        compose.onNodeWithTag("ownership_takeover").assertDoesNotExist()
         compose.runOnIdle { assertEquals(0, actions) }
     }
 

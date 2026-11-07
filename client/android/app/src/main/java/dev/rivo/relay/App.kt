@@ -20,6 +20,7 @@ import dev.rivo.relay.codex.BatchSubmission
 import dev.rivo.relay.codex.PendingSubmission
 import dev.rivo.relay.codex.SessionState
 import dev.rivo.relay.codex.control
+import dev.rivo.relay.codex.canCompose
 import dev.rivo.relay.codex.pinnedThreadsToObserve
 import dev.rivo.relay.ui.login.LoginScreen
 import dev.rivo.relay.ui.projects.*
@@ -403,8 +404,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         val current = currentState.snapshot
                         val id = threadId
                         if (current != null && id != null && currentState.id == id && current.id == id && !currentState.stale &&
-                            current.requests.isEmpty() && !(current.recoveryRequired && current.activeTurnId.isBlank()) && currentState.control().canOperate && writable) {
-                            val queued = current.readOnly || current.isOngoing || current.requests.isNotEmpty() || current.queue.isNotEmpty()
+                            current.requests.isEmpty() && !(current.recoveryRequired && current.activeTurnId.isBlank()) && currentState.canCompose() && writable) {
+                            val queued = currentState.control().canOperate && (current.isOngoing || current.requests.isNotEmpty() || current.queue.isNotEmpty())
                             val body = JSONObject().put("input", input)
                             if (queued) body.put("operation", "enqueue")
                             model?.let { body.put("model", it) }; effort?.let { body.put("effort", it) }; mode?.let { body.put("mode", it) }; serviceTier?.let { body.put("serviceTier", it) }

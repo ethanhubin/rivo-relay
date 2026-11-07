@@ -114,7 +114,7 @@ class ChatRenderingUiTest {
         } } }
         compose.onNodeWithTag("message_input").performTextInput("保留草稿")
         compose.runOnIdle { state.value = state.value.copy(snapshot = state.value.snapshot!!.copy(
-            readOnly = true, writerOwner = "none", control = JSONObject().put("state", "released").put("canOperate", false).put("action", "resume"))) }
+            readOnly = true, writerOwner = "external", control = JSONObject().put("state", "external").put("canOperate", false).put("action", "takeover"))) }
         compose.onNodeWithText("保留草稿").assertIsDisplayed()
         for (tag in listOf("message_input", "add_attachment", "composer_settings", "codex_task_mode", "send_message"))
             compose.onNodeWithTag(tag).assertIsNotEnabled()
@@ -122,6 +122,24 @@ class ChatRenderingUiTest {
             readOnly = false, control = JSONObject().put("state", "writable").put("canOperate", true))) }
         compose.onNodeWithTag("message_input").assertIsEnabled()
         compose.onNodeWithText("保留草稿").assertIsDisplayed()
+    }
+
+    @Test fun releasedSessionAllowsDraftAndSendWithoutOwnershipButtons() {
+        val state = SessionState(id = "released", snapshot = sessionSnapshot(JSONObject()
+            .put("thread", JSONObject().put("id", "released")).put("readOnly", true).put("writerOwner", "none")
+            .put("control", JSONObject().put("state", "released").put("canOperate", false).put("action", "resume"))))
+        var sends = 0
+        compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize()) {
+            ChatScreen(state, false, false, emptyList(), {},
+                onSend = { _, _, _, _ -> sends++ }, onStop = {}, onRespond = { _, _ -> },
+                onRefresh = {}, onLoadModels = {}, onEarlier = {}, readFile = { JSONObject() })
+        } } }
+        compose.runOnIdle { org.junit.Assert.assertEquals(0, sends) }
+        compose.onNodeWithTag("ownership_takeover").assertDoesNotExist()
+        compose.onNodeWithTag("writer_action").assertDoesNotExist()
+        compose.onNodeWithTag("message_input").performTextInput("发送时获取权限")
+        compose.onNodeWithTag("send_message").assertIsEnabled().performClick()
+        compose.runOnIdle { org.junit.Assert.assertEquals(1, sends) }
     }
 
     @Test fun externallyOwnedHistoryLocksNewInputAndCannotStop() {

@@ -88,6 +88,57 @@ class HandoffTests(unittest.TestCase):
         self.assertFalse(snapshot['control']['canOperate'])
         writers.terminate.assert_not_called()
 
+    def test_open_released_session_checks_owner_without_acquiring(self):
+        for owner, expected in [('none', 'released'), ('external', 'external'), ('unknown', 'ownership_unverified')]:
+            with self.subTest(owner=owner):
+                service, native, writers = self.service()
+                native.writer_owner = Mock(return_value=owner)
+                service._observe(TID, 'ownership', '', {'released': True, 'releaseState': 'verified'})
+                native.calls.clear()
+                snapshot = service.get_session(TID)
+                self.assertEqual(expected, snapshot['control']['state'])
+                native.writer_owner.assert_called_once_with(TID)
+                self.assertNotIn('thread/resume', [m for m, _ in native.calls])
+                self.assertNotIn('turn/start', [m for m, _ in native.calls])
+                writers.terminate.assert_not_called()
+
+    def test_explicit_send_acquires_released_writer_then_starts_once(self):
+        service, native, writers = self.service()
+        service._observe(TID, 'ownership', '', {'released': True, 'releaseState': 'verified'})
+        receipt = service.send(TID, 'hello', acquire_released=True)
+        methods = [m for m, _ in native.calls]
+        self.assertEqual('turn', receipt['turnId'])
+        self.assertLess(methods.index('thread/resume'), methods.index('turn/start'))
+        self.assertEqual(1, methods.count('turn/start'))
+        self.assertNotIn(('ownership', ''), service.observations_for(TID))
+        writers.terminate.assert_not_called()
+
+    def test_send_conflict_preserves_release_and_never_starts_or_kills(self):
+        service, native, writers = self.service()
+        service._observe(TID, 'ownership', '', {'released': True, 'releaseState': 'verified'})
+        original = native.request
+        def request(method, params, **kwargs):
+            if method == 'thread/resume':
+                raise CodexError('already has an active writer', code='native_rejected')
+            return original(method, params, **kwargs)
+        native.request = request
+        with self.assertRaises(CodexError):
+            service.send(TID, 'hello', acquire_released=True)
+        self.assertTrue(service.observations_for(TID)[('ownership', '')]['released'])
+        self.assertEqual('external', service.get_session(TID)['control']['state'])
+        self.assertNotIn('turn/start', [m for m, _ in native.calls])
+        writers.terminate.assert_not_called()
+
+    def test_background_send_cannot_reacquire_released_session(self):
+        service, native, writers = self.service()
+        service._observe(TID, 'ownership', '', {'released': True, 'releaseState': 'verified'})
+        with self.assertRaises(CodexError) as caught:
+            service.send(TID, 'hello')
+        self.assertEqual('writer_released', caught.exception.code)
+        self.assertIsNone(service.send_queued(TID, input_items=[{'type': 'text', 'text': 'queued'}]))
+        self.assertNotIn('thread/resume', [m for m, _ in native.calls])
+        self.assertNotIn('turn/start', [m for m, _ in native.calls])
+
     def test_resume_ticket_cannot_release_or_cross_owners(self):
         for action, owner in [('release', 'phone'), ('resume', 'other')]:
             service, native, writers = self.service()

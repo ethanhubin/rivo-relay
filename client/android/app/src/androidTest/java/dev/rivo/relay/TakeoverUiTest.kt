@@ -17,18 +17,18 @@ import org.junit.Test
 
 class TakeoverUiTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
-    @Test fun takeoverRemainsVisibleWithReasonAndReenablesAfterReconnect() {
+    @Test fun takeoverRequiresFreshExternalOwnership() {
         val reason = mutableStateOf<String?>("网络不可用，请恢复节点连接后接管")
         val snapshot = sessionSnapshot(JSONObject().put("thread", JSONObject().put("id", "t"))
             .put("readOnly", true).put("writerOwner", "external"))
+        val stale = mutableStateOf(true)
         var action = ""
         compose.setContent { RivoTheme { Surface {
-            NativeWriterStatus(SessionState(id = "t", snapshot = snapshot, stale = true, lastConfirmedControl = SessionState(snapshot = snapshot).control()), "节点", false,
+            NativeWriterStatus(SessionState(id = "t", snapshot = snapshot, stale = stale.value, lastConfirmedControl = SessionState(snapshot = snapshot).control()), "节点", false,
                 { action = it }, reason.value)
         } } }
-        compose.onNodeWithTag("ownership_takeover").assertIsDisplayed().assertIsNotEnabled()
-        compose.onNodeWithTag("takeover_reason", useUnmergedTree = true).assertTextContains("网络不可用", substring = true)
-        compose.runOnIdle { reason.value = null }
+        compose.onNodeWithTag("ownership_takeover").assertDoesNotExist()
+        compose.runOnIdle { reason.value = null; stale.value = false }
         compose.onNodeWithTag("ownership_takeover").assertIsDisplayed().assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals("takeover", action) }
     }
@@ -44,7 +44,7 @@ class TakeoverUiTest {
         compose.onNodeWithText("释放权限").assertIsEnabled()
         compose.runOnIdle { state.value = ready.copy(stale = true, lastConfirmedControl = ready.control()) }
         compose.onNodeWithTag("ownership_takeover").assertDoesNotExist()
-        compose.onNodeWithText("释放权限").assertIsNotEnabled()
+        compose.onNodeWithText("释放权限").assertDoesNotExist()
         compose.runOnIdle { state.value = ready }
         compose.onNodeWithText("释放权限").assertIsEnabled()
         compose.onNodeWithTag("ownership_takeover").assertDoesNotExist()
@@ -62,4 +62,20 @@ class TakeoverUiTest {
         compose.onNodeWithTag("ownership_takeover").assertIsDisplayed().assertIsNotEnabled()
         compose.onNodeWithTag("takeover_reason", useUnmergedTree = true).assertTextContains("Desktop", substring = true)
     }
+    @Test fun releasedAndUncertainStatesHaveNoOwnershipButtons() {
+        val state = mutableStateOf(SessionState())
+        compose.setContent { RivoTheme { Surface {
+            NativeWriterStatus(state.value, "节点", false, { error("No action expected") })
+        } } }
+        for (name in listOf("released", "release_pending", "workspace_unavailable", "ownership_unverified")) {
+            compose.runOnIdle { state.value = SessionState(id = "t", snapshot = sessionSnapshot(JSONObject()
+                .put("thread", JSONObject().put("id", "t")).put("readOnly", true)
+                .put("control", JSONObject().put("state", name).put("action", "resume")))) }
+            compose.onNodeWithTag("ownership_takeover").assertDoesNotExist()
+            compose.onNodeWithTag("writer_action").assertDoesNotExist()
+            compose.onNodeWithTag("writer_recheck").assertDoesNotExist()
+            compose.onNodeWithText("恢复操作").assertDoesNotExist()
+        }
+    }
+
 }

@@ -61,5 +61,11 @@ fun SessionState.displayControl(): SessionControl =
     control().takeUnless { it.state == ControlState.UNKNOWN }
         ?: lastConfirmedControl ?: SessionControl(ControlState.UNKNOWN)
 
-fun SessionState.showTakeover(): Boolean = displayControl().state in setOf(
-    ControlState.EXTERNAL, ControlState.RELEASED, ControlState.RELEASE_PENDING, ControlState.WORKSPACE_UNAVAILABLE)
+fun SessionState.showTakeover(): Boolean = control().state == ControlState.EXTERNAL
+
+fun SessionState.showRelease(): Boolean = control().let { it.canOperate && it.action == "release" }
+
+/** A released session can draft/send; the send request acquires normally on the server. */
+fun SessionState.canCompose(): Boolean = control().let {
+    it.canOperate || it.state == ControlState.RELEASED && it.action == "resume"
+}

@@ -366,9 +366,10 @@ class CodexService:
             self._materializing.pop(thread_id, None)
             return None
 
-    def _resume(self, thread_id):
+    def _resume(self, thread_id, *, acquire_released=False):
         with self.operation_gate(thread_id):
-            if self.observations_for(thread_id).get(('ownership', ''), {}).get('released'):
+            released = self.observations_for(thread_id).get(('ownership', ''), {}).get('released')
+            if released and not acquire_released:
                 raise CodexError("会话已主动释放", code="writer_released", http_status=409)
             with self._lock:
                 # Codex's first turn must use the connection that started the
@@ -376,7 +377,7 @@ class CodexService:
                 # creation even on this same daemon.
                 if thread_id in self._created:
                     return copy.deepcopy(self._created[thread_id])
-                joined = thread_id in self._joined
+                joined = thread_id in self._joined and not released
             if joined:
                 try:
                     thread = self.connection.request("thread/read", {
@@ -393,7 +394,16 @@ class CodexService:
                     self._joined.discard(thread_id)
             # Joining emits native notifications, even for an idle thread.
             # Repeat reads must not resume and trigger their own SSE refresh.
-            response = self.connection.request("thread/resume", {"threadId": thread_id, "excludeTurns": True})
+            try:
+                response = self.connection.request("thread/resume", {"threadId": thread_id, "excludeTurns": True})
+            except CodexError as error:
+                if acquire_released and error.code == 'native_rejected' and 'already has an active writer' in str(error):
+                    self._observe(thread_id, 'ownership', '', {'released': True, 'externalWriter': True})
+                    self.on_event({'method': 'relay/ownershipChanged', 'params': {'threadId': thread_id}})
+                raise
+            if released:
+                self._forget_observation(thread_id, 'ownership')
+                self.on_event({'method': 'relay/ownershipChanged', 'params': {'threadId': thread_id}})
             with self._lock:
                 self._settings[thread_id] = self._settings_from(response)
                 self._joined.add(thread_id)
@@ -417,10 +427,10 @@ class CodexService:
                 # Reading must not resume the thread into a missing/rebound cwd.
                 raise CodexError('工作树不可执行', code='workspace_unavailable', http_status=409)
             ownership = self.observations_for(thread_id).get(('ownership', ''), {})
-            if ownership.get('released'):
-                raise CodexError('会话已主动释放', code='writer_released', http_status=409)
             inspect_owner = getattr(self.connection, 'writer_owner', None)
             writer_owner = inspect_owner(thread_id) if inspect_owner else None
+            if ownership.get('released'):
+                raise CodexError('会话已主动释放', code='writer_released', http_status=409)
             if writer_owner in ('none', 'external', 'unknown'):
                 # Viewing an idle thread must not acquire its writer. The first
                 # explicit execution/resume acquires and rechecks ownership.
@@ -485,6 +495,14 @@ class CodexService:
         if control.get('action') == 'resume' and observations.get(('ownership', ''), {}).get('externalWriter'):
             control = control_projection(read_only=True, released=False,
                 workspace_unavailable=workspace_unavailable, runtime=runtime)
+        # Release intent pauses work; current ownership decides which action is shown.
+        if ownership.get('released') and writer_owner in ('external', 'unknown'):
+            control = control_projection(read_only=True, released=False,
+                workspace_unavailable=workspace_unavailable, runtime=runtime,
+                ownership_unverified=writer_owner == 'unknown')
+        elif ownership.get('released') and writer_owner == 'none' and not workspace_unavailable:
+            control = control_projection(read_only=True, released=True,
+                workspace_unavailable=False, runtime=runtime)
         return {"thread": thread, "requests": requests, "settings": settings, 'control': control, 'plan': plan,
                 **goal_state,
                 'tokenUsage': usage, 'changes': changes, 'turnSettings': turn_settings,
@@ -629,12 +647,12 @@ class CodexService:
             raise CodexError("请输入消息", code="invalid_message", http_status=400)
         return [{"type": "text", "text": text, "text_elements": []}]
 
-    def send(self, thread_id, text, model=None, effort=None, client_message_id=None, *, input_items=None, mode=None, service_tier=None):
+    def send(self, thread_id, text, model=None, effort=None, client_message_id=None, *, input_items=None, mode=None, service_tier=None, acquire_released=False):
         self.start()
         with self.operation_gate(thread_id):
             self._assert_workspace(thread_id)
             self._assert_submission_ready(thread_id)
-            self._resume(thread_id)
+            self._resume(thread_id, acquire_released=acquire_released)
             with self._lock:
                 inherited_settings = copy.deepcopy(self._settings.get(thread_id, {}))
             params = {"threadId": thread_id, "input": input_items if input_items is not None else self._input(text)}
