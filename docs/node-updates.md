@@ -48,4 +48,4 @@ HTTP 响应日志记录 UTC 时间、方法和状态，不记录地址、查询�
 launchd 在 33.530 拒绝并记录 `37: Operation already in progress`；旧服务到 34.352 才退出并移除。
 修复要求 bootout 后轮询确认服务已从 launchd 移除，才允许 bootstrap；回滚同样遵守此屏障。
 
-服务切换必须通过 `--submit` 交给 launchd 独立执行，避免聊天或命令取消在卸载后杀死部署进程。提交成功不代表部署成功，必须读取 deployment.log 的 complete/rollback 结果并验证 HTTP。
+服务切换必须通过 `--submit` 交给独立进程会话执行，避免聊天或命令取消在卸载后杀死部署进程。提交成功不代表部署成功，必须读取 deployment.log 的 complete/rollback 结果并验证 HTTP。
