@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
@@ -19,7 +20,10 @@ HOST = Path(__file__).parents[1] / 'rivo_relay/codex/desktop_host.cjs'
 FIXTURE = r'''
 const {startDesktopBridge} = require(process.argv[1]);
 const notify = new Set(), state = new Set(), human = new Set();
-let ready = 'connected';
+let ready = process.argv[3] ? JSON.parse(process.argv[3]) : 'connected';
+let hostProbes = 0;
+let reconnectRequests = 0;
+const publishState = value => {ready=value; for(const fn of state)fn(value)};
 const connection = {
  getConnectionState: () => ready, getTransportKind: () => 'fixture',
  registerInternalNotificationHandler: fn => {notify.add(fn); return () => notify.delete(fn)},
@@ -33,7 +37,20 @@ const connection = {
      return {};
    }
    if(method === 'test/disconnect') process.exit(0);
-   if(method === 'test/notReady') {ready='reconnecting'; for(const fn of state)fn(ready); return {}};
+   if(method === 'test/notReady') {publishState('reconnecting'); return {}};
+   if(method === 'test/reconnect') {
+     reconnectRequests++;
+     publishState({state:'reconnecting'});
+     setTimeout(()=>publishState({state:'connected'}), 25);
+     return {};
+   }
+   if(method === 'server/diagnostics') return {process:{id:42}};
+   if(method === 'command/exec') {
+     hostProbes++;
+     return {exitCode:0,stdout:JSON.stringify({pid:42,processStart:'fixture',executable:'/fixture/codex',
+       codexHome:'/native/home',hostName:'native-host',platform:'darwin'})};
+   }
+   if(method === 'test/metrics') return {hostProbes,reconnectRequests};
    return {method,params};
  },
 };
@@ -47,8 +64,11 @@ startDesktopBridge({connection,directory:process.argv[2],appVersion:'fixture'}).
 @unittest.skipUnless(shutil.which('node'), 'Node is needed for the isolated Desktop host fixture')
 class DesktopBridgeTests(unittest.TestCase):
     def setUp(self):
+        self.start_fixture()
+
+    def start_fixture(self, initial_state='connected'):
         self.temp = tempfile.TemporaryDirectory(prefix='rivo-bridge-', dir='/tmp')
-        self.process = subprocess.Popen(['node', '-e', FIXTURE, str(HOST), self.temp.name],
+        self.process = subprocess.Popen(['node', '-e', FIXTURE, str(HOST), self.temp.name, json.dumps(initial_state)],
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.assertEqual('ready', self.process.stdout.readline().strip())
         self.events = []
@@ -83,13 +103,96 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertTrue(caught.exception.definite)
 
     def test_socket_alive_does_not_mean_writer_ready(self):
-        self.connection.start()
-        self.connection.request('test/notReady')
-        self.wait_for(lambda: not self.connection.status()['connected'])
+        self.tearDown()
+        self.start_fixture({'state': 'reconnecting'})
+        self.assertFalse(self.connection.start()['connected'])
         self.assertTrue(self.connection.status()['bridge']['available'])
         with self.assertRaises(CodexError) as caught:
             self.connection.request('turn/start')
         self.assertFalse(caught.exception.request_sent)
+
+    def test_native_disconnect_retires_the_bridge_without_stopping_desktop(self):
+        self.connection.start()
+        with self.assertRaises(CodexError) as caught:
+            self.connection.request('test/notReady')
+        self.assertTrue(caught.exception.request_sent)
+        self.wait_for(lambda: not self.connection.status()['bridge']['available'])
+        self.wait_for(lambda: any(e['method'] == 'relay/nativeDisconnected' for e in self.events))
+        self.assertIsNone(self.process.poll())
+
+    def test_host_disconnects_peers_without_relying_on_client_state_handling(self):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
+            peer.settimeout(2)
+            peer.connect(str(Path(self.temp.name, 'bridge.sock')))
+            peer.sendall((json.dumps({'id': 1, 'method': 'hello', 'params': {
+                'token': Path(self.temp.name, 'token').read_text(), 'protocolVersion': 1}}) + '\n').encode())
+            buffer = b''
+            while b'\n' not in buffer:
+                buffer += peer.recv(4096)
+            self.assertEqual(1, json.loads(buffer.split(b'\n')[0])['id'])
+            peer.sendall((json.dumps({'id': 2, 'method': 'rpc', 'params': {
+                'method': 'test/notReady', 'params': {}}}) + '\n').encode())
+            # This raw peer never interprets connection-state notifications.
+            # EOF must be initiated by the host itself, without killing Desktop.
+            while peer.recv(4096):
+                pass
+        self.assertIsNone(self.process.poll())
+
+    def test_client_retires_legacy_host_state_change_even_if_host_keeps_socket(self):
+        self.connection.start()
+        original = self.connection.generation
+        # A legacy host may publish this state while leaving its server/socket
+        # alive; the client must retire its own transport on that transition.
+        self.connection._set_state({'type': 'reconnecting'})
+        self.wait_for(lambda: not self.connection.status()['bridge']['available'])
+        self.wait_for(lambda: any(e['method'] == 'relay/nativeDisconnected' for e in self.events))
+        self.connection.start()
+        self.assertNotEqual(original, self.connection.generation)
+        self.assertIsNone(self.process.poll())
+
+    def test_native_reconnect_expires_writer_and_approval_then_rechecks_host(self):
+        from rivo_relay.codex.sessions import CodexService
+        now = [0]
+        native = Backend('app_server')
+        runtime = RuntimeConnection(native=native, desktop=self.connection, clock=lambda: now[0])
+        service = CodexService(connection=runtime)
+        try:
+            runtime.start(); now[0] = 3; runtime.start()
+            self.assertEqual('desktop', runtime.status()['preferredWriter'])
+            thread_id = runtime.request('thread/start')['thread']['id']
+            service._joined.add(thread_id)
+            service._created[thread_id] = {'id': thread_id}
+            runtime.request('test/approval')
+            self.wait_for(lambda: len(service.interactions.list(thread_id)) == 1)
+            request_key = service.interactions.list(thread_id)[0]['key']
+            proof = runtime._identity_pair
+            original = self.connection.generation
+            self.assertEqual(1, self.connection.request('test/metrics')['hostProbes'])
+            with self.assertRaises(CodexError) as caught:
+                runtime.request('test/reconnect', {'threadId': thread_id})
+            self.assertTrue(caught.exception.request_sent)
+            self.wait_for(lambda: not self.connection.status()['bridge']['available'])
+            self.wait_for(lambda: thread_id not in service._joined)
+            self.assertNotIn(thread_id, service._created)
+            self.assertEqual([], service.interactions.list(thread_id))
+            self.assertEqual({}, runtime._requests)
+            with self.assertRaises(CodexError):
+                service.interactions.respond(request_key, {'decision': 'accept'})
+            # Poll readiness without assuming timer scheduling. Startup while
+            # reconnecting may remain socket-connected, but never writer-ready.
+            self.wait_for(lambda: self.connection.start()['connected'])
+            self.assertNotEqual(original, self.connection.generation)
+            now[0] = 6; runtime.start()
+            self.assertNotEqual(proof, runtime._identity_pair)
+            metrics = self.connection.request('test/metrics')
+            self.assertEqual(2, metrics['hostProbes'])
+            self.assertEqual(1, metrics['reconnectRequests'])
+            now[0] = 9; runtime.start()
+            self.assertEqual('desktop', runtime.status()['preferredWriter'])
+            self.assertEqual('test/echo', runtime.request('test/echo', {'threadId': thread_id})['method'])
+            self.assertFalse(any(method == 'test/reconnect' for method, _ in native.calls))
+        finally:
+            service.close()
 
     def test_sent_request_is_unknown_on_disconnect_and_never_replayed(self):
         self.connection.start()

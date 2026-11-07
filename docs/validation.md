@@ -459,3 +459,9 @@ Android `assembleDebug` / `assembleDebugAndroidTest` / `testDebugUnitTest` / `li
 更新前以SQLite backup API备份 `workspace/local-node/data/relay.sqlite3`，完整性检查为ok，依赖检查通过；无待执行/运行中的Relay队列项或pending提交。以SIGTERM平滑重启 `local.rivo-relay`，Relay PID从64497变为91223，节点ID及5个既有有效授权完全保留，数据库检查仍为ok。重启后的原生连接正常，项目列表21项，媒体代理/缩略图/溯源/媒体库能力已加载，真实原生文件读取产生WebP缩略图并正确返回206 Range内容。临时检查凭据已撤销，没有发送真实Codex任务。Desktop桥接仍未安装宿主加载器，ASR返回unconfigured；没有将代码部署误记为这两项真实服务已启用。
 
 源码与发布记录保存到 `codex/release-0.2.10` 分支及 `v0.2.10` 标签；APK、SHA256SUMS随GitHub测试版Release交付，保留main当前状态。本机备份、源码文件摘要、构建、签名及部署验证记录在忽略目录 `workspace/artifacts/release-0.2.10/`，不上传节点数据库、连接凭据或私有运行日志。
+
+## 2026-11-07 设置页与手动更新（0.2.11 本机构建）
+
+底部增加设置页，登录页提供未配对入口；设置页展示版本、GitHub Release 手动检查、更新说明、浏览器 APK 下载和节点信息。公共更新请求独立于节点授权，包含预发布版本，以数字版本比较且不降级；错误和空发布列表不伪装为已是最新版本。当前没有后台自动检查或静默安装。
+
+`testDebugUnitTest` 176 项通过；`assembleDebug` 和 `lintDebug` 成功，lint 0 错误、42 警告、3 提示。模拟器 3 项设置 UI 测试通过，覆盖检查中禁用重复点击、更新说明和下载跳转、失败重试、已是最新版本以及真实 App 底部 Codex/待办/设置导航。测试使用模拟节点，不访问真实会话。设置页截图已检查，无文字遮挡。APK versionCode=23，debug 签名与 0.2.10 一致；构建和截图位于 `workspace/artifacts/settings-0.2.11/`。本次未向 GitHub 发布 0.2.11，也未安装到实体手机。

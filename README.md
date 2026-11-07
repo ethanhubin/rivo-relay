@@ -139,3 +139,15 @@ MacBook Pro 和 e2 Mac mini 已部署用户登录自启动 Relay，安装于各�
 | [原生验证记录](docs/native-validation.md) | Codex 运行时接入与跨端验证证据 |
 
 源码主要位于 `server/`（Python 服务）、`client/android/`（Android App）和 `scripts/`（运行与验证脚本）。
+
+### 手机会话恢复与 Codex 重新授权
+
+手机服务使用独立后台时，启动参数应为 `--codex-runtime app_server`，无需保持 Desktop 打开。Desktop 仍持有某个会话时，该会话在手机端只读；失败恢复记录可以单独忽略，忽略不会删除原生历史或重新执行指令。
+
+遇到 Codex 凭证撤销，请在运行 Relay 的电脑上使用同一个 ChatGPT 账号重新授权：
+
+```sh
+PYTHONPATH=server .venv/bin/python scripts/reauthorize-codex.py
+```
+
+脚本使用 Codex 官方设备授权流程，不复制令牌。授权后验证后台认证；只有认证仍失败且已加载会话均空闲时才调用托管 daemon 的重启命令，再验证一次。网络故障、无法核实会话状态或非托管后台会明确报错，不强制结束进程。授权仍需本人完成，失败任务不会自动重发；手机配对无需重置。该脚本针对本机默认 Codex home，远程节点应在实际节点上执行。

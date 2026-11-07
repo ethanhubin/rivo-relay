@@ -151,6 +151,52 @@ class JournalHostTests(unittest.TestCase):
 
 
 class JournalAdapterTests(unittest.TestCase):
+    def denied_host(self):
+        native = FakeNative()
+        native.native_host_info = Mock(side_effect=CodexError(
+            'sandbox denied ps', code='native_host_unverified', http_status=409))
+        return native
+
+    def test_denied_probe_preserves_official_history_pagination_and_external_writer(self):
+        native = self.denied_host()
+        original = native.request
+        def request(method, params, **kwargs):
+            native.calls.append((method, params))
+            if method == 'thread/turns/list':
+                return {'data': [{'id': TURN, 'status': 'completed', 'items': [
+                    {'id': 'answer', 'type': 'agentMessage', 'text': 'Original answer'}]}],
+                    'nextCursor': None if params.get('cursor') else 'older'}
+            if method == 'thread/resume':
+                raise CodexError('already has an active writer', code='native_rejected', http_status=409)
+            return original(method, params, **kwargs)
+        native.request = request
+        service = CodexService(connection=native)
+        service.native_journal._repair = Mock(side_effect=AssertionError('must not repair'))
+        snapshot = service.get_session('thread')
+        self.assertTrue(snapshot['readOnly'])
+        self.assertEqual('Original answer', snapshot['thread']['turns'][0]['items'][0]['text'])
+        self.assertEqual('ready', snapshot['nativeSync']['state'])
+        self.assertEqual('unavailable', snapshot['nativeSync']['journalCheck'])
+        self.assertEqual('older', snapshot['nextCursor'])
+        page = service.history('thread', cursor='older', native_revision=snapshot['nativeRevision'])
+        self.assertEqual(TURN, page['turns'][0]['id'])
+        service.native_journal._repair.assert_not_called()
+        self.assertNotIn('command/exec', [call[0] for call in native.calls])
+
+    def test_denied_probe_does_not_hide_failed_rpc_or_known_watermark(self):
+        native = self.denied_host()
+        journal = NativeJournal(native, NativeHistoryAdapter())
+        native.request = Mock(side_effect=CodexError('history failed', code='native_rejected'))
+        self.assertEqual('unavailable', journal.ensure(THREAD).state)
+        native.request.reset_mock()
+        journal._inspections[(native.generation, THREAD)] = {'journal': {'turnId': TURN}}
+        self.assertEqual('unavailable', journal.ensure(THREAD).state)
+        native.request.assert_not_called()
+
+    def test_denied_probe_cannot_claim_expected_turn_is_persisted(self):
+        journal = NativeJournal(self.denied_host(), NativeHistoryAdapter())
+        self.assertEqual('unavailable', journal.ensure(THREAD, expected_turn_id=TURN).state)
+
     def native(self):
         native = FakeNative()
         native.native_host_info = lambda: {'generation': native.generation}

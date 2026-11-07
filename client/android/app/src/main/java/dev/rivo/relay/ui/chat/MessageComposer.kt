@@ -271,7 +271,7 @@ fun MessageComposer(
                 Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.testTag("attachment_error"))
             }
-            (voice.error ?: permissionNotice ?: capability.reason.takeIf { repository != null && !capability.available })?.let {
+            (voice.error ?: permissionNotice)?.let {
                 Text(it, style = MaterialTheme.typography.labelSmall,
                     color = if (voice.error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.testTag("voice_status"))

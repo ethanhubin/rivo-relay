@@ -29,11 +29,25 @@ internal class TaskChangeTracker {
     private val running = linkedSetOf<String>()
     private val announced = linkedSetOf<String>()
     private var requests = emptySet<String>()
+    private var goalState: String? = null
     fun expectTurn(id: String) { if (id.isNotBlank()) running += id }
     fun observe(json: JSONObject): List<TaskNotice> {
         val turns = json.optJSONObject("thread")?.objects("turns").orEmpty()
         val nextRequests = json.objects("requests").map { it.string("key") }.filter(String::isNotBlank).toSet()
         val result = mutableListOf<TaskNotice>()
+        val goal = json.optJSONObject("goal")
+        val nextGoalState = goal?.let { "${it.optLong("createdAt")}:${it.string("status")}" }
+        if (initialized && nextGoalState != goalState && goal != null) {
+            val kind = when (goal.string("status")) {
+                "complete" -> "completed"
+                "blocked", "usageLimited", "budgetLimited" -> "goalStopped"
+                else -> null
+            }
+            if (kind != null) result += TaskNotice("goal:$nextGoalState:${goal.optLong("updatedAt")}", kind)
+        }
+        val goalOwnsCompletion = goal?.string("status") == "active" || goalState?.endsWith(":active") == true ||
+            (nextGoalState != goalState && result.any { it.key.startsWith("goal:") })
+        goalState = nextGoalState
         if (initialized || running.isNotEmpty()) (nextRequests - requests).forEach { result += TaskNotice("request:$it", "waiting") }
         val overlap = turns.any { it.string("id") in known }
         val latest = turns.lastOrNull()?.string("id")
@@ -43,7 +57,7 @@ internal class TaskChangeTracker {
             if (id.isNotBlank()) {
                 if (status == "inProgress") running += id
                 else if (status in setOf("completed", "failed")) {
-                    if (id in running || (initialized && overlap && id == latest && id !in known))
+                    if ((!goalOwnsCompletion || status == "failed") && (id in running || (initialized && overlap && id == latest && id !in known)))
                         result += TaskNotice("turn:$id:$status", if (status == "failed") "failed" else "completed")
                     running -= id
                 } else if (status in setOf("interrupted", "canceled", "cancelled")) running -= id
@@ -171,7 +185,7 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
         val watch = watches[id] ?: return
         if (json.optJSONObject("thread")?.string("id") != id) return
         watch.lastReadNanos = System.nanoTime()
-        watch.busy = json.string("activeTurnId").isNotBlank() || json.string("status") in setOf("running", "waiting") ||
+        watch.busy = json.optJSONObject("goal")?.string("status") == "active" || json.string("activeTurnId").isNotBlank() || json.string("status") in setOf("running", "waiting") ||
             json.objects("requests").isNotEmpty() || json.objects("queue").any { it.string("status") in setOf("queued", "pending", "waiting", "running") }
         val title = visibleSessionText(json.getJSONObject("thread").string("name")).ifBlank { "Codex 会话" }
         watch.tracker.observe(json).forEach { notice -> if (visibleThread != id) notify(id, title, notice) }
@@ -179,7 +193,7 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
     private fun tag(id: String) = "relay:$nodeBase:$id"
     private fun notify(id: String, title: String, notice: TaskNotice) {
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
-        val text = when (notice.kind) { "waiting" -> "Codex 需要你的回应"; "failed" -> "Codex 任务失败，请打开会话查看"; else -> "Codex 任务已完成" }
+        val text = when (notice.kind) { "waiting" -> "Codex 需要你的回应"; "failed" -> "Codex 任务失败，请打开会话查看"; "goalStopped" -> "Codex 目标受阻或达到限制，请打开会话查看"; else -> "Codex 任务已完成" }
         val pending = PendingIntent.getActivity(context, 0, TaskNotificationTarget(nodeBase, id).intent(context), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val notification = NotificationCompat.Builder(context, "codex_tasks").setSmallIcon(R.drawable.ic_launcher)
             .setContentTitle(title.take(120)).setContentText(text).setSubText(nodeName).setContentIntent(pending)

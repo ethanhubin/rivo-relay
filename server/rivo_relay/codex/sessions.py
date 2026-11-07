@@ -424,6 +424,7 @@ class CodexService:
                 # Missing/revoked source metadata cannot hide native history.
                 pass
         return {"thread": thread, "requests": requests, "settings": settings, 'plan': plan,
+                **self.read_goal(thread_id),
                 'tokenUsage': usage, 'changes': changes, 'turnSettings': turn_settings,
                 "activeTurnId": active, "status": status, "readOnly": read_only, "nextCursor": history["nextCursor"],
                 "backwardsCursor": history["backwardsCursor"],
@@ -998,6 +999,37 @@ class CodexService:
     def upload_attachment(self, thread_id, name, encoded):
         return upload_attachment(self.connection, self._attachment_cwd(thread_id), name, encoded)
 
+    def read_goal(self, thread_id):
+        # Goal RPC is independent of history and does not resume/acquire a writer.
+        try:
+            result = self.connection.request("thread/goal/get", {"threadId": thread_id})
+            return {"goal": result.get("goal"), "goalSupported": True}
+        except CodexError as error:
+            if error.native_code == -32601:
+                return {"goal": None, "goalSupported": False}
+            raise
+
+    def update_goal(self, thread_id, operation, *, objective=None, token_budget=None):
+        self.start()
+        self._assert_workspace(thread_id)
+        if operation not in {"set", "pause", "resume", "clear"}:
+            raise CodexError("目标操作无效", code="invalid_request", http_status=400)
+        params = {"threadId": thread_id}
+        if operation == "set":
+            if not isinstance(objective, str) or not objective.strip() or len(objective) > 200000:
+                raise CodexError("请填写目标", code="invalid_request", http_status=400)
+            if token_budget is not None and (type(token_budget) is not int or not 0 < token_budget <= 9223372036854775807):
+                raise CodexError("Token 预算必须为正整数", code="invalid_request", http_status=400)
+            params.update(objective=objective.strip(), status="active")
+            if token_budget is not None:
+                params["tokenBudget"] = token_budget
+        elif operation != "clear":
+            params["status"] = "paused" if operation == "pause" else "active"
+        with self._operations:
+            self._resume(thread_id)
+            result = self.connection.request("thread/goal/clear" if operation == "clear" else "thread/goal/set", params)
+        return {"threadId": thread_id, **result}
+
     def update_settings(self, thread_id, *, model=None, effort=None, service_tier=None):
         self.start()
         self._assert_workspace(thread_id)
@@ -1088,6 +1120,9 @@ class CodexService:
                         self._active[thread_id] = turn_id
                     elif self._active.get(thread_id) == turn_id:
                         self._active.pop(thread_id, None)
+            elif method in {"thread/goal/updated", "thread/goal/cleared"}:
+                # A goal update can reference a completed turn; it is not a new live turn.
+                pass
             elif thread_id and turn_id:
                 key = (thread_id, turn_id)
                 turn = self._live.setdefault(key, {"id": turn_id, "status": "inProgress", "items": []})

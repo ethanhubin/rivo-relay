@@ -137,9 +137,14 @@ class NativeConnection:
             unsupported = error.get("code") == -32601 or (
                 error.get("code") == -32600 and
                 message.startswith(f"Invalid request: unknown variant `{method}`"))
+            auth_failed = any(marker in message.lower() for marker in (
+                "token_revoked", "invalidated oauth token", "access token could not be refreshed",
+                "refresh_token_reused", "refresh_token_expired"))
+            if auth_failed:
+                message = "Codex 登录已失效，请在后台重新授权；若已授权仍报错，需在任务空闲时重启独立后台。手机配对无需重置。"
             missing = "thread not found" in message.lower() or "thread does not exist" in message.lower()
             request_sent = error.get('requestSent', getattr(self, '_error_request_sent', False))
-            raise CodexError(message, code="native_method_unsupported" if unsupported else "native_rejected",
+            raise CodexError(message, code="native_auth_required" if auth_failed else "native_method_unsupported" if unsupported else "native_rejected",
                              http_status=501 if unsupported else (404 if missing else 409),
                              request_sent=request_sent is not False, native_code=error.get("code"))
         return response.get("result") or {}

@@ -16,7 +16,7 @@ import androidx.compose.ui.unit.dp
 import dev.rivo.relay.ui.theme.RivoSpacing
 
 @Composable
-fun LoginScreen(busy: Boolean, error: String?, onPair: (String, String) -> Unit, onError: (String) -> Unit, savedNodes: List<dev.rivo.relay.connection.SavedNode> = emptyList(), onSelect: (String) -> Unit = {}) {
+fun LoginScreen(busy: Boolean, error: String?, onPair: (String, String) -> Unit, onError: (String) -> Unit, savedNodes: List<dev.rivo.relay.connection.SavedNode> = emptyList(), onSelect: (String) -> Unit = {}, onSettings: () -> Unit = {}) {
     var manual by rememberSaveable { mutableStateOf(false) }
     var address by rememberSaveable { mutableStateOf("") }
     var code by rememberSaveable { mutableStateOf("") }
@@ -47,6 +47,7 @@ fun LoginScreen(busy: Boolean, error: String?, onPair: (String, String) -> Unit,
                 }
             }
         }
+        TextButton(onClick = onSettings, modifier = Modifier.testTag("login_settings")) { Text("设置与检查更新") }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 16.dp).testTag("login_error")) }
     }
     if (manual) {

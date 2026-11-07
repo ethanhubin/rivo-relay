@@ -49,6 +49,61 @@ class FakeNative:
 
 
 class NativeSemanticsTests(unittest.TestCase):
+    def test_goal_snapshot_reads_native_state_and_clear_without_resume_loop(self):
+        native = FakeNative()
+        original = native.request
+        goal = {"objective": "Finish refactoring", "status": "active", "tokensUsed": 123,
+                "timeUsedSeconds": 60, "tokenBudget": 10000}
+        def request(method, params, **kwargs):
+            if method == "thread/goal/get":
+                return {"goal": goal}
+            return original(method, params, **kwargs)
+        native.request = request
+        events = []
+        service = CodexService(connection=native, on_event=events.append)
+        self.assertEqual(goal, service.get_session("thread")["goal"])
+        service._event({"method": "thread/goal/updated", "params": {"threadId": "thread", "turnId": "old-turn", "goal": goal}})
+        self.assertFalse(service._live)
+        goal = None
+        service._event({"method": "thread/goal/cleared", "params": {"threadId": "thread"}})
+        result = service.get_session("thread")
+        self.assertIsNone(result["goal"])
+        self.assertTrue(result["goalSupported"])
+        self.assertEqual(1, sum(method == "thread/resume" for method, _ in native.calls))
+        self.assertEqual(2, len(events))
+
+    def test_goal_unsupported_is_distinct_from_native_failure(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        with patch.object(native, "request", side_effect=CodexError("Unknown method", native_code=-32601)):
+            self.assertEqual({"goal": None, "goalSupported": False}, service.read_goal("thread"))
+        with patch.object(native, "request", side_effect=CodexError("Connection lost")):
+            with self.assertRaises(CodexError):
+                service.read_goal("thread")
+
+    def test_goal_controls_preserve_native_budget_and_do_not_send_prompt(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        service.update_goal("thread", "set", objective="Finish", token_budget=1000)
+        self.assertEqual(("thread/goal/set", {"threadId": "thread", "objective": "Finish", "status": "active", "tokenBudget": 1000}), native.calls[-1])
+        for operation, status in (("pause", "paused"), ("resume", "active")):
+            service.update_goal("thread", operation)
+            self.assertEqual(("thread/goal/set", {"threadId": "thread", "status": status}), native.calls[-1])
+        service.update_goal("thread", "clear")
+        self.assertEqual(("thread/goal/clear", {"threadId": "thread"}), native.calls[-1])
+        self.assertFalse(any(method in {"turn/start", "turn/interrupt"} for method, _ in native.calls))
+        for budget in (True, 0, -1, 1.5, 2**63):
+            with self.assertRaises(CodexError):
+                service.update_goal("thread", "set", objective="Finish", token_budget=budget)
+
+    def test_goal_write_refuses_external_writer(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        with patch.object(native, "request", side_effect=CodexError("already has an active writer", code="native_rejected")) as request:
+            with self.assertRaises(CodexError):
+                service.update_goal("thread", "pause")
+        self.assertFalse(any(call.args[0] == "thread/goal/set" for call in request.call_args_list))
+
     def test_external_writer_can_read_history_without_takeover_or_write(self):
         native = FakeNative()
         original = native.request

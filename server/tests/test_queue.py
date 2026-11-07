@@ -36,6 +36,18 @@ class QueueTests(unittest.TestCase):
         self.addCleanup(self.queue.close)
     def add(self, id):
         return self.queue.enqueue('thread', id, 'phone', {'input': [{'type':'text','text':id}, {'type':'image','url':'data:image/png;base64,test'}], 'model':'model', 'effort':'high'})
+    def test_readonly_failed_recovery_can_be_dismissed_without_replay(self):
+        self.add('a')
+        self.queue._set('a', 'failed')
+        self.native.snapshot['readOnly'] = True
+        item = self.queue.list('thread')[0]
+        with self.assertRaises(QueueConflict):
+            self.queue.recover('thread', 'a', item['revision'], 'retry', 'phone')
+        self.queue.change('thread', 'a', item['revision'], 'dismiss')
+        self.queue.tick()
+        self.assertEqual([], self.queue.list('thread'))
+        self.assertEqual([], self.native.sent)
+
     def test_fifo_waits_for_completed_turn_and_dispatches_once(self):
         self.add('a'); self.add('b')
         self.native.snapshot.update(activeTurnId='external', status='running')

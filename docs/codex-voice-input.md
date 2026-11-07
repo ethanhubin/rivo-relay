@@ -8,7 +8,8 @@ Partial results replace that insertion span rather than adding repeated text.
 
 The authenticated node advertises speech capability through
 `/v1/media/capabilities`; discovery is cached per `RelayApi` client. An
-unconfigured or incompatible node displays a disabled microphone and a reason.
+unconfigured or incompatible node displays only a greyed-out, disabled microphone,
+without a visible status message. Its reason remains available to screen readers.
 No speech model is downloaded or started automatically. The node owner supplies
 `RIVO_SPEECH_BACKEND_URL` and, optionally, `RIVO_SPEECH_BACKEND_TOKEN`.
 

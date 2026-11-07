@@ -27,6 +27,34 @@ class SessionControllerTest {
         .setBody("""{"error":{"code":"native_rejected","message":"读取暂时失败"}}""")
     private suspend fun await(latch: CountDownLatch) = withContext(Dispatchers.IO) { assertTrue(latch.await(5, TimeUnit.SECONDS)) }
 
+    @Test fun transportResetDoesNotLeaveSessionLoadingForever() = runBlocking {
+        val server = MockWebServer()
+        val started = CountDownLatch(1)
+        val reads = AtomicInteger()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                if (reads.incrementAndGet() == 1) {
+                    started.countDown()
+                    return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                }
+                return snapshot("t", "reconnected")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val transport = api(server)
+        val controller = SessionController(transport, scope) { fail(it.message) }
+        try {
+            controller.open("t")
+            await(started)
+            transport.resetTransport()
+            controller.refresh()
+            val recovered = withTimeout(5000) { controller.state.first { it.snapshot?.name == "reconnected" && !it.stale } }
+            assertFalse(recovered.loading)
+        } finally { controller.close(); scope.cancel(); server.shutdown() }
+    }
+
     @Test fun liveOutputUpdatesWithoutAnotherHistoryRequest() = runBlocking {
         val server = MockWebServer()
         val reads = AtomicInteger()
@@ -152,6 +180,8 @@ class SessionControllerTest {
             controller.open("t")
             assertEquals(401, (withTimeout(5_000) { unauthorized.await() } as ApiException).status)
             assertNull(controller.state.value.readError)
+            assertFalse(controller.state.value.loading)
+            assertTrue(controller.state.value.stale)
         } finally { controller.close(); scope.cancel(); server.shutdown() }
     }
 
