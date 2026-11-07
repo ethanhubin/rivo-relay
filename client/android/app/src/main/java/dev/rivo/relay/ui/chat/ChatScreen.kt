@@ -44,6 +44,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     uploadFile: suspend (String, String, java.io.File) -> JSONObject = { _, _, _ -> error("节点不支持文件上传") },
     downloadFile: suspend (String, java.io.OutputStream, (Long, Long) -> Unit) -> Unit = { _, _, _ -> error("节点不支持文件下载") },
     onQueue: (JSONObject, () -> Unit) -> Unit = { _, _ -> },
+    onGoal: (JSONObject) -> Unit = {},
     draftStore: ConversationStore? = null, onPersistDraft: (String, ConversationDraft) -> Unit = { _, _ -> },
     onSendWithMode: ((JSONArray, String?, String?, String?, () -> Unit) -> Unit)? = null,
     readTool: suspend (String) -> JSONObject = { error("节点工具不可用") },
@@ -381,9 +382,12 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 NativeRequestPanel(request, !busy && !blocked && !state.stale && !snapshot.readOnly) { onRespond(request, it) }
             } }
         }
-        recoveryTask?.let { task -> RecoveryTaskPanel(task, !busy && !blocked && !state.stale && snapshot?.readOnly != true) { operation ->
+        recoveryTask?.let { task -> RecoveryTaskPanel(task, !busy && !blocked && !state.stale, readOnly = snapshot?.readOnly == true) { operation ->
             onQueue(JSONObject().put("operation", operation).put("itemId", task.id).put("revision", task.revision), {})
         } }
+        if (snapshot?.goalSupported == true) key(state.id) {
+            NativeGoalPanel(snapshot.goal, !busy && !blocked && !state.stale && !snapshot.readOnly, onGoal)
+        }
         NativePlan(snapshot?.plan)
         val waitingQueue = snapshot?.queue.orEmpty().filter { it.status !in setOf("running", "dispatching") && it.id != recoveryTask?.id }
         if (snapshot != null && waitingQueue.isNotEmpty()) ExecutionQueuePanel(snapshot.id, waitingQueue, !busy && !blocked && !state.stale,

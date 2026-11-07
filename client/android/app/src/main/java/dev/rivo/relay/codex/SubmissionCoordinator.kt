@@ -22,6 +22,7 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
     val state = mutable.asStateFlow()
     private var afterAccepted: ((JSONObject) -> Unit)? = null
     private fun failureMessage(response: JSONObject, label: String): String = when (response.string("errorCode")) {
+        "native_auth_required" -> "Codex 登录已失效，请在后台重新授权并检查独立后台登录状态。无需重新配对手机。"
         "writer_still_held" -> "会话仍被进程持有，未确认释放成功"
         "handoff_changed", "handoff_confirmation_required" -> "持锁进程或关联会话已变化，请重新操作并确认"
         "handoff_acquire_failed" -> "原进程已结束，但新运行时尚未取得会话权限"

@@ -25,6 +25,7 @@ import dev.rivo.relay.ui.projects.*
 import dev.rivo.relay.ui.sessions.SessionsScreen
 import dev.rivo.relay.ui.chat.ChatScreen
 import dev.rivo.relay.ui.todos.TodosScreen
+import dev.rivo.relay.ui.settings.SettingsScreen
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -36,10 +37,18 @@ private val pendingProjectSaver = Saver<ProjectSummary?, ArrayList<String>>(
 @Composable
 fun RelayApp(vm: AppViewModel = viewModel()) {
     val app by vm.state.collectAsStateWithLifecycle()
+    var loginSettings by rememberSaveable { mutableStateOf(false) }
+    BackHandler(app.node == null && loginSettings) { loginSettings = false }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Box(Modifier.fillMaxSize().systemBarsPadding()) {
             val node = app.node
-            if (node == null) LoginScreen(app.pairing, app.error, vm::pair, vm::setError, app.savedNodes, vm::selectNode)
+            if (node == null) {
+                if (loginSettings) Column {
+                    TextButton(onClick = { loginSettings = false }) { Text("返回登录") }
+                    SettingsScreen()
+                } else LoginScreen(app.pairing, app.error, vm::pair, vm::setError, app.savedNodes, vm::selectNode,
+                    onSettings = { loginSettings = true })
+            }
             else key(node) { ConnectedApp(node, app.error, vm::setError, vm::disconnect, vm::retryConnection, app.savedNodes, vm::selectNode) }
         }
     }
@@ -50,10 +59,9 @@ fun RelayApp(vm: AppViewModel = viewModel()) {
 private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) -> Unit, disconnect: () -> Unit, retryConnection: () -> Unit,
     savedNodes: List<dev.rivo.relay.connection.SavedNode>, selectNode: (String) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    var route by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastRoute")?.let { if (it == "new") "sessions" else it }?.takeIf { it in setOf("projects", "sessions", "chat", "todos") } ?: "projects") }
+    var route by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastRoute")?.let { if (it == "new") "sessions" else it }?.takeIf { it in setOf("projects", "sessions", "chat", "todos", "settings") } ?: "projects") }
     var threadId by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastThreadId")) }
     var chatParent by rememberSaveable { mutableStateOf("sessions") }
-    var connectionOpen by remember { mutableStateOf(false) }
     var addProject by remember { mutableStateOf(false) }
     var pendingGeneration by rememberSaveable { mutableStateOf(0) }
     var pendingDraft by remember { mutableStateOf(ConversationDraft()) }
@@ -229,8 +237,9 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     Column(Modifier.fillMaxSize().imePadding()) {
         Box(Modifier.weight(1f)) {
             when (route) {
+                "settings" -> SettingsScreen(node.connection.name, node.connection.base)
                 "projects" -> ProjectsScreen(catalog.projects, node.connection.name, catalog.loading, { project -> node.catalog.project(project); route = "sessions"; setError(null) },
-                    { connectionOpen = true }, { node.catalog.refreshProjects() }, { if (node.catalog.state.value.projectsFresh) addProject = true },
+                    { route = "settings"; setError(null) }, { node.catalog.refreshProjects() }, { if (node.catalog.state.value.projectsFresh) addProject = true },
                     usage = catalog.usage, usageLoading = catalog.usageLoading, usageError = catalog.usageError,
                     onRefreshUsage = { node.catalog.refreshUsage(true) }, canAdd = projectsWritable,
                     savedNodes = savedNodes, currentBase = node.connection.base,
@@ -431,6 +440,13 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                                 node.catalog.refreshThreads()
                                 if (route == "chat" && threadId == id) back()
                             }
+                    }, onGoal = { body ->
+                        val id = threadId
+                        val current = node.session.state.value
+                        if (id != null && current.id == id && !current.stale && writable && current.snapshot?.readOnly == false)
+                            node.submissions.submit("/v1/threads/${encoded(id)}/goal", body, "更新目标") {
+                                if (route == "chat" && threadId == id) node.session.refresh()
+                            }
                     }, onQueue = { body, accepted ->
                         val id = threadId
                         val current = node.session.state.value
@@ -491,11 +507,13 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                 }
             }
         }
-        if (route == "projects" || route == "todos") NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
-            NavigationBarItem(selected = route != "todos", onClick = { route = "projects"; setError(null); node.catalog.refreshProjects() },
+        if (route in setOf("projects", "todos", "settings")) NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
+            NavigationBarItem(selected = route == "projects", onClick = { route = "projects"; setError(null); node.catalog.refreshProjects() },
                 icon = { Text("⌘") }, label = { Text("Codex") }, modifier = Modifier.testTag("nav_codex"))
             NavigationBarItem(selected = route == "todos", onClick = { route = "todos"; setError(null); node.todos.refresh(); node.catalog.refreshProjects() },
                 icon = { Text("✓") }, label = { Text("待办") }, modifier = Modifier.testTag("nav_todos"))
+            NavigationBarItem(selected = route == "settings", onClick = { route = "settings"; setError(null) },
+                icon = { Text("⚙") }, label = { Text("设置") }, modifier = Modifier.testTag("nav_settings"))
         }
     }
     handoffPrompt?.let { (id, operation, preview) ->
@@ -528,9 +546,6 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             Text("提交 ID：${pending.id}", style = MaterialTheme.typography.labelSmall)
         } }, confirmButton = { TextButton(onClick = { node.submissions.finishReconciliation(pending.id); endingPending = null }, enabled = !submission.busy && submission.pending?.id == pending.id,
             modifier = Modifier.testTag("confirm_finish_reconciliation")) { Text("结束手机等待") } }, dismissButton = { TextButton(onClick = { endingPending = null }) { Text("继续核对") } }) }
-    if (connectionOpen) AlertDialog(onDismissRequest = { connectionOpen = false }, title = { Text(node.connection.name) },
-        text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { Text(node.connection.base); Text("Rivo Relay ${BuildConfig.VERSION_NAME}"); Text("连接凭据已加密保存在此设备。可通过项目页顶部菜单切换节点。", style = MaterialTheme.typography.bodySmall) } },
-        confirmButton = { TextButton(onClick = { connectionOpen = false }) { Text("完成") } })
     todoAttachment?.let { path -> dev.rivo.relay.ui.chat.FilePreviewDialog(path,
         { p -> node.api.call("/v1/files?path=" + encoded(p)) }, { p, output, progress -> node.api.downloadFile(p, output, progress) }) { todoAttachment = null } }
     if (addProject) ProjectDirectoryDialog(

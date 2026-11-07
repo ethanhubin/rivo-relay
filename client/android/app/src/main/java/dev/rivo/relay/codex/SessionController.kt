@@ -172,10 +172,14 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                         }
                     }
                 } catch (e: Exception) {
-                    if (e is CancellationException) throw e
+                    // Transport reset cancels a Call, not this session. Only a
+                    // canceled session job must terminate the refresh loop.
+                    if (e is CancellationException) currentCoroutineContext().ensureActive()
                     if (isCurrent(id, targetGeneration)) {
-                        if (e is ApiException && e.status == 401) failure(e)
-                        else if (requestHistoryEpoch == historyEpoch) mutable.update { it.copy(loading = false, stale = true, readError = message(e)) }
+                        if (e is ApiException && e.status == 401) {
+                            mutable.update { it.copy(loading = false, stale = true) }
+                            failure(e)
+                        } else if (requestHistoryEpoch == historyEpoch) mutable.update { it.copy(loading = false, stale = true, readError = message(e)) }
                     }
                 }
                 finally { reading = false }

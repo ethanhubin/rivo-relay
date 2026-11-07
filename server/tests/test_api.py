@@ -126,6 +126,25 @@ class ApiTests(unittest.TestCase):
         self.paired = self._pair()
         self.token = self.paired["token"]
 
+    def test_goal_controls_validate_authentication_and_deduplicate(self):
+        writes = []
+        def update(thread_id, operation, **kwargs):
+            writes.append((thread_id, operation, kwargs))
+            return {'threadId': thread_id}
+        self.native.update_goal = update
+        path = '/v1/threads/thread-1/goal'
+        body = {'submissionId': 'goal-set', 'operation': 'set', 'objective': 'Finish', 'tokenBudget': 1000}
+        self.assertEqual(401, self.request('POST', path, body)[0])
+        for _ in range(2):
+            self.assertEqual(200, self.request('POST', path, body, token=self.token)[0])
+        self.assertEqual([('thread-1', 'set', {'objective': 'Finish', 'token_budget': 1000})], writes)
+        for invalid in (0, -1, True, '100', 1.5, 2**63):
+            self.assertEqual(400, self.request('POST', path, {**body, 'tokenBudget': invalid}, token=self.token)[0])
+        for operation in ('pause', 'resume', 'clear'):
+            self.assertEqual(200, self.request('POST', path, {'submissionId': 'goal-' + operation, 'operation': operation}, token=self.token)[0])
+        self.assertEqual(400, self.request('POST', path, {**body, 'operation': 'unknown'}, token=self.token)[0])
+        self.assertEqual(400, self.request('POST', path, {**body, 'objective': ''}, token=self.token)[0])
+
     def test_fast_settings_are_validated_and_deduplicated(self):
         writes = []
         def update(thread_id, **kwargs):
@@ -629,6 +648,13 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 404)
         self.assertEqual(result["error"]["code"], "thread_not_found")
         self.assertNotIn("private/test-only-path", json.dumps(result))
+
+    def test_history_failure_is_not_mislabeled_as_desktop_disconnection(self):
+        self.native.get_error = NativeFailure('native_history_unavailable', http_status=503)
+        status, result, _ = self.request('GET', '/v1/threads/thread-1', token=self.token)
+        self.assertEqual(503, status)
+        self.assertEqual('原生历史暂不可用，请稍后重试', result['error']['message'])
+        self.assertNotIn('private/test-only-path', json.dumps(result))
 
     def test_duplicate_content_length_is_rejected_before_reading_body(self):
         client = http.client.HTTPConnection("127.0.0.1", self.port, timeout=4)

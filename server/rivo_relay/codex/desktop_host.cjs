@@ -11,6 +11,10 @@ const HUMAN_REQUESTS = [
   'item/tool/requestUserInput', 'item/permissions/requestApproval',
   'execCommandApproval', 'applyPatchApproval',
 ];
+function readyState(state) {
+  if (state && typeof state === 'object') state = state.state || state.type || state.status;
+  return ['connected', 'ready'].includes(String(state || '').toLowerCase());
+}
 
 async function startDesktopBridge({ connection, directory, appVersion = null }) {
   for (const method of ['sendAppServerRequest', 'handleClientResponse',
@@ -31,6 +35,7 @@ async function startDesktopBridge({ connection, directory, appVersion = null }) 
   fs.writeFileSync(tokenPath, token, { mode: 0o600, flag: 'wx' });
   const peers = new Set();
   const pending = new Map();
+  let nativeReady = readyState(connection.getConnectionState());
   let closed = false;
   function send(peer, value) {
     if (peer.socket.destroyed) return;
@@ -51,8 +56,16 @@ async function startDesktopBridge({ connection, directory, appVersion = null }) 
       broadcast(message);
     }),
     connection.registerInternalConnectionStateHandler(state => {
-      if (!['connected', 'ready'].includes(state)) pending.clear();
+      const wasReady = nativeReady;
+      nativeReady = readyState(state);
+      if (!nativeReady) pending.clear();
       broadcast({ method: 'qiguang/desktopConnectionState', params: { state } });
+      // A surviving bridge socket must not retain the previous native writer's
+      // generation, subscriptions, approval IDs or host-identity proof. Require
+      // a fresh authenticated handshake after the underlying connection drops.
+      if (wasReady && !nativeReady) {
+        for (const peer of peers) peer.socket.destroy();
+      }
     }),
     connection.registerInternalServerRequestHandler({ methods: HUMAN_REQUESTS, handler: message => {
       if (![...peers].some(peer => peer.authenticated)) return null;
@@ -105,7 +118,7 @@ async function startDesktopBridge({ connection, directory, appVersion = null }) 
           } };
       } else if (message.method === 'hello') {
         throw new Error('Bridge already authenticated');
-      } else if (!['connected', 'ready'].includes(connection.getConnectionState())) {
+      } else if (!readyState(connection.getConnectionState())) {
         throw new Error('Desktop app-server is not connected');
       } else if (message.method === 'rpc') {
         if (typeof params.method !== 'string' || ['initialize', 'initialized'].includes(params.method)) {

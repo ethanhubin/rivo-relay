@@ -163,3 +163,11 @@ HTTP 层建议在现有带 submission ID 的发送/引导请求中传原生 `inp
 既有 runtime **906** 通过现有 Relay/Tailscale HTTPS 接口验证了 account quota、项目目录、Git refs、独立工作树与 diff、Review 范围读取，以及真实 Plan → Default 两轮执行：Plan 读取为 `readOnly`，Default 恢复进入 Plan 前的原生 sandbox。测试工作树已清理、会话已归档、临时凭据已撤销。未执行新的原生 Review 任务，也不将这些检查当作 Desktop UI 验收；完整结果见[0.2.0 验证记录](validation.md)。
 
 当前原生 `Turn` 不带 model/effort 字段。手机模型变化提示只使用 Relay 已观察的发送设置及 `model/rerouted`，未知轮次保持未知，不用当前设置补旧历史。收到首轮接受回执后、rollout 仍为空的短窗口已按真实节点行为修复并回归覆盖。
+
+## 2026-11-07 本机历史打开回归修复
+
+0.2.10 迁移的 journal 检查通过原生 `command/exec` 执行主机探测；本机沙箱拒绝 `ps`，导致 `native_host_unverified` 被升级为必选历史门禁，正常的 `thread/turns/list` 也未被调用，最终返回 503 并误显示 Desktop 不可用。
+
+现仅在主机无法验证、连接 generation 未改变且没有已知 journal 水位时，允许以官方历史 RPC 为准读取，并通过 `nativeSync.journalCheck=unavailable` 明确表示未核对 rollout。此路径不推断本机目录、不修复文件；官方读取失败、已知水位、预期 turn 未持久化和真实历史损坏仍不能被这一降级掩盖。错误提示区分历史不可用与原生服务连接故障。
+
+服务端原有及新增回归共 315 项通过，随后新增的 HTTP 错误文案测试单独通过（共 316 项）。本机 Relay PID 从 91223 更新到 5284，原生 daemon PID 保持 53513，已有配对保留，临时验证授权已撤销。用户指定会话 `01a1875d-b7ec-7fc2-95ba-e6aa68177cf7` 的真实 HTTP 快照从 503 恢复为 200，返回 17 轮历史；另外两个会话也返回 200。三者均保留外部 writer 下的只读状态，未接管或发送消息。结果保存在 `workspace/artifacts/history-open-fix/verification.json`。本次验证为服务 API 验证，未宣称手机 UI 已验收；无需升级 APK。

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from dataclasses import replace
 from collections import OrderedDict
 import json
 from pathlib import Path
@@ -40,8 +41,9 @@ class NativeJournal:
     """All file access happens through the selected daemon's native command RPC.
 
     Test doubles without host introspection retain their strict RPC contract.
-    Production transports expose native_host_info; a failed inspection is never
-    mistaken for an authoritative ready history.
+    Production transports expose native_host_info. If host identity cannot be
+    inspected, official RPC remains usable with journalCheck=unavailable;
+    filesystem repair remains disabled and known watermarks stay enforced.
     """
     def __init__(self, connection, history_adapter, on_repaired=None):
         self._connection = connection
@@ -125,7 +127,20 @@ class NativeJournal:
         return result
 
     def _journal(self, thread_id):
-        inspection = self._inspect(thread_id)
+        generation = str(self.connection.generation)
+        try:
+            inspection = self._inspect(thread_id)
+        except CodexError as error:
+            # command/exec may forbid process inspection even while official
+            # history RPC works. Do not infer a local home or attempt repair.
+            # A previously observed watermark must not be silently discarded.
+            with self._inspection_lock:
+                known = (generation, thread_id) in self._inspections
+            if (error.code != 'native_host_unverified' or known
+                    or generation != str(self.connection.generation)):
+                raise
+            self._local.journal_check = 'unavailable'
+            return None
         if inspection.get('changing'):
             raise CodexError('Codex rollout 正在更新，请等待原生写入完成', code='history_converging', http_status=409)
         watermark = inspection.get('journal')
@@ -166,9 +181,11 @@ class NativeJournal:
 
     def ensure(self, thread_id, *, workspace_root='', expected_turn_id=None):
         if not self.supported:
-            return NativeConvergenceResult('ready', self.generation(thread_id), int(time.time()))
+            return NativeConvergenceResult('ready', self.generation(thread_id), int(time.time()),
+                                           journal_check='unsupported')
         self._local.workspace_root = workspace_root
         self._local.inspection = None
+        self._local.journal_check = 'verified'
         binder = getattr(self._connection, 'history_host_connection', None)
         try:
             # Probe, filesystem helper and persisted RPC must use the exact
@@ -185,4 +202,4 @@ class NativeJournal:
         if inspection.get('changing') and inspection.get('writerBusy'):
             return NativeConvergenceResult('converging', result.generation, result.checked_at,
                                            error='Codex rollout 正在更新')
-        return result
+        return replace(result, journal_check=self._local.journal_check)

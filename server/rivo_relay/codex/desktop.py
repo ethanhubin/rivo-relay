@@ -126,9 +126,19 @@ class DesktopConnection(NativeConnection):
     def _set_state(self, state):
         if isinstance(state, dict):
             state = state.get('state') or state.get('type') or state.get('status')
+        close = None
         with self._lock:
+            was_ready = self._ready
             self._state = str(state or 'unknown').lower()
             self._ready = self._state in {'ready', 'connected'}
+            if was_ready and not self._ready:
+                close = self._socket
+        # Older protocol-1 hosts may keep their bridge socket open while their
+        # native connection restarts. Retire that transport as well: _read emits
+        # the existing writer-disconnect event and the next start gets a fresh
+        # generation/hello, so stale approvals and host proofs cannot survive.
+        if close is not None:
+            close.close()
 
     def request(self, method, params=None, *, timeout=None):
         if not self.status()['connected']:

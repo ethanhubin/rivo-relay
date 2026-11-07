@@ -42,6 +42,7 @@ class NativeConvergenceResult:
     projection_turn_id: Optional[str] = None
     reprojected: bool = False
     error: str = ""
+    journal_check: str = "verified"
 
     @property
     def ready(self) -> bool:
@@ -52,6 +53,7 @@ class NativeConvergenceResult:
             "state": self.state,
             "generation": self.generation,
             "checked_at": self.checked_at,
+            "journalCheck": self.journal_check,
         }
 
 

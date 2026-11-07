@@ -315,7 +315,9 @@ class Handler(BaseHTTPRequestHandler):
                 409: "操作状态已变化，请刷新", 429: "尝试过于频繁，请稍后再试",
                 501: "当前节点版本暂不支持此功能",
                 413: "文件超过此操作的大小限制",
-            }.get(status, "Desktop 连接暂不可用，请检查电脑端连接")
+            }.get(status, "原生服务连接暂不可用，请检查节点服务")
+            if code == 'native_history_unavailable':
+                message = '原生历史暂不可用，请稍后重试'
             if code == "file_too_large":
                 message = ("文件超过预览大小，请选择保存到手机" if path == ["v1", "files"]
                            else "文件最大支持 1 GiB")
@@ -476,6 +478,15 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(body.get("pinned"), bool):
                         raise ApiError(400, "invalid_request", "pinned must be boolean")
                     fn = lambda: codex.pin_session(thread_id, body["pinned"])
+                elif action == 'goal':
+                    operation = body.get('operation')
+                    if operation not in ('set', 'pause', 'resume', 'clear'):
+                        raise ApiError(400, 'invalid_request', 'Invalid goal operation')
+                    objective = required(body, 'objective', 200000) if operation == 'set' else None
+                    budget = body.get('tokenBudget')
+                    if budget is not None and (type(budget) is not int or not 0 < budget <= 9223372036854775807):
+                        raise ApiError(400, 'invalid_request', 'tokenBudget must be a positive integer')
+                    fn = lambda: codex.update_goal(thread_id, operation, objective=objective, token_budget=budget)
                 elif action == 'settings':
                     if not any(body.get(key) is not None for key in ('model', 'effort', 'serviceTier')):
                         raise ApiError(400, 'invalid_request', 'Settings required')
