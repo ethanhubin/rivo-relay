@@ -507,7 +507,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     }, onOpenThread = { openChat(it.threadId, "todos") }, onRefresh = { node.todos.refresh(); node.catalog.refreshProjects() },
                     onSaveDetails = node.todos::saveDetails, onUpdateDetails = node.todos::updateDetails,
                     onSynchronize = node.todos::synchronizeNow, onDiscardLocal = node.todos::discardLocalChanges,
-                    readDirectory = { path -> node.api.call("/v1/directories?path=" + encoded(path)) }, onOpenAttachment = { todoAttachment = it })
+                    readDirectory = { path -> node.api.call("/v1/directories?path=" + encoded(path)) }, onOpenAttachment = { todoAttachment = it },
+                    uploadAttachment = if (projectsWritable) node.api::uploadProjectFile else null)
             }
         }
         val cached = catalogCacheNoticeVisible(route, catalog, network != null)

@@ -57,7 +57,8 @@ fun TodosScreen(state: TodosState, projects: List<ProjectSummary>, canDispatch: 
     onSaveDetails: ((Todo?, String, String, JSONObject, () -> Unit) -> Unit)? = null,
     onUpdateDetails: ((Todo, JSONObject) -> Unit)? = null,
     onSynchronize: (() -> Unit)? = null, onDiscardLocal: (() -> Unit)? = null,
-    readDirectory: (suspend (String) -> JSONObject)? = null, onOpenAttachment: ((String) -> Unit)? = null) {
+    readDirectory: (suspend (String) -> JSONObject)? = null, onOpenAttachment: ((String) -> Unit)? = null,
+    uploadAttachment: (suspend (String, String, java.io.File) -> JSONObject)? = null) {
     var editor by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Todo?>(null) }
     var delivery by remember { mutableStateOf<Todo?>(null) }
@@ -171,7 +172,7 @@ fun TodosScreen(state: TodosState, projects: List<ProjectSummary>, canDispatch: 
         onSave = { title, notes, details -> save(title, notes, details, false) }, onDelete = { editing?.let { item -> onDelete(item) { editor = false } } },
         onStartCodex = if (canDispatch && state.online && state.pendingCount == 0 && !state.syncing && editing?.completed != true && editing?.threadId.orEmpty().isBlank())
             { { title, notes, details -> save(title, notes, details, true) } } else null,
-        onOpenAttachment = onOpenAttachment,
+        onOpenAttachment = onOpenAttachment, uploadAttachment = uploadAttachment?.takeIf { state.online },
         onOpenThread = editing?.takeIf { it.threadId.isNotBlank() }?.let { item -> { editor = false; onOpenThread(item) } })
     delivery?.let { item -> DispatchSheet(item, projects, canDispatch && state.online && state.pendingCount == 0 && !state.syncing, loadThreads, { delivery = null }) { project, thread -> onDispatch(item, project, thread) { delivery = null } } }
     if (deleteConfirm) AlertDialog(onDismissRequest = { deleteConfirm = false }, title = { Text("删除 ${selectedIds.size} 项待办？") },
