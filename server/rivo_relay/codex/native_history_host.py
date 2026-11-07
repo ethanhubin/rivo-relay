@@ -276,15 +276,13 @@ def dispatch(request):
         states, inspections = {}, {}
         known = request.get('known') or {}
         for thread_id in request['threadIds']:
-            if not writer_busy(home, thread_id):
-                continue
             inspected = inspect_journal(home, thread_id, known.get(thread_id))
             inspections[thread_id] = inspected
             journal = inspected.get('journal') or {}
             # A lock alone only proves ownership; idle Desktop sessions hold it too.
-            if inspected.get('changing') or not inspected.get('writerBusy'):
+            if not inspected.get('available') or inspected.get('changing'):
                 continue
-            if journal.get('status') == 'inProgress':
+            if journal.get('status') == 'inProgress' and inspected.get('writerBusy'):
                 states[thread_id] = 'running'
             elif journal.get('status') in ('completed', 'interrupted', 'failed'):
                 states[thread_id] = 'idle'

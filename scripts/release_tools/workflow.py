@@ -271,6 +271,8 @@ class Release:
 
     def run(self, commit=False):
         with locked(self.root / 'workspace/.release-cli.lock') as lock:
+            # Another worker may have finished since this object was created.
+            self.state = load(self.state_file)
             lock.seek(0)
             lock.truncate()
             lock.write(json.dumps({'version': self.state['version'], 'pid': os.getpid()}))

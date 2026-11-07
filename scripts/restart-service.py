@@ -12,6 +12,8 @@ import sys
 import tempfile
 import time
 import urllib.request
+import uuid
+from release_tools.jobs import submit
 
 
 def record(event, **fields):
@@ -117,7 +119,7 @@ if __name__ == '__main__':
     parser.add_argument('--candidate', required=True, type=Path)
     parser.add_argument('--plist', type=Path, default=Path.home() / 'Library/LaunchAgents/local.rivo-relay.plist')
     parser.add_argument('--health', default='http://127.0.0.1:18765/health')
-    parser.add_argument('--submit', action='store_true', help='Run in an independent process session so caller cancellation cannot stop deployment')
+    parser.add_argument('--submit', action='store_true', help='Run as an independent launchd job so stopping Relay cannot stop deployment')
     parser.add_argument('--log-dir', type=Path, help='Required with --submit; inspect deployment.log for complete/rollback events')
     args = parser.parse_args()
     if args.submit:
@@ -125,16 +127,17 @@ if __name__ == '__main__':
             parser.error('--submit requires --log-dir')
         args.log_dir.mkdir(parents=True, exist_ok=True)
         log = (args.log_dir / 'deployment.log').resolve()
-        # New session + redirected descriptors survive the caller's process-group
-        # cancellation. The worker retains the deployment lock until completion.
-        with log.open('ab', buffering=0) as output:
-            process = subprocess.Popen([
-                sys.executable, str(Path(__file__).resolve()),
-                '--candidate', str(args.candidate.resolve()),
-                '--plist', str(args.plist.resolve()), '--health', args.health],
-                stdin=subprocess.DEVNULL, stdout=output, stderr=output,
-                start_new_session=True, close_fds=True)
-        record('submitted', pid=process.pid, log=str(log))
+        # setsid does not escape launchd's job/process-group ownership. A worker
+        # descended from Relay can die when it bootouts Relay, even with a new
+        # POSIX session. Let launchd create a separate job before stopping it.
+        label = 'local.rivo-relay.deploy.' + uuid.uuid4().hex
+        result = submit(label, [sys.executable, str(Path(__file__).resolve()),
+            '--candidate', str(args.candidate.resolve()),
+            '--plist', str(args.plist.resolve()), '--health', args.health], log)
+        if result.returncode:
+            record('submission_failed', detail=result.stderr.strip()[:2000])
+            raise SystemExit(result.returncode)
+        record('submitted', label=label, log=str(log))
 
     else:
         replace(args.plist, args.candidate, args.health)

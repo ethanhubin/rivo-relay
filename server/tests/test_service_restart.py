@@ -1,9 +1,14 @@
 import importlib.util
 from pathlib import Path
 import plistlib
+import runpy
+import sys
+from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
 
 spec = importlib.util.spec_from_file_location('restart', Path(__file__).resolve().parents[2] / 'scripts/restart-service.py')
 m = importlib.util.module_from_spec(spec)
@@ -48,3 +53,30 @@ class RestartTest(unittest.TestCase):
             with patch.object(m, 'stop'), patch.object(m, 'start', side_effect=RuntimeError('failed')):
                 with self.assertRaisesRegex(RuntimeError, 'Deployment and rollback failed'):
                     m.replace(path, path, 'http://localhost/health')
+
+
+class SubmissionTest(unittest.TestCase):
+    def test_worker_is_submitted_as_separate_launchd_job(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = ['restart-service.py', '--candidate', directory + '/candidate.plist',
+                    '--submit', '--log-dir', directory]
+            with patch.object(sys, 'argv', args), patch('subprocess.run', return_value=SimpleNamespace(returncode=0, stderr='')) as run:
+                runpy.run_path(str(Path(m.__file__)), run_name='__main__')
+            command = run.call_args.args[0]
+            self.assertEqual(command[:2], ['launchctl', 'bootstrap'])
+            config = plistlib.loads(Path(command[-1]).read_bytes())
+            self.assertIs(config['KeepAlive'], False)
+            command = config['ProgramArguments']
+            self.assertTrue(config['Label'].startswith('local.rivo-relay.deploy.'))
+            self.assertIn('--candidate', command)
+            self.assertNotIn('--submit', command)
+
+    def test_submission_failure_is_reported_without_stopping_service(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = ['restart-service.py', '--candidate', directory + '/candidate.plist',
+                    '--submit', '--log-dir', directory]
+            with patch.object(sys, 'argv', args), patch('subprocess.run', return_value=SimpleNamespace(returncode=5, stderr='failed')) as run:
+                with self.assertRaises(SystemExit) as error:
+                    runpy.run_path(str(Path(m.__file__)), run_name='__main__')
+                self.assertEqual(error.exception.code, 5)
+                self.assertEqual(run.call_count, 1)

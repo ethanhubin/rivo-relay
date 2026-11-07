@@ -33,6 +33,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.rivo.relay.codex.threadIsExecuting
+import dev.rivo.relay.codex.threadPendingLabel
 import dev.rivo.relay.codex.threadIsActive
 import dev.rivo.relay.data.PendingConversation
 import dev.rivo.relay.data.CodexUsage
@@ -148,10 +150,17 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                                     when {
                                         isSelected -> Text("✓", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.primary, modifier = Modifier.semantics { contentDescription = "已选择" })
-                                        threadIsActive(thread) -> CircularProgressIndicator(Modifier.size(18.dp).semantics { contentDescription = "任务处理中" }, strokeWidth = 2.dp)
+                                        threadIsExecuting(thread) -> CircularProgressIndicator(Modifier.size(18.dp).semantics { contentDescription = "任务处理中" }, strokeWidth = 2.dp)
+                                        threadPendingLabel(thread) != null -> Text("Ⅱ", Modifier.semantics {
+                                            contentDescription = threadPendingLabel(thread)!!
+                                        }, color = MaterialTheme.colorScheme.secondary)
                                         thread.source == "todo" -> Text("☑", Modifier.testTag("session_source_todo_${thread.id}").semantics { contentDescription = "来自待办" }, style = MaterialTheme.typography.titleMedium)
                                         else -> Icon(painterResource(android.R.drawable.sym_action_chat), null, Modifier.size(20.dp))
                                     }
+                                }
+                                if (!threadIsExecuting(thread)) threadPendingLabel(thread)?.let { label ->
+                                    Text(label, Modifier.padding(start = 4.dp), style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.secondary)
                                 }
                                 Text(thread.name, Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.bodyLarge,
                                     fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)

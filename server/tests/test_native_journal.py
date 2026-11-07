@@ -45,12 +45,12 @@ class JournalHostTests(unittest.TestCase):
     def write(self):
         self.path.write_text(''.join(json.dumps(record) + '\n' for record in self.records))
 
-    def test_external_activity_requires_live_lock_and_current_journal(self):
+    def test_activity_requires_terminal_journal_for_idle_and_live_lock_for_running(self):
         request = {'runtime': {}, 'operation': 'activity', 'threadIds': [THREAD]}
         lock = self.home / 'thread-writer-locks' / f'{THREAD}.lock'
         lock.parent.mkdir()
         with patch('rivo_relay.codex.native_history_host.verify_runtime', return_value=self.home):
-            self.assertEqual({}, dispatch(request)['states'])
+            self.assertEqual({THREAD: 'idle'}, dispatch(request)['states'])
             with lock.open('a+b') as writer:
                 flock(writer.fileno(), LOCK_EX | LOCK_NB)
                 try:
@@ -64,6 +64,12 @@ class JournalHostTests(unittest.TestCase):
                 finally:
                     flock(writer.fileno(), LOCK_UN)
             self.write()
+            self.assertEqual({}, dispatch(request)['states'])
+            self.records.append({'type': 'event_msg', 'payload': {'type': 'turn_aborted', 'turn_id': TURN}})
+            self.write()
+            self.assertEqual({THREAD: 'idle'}, dispatch(request)['states'])
+            with self.path.open('ab') as stream:
+                stream.write(b'{')
             self.assertEqual({}, dispatch(request)['states'])
 
     def test_inspection_only_returns_lifecycle_and_never_message_content(self):

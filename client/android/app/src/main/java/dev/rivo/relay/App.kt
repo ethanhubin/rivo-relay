@@ -481,7 +481,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     }, onQueue = { body, accepted ->
                         val id = threadId
                         val current = node.session.state.value
-                        if (id != null && current.id == id && current.control().canOperate && writable) node.submissions.submit("/v1/threads/${encoded(id)}/queue", body, "更新执行队列",
+                        if (id != null && current.id == id && !current.stale && (current.control().canOperate || body.string("operation") == "dismiss") && writable) node.submissions.submit("/v1/threads/${encoded(id)}/queue", body, "更新执行队列",
                             prepared = { pending ->
                                 if (body.string("operation") == "steer") current.snapshot?.queue?.firstOrNull { it.id == body.string("itemId") }?.let { task ->
                                     task.raw.optJSONArray("input")?.let { input -> node.session.beginSubmission(id, pending.id, input, "guidance", task.id) }

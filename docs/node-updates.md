@@ -80,4 +80,8 @@ HTTP 响应日志记录 UTC 时间、方法和状态，不记录地址、查询�
 launchd 在 33.530 拒绝并记录 `37: Operation already in progress`；旧服务到 34.352 才退出并移除。
 修复要求 bootout 后轮询确认服务已从 launchd 移除，才允许 bootstrap；回滚同样遵守此屏障。
 
-服务切换必须通过 `--submit` 交给独立进程会话执行，避免聊天或命令取消在卸载后杀死部署进程。提交成功不代表部署成功，必须读取 deployment.log 的 complete/rollback 结果并验证 HTTP。
+服务切换必须通过 `--submit` 交给独立 launchd job 执行（仅 setsid / start_new_session 无法脱离 Relay 的 launchd 生命周期），避免聊天或命令取消在卸载后杀死部署进程。提交成功不代表部署成功，必须读取 deployment.log 的 complete/rollback 结果并验证 HTTP。
+
+发布主任务和服务切换任务均由独立 launchd job 执行，避免 Relay 卸载时中断后续 APK 发布。提交失败直接报错；提交成功仅代表调度成功，仍须检查 status 和部署日志。发布 worker 在取得全局锁后重新读取状态，避免沿用过期步骤。
+
+一次性任务使用显式 `RunAtLoad=true / KeepAlive=false` 的临时 plist，通过 `launchctl bootstrap` 加载；不要使用 `launchctl submit`，本机实测该方式会重复拉起已完成任务，造成循环停服。验证需覆盖任务退出后至少两个重调度周期，不能只检查首次启动。

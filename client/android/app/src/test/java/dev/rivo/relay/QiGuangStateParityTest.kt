@@ -28,6 +28,24 @@ class QiGuangStateParityTest {
         assertTrue(threadIsActive(thread("recover", 0).copy(recoveryRequired = true)))
     }
 
+    @Test fun interruptedQueueRemainsVisibleWithoutExecutionSpinner() {
+        val idle = ThreadSummary("t", "test", "", "idle", "", "p", false, 0,
+            nativeExecution = "idle", deliveryState = "recovery", recoveryRequired = true, hasOutstandingWork = true)
+        assertTrue(threadIsActive(idle))
+        assertFalse(threadIsExecuting(idle))
+        assertEquals("待恢复", threadPendingLabel(idle))
+        assertTrue(threadIsExecuting(idle.copy(nativeExecution = "running", status = "running")))
+        val waiting = idle.copy(status = "waiting", nativeExecution = "running")
+        assertFalse(threadIsExecuting(waiting))
+        assertEquals("待回答", threadPendingLabel(waiting))
+        assertEquals("状态待确认", threadPendingLabel(idle.copy(status = "unknown", nativeExecution = "unknown",
+            recoveryRequired = false, hasOutstandingWork = false, deliveryState = "idle")))
+        val queued = idle.copy(recoveryRequired = false, deliveryState = "queued", queueDepth = 1)
+        assertFalse(threadIsExecuting(queued))
+        assertEquals("排队中", threadPendingLabel(queued))
+        assertEquals("失败", threadPendingLabel(queued.copy(deliveryState = "failed", queueDepth = 0)))
+    }
+
     @Test fun convergenceKeepsLastReadyMessagesAndTransientControlsNeverEnterCache() = runBlocking {
         val directory = java.nio.file.Files.createTempDirectory("rivo-parity-cache").toFile()
         val store = ConversationStore(directory)

@@ -195,7 +195,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         // latest draft at click time rather than capturing an earlier composition.
         val before = latestDraft
         val restored = queueTaskDraft(task)
-        onQueue(JSONObject().put("operation", "remove").put("itemId", task.id).put("revision", task.revision)) {
+        onQueue(JSONObject().put("operation", if (task.recoveryRequired) "dismiss" else "remove").put("itemId", task.id).put("revision", task.revision)) {
             if (currentSessionId == targetId && latestDraft == before) {
                 targetId?.let { onPersistDraft(it, ConversationDraft(restored.text,
                     restored.images.map { image -> StoredDraftImage(image.id, image.bytes) }, restored.files,
@@ -441,6 +441,20 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             NativeGoalPanel(snapshot.goal, !busy && !blocked && !state.stale && canOperate, onGoal, goalEditing) { goalEditing = it }
         }
         NativePlan(snapshot?.plan)
+        snapshot?.recoveryTask?.let { task ->
+            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp).testTag("queue_recovery_panel")) {
+                Text("任务待恢复", style = MaterialTheme.typography.titleSmall)
+                Text(task.text, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+                Text("检查后继续会先核对历史和当前状态；忽略仅移除此待处理记录。", style = MaterialTheme.typography.bodySmall)
+                Row {
+                    TextButton(onClick = { onQueue(JSONObject().put("operation", "recover").put("itemId", task.id).put("revision", task.revision), {}) },
+                        enabled = !busy && !blocked && !state.stale && canOperate && snapshot.status == "idle" && !snapshot.isOngoing && snapshot.requests.isEmpty(),
+                        modifier = Modifier.testTag("recover_queue_task")) { Text("检查后继续") }
+                    TextButton(onClick = { removingQueue = task }, enabled = !busy && !blocked && !state.stale,
+                        modifier = Modifier.testTag("dismiss_recovery_task")) { Text("忽略记录") }
+                }
+            }
+        }
         val waitingQueue = snapshot?.queue.orEmpty().filter { it.status !in setOf("running", "dispatching") && !it.recoveryRequired && it.id != snapshot?.recoveryTask?.id }
         if (snapshot != null && waitingQueue.isNotEmpty()) ExecutionQueuePanel(snapshot.id, waitingQueue, !busy && !blocked && canOperate,
             canSteer = canOperate && snapshot.activeTurnId.isNotBlank() && snapshot.requests.isEmpty(),
@@ -532,9 +546,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         }
     }
     removingQueue?.let { task -> AlertDialog(onDismissRequest = { if (!busy) removingQueue = null },
-        title = { Text(if (task.status == "unknown") "移除待核对记录？" else "撤回待发任务？") },
-        text = { Text(if (task.status == "unknown") "仅移除此队列记录，不会停止或重新发送原任务。请先核对会话历史。" else "该任务将从等待队列移除，不再执行。") },
-        confirmButton = { TextButton(onClick = { onQueue(JSONObject().put("operation", "remove").put("itemId", task.id).put("revision", task.revision)) { removingQueue = null } }, enabled = !busy && !blocked && canOperate, modifier = Modifier.testTag("queue_remove")) { Text("确认撤回") } },
+        title = { Text(if (task.recoveryRequired) "忽略待恢复记录？" else "撤回待发任务？") },
+        text = { Text(if (task.recoveryRequired) "仅移除此队列记录，不会停止或重新发送原任务。请先核对会话历史。" else "该任务将从等待队列移除，不再执行。") },
+        confirmButton = { TextButton(onClick = { onQueue(JSONObject().put("operation", if (task.recoveryRequired) "dismiss" else "remove").put("itemId", task.id).put("revision", task.revision)) { removingQueue = null } }, enabled = !busy && !blocked && !state.stale && (canOperate || task.recoveryRequired), modifier = Modifier.testTag("queue_remove")) { Text(if (task.recoveryRequired) "确认忽略" else "确认撤回") } },
         dismissButton = { TextButton(onClick = { removingQueue = null }) { Text("取消") } }) }
     filePath?.let { FilePreviewDialog(it, readFile, downloadFile, initialAction = fileAction) { filePath = null; fileAction = null } }
     if (workspaceFileDialog && !inputLocked) WorkspaceFilePicker(cwd, readDirectory,

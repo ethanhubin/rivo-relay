@@ -81,7 +81,9 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
     private fun applyProjects(response: JSONObject, fresh: Boolean) {
         val projects = response.objects("projects").map {
             ProjectSummary(it.string("id"), it.string("name"), it.string("path"), it.optInt("threadCount"),
-                outstandingWorkCount = it.optInt("outstandingWorkCount", 0).coerceAtLeast(0))
+                outstandingWorkCount = it.optInt("outstandingWorkCount", 0).coerceAtLeast(0),
+                runningTurnCount = it.optInt("runningTurnCount", 0).coerceAtLeast(0),
+                activeGoalCount = it.optInt("activeGoalCount", 0).coerceAtLeast(0))
         }
         val selectedId = mutable.value.selectedProject?.id ?: store?.getMetadata("selectedProjectId")
         val selected = projects.firstOrNull { it.id == selectedId }
@@ -161,7 +163,7 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
                 store?.putMetadata("read:${thread.id}", it.toString())
             }
         }
-        thread.updatedAt > readAt && !threadIsActive(thread)
+        thread.updatedAt > readAt && !threadIsExecuting(thread)
     }.mapTo(mutableSetOf()) { it.id }
 
     /** Call only after the selected thread's fresh history was successfully displayed. */
@@ -212,6 +214,21 @@ private fun threadsPath(projectId: String, archived: Boolean) = "/v1/threads?pro
 fun threadIsActive(thread: ThreadSummary): Boolean = thread.hasOutstandingWork || thread.recoveryRequired ||
     thread.queueDepth > 0 || thread.nativeExecution == "running" ||
     thread.status in setOf("running", "inProgress", "active", "waiting", "queued", "starting")
+
+/** Queue attention and execution animation are independent. */
+fun threadIsExecuting(thread: ThreadSummary): Boolean =
+    thread.status != "waiting" && (thread.nativeExecution == "running" || thread.status in setOf("running", "inProgress", "active", "starting"))
+
+fun threadPendingLabel(thread: ThreadSummary): String? = when {
+    thread.status == "waiting" -> "待回答"
+    thread.recoveryRequired -> "待恢复"
+    thread.deliveryState == "failed" -> "失败"
+    thread.queueDepth > 0 || thread.deliveryState == "queued" -> "排队中"
+    thread.deliveryState == "dispatching" -> "发送中"
+    thread.hasOutstandingWork -> "待处理"
+    thread.nativeExecution == "unknown" || thread.status == "unknown" -> "状态待确认"
+    else -> null
+}
 
 /** QiGuang ordering: pinned/active groups, stable active ranks, newest completed first. */
 fun stableThreadOrder(threads: List<ThreadSummary>, previousIds: List<String> = emptyList()): List<ThreadSummary> {

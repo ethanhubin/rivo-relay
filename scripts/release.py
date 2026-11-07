@@ -6,8 +6,11 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import os
+import uuid
 
 from release_tools.common import load, require
+from release_tools.jobs import submit
 from release_tools.workflow import Release, prepare, version
 
 
@@ -64,22 +67,24 @@ def main(argv=None):
                               'stateFile': str(directory / 'release-state.json')}, ensure_ascii=False, indent=2))
             return 0
         if args.worker:
+            os.chdir(ROOT)
             release = Release(ROOT, args.version)
             release.retry_deploy = args.retry_deploy
             release.run(commit=args.commit)
             return 0
         python = ROOT / '.venv/bin/python'
         require(python.is_file(), '需要仓库 .venv/bin/python')
-        with (directory / 'release.log').open('ab', buffering=0) as stream:
-            command = [str(python), str(Path(__file__).resolve()), 'run', args.version, '--worker']
-            if args.commit:
-                command.append('--commit')
-            if args.retry_deploy:
-                command.append('--retry-deploy')
-            process = subprocess.Popen(command, cwd=ROOT, stdin=subprocess.DEVNULL,
-                                       stdout=stream, stderr=stream, start_new_session=True, close_fds=True)
-        print(json.dumps({'submitted': True, 'pid': process.pid, 'version': args.version,
-                          'log': str(directory / 'release.log'),
+        command = [str(python), str(Path(__file__).resolve()), 'run', args.version, '--worker']
+        if args.commit:
+            command.append('--commit')
+        if args.retry_deploy:
+            command.append('--retry-deploy')
+        label = 'local.rivo-relay.release.' + uuid.uuid4().hex
+        log = str(directory / 'release.log')
+        result = submit(label, command, log)
+        require(result.returncode == 0, '发布任务提交失败：' + result.stderr.strip())
+        print(json.dumps({'submitted': True, 'label': label, 'version': args.version,
+                          'log': log,
                           'note': '提交后台任务不代表发布成功；请用 status 查看 complete'}, ensure_ascii=False))
         return 0
     except Exception as error:

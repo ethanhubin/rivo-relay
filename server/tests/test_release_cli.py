@@ -1,6 +1,6 @@
 """Release CLI tests use temporary Git repos/HTTP fixtures, never real services."""
 import argparse
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
@@ -82,13 +82,19 @@ class ReleaseCliTest(unittest.TestCase):
         python = self.root / '.venv/bin/python'
         python.parent.mkdir(parents=True)
         python.write_text('fixture')
-        with patch.object(cli, 'ROOT', self.root), patch.object(cli.subprocess, 'Popen') as spawn, redirect_stdout(io.StringIO()):
-            spawn.return_value.pid = 123
+        with patch.object(cli, 'ROOT', self.root), patch.object(cli.subprocess, 'run') as spawn, redirect_stdout(io.StringIO()):
+            spawn.return_value.returncode = 0
+            spawn.return_value.stderr = ''
             self.assertEqual(0, cli.main(['run', '0.2.28', '--commit']))
-            self.assertTrue(spawn.call_args.kwargs['start_new_session'])
-            self.assertTrue(spawn.call_args.kwargs['close_fds'])
-            self.assertIn('--worker', spawn.call_args.args[0])
-            self.assertIn('--commit', spawn.call_args.args[0])
+            self.assertEqual(spawn.call_args.args[0][:2], ['launchctl', 'bootstrap'])
+            submitted = __import__('plistlib').loads(Path(spawn.call_args.args[0][-1]).read_bytes())
+            self.assertIs(submitted['KeepAlive'], False)
+            self.assertIn('--worker', submitted['ProgramArguments'])
+            self.assertIn('--commit', submitted['ProgramArguments'])
+            spawn.return_value.returncode = 5
+            spawn.return_value.stderr = 'submission rejected'
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(1, cli.main(['run', '0.2.28']))
         with c.locked(self.root / 'workspace/.release-cli.lock') as stream:
             stream.write(json.dumps({'version': '0.2.28'}))
             stream.flush()

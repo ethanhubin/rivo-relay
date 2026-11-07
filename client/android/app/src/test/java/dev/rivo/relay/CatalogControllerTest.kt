@@ -121,7 +121,7 @@ class CatalogControllerTest {
     @Test fun projectActivityCountIsProjectedAndMissingOrInvalidCountsAreIdle() = runBlocking {
         val server = MockWebServer()
         server.enqueue(MockResponse().setBody("""{"projects":[
-            {"id":"active","name":"Active","path":"/active","threadCount":8,"outstandingWorkCount":2},
+            {"id":"active","name":"Active","path":"/active","threadCount":8,"outstandingWorkCount":2,"runningTurnCount":1,"activeGoalCount":1},
             {"id":"old","name":"Missing count","path":"/old","threadCount":3},
             {"id":"invalid","name":"Negative count","path":"/invalid","outstandingWorkCount":-1}
         ]}"""))
@@ -134,6 +134,8 @@ class CatalogControllerTest {
             val result = controller.state.value.projects
             assertEquals(listOf("active", "old", "invalid"), result.map { it.id })
             assertEquals(listOf(2, 0, 0), result.map { it.outstandingWorkCount })
+            assertEquals(listOf(1, 0, 0), result.map { it.runningTurnCount })
+            assertEquals(listOf(1, 0, 0), result.map { it.activeGoalCount })
             assertEquals(8, result.first().threadCount)
             assertNull(failure.get())
             assertEquals("/v1/projects", server.takeRequest().path)
@@ -293,7 +295,7 @@ class CatalogControllerTest {
         val server = MockWebServer()
         server.enqueue(MockResponse().setBody("""{"threads":[{"id":"t","name":"Thread","status":"idle","updatedAt":100}]}"""))
         server.enqueue(MockResponse().setBody("""{"threads":[{"id":"t","name":"Thread","status":"running","updatedAt":200}]}"""))
-        server.enqueue(MockResponse().setBody("""{"threads":[{"id":"t","name":"Thread","status":"idle","updatedAt":201}]}"""))
+        server.enqueue(MockResponse().setBody("""{"threads":[{"id":"t","name":"Thread","status":"idle","updatedAt":201,"recoveryRequired":true,"hasOutstandingWork":true}]}"""))
         server.start()
         val scope = CoroutineScope(coroutineContext + SupervisorJob())
         val controller = CatalogController(api(server), scope, { throw it })
