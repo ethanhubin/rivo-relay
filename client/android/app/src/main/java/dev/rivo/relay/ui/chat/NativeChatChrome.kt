@@ -43,36 +43,28 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
     val takeover = state.takeoverControl(blockedReason ?: if (busy) "有操作正在处理或等待核对，完成后可接管" else if (onAction == null) "当前页面暂不支持接管" else null)
     val external = control.state == ControlState.EXTERNAL
     val releaseReason = releaseUnavailableReason(runtime)
-    val detail = state.controlNotice?.takeIf { it.isNotBlank() } ?: blockedReason ?: releaseReason
-        ?: control.reason.takeIf { it.isNotBlank() }
-        ?: if (state.showTakeover()) {
-            if (takeover.enabled) "接管前核验，确认后执行" else takeover.reason
-        } else if (control.canOperate) "当前 App 可操作" else "等待核验操作权限"
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).testTag("writer_status")) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f).testTag("writer_status_details").clickable { runtimeDetails = true }) {
-                Text("$nodeName · " + when (control.state) {
-                    ControlState.WRITABLE -> if (runtime?.optBoolean("desktopShared") == true) "可操作 · Desktop 共享" else "可操作"
-                    ControlState.EXTERNAL -> "外部 Codex 占用"
-                    ControlState.RELEASE_PENDING -> "释放待确认"
-                    ControlState.RELEASED -> "已释放权限"
-                    ControlState.WORKSPACE_UNAVAILABLE -> "工作目录不可用"
-                    ControlState.UNVERIFIED -> "操作权限暂无法核验"
-                    ControlState.UNKNOWN -> "权限同步中"
-                } + if (!confirmedNow && control.state != ControlState.UNKNOWN) " · 待确认" else "", Modifier.then(if (runtime != null) Modifier.clickable { runtimeDetails = true } else Modifier)
-                    .then(if (external) Modifier.testTag("external_writer_notice") else Modifier),
-                    style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    color = if (control.canOperate || control.state == ControlState.UNKNOWN) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
-                Text(detail, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.testTag(if (releaseReason != null) "writer_release_unavailable" else "takeover_reason"))
-            }
-            if (state.showTakeover()) TextButton(onClick = { onAction?.invoke("takeover") }, enabled = takeover.enabled,
-                modifier = Modifier.testTag("ownership_takeover")) { Text("强制接管", maxLines = 1) }
-            if (state.showRelease() && onAction != null) {
-                TextButton(onClick = { onAction("release") }, enabled = !busy && blockedReason == null && releaseReason == null,
-                    modifier = Modifier.testTag("writer_action")) {
-                    Text(if (busy) "处理中…" else "释放权限")
-                }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).testTag("writer_status"),
+        verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1f).testTag("writer_status_details").clickable { runtimeDetails = true }) {
+            Text("$nodeName · " + when (control.state) {
+                ControlState.WRITABLE -> "可操作"
+                ControlState.EXTERNAL -> "外部 Codex 占用"
+                ControlState.RELEASE_PENDING -> "释放待确认"
+                ControlState.RELEASED -> "已释放权限"
+                ControlState.WORKSPACE_UNAVAILABLE -> "工作目录不可用"
+                ControlState.UNVERIFIED -> "操作权限暂无法核验"
+                ControlState.UNKNOWN -> "权限同步中"
+            } + if (!confirmedNow && control.state != ControlState.UNKNOWN) " · 待确认" else "",
+                modifier = if (external) Modifier.testTag("external_writer_notice") else Modifier,
+                style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                color = if (control.canOperate || control.state == ControlState.UNKNOWN) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
+        }
+        if (state.showTakeover()) TextButton(onClick = { onAction?.invoke("takeover") }, enabled = takeover.enabled,
+            modifier = Modifier.testTag("ownership_takeover")) { Text("强制接管", maxLines = 1) }
+        if (state.showRelease() && onAction != null) {
+            TextButton(onClick = { onAction("release") }, enabled = !busy && blockedReason == null && releaseReason == null,
+                modifier = Modifier.testTag("writer_action")) {
+                Text(if (busy) "处理中…" else "释放权限", maxLines = 1)
             }
         }
     }

@@ -29,6 +29,7 @@ class TakeoverUiTest {
         } } }
         compose.onNodeWithTag("ownership_takeover").assertDoesNotExist()
         compose.runOnIdle { reason.value = null; stale.value = false }
+        compose.onNodeWithTag("writer_status_details").assertTextEquals("节点 · 外部 Codex 占用")
         compose.onNodeWithTag("ownership_takeover").assertIsDisplayed().assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals("takeover", action) }
     }
@@ -41,6 +42,7 @@ class TakeoverUiTest {
         val ready = SessionState(id = "t", snapshot = sessionSnapshot(JSONObject()
             .put("thread", JSONObject().put("id", "t")).put("writerOwner", "relay")))
         compose.runOnIdle { state.value = ready }
+        compose.onNodeWithTag("writer_status_details").assertTextEquals("节点 · 可操作").assertIsDisplayed()
         compose.onNodeWithText("释放权限").assertIsEnabled()
         compose.runOnIdle { state.value = ready.copy(stale = true, lastConfirmedControl = ready.control()) }
         compose.onNodeWithTag("ownership_takeover").assertDoesNotExist()
@@ -60,14 +62,19 @@ class TakeoverUiTest {
             NativeWriterStatus(SessionState(id = "t", snapshot = snapshot), "节点", false, { error("disabled") })
         } } }
         compose.onNodeWithTag("ownership_takeover").assertIsDisplayed().assertIsNotEnabled()
-        compose.onNodeWithTag("takeover_reason", useUnmergedTree = true).assertTextContains("Desktop", substring = true)
+        val desktopReason = "共享 Desktop 不支持结束进程接管"
+        compose.onNodeWithText(desktopReason, substring = true).assertDoesNotExist()
+        compose.onNodeWithTag("writer_status_details").assertTextEquals("节点 · 外部 Codex 占用").performClick()
+        compose.onNodeWithText(desktopReason, substring = true).assertIsDisplayed()
     }
     @Test fun releasedAndUncertainStatesHaveNoOwnershipButtons() {
         val state = mutableStateOf(SessionState())
         compose.setContent { RivoTheme { Surface {
             NativeWriterStatus(state.value, "节点", false, { error("No action expected") })
         } } }
-        for (name in listOf("released", "release_pending", "workspace_unavailable", "ownership_unverified")) {
+        val statuses = mapOf("released" to "已释放权限", "release_pending" to "释放待确认",
+            "workspace_unavailable" to "工作目录不可用", "ownership_unverified" to "操作权限暂无法核验")
+        for ((name, label) in statuses) {
             compose.runOnIdle { state.value = SessionState(id = "t", snapshot = sessionSnapshot(JSONObject()
                 .put("thread", JSONObject().put("id", "t")).put("readOnly", true)
                 .put("control", JSONObject().put("state", name).put("action", "resume")))) }
@@ -75,6 +82,7 @@ class TakeoverUiTest {
             compose.onNodeWithTag("writer_action").assertDoesNotExist()
             compose.onNodeWithTag("writer_recheck").assertDoesNotExist()
             compose.onNodeWithText("恢复操作").assertDoesNotExist()
+            compose.onNodeWithTag("writer_status_details").assertTextEquals("节点 · $label")
         }
     }
 

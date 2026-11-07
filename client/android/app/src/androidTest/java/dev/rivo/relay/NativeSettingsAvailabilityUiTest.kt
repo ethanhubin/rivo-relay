@@ -29,10 +29,13 @@ class NativeSettingsAvailabilityUiTest {
         compose.setContent { RivoTheme { Surface {
             NativeWriterStatus(state.value, "节点", false, { actions++ })
         } } }
-        compose.onNodeWithTag("writer_release_unavailable", useUnmergedTree = true).assertTextContains("首条消息尚未持久化", substring = true)
+        val releaseReason = "首条消息尚未持久化，当前会话已保留。"
+        compose.onNodeWithText(releaseReason).assertDoesNotExist()
         compose.onNodeWithTag("writer_action").assertIsNotEnabled()
+        compose.onNodeWithTag("writer_status_details").assertTextEquals("节点 · 可操作").performClick()
+        compose.onNodeWithText(releaseReason).assertIsDisplayed()
+        compose.onNodeWithText("关闭").performClick()
         compose.runOnIdle { assertEquals(0, actions); state.value = session(true) }
-        compose.onNodeWithTag("writer_release_unavailable", useUnmergedTree = true).assertDoesNotExist()
         compose.onNodeWithTag("writer_action").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(1, actions) }
     }
@@ -71,9 +74,11 @@ class NativeSettingsAvailabilityUiTest {
         } } }
         compose.onNodeWithTag("writer_action").assertDoesNotExist()
         compose.onNodeWithTag("ownership_takeover").assertDoesNotExist()
-        compose.onNodeWithTag("writer_status_details").performClick()
+        val reasons = listOf(notice, blocked, release, ownership)
+        reasons.forEach { reason -> compose.onNodeWithText(reason, useUnmergedTree = true).assertDoesNotExist() }
+        compose.onNodeWithTag("writer_status_details").assertTextEquals("节点 · 释放待确认").performClick()
         val inDetails = hasAnyAncestor(hasTestTag("writer_runtime_details"))
-        listOf(notice, blocked, release, ownership).forEach { reason ->
+        reasons.forEach { reason ->
             compose.onAllNodes(hasText(reason) and inDetails, useUnmergedTree = true).assertCountEquals(1)
             compose.onNode(hasText(reason) and inDetails, useUnmergedTree = true).performScrollTo().assertIsDisplayed()
         }
