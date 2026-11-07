@@ -10,7 +10,7 @@
 
 | 范围 | Relay 当前代码行为 | 实现入口 |
 | --- | --- | --- |
-| 会话整理 | 最近/归档切换，长按多选、全选、批量置顶/取消置顶、归档/恢复；运行中会话不允许归档；批量写操作逐个核对 | `CatalogState.kt`、`SessionsScreen.kt`、`SubmissionCoordinator.kt` |
+| 会话整理 | 最近/归档切换，单个会话置顶/取消置顶，长按多选、批量归档/恢复；运行中会话不允许归档；批量写操作逐个核对 | `CatalogState.kt`、`SessionsScreen.kt`、`SubmissionCoordinator.kt` |
 | 未读与恢复 | 按节点保存会话已读更新时间；新更新出现未读点；项目列表/会话列表/最近历史使用私有缓存，缓存不代替权威历史或分页游标 | `CatalogState.kt`、`ConversationStore.kt`、`SessionController.kt` |
 | 项目目录 | 浏览所选节点的目录、返回上级、选择已有目录；可在当前目录创建单层文件夹后注册项目 | `ProjectDirectoryDialog.kt`、`codex/developer.py` |
 | 工作树 | 新会话从已提交 ref 创建独立工作树；开发工具展示路径、来源、提交、脏状态；清理绑定工作树状态，丢弃有改动的工作树需明确确认 | `NewConversationDialog.kt`、`DeveloperTools.kt`、`codex/developer.py` |

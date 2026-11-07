@@ -77,7 +77,7 @@ class ParityFeaturesUiTest {
         compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize()) {
             if (showProjects) ProjectsScreen(listOf(project), "测试节点", false, {}, {}, {}, { writes++ }, canAdd = fresh)
             else SessionsScreen("缓存项目", listOf(thread), false, fresh, {}, {}, { writes++ }, {},
-                onBatchPin = { _, _ -> writes++ }, onArchive = { _, _ -> writes++ })
+                onPin = { _, _ -> writes++ }, onArchive = { _, _ -> writes++ })
         } } }
         compose.onNodeWithTag("add_project").assertIsNotEnabled()
         compose.runOnIdle { fresh = true }
@@ -137,7 +137,7 @@ class ParityFeaturesUiTest {
         compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize()) {
             SessionsScreen("测试项目", threads, false, true, {}, {}, {}, {}, archived = archived,
                 onArchivedChanged = { archived = it }, onArchive = { selected, value -> action = selected.map { it.id }.toSet() to value },
-                onBatchPin = { _, _ -> }, unreadThreadIds = setOf("a"))
+                unreadThreadIds = setOf("a"))
         } } }
         compose.onNodeWithTag("unread_thread_a", useUnmergedTree = true).assertExists()
         compose.onNodeWithTag("thread_a").performTouchInput { longClick() }

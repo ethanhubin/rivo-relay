@@ -72,7 +72,7 @@
 
 `mode` 可省略，或为 `plan` / `default`。Plan 通过原生 collaboration mode 运行，并将当前 turn sandbox 收紧为 `readOnly`；切回 default 仅在当前配置仍匹配 Relay 保存的 Plan 设置时恢复原先 sandbox，避免覆盖其他端修改。已有原生只读配置不会因此提升权限。`readOnly=true` 表示另一运行时占用了 thread writer，仍可读取持久历史。
 
-归档前检查运行中的 turn、待回答请求和执行队列；存在未处理工作时拒绝，最终操作仍由原生节点校验。批量置顶、归档、恢复由客户端逐项提交独立 submissionId，没有全有或全无的批量事务。未读标记是 Android 按节点和 thread 的已读 updatedAt 本地记录，没有服务端未读字段。没有已读记录的历史会话首次出现在列表（包括本地缓存）时，以当前 updatedAt 持久保存已读基线；后续更晚的已完成更新才显示未读，已有已读记录继续保留。
+归档前检查运行中的 turn、待回答请求和执行队列；存在未处理工作时拒绝，最终操作仍由原生节点校验。批量归档、恢复由客户端逐项提交独立 submissionId，没有全有或全无的批量事务。未读标记是 Android 按节点和 thread 的已读 updatedAt 本地记录，没有服务端未读字段。没有已读记录的历史会话首次出现在列表（包括本地缓存）时，以当前 updatedAt 持久保存已读基线；后续更晚的已完成更新才显示未读，已有已读记录继续保留。
 
 历史按原生 thread/turn/item ID 合并，不按文字去重。新建空会话可能还没有持久 rollout，首轮前返回创建元数据和空 turns；完成历史以原生分页为准。`nextCursor` 为空表示没有下一页，cursor 不应跨 runtime/重置继续使用。
 

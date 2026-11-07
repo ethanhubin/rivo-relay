@@ -280,11 +280,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             node.catalog.refreshThreads()
                         }
                     }, archived = catalog.archived, onArchivedChanged = node.catalog::setArchived,
-                    onBatchPin = { threads, pinned ->
-                        if (node.catalog.state.value.threadsFresh) node.submissions.submitBatch(threads.map { BatchSubmission("/v1/threads/${encoded(it.id)}/pin", JSONObject().put("pinned", pinned), "批量置顶") }) {
-                            node.catalog.refreshThreads()
-                        }
-                    }, onArchive = { threads, archived ->
+                    onArchive = { threads, archived ->
                         if (node.catalog.state.value.threadsFresh) node.submissions.submitBatch(threads.map { BatchSubmission("/v1/threads/${encoded(it.id)}/archive", JSONObject().put("archived", archived), if (archived) "归档会话" else "恢复会话") }) { node.catalog.refreshThreads() }
                     }, unreadThreadIds = catalog.unreadThreadIds, usage = catalog.usage, usageLoading = catalog.usageLoading,
                     usageError = catalog.usageError, onRefreshUsage = { node.catalog.refreshUsage(true) }, projectKey = catalog.selectedProject?.id.orEmpty(),

@@ -48,7 +48,6 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
     onBack: () -> Unit, onThread: (ThreadSummary) -> Unit, onNew: () -> Unit, onRefresh: () -> Unit,
     onPin: (ThreadSummary, Boolean) -> Unit = { _, _ -> },
     archived: Boolean = false, onArchivedChanged: ((Boolean) -> Unit)? = null,
-    onBatchPin: ((List<ThreadSummary>, Boolean) -> Unit)? = null,
     onArchive: ((List<ThreadSummary>, Boolean) -> Unit)? = null,
     unreadThreadIds: Set<String> = emptySet(), usage: CodexUsage? = null,
     usageLoading: Boolean = false, usageError: String? = null, onRefreshUsage: (() -> Unit)? = null,
@@ -105,13 +104,12 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text("已选择 ${selected.size} 项", Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                        if (selectedIds.size != shown.size) TextButton(onClick = { selectedIds = visibleIds }, enabled = canCreate) { Text("全选") }
-                        if (!archived) TextButton(onClick = {
-                            val pin = !selected.all { it.pinned }
-                            if (onBatchPin != null) onBatchPin(selected, pin) else selected.singleOrNull()?.let { onPin(it, pin) }
+                        val singleSelected = selected.singleOrNull()
+                        if (!archived && singleSelected != null) TextButton(onClick = {
+                            onPin(singleSelected, !singleSelected.pinned)
                             selectedIds = emptySet()
-                        }, enabled = canCreate && selected.isNotEmpty() && (onBatchPin != null || selected.size == 1),
-                            modifier = Modifier.testTag("pin_session"), contentPadding = PaddingValues(horizontal = 6.dp)) { Text(if (selected.all { it.pinned }) "取消置顶" else "置顶") }
+                        }, enabled = canCreate, modifier = Modifier.testTag("pin_session"),
+                            contentPadding = PaddingValues(horizontal = 6.dp)) { Text(if (singleSelected.pinned) "取消置顶" else "置顶") }
                         if (onArchive != null) TextButton(onClick = { onArchive(selected, !archived); selectedIds = emptySet() },
                             enabled = canCreate && selected.isNotEmpty() && (archived || selected.none(::threadIsActive)), modifier = Modifier.testTag("archive_sessions"),
                             contentPadding = PaddingValues(horizontal = 6.dp)) { Text(if (archived) "恢复" else "归档") }
