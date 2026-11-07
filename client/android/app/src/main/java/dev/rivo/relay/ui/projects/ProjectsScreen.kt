@@ -38,6 +38,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.rivo.relay.ui.common.PinIcon
 import dev.rivo.relay.ui.theme.*
 import dev.rivo.relay.data.CodexUsage
 import dev.rivo.relay.ui.common.CodexQuotaProgressBar
@@ -59,9 +60,12 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
     onProject: (ProjectSummary) -> Unit, onConnection: () -> Unit, onRefresh: () -> Unit, onAdd: (() -> Unit)? = null,
     usage: CodexUsage? = null, usageLoading: Boolean = false, usageError: String? = null, onRefreshUsage: (() -> Unit)? = null, canAdd: Boolean = true,
     savedNodes: List<dev.rivo.relay.connection.SavedNode> = emptyList(), currentBase: String = "",
-    onSelectNode: (String) -> Unit = {}, onAddNode: () -> Unit = {}, canSwitchNode: Boolean = true, nodeConnected: Boolean? = null) {
+    onSelectNode: (String) -> Unit = {}, onAddNode: () -> Unit = {}, canSwitchNode: Boolean = true, nodeConnected: Boolean? = null,
+    pinnedProjectIds: List<String> = emptyList(), onPinProject: ((String, Boolean) -> Unit)? = null) {
     var nodeMenuOpen by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val pinRanks = remember(pinnedProjectIds) { pinnedProjectIds.withIndex().associate { it.value to it.index } }
+    val orderedProjects = remember(projects, pinRanks) { projects.sortedBy { pinRanks[it.id] ?: Int.MAX_VALUE } }
     LazyColumn(Modifier.fillMaxSize().testTag("projects_page"), contentPadding = PaddingValues(horizontal = RivoSpacing.Page),
         verticalArrangement = Arrangement.spacedBy(RivoSpacing.Sm, Alignment.CenterVertically)) {
         item {
@@ -123,13 +127,12 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                 TextButton(onClick = onRefresh) { Text("重新加载") }
             }
         }
-        items(projects, key = { it.id }) { project ->
+        items(orderedProjects, key = { it.id }) { project ->
+            val pinned = project.id in pinRanks
+            var projectMenuOpen by remember { mutableStateOf(false) }
             Box(Modifier.fillMaxWidth()) {
                 Surface(modifier = Modifier.fillMaxWidth().testTag("project_${project.id}").combinedClickable(
-                    onClick = { onProject(project) }, onLongClickLabel = "复制项目名称", onLongClick = {
-                        context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("项目名称", project.name))
-                        if (Build.VERSION.SDK_INT < 33) Toast.makeText(context, "已复制项目名称", Toast.LENGTH_SHORT).show()
-                    }),
+                    onClick = { onProject(project) }, onLongClickLabel = "项目操作", onLongClick = { projectMenuOpen = true }),
                     shape = RoundedCornerShape(RivoRadius.Card), color = MaterialTheme.colorScheme.surfaceContainerLow) {
                     Row(Modifier.heightIn(min = 74.dp).padding(10.dp), verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(RivoSpacing.Md)) {
@@ -140,11 +143,23 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                             Text(project.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text("${project.threadCount} 个会话", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
+                        if (pinned) PinIcon(Modifier.testTag("project_pin_${project.id}").semantics { contentDescription = "已置顶" })
                         Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
                 if (project.outstandingWorkCount > 0) {
                     ProjectRunningBorder(Modifier.matchParentSize().testTag("project_${project.id}_running_border"))
+                }
+                DropdownMenu(expanded = projectMenuOpen, onDismissRequest = { projectMenuOpen = false }) {
+                    if (onPinProject != null) DropdownMenuItem(
+                        text = { Text(if (pinned) "取消置顶" else "置顶") },
+                        onClick = { projectMenuOpen = false; onPinProject(project.id, !pinned) },
+                    )
+                    DropdownMenuItem(text = { Text("复制项目名称") }, onClick = {
+                        projectMenuOpen = false
+                        context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("项目名称", project.name))
+                        if (Build.VERSION.SDK_INT < 33) Toast.makeText(context, "已复制项目名称", Toast.LENGTH_SHORT).show()
+                    })
                 }
             }
         }

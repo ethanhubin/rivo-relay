@@ -140,6 +140,36 @@ class CatalogControllerTest {
         } finally { scope.cancel(); server.shutdown() }
     }
 
+    @Test fun projectPinsSurviveCatalogRefreshAndReopeningTheNodeStore() = runBlocking {
+        val directory = java.nio.file.Files.createTempDirectory("relay-project-pins").toFile()
+        val server = MockWebServer()
+        val catalog = """{"projects":[{"id":"a","name":"A","path":"/a"},{"id":"b","name":"B","path":"/b"}]}"""
+        server.enqueue(MockResponse().setBody(catalog))
+        server.enqueue(MockResponse().setBody(catalog))
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val transport = api(server)
+        val store = ConversationStore(ConversationStore.nodeDirectory(directory, "primary"))
+        val controller = CatalogController(transport, scope, { throw AssertionError(it) }, store)
+        try {
+            withTimeout(5_000) { controller.refreshProjects().join() }
+            controller.setProjectPinned("b", true)
+            controller.setProjectPinned("a", true)
+            controller.setProjectPinned("b", true)
+            assertEquals(listOf("a", "b"), controller.state.value.pinnedProjectIds)
+            assertEquals(1, server.requestCount)
+            withTimeout(5_000) { controller.refreshProjects().join() }
+            assertEquals(listOf("a", "b"), controller.state.value.pinnedProjectIds)
+            controller.setProjectPinned("a", false)
+            store.flushMetadata()
+
+            val reopened = ConversationStore(ConversationStore.nodeDirectory(directory, "primary"))
+            assertEquals(listOf("b"), CatalogController(transport, scope, {}, reopened).state.value.pinnedProjectIds)
+            val other = ConversationStore(ConversationStore.nodeDirectory(directory, "other"))
+            assertTrue(CatalogController(transport, scope, {}, other).state.value.pinnedProjectIds.isEmpty())
+        } finally { scope.cancel(); server.shutdown(); directory.deleteRecursively() }
+    }
+
     @Test fun concurrentRefreshCallsShareTheInFlightReadAndCanRefreshAfterCompletion() = runBlocking {
         val server = MockWebServer()
         val started = CountDownLatch(1)

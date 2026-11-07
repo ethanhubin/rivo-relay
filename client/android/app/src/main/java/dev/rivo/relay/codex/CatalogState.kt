@@ -4,7 +4,10 @@ import dev.rivo.relay.data.*
 import dev.rivo.relay.ui.projects.ProjectSummary
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import org.json.JSONArray
 import org.json.JSONObject
+
+private const val PINNED_PROJECTS = "pinnedProjectIds"
 
 data class CatalogState(
     val projects: List<ProjectSummary> = emptyList(), val threads: List<ThreadSummary> = emptyList(),
@@ -14,12 +17,13 @@ data class CatalogState(
     val usageLoading: Boolean = false, val usageError: String? = null,
     val projectsFresh: Boolean = false, val threadsFresh: Boolean = false,
     val modelsSource: String = "", val modelsStale: Boolean = false, val modelsError: String? = null,
+    val pinnedProjectIds: List<String> = emptyList(),
 ) { val loading: Boolean get() = projectsLoading || threadsLoading }
 
 /** Separate catalog/list owner; stale requests cannot overwrite another project or archive filter. */
 class CatalogController(private val api: RelayApi, private val scope: CoroutineScope, private val failure: (Throwable) -> Unit,
     private val store: ConversationStore? = null) {
-    private val mutable = MutableStateFlow(CatalogState())
+    private val mutable = MutableStateFlow(CatalogState(pinnedProjectIds = readProjectPins()))
     val state = mutable.asStateFlow()
     private var projectsJob: Job? = null
     private var listJob: Job? = null
@@ -27,6 +31,21 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
     private var usageUpdatedAt = 0L
     private var generation = 0
     private val readVersions = mutableMapOf<String, Long>()
+
+    private fun readProjectPins(): List<String> {
+        val saved = store?.getMetadata(PINNED_PROJECTS) ?: return emptyList()
+        val ids = runCatching { JSONArray(saved) }.getOrNull() ?: return emptyList()
+        return List(ids.length()) { ids.optString(it) }.filter { it.isNotBlank() }.distinct()
+    }
+
+    fun setProjectPinned(projectId: String, pinned: Boolean) {
+        val current = mutable.value
+        val ids = current.pinnedProjectIds
+        if (current.projects.none { it.id == projectId } || (projectId in ids) == pinned) return
+        val updated = if (pinned) listOf(projectId) + ids else ids - projectId
+        store?.putMetadata(PINNED_PROJECTS, JSONArray(updated).toString())
+        mutable.update { it.copy(pinnedProjectIds = updated) }
+    }
 
     /** Manual refresh, node startup and visible-home polling share one read. */
     @Synchronized

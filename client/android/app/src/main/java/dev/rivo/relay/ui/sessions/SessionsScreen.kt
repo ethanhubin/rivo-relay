@@ -38,6 +38,7 @@ import dev.rivo.relay.data.PendingConversation
 import dev.rivo.relay.data.CodexUsage
 import dev.rivo.relay.data.ThreadSummary
 import dev.rivo.relay.ui.common.CodexQuotaProgressBar
+import dev.rivo.relay.ui.common.PinIcon
 import dev.rivo.relay.ui.theme.*
 
 /** Layout and selection interactions adapted from QiGuang SessionScreens, using Relay identities. */
@@ -162,7 +163,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                                 }
                                 if (thread.id in unreadThreadIds) Box(Modifier.padding(start = 7.dp).size(7.dp).background(MaterialTheme.colorScheme.primary, CircleShape)
                                     .testTag("unread_thread_${thread.id}").semantics { contentDescription = "有未读更新" })
-                                if (thread.pinned) SessionPinIcon(Modifier.padding(start = 8.dp).testTag("session_pin_${thread.id}").semantics { contentDescription = "已置顶" })
+                                if (thread.pinned) PinIcon(Modifier.padding(start = 8.dp).testTag("session_pin_${thread.id}").semantics { contentDescription = "已置顶" })
                             }
                         }
                     }
@@ -214,19 +215,5 @@ private fun SessionFilter(label: String, selected: Boolean, onClick: () -> Unit,
         Text(label, Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.labelMedium,
             color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium)
-    }
-}
-
-@Composable
-private fun SessionPinIcon(modifier: Modifier = Modifier) {
-    val color = MaterialTheme.colorScheme.onSurfaceVariant
-    Canvas(modifier.size(20.dp)) {
-        val x = size.width / 2; val top = size.height * .16f; val bottom = size.height * .54f; val stroke = size.width * .12f
-        fun line(x1: Float, y1: Float, x2: Float, y2: Float) = drawLine(color, Offset(x1, y1), Offset(x2, y2), stroke, StrokeCap.Round)
-        line(x - size.width * .22f, top, x + size.width * .22f, top)
-        line(x - size.width * .16f, top, x - size.width * .16f, bottom)
-        line(x + size.width * .16f, top, x + size.width * .16f, bottom)
-        line(x - size.width * .27f, bottom, x + size.width * .27f, bottom)
-        line(x, bottom, x, size.height * .88f)
     }
 }

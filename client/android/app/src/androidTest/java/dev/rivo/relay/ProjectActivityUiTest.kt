@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
@@ -26,6 +27,43 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 class ProjectActivityUiTest {
     @get:Rule val compose = createComposeRule()
+
+    @Test fun longPressCanPinAndUnpinAProjectWithoutOpeningIt() {
+        val projects = listOf(
+            ProjectSummary("first", "第一个项目", "/fixture/first"),
+            ProjectSummary("second", "第二个项目", "/fixture/second"),
+        )
+        var pins by mutableStateOf(emptyList<String>())
+        val selected = mutableListOf<String>()
+        compose.setContent {
+            RivoTheme {
+                ProjectsScreen(
+                    projects = projects, nodeName = "UI 验证", loading = false,
+                    onProject = { selected += it.id }, onConnection = {}, onRefresh = {},
+                    pinnedProjectIds = pins,
+                    onPinProject = { id, pinned -> pins = if (pinned) listOf(id) else emptyList() },
+                )
+            }
+        }
+        val first = compose.onNodeWithTag("project_first")
+        val second = compose.onNodeWithTag("project_second")
+        val pin = compose.onNodeWithTag("project_pin_second", useUnmergedTree = true)
+        assertTrue(first.getUnclippedBoundsInRoot().top < second.getUnclippedBoundsInRoot().top)
+
+        second.performTouchInput { longClick() }
+        compose.onNodeWithText("复制项目名称").assertIsDisplayed()
+        compose.onNodeWithText("置顶").performClick()
+        pin.assertIsDisplayed()
+        assertTrue(second.getUnclippedBoundsInRoot().top < first.getUnclippedBoundsInRoot().top)
+
+        second.performTouchInput { longClick() }
+        compose.onNodeWithText("取消置顶").performClick()
+        pin.assertDoesNotExist()
+        assertTrue(first.getUnclippedBoundsInRoot().top < second.getUnclippedBoundsInRoot().top)
+        compose.runOnIdle { assertTrue(selected.isEmpty()) }
+        second.performClick()
+        compose.runOnIdle { assertEquals(listOf("second"), selected) }
+    }
 
     @Test fun activeBorderMovesAndDisappearsWhenWorkEndsWithoutBlockingProjectSelection() {
         compose.mainClock.autoAdvance = false

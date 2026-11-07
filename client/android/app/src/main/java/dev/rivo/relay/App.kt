@@ -258,6 +258,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     usage = catalog.usage, usageLoading = catalog.usageLoading, usageError = catalog.usageError,
                     onRefreshUsage = { node.catalog.refreshUsage(true) }, canAdd = projectsWritable,
                     savedNodes = savedNodes, currentBase = node.connection.base,
+                    pinnedProjectIds = catalog.pinnedProjectIds, onPinProject = node.catalog::setProjectPinned,
                     nodeConnected = when {
                         network == null -> false
                         catalog.projectsFresh -> true
