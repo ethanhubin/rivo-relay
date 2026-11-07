@@ -332,11 +332,11 @@ fun MessageComposer(
                         }
                         Spacer(Modifier.weight(1f))
                         Box {
-                            ComposerToolButton(onSettings, true, "运行设置", "composer_settings") {
+                            ComposerToolButton(onSettings, enabled, "运行设置", "composer_settings") {
                                 Text("⚙", style = MaterialTheme.typography.titleMedium)
                             }
                             val gap = with(LocalDensity.current) { 8.dp.roundToPx() }
-                            if (settingsExpanded && settingsContent != null) Popup(
+                            if (enabled && settingsExpanded && settingsContent != null) Popup(
                                 popupPositionProvider = remember(gap) { ComposerSettingsPositionProvider(gap) }, onDismissRequest = onDismissSettings,
                                 properties = PopupProperties(focusable = false, dismissOnBackPress = true, dismissOnClickOutside = true)) {
                                 Surface(Modifier.widthIn(min = 240.dp, max = 280.dp).heightIn(max = 440.dp).testTag("composer_settings_panel"),

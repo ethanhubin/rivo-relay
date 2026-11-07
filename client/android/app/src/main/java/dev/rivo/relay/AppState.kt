@@ -28,11 +28,12 @@ class NodeRuntime(val connection: NodeConnection, private val scope: CoroutineSc
         "${connection.nodeId}:${connection.deviceId}:${connection.storageBase}"))
     val notifications = TaskNotifications(context.applicationContext, api, scope, connection.base, connection.name, requestNotificationPermission, failure)
     val catalog = CatalogController(api, scope, failure, store = conversations)
-    val session = SessionController(api, scope, conversations, notifications::observe, notifications::setVisibleThread, failure)
+    val session = SessionController(api, scope, conversations, notifications::observe, notifications::setVisibleThread, failure = failure)
     private val pendingRevisionMutable = MutableStateFlow(0L)
     val pendingRevision = pendingRevisionMutable.asStateFlow()
     val submissions = SubmissionCoordinator(api, scope, vault, "pending:${connection.nodeId}:${connection.deviceId}:${connection.storageBase}",
         onResolved = { pending, response ->
+            session.invalidateControl()
             session.resolveSubmission(pending.id, response)
             if (conversations.markSentDraftResolved(pending.id, response)) scope.launch {
                 try { conversations.clearAcceptedSentDraft(pending.id) }

@@ -25,7 +25,7 @@ from .files import read_file, read_directory, upload_attachment, download_file, 
 from .developer import (project_directory, project_git, review_context, workspace_diff,
                         diff_summary, validate_review, Workspaces)
 from .observations import Observations
-from .projection import execution_projection
+from .projection import execution_projection, control_projection
 from .models import ModelCatalog
 from .attachment_context import attachment_context
 from .image_inputs import needs_image_staging, prepare_image_inputs
@@ -423,13 +423,17 @@ class CodexService:
             except CodexError:
                 # Missing/revoked source metadata cannot hide native history.
                 pass
-        return {"thread": thread, "requests": requests, "settings": settings, 'plan': plan,
+        runtime = self._thread_runtime(thread_id)
+        control = control_projection(read_only=read_only,
+            released=bool(observations.get(('ownership', ''), {}).get('released')),
+            workspace_unavailable=workspace_unavailable, runtime=runtime)
+        return {"thread": thread, "requests": requests, "settings": settings, 'control': control, 'plan': plan,
                 **self.read_goal(thread_id),
                 'tokenUsage': usage, 'changes': changes, 'turnSettings': turn_settings,
                 "activeTurnId": active, "status": status, "readOnly": read_only, "nextCursor": history["nextCursor"],
                 "backwardsCursor": history["backwardsCursor"],
                 "nativeRevision": history['nativeRevision'], "nativeSync": history['nativeSync'],
-                'nativeRuntime': self._thread_runtime(thread_id),
+                'nativeRuntime': runtime,
                 "writerOwner": 'none' if observations.get(('ownership', ''), {}).get('released') or (workspace and workspace['status'] != 'ready') else 'external' if read_only else 'relay',
                 'workspaceUnavailable': workspace_unavailable, 'workspaceRebind': rebind,
                 'reviewDiagnostics': review_diagnostics,
@@ -683,11 +687,11 @@ class CodexService:
         self.start()
         with self._lock:
             joined = thread_id in self._joined
-        if action == 'release' and joined:
+        if action == 'resume' or (action == 'release' and joined):
             connection = self._thread_connection(thread_id)
             ticket = secrets.token_urlsafe(32)
             with self._lock:
-                self._subscription_releases[ticket] = {'threadId': thread_id, 'owner': owner,
+                self._subscription_releases[ticket] = {'threadId': thread_id, 'owner': owner, 'operation': action,
                     'generation': str(connection.generation), 'connection': connection,
                     'expires': time.monotonic() + 120}
                 while len(self._subscription_releases) > 128:
@@ -727,7 +731,7 @@ class CodexService:
         if preview is None:
             return None
         connection = self._thread_connection(thread_id)
-        if (preview['threadId'] != thread_id or preview['owner'] != owner
+        if (preview.get('operation', 'release') != 'release' or preview['threadId'] != thread_id or preview['owner'] != owner
                 or preview['connection'] is not connection or preview['generation'] != str(connection.generation)
                 or preview['expires'] < time.monotonic()):
             raise CodexError('释放订阅预览已失效，请重新操作', code='handoff_changed', http_status=409)
@@ -790,6 +794,27 @@ class CodexService:
         # Queue dispatch and read-side resume remain blocked until handoff finishes.
         with getattr(self, 'queue_lock', self._operations), self._operations, self._subscriptions:
             self.start()
+            if action == 'resume':
+                with self._lock:
+                    preview = self._subscription_releases.pop(ticket, None)
+                connection = self._thread_connection(thread_id)
+                if (not preview or preview.get('operation') != 'resume'
+                        or preview['threadId'] != thread_id or preview['owner'] != owner
+                        or preview['connection'] is not connection
+                        or preview['generation'] != str(connection.generation)
+                        or preview['expires'] < time.monotonic() or rebind_workspace is not None):
+                    raise CodexError('恢复预览已失效，请重新操作', code='handoff_changed', http_status=409)
+                self._assert_workspace(thread_id)
+                # Ordinary resume never terminates another writer or starts a turn.
+                response = self.connection.request('thread/resume', {'threadId': thread_id, 'excludeTurns': True})
+                if str(connection.generation) != preview['generation']:
+                    raise CodexError('原生连接已变化，恢复结果待核对', code='handoff_changed', http_status=409, request_sent=True)
+                self._forget_observation(thread_id, 'ownership')
+                with self._lock:
+                    self._joined.add(thread_id)
+                    self._settings[thread_id] = self._settings_from(response)
+                self.on_event({'method': 'relay/ownershipChanged', 'params': {'threadId': thread_id}})
+                return {'threadId': thread_id}
             if action == 'release' and rebind_workspace is None:
                 released = self._release_subscription(thread_id, owner, ticket)
                 if released is not None:

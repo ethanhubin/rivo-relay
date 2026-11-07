@@ -8,13 +8,16 @@ import kotlinx.coroutines.flow.*
 data class SessionState(val id: String? = null, val snapshot: SessionSnapshot? = null, val loading: Boolean = false, val stale: Boolean = false,
     val historyCursor: String? = null, val loadingEarlier: Boolean = false, val earlierLoaded: Boolean = false,
     val readError: String? = null, val historyError: String? = null,
-    val pendingMessages: List<PendingNativeMessage> = emptyList(), val overlayRevision: Long = 0L)
+    val pendingMessages: List<PendingNativeMessage> = emptyList(), val overlayRevision: Long = 0L,
+    val controlNotice: String? = null)
 
 /** One active thread owns reads and subscription; switch cancels both and rejects late snapshots. */
 class SessionController(private val api: RelayApi, private val scope: CoroutineScope,
     private val store: ConversationStore? = null,
     private val onSnapshot: (String, org.json.JSONObject) -> Unit = { _, _ -> },
     private val onVisible: (String?) -> Unit = {},
+    private val slowReadMillis: Long = 3000,
+    private val readTimeoutMillis: Long = 10000,
     private val failure: (Throwable) -> Unit) {
     private val mutable = MutableStateFlow(SessionState())
     val state = mutable.asStateFlow()
@@ -24,6 +27,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
     private var activeJob: Job? = null
     private var updates: Channel<Unit>? = null
     private var generation = 0L
+    private var controlEpoch = 0L
     private var historyEpoch = 0L
     private var historyJob: Job? = null
     private val requestedHistoryCursors = mutableSetOf<String>()
@@ -60,7 +64,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                 try { if (mutable.value.snapshot == null) cached = store?.loadSnapshot(id)?.let(::sessionSnapshot) }
                 catch (e: Exception) { if (e is CancellationException) throw e }
                 if (isCurrent(id, targetGeneration)) mutable.update {
-                    it.copy(snapshot = it.snapshot ?: cached, loading = false, stale = true)
+                    it.copy(snapshot = it.snapshot ?: cached, loading = false, stale = true, controlNotice = "网络不可用，恢复连接并同步后才能操作")
                 }
             }
             return
@@ -101,6 +105,8 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                                 if (pendingDeltas.size >= 128) flushDeltas()
                                 return@collect
                             }
+                            if (event.type == "native" && event.payload.string("method") == "relay/ownershipChanged")
+                                invalidateControl("会话权限已变化，正在重新确认")
                             val historyInvalidated = event.type == "reset" || (event.type == "native" &&
                                 event.payload.string("method") == "relay/historyInvalidated")
                             if (historyInvalidated) pendingDeltas.clear() else flushDeltas()
@@ -115,12 +121,12 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                     catch (e: Exception) {
                         if (e is CancellationException) throw e
                         if (isCurrent(id, targetGeneration)) {
-                            mutable.update { it.copy(stale = true) }
+                            invalidateControl("连接已中断，正在重新确认操作权限")
                             if (e is ApiException && e.status == 401) failure(e)
                         }
                     }
                     flushDeltas()
-                    if (isCurrent(id, targetGeneration)) mutable.update { it.copy(stale = true) }
+                    if (isCurrent(id, targetGeneration)) invalidateControl("连接已中断，正在重新确认操作权限")
                     delay(1800); signals.trySend(Unit)
                 }
             }
@@ -134,15 +140,28 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
             signals.trySend(Unit)
             for (ignored in signals) {
                 val requestHistoryEpoch = historyEpoch
+                val requestControlEpoch = controlEpoch
+                val readStarted = System.nanoTime()
+                val slowRead = launch {
+                    delay(slowReadMillis)
+                    if (isCurrent(id, targetGeneration)) mutable.update {
+                        it.copy(stale = true, controlNotice = "服务器响应较慢，暂时禁止操作，等待同步确认")
+                    }
+                }
                 try {
                     reading = true
-                    val json = api.call("/v1/threads/" + encoded(id))
+                    val json = withTimeout(readTimeoutMillis) { api.call("/v1/threads/" + encoded(id)) }
                     val head = sessionSnapshot(json)
                     require(head.id == id) { "节点返回了其他会话，请重新同步" }
                     val previous = mutable.value
                     val snapshot = if (head.nativeReady && previous.earlierLoaded &&
                         head.nativeRevision != null && previous.snapshot?.nativeRevision != head.nativeRevision)
-                        loadHistoryDepth(id, head, previous.snapshot) else head
+                        withTimeout((readTimeoutMillis - (System.nanoTime() - readStarted) / 1_000_000).coerceAtLeast(1)) {
+                            loadHistoryDepth(id, head, previous.snapshot)
+                        } else head
+                    if ((System.nanoTime() - readStarted) / 1_000_000 >= readTimeoutMillis)
+                        throw ApiException(408, "control_timeout", "会话同步超时，等待重新确认操作权限")
+                    if (requestControlEpoch != controlEpoch) { signals.trySend(Unit); continue }
                     if (isCurrent(id, targetGeneration) && requestHistoryEpoch == historyEpoch) {
                         reconcilePending(id, snapshot)
                         mutable.update { current ->
@@ -158,7 +177,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                                     turnSettings = mergeLatestTurnSettings(current.snapshot?.turnSettings.orEmpty(), snapshot.turnSettings),
                                     reviewDiagnostics = mergeTurnDiagnostics(current.snapshot?.reviewDiagnostics.orEmpty(), snapshot.reviewDiagnostics))
                                 else -> snapshot
-                            }, loading = false, stale = false, readError = null,
+                            }, loading = false, stale = false, readError = null, controlNotice = null,
                                 historyCursor = if (!snapshot.nativeReady || keepEarlier) current.historyCursor else snapshot.historyCursor)
                         }
                         // Fresh live control/history is authoritative even while persistence catches up.
@@ -179,10 +198,10 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                         if (e is ApiException && e.status == 401) {
                             mutable.update { it.copy(loading = false, stale = true) }
                             failure(e)
-                        } else if (requestHistoryEpoch == historyEpoch) mutable.update { it.copy(loading = false, stale = true, readError = message(e)) }
+                        } else if (requestHistoryEpoch == historyEpoch) mutable.update { it.copy(loading = false, stale = true, readError = message(e), controlNotice = "同步失败，暂时禁止操作，等待重新连接") }
                     }
                 }
-                finally { reading = false }
+                finally { slowRead.cancel(); reading = false }
                 delay(180)
             }
         }
@@ -244,6 +263,12 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
     private fun publishPending(id: String) {
         mutable.update { it.copy(pendingMessages = pendingByThread[it.id].orEmpty(), overlayRevision = it.overlayRevision + 1) }
         if (pendingByThread[id]?.isEmpty() == true) pendingByThread.remove(id)
+    }
+    /** Fence reads started before a disconnect or mutation; they cannot restore permission. */
+    fun invalidateControl(notice: String = "操作结果已变化，正在重新确认会话权限") {
+        controlEpoch++
+        mutable.update { it.copy(stale = true, controlNotice = notice) }
+        refresh()
     }
     fun refresh() { updates?.trySend(Unit) }
     /** UI calls this only when the laid-out timeline still does not fill its viewport. */

@@ -19,6 +19,7 @@ import dev.rivo.relay.data.*
 import dev.rivo.relay.codex.BatchSubmission
 import dev.rivo.relay.codex.PendingSubmission
 import dev.rivo.relay.codex.SessionState
+import dev.rivo.relay.codex.control
 import dev.rivo.relay.codex.pinnedThreadsToObserve
 import dev.rivo.relay.ui.login.LoginScreen
 import dev.rivo.relay.ui.projects.*
@@ -89,7 +90,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             JSONObject().put("operation", operation).put("ticket", preview.getString("ticket")).put("confirmed", confirmed).apply {
                 preview.optJSONObject("workspaceRebind")?.string("path")?.takeIf(String::isNotBlank)?.let { put("rebindWorkspace", it) }
             },
-            if (operation == "takeover") "强制接管" else "主动释放") { node.session.refresh() }
+            when (operation) { "takeover" -> "强制接管"; "resume" -> "恢复操作"; else -> "主动释放" }) { node.session.refresh() }
     }
     fun requestHandoff(operation: String) {
         val id = threadId ?: return
@@ -128,7 +129,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     val todos by node.todos.state.collectAsStateWithLifecycle()
     val submission by node.submissions.state.collectAsStateWithLifecycle()
     val owner = LocalLifecycleOwner.current
-    val writable = !submission.busy && submission.pending == null && !handoffLoading
+    val writable = network != null && !submission.busy && submission.pending == null && !handoffLoading
     val projectsWritable = writable && catalog.projectsFresh
     val threadsWritable = writable && catalog.threadsFresh
     val visiblePending = listedPending.filter { it.projectId == catalog.selectedProject?.id }
@@ -367,7 +368,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             }
                         })
                 }
-                "chat" -> ChatScreen(session.takeIf { it.id == threadId } ?: SessionState(id = threadId, loading = true, stale = true), submission.busy, submission.pending != null, catalog.models, ::back,
+                "chat" -> ChatScreen(session.takeIf { it.id == threadId }?.let { if (network == null) it.copy(stale = true, controlNotice = "网络不可用，恢复连接并同步后才能操作") else it } ?: SessionState(id = threadId, loading = true, stale = true), submission.busy, submission.pending != null || handoffLoading || network == null, catalog.models, ::back,
                     nodeName = node.connection.name, writerBusy = handoffLoading, onWriterAction = ::requestHandoff,
                     defaultSettings = defaultSettings, onSaveDefaults = ::saveDefaults, onForwardLink = ::forwardLink, draftReloadKey = draftReloadKey,
                     modelCatalogNotice = catalog.modelsError ?: if (catalog.modelsStale) "模型目录暂未更新，当前使用最近可用选项" else null,
@@ -376,7 +377,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         val current = currentState.snapshot
                         val id = threadId
                         if (current != null && id != null && currentState.id == id && current.id == id && !currentState.stale &&
-                            current.requests.isEmpty() && !(current.recoveryRequired && current.activeTurnId.isBlank()) && !current.readOnly && writable) {
+                            current.requests.isEmpty() && !(current.recoveryRequired && current.activeTurnId.isBlank()) && currentState.control().canOperate && writable) {
                             val queued = current.readOnly || current.activeTurnId.isNotBlank() || current.requests.isNotEmpty() || current.queue.isNotEmpty()
                             val body = JSONObject().put("input", input)
                             if (queued) body.put("operation", "enqueue")
@@ -396,14 +397,15 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     }, onSettingsChange = { settings ->
                         val current = node.session.state.value
                         val id = threadId
-                        if (id != null && current.id == id && current.snapshot?.id == id && !current.stale && current.snapshot?.readOnly == false && writable)
+                        if (id != null && current.id == id && current.snapshot?.id == id && !current.stale && current.control().canOperate && writable)
                             node.submissions.submit("/v1/threads/${encoded(id)}/settings", settings, "更新模型设置") { if (threadId == id) node.session.refresh() }
                     }, onStop = {
-                        session.snapshot?.takeIf { !it.readOnly && it.id == threadId && session.id == threadId }?.let { snapshot ->
+                        node.session.state.value.let { current -> current.snapshot?.takeIf { writable && current.control().canOperate && it.id == threadId && current.id == threadId } }?.let { snapshot ->
                             node.submissions.submit("/v1/threads/${encoded(snapshot.id)}/interrupt", JSONObject().put("turnId", snapshot.activeTurnId), "停止任务") { node.session.refresh() }
                         }
                     }, onRespond = { request, response ->
-                        if (session.snapshot?.readOnly != true && session.id == threadId && session.snapshot?.id == threadId && session.snapshot?.requests?.any { it.key == request.key } == true) {
+                        val current = node.session.state.value
+                        if (writable && current.control().canOperate && current.id == threadId && current.snapshot?.id == threadId && current.snapshot?.requests?.any { it.key == request.key } == true) {
                             node.submissions.submit("/v1/requests/respond", JSONObject().put("key", request.key).put("response", response), "回答 Codex") { node.session.refresh() }
                         }
                     }, onRefresh = node.session::refresh, onLoadModels = { node.catalog.loadModels() }, onEarlier = node.session::loadEarlier,
@@ -414,7 +416,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     mediaApi = node.api,
                     cachedFile = { path, progress -> node.api.cachedFile(context.cacheDir, path, progress) },
                     draftStore = node.conversations, onPersistDraft = node::persistDraft, usage = catalog.usage, onFillHistory = node.session::ensureVisibleHistory,
-                    readTool = { path -> node.api.call(path) }, submitTool = { path, body, accepted ->
+                    readTool = { path -> node.api.call(path) }, submitTool = submitTool@{ path, body, accepted ->
+                        if (!writable || !node.session.state.value.control().canOperate) return@submitTool
                         val targetThreadId = threadId
                         node.submissions.submit(path, body, "更新会话") { receipt ->
                             targetThreadId?.let { node.notifications.watch(it, requestPermission = true, turnId = receipt.string("turnId")) }
@@ -422,11 +425,11 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             node.catalog.refreshThreads()
                         }
                     }, pinned = catalog.threads.firstOrNull { it.id == threadId }?.pinned == true,
-                    canManage = !session.stale && session.id == threadId && session.snapshot?.id == threadId && session.snapshot?.readOnly == false && !submission.busy && submission.pending == null,
+                    canManage = !session.stale && session.id == threadId && session.snapshot?.id == threadId && session.control().canOperate && writable,
                     onPin = { pinned ->
                         val current = node.session.state.value
                         val id = threadId
-                        if (id != null && !current.stale && current.id == id && current.snapshot?.id == id && current.snapshot?.readOnly == false)
+                        if (id != null && !current.stale && current.id == id && current.snapshot?.id == id && writable && current.control().canOperate)
                             node.submissions.submit("/v1/threads/${encoded(id)}/pin", JSONObject().put("pinned", pinned), if (pinned) "置顶会话" else "取消置顶") {
                                 if (pinned) node.notifications.watch(id, requestPermission = true)
                                 node.catalog.refreshThreads()
@@ -435,7 +438,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         val current = node.session.state.value
                         val id = threadId
                         val snapshot = current.snapshot
-                        if (id != null && !current.stale && current.id == id && snapshot?.id == id && !snapshot.readOnly && snapshot.activeTurnId.isBlank() && snapshot.queue.isEmpty() && snapshot.requests.isEmpty())
+                        if (id != null && !current.stale && current.id == id && snapshot?.id == id && writable && current.control().canOperate && snapshot.activeTurnId.isBlank() && snapshot.queue.isEmpty() && snapshot.requests.isEmpty())
                             node.submissions.submit("/v1/threads/${encoded(id)}/archive", JSONObject().put("archived", true), "归档会话") {
                                 node.catalog.refreshThreads()
                                 if (route == "chat" && threadId == id) back()
@@ -443,14 +446,14 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     }, onGoal = { body ->
                         val id = threadId
                         val current = node.session.state.value
-                        if (id != null && current.id == id && !current.stale && writable && current.snapshot?.readOnly == false)
+                        if (id != null && current.id == id && !current.stale && writable && current.control().canOperate)
                             node.submissions.submit("/v1/threads/${encoded(id)}/goal", body, "更新目标") {
                                 if (route == "chat" && threadId == id) node.session.refresh()
                             }
                     }, onQueue = { body, accepted ->
                         val id = threadId
                         val current = node.session.state.value
-                        if (id != null && current.id == id && !current.stale && writable) node.submissions.submit("/v1/threads/${encoded(id)}/queue", body, "更新执行队列",
+                        if (id != null && current.id == id && current.control().canOperate && writable) node.submissions.submit("/v1/threads/${encoded(id)}/queue", body, "更新执行队列",
                             prepared = { pending ->
                                 if (body.string("operation") == "steer") current.snapshot?.queue?.firstOrNull { it.id == body.string("itemId") }?.let { task ->
                                     task.raw.optJSONArray("input")?.let { input -> node.session.beginSubmission(id, pending.id, input, "guidance", task.id) }

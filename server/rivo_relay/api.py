@@ -535,7 +535,7 @@ class Handler(BaseHTTPRequestHandler):
                     fn = lambda: codex.steer(thread_id, text, **kwargs)
                 elif action == "ownership":
                     operation = body.get("operation")
-                    if operation not in ("takeover", "release"):
+                    if operation not in ("takeover", "release", "resume"):
                         raise ApiError(400, "invalid_request", "Invalid ownership operation")
                     ticket = required(body, "ticket", 128)
                     options = {'rebind_workspace': required(body, 'rebindWorkspace', 4096)} if 'rebindWorkspace' in body else {}

@@ -104,6 +104,26 @@ class ChatRenderingUiTest {
         compose.waitUntil(5000) { reads == 1 }
     }
 
+    @Test fun losingPermissionLocksDraftAndRestoringPermissionPreservesIt() {
+        val state = androidx.compose.runtime.mutableStateOf(SessionState(id = "control", snapshot = sessionSnapshot(
+            JSONObject().put("thread", JSONObject().put("id", "control")).put("writerOwner", "relay"))))
+        compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize()) {
+            ChatScreen(state.value, false, false, emptyList(), {},
+                onSend = { _, _, _, _ -> error("Must not send") }, onStop = {}, onRespond = { _, _ -> },
+                onRefresh = {}, onLoadModels = {}, onEarlier = {}, readFile = { JSONObject() })
+        } } }
+        compose.onNodeWithTag("message_input").performTextInput("保留草稿")
+        compose.runOnIdle { state.value = state.value.copy(snapshot = state.value.snapshot!!.copy(
+            readOnly = true, writerOwner = "none", control = JSONObject().put("state", "released").put("canOperate", false).put("action", "resume"))) }
+        compose.onNodeWithText("保留草稿").assertIsDisplayed()
+        for (tag in listOf("message_input", "add_attachment", "composer_settings", "codex_task_mode", "send_message"))
+            compose.onNodeWithTag(tag).assertIsNotEnabled()
+        compose.runOnIdle { state.value = state.value.copy(snapshot = state.value.snapshot!!.copy(
+            readOnly = false, control = JSONObject().put("state", "writable").put("canOperate", true))) }
+        compose.onNodeWithTag("message_input").assertIsEnabled()
+        compose.onNodeWithText("保留草稿").assertIsDisplayed()
+    }
+
     @Test fun externallyOwnedHistoryLocksNewInputAndCannotStop() {
         val snapshot = sessionSnapshot(JSONObject().put("thread", JSONObject().put("id", "external").put("name", "已有会话")
             .put("turns", JSONArray().put(JSONObject().put("id", "turn").put("items", JSONArray().put(
@@ -119,6 +139,8 @@ class ChatRenderingUiTest {
         compose.onNodeWithText("已有历史仍可阅读").assertIsDisplayed()
         compose.onNodeWithTag("message_input").assertIsNotEnabled()
         compose.onNodeWithTag("add_attachment").assertIsNotEnabled()
+        compose.onNodeWithTag("composer_settings").assertIsNotEnabled()
+        compose.onNodeWithTag("codex_task_mode").assertIsNotEnabled()
         compose.onNodeWithTag("stop_turn").assertIsNotEnabled()
         compose.onNodeWithTag("conversation_more_button").performClick()
         compose.onNodeWithTag("header_stop_turn").assertIsNotEnabled()

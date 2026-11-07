@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.codex.SessionState
+import dev.rivo.relay.codex.control
 import dev.rivo.relay.data.*
 import org.json.JSONObject
 import org.json.JSONArray
@@ -107,7 +108,15 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val scope = rememberCoroutineScope()
     val currentSessionId by rememberUpdatedState(state.id)
     val recoveryTask = snapshot?.recoveryTask?.takeIf { snapshot.activeTurnId.isBlank() }
-    val inputLocked = blocked || snapshot?.readOnly == true || snapshot?.requests?.isNotEmpty() == true || recoveryTask != null
+    val canOperate = state.control().canOperate
+    val inputLocked = blocked || busy || writerBusy || (pendingTitle == null && !canOperate) || snapshot?.requests?.isNotEmpty() == true || recoveryTask != null
+    val latestInputLocked by rememberUpdatedState(inputLocked)
+    LaunchedEffect(inputLocked) {
+        if (inputLocked) {
+            focus.clearFocus(); keyboard?.hide(); settingsOpen = false
+            editingImage = null; workspaceFileDialog = false; removingQueue = null; stopConfirm = false
+        }
+    }
     fun openFile(path: String) { fileAction = null; filePath = path }
     fun addImages(uris: List<android.net.Uri>) {
         val targetId = state.id
@@ -117,7 +126,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             val available = (10 - images.size).coerceAtLeast(0)
             try { uris.take(available).forEach { uri ->
                 val image = prepareImage(context, uri)
-                if (currentSessionId == targetId && images.size < 10) {
+                if (currentSessionId == targetId && !latestInputLocked && images.size < 10) {
                     require(images.sumOf { it.bytes.size.toLong() } + image.bytes.size <= 40L * 1024 * 1024) { "图片总大小不能超过 40 MiB" }; images = images + image
                 }
             }; if (uris.size > available && currentSessionId == targetId) attachmentError = "最多添加 10 张图片，其余图片未添加" }
@@ -189,10 +198,11 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             try {
                 val available = (16 - files.size).coerceAtLeast(0)
                 for (uri in uris.take(available)) {
-                if (currentSessionId != sessionId) break
+                if (currentSessionId != sessionId || latestInputLocked) break
                 val prepared = prepareFile(context, uri)
+                if (latestInputLocked) { prepared.file.delete(); break }
                 val uploaded = try { uploadFile(sessionId, prepared.name, prepared.file) } finally { prepared.file.delete() }
-                if (currentSessionId == sessionId) files = files + JSONObject().put("type", "mention")
+                if (currentSessionId == sessionId && !latestInputLocked) files = files + JSONObject().put("type", "mention")
                     .put("name", uploaded.getString("name")).put("path", uploaded.getString("path"))
                 }
                 if (uris.size > available && currentSessionId == sessionId) attachmentError = "最多添加 16 个文件，其余文件未上传"
@@ -252,7 +262,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         draft = appendQuoteToDraft(draft, text); inputFocusRequest++
     }) else null
     val saveFile: (String) -> Unit = { fileAction = FileAction.SAVE; filePath = it }
-    fun openSettings() { settingsOpen = !settingsOpen; if (settingsOpen) onLoadModels() }
+    fun openSettings() { if (inputLocked) return; settingsOpen = !settingsOpen; if (settingsOpen) onLoadModels() }
     val mediaFavorite: (suspend (String, Boolean?) -> dev.rivo.relay.data.MediaFavoriteResult)? = mediaClient?.let { client ->
         { source, desired -> client.favorite(source, desired) }
     }
@@ -267,13 +277,13 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         if (busy || inputLocked || preparing || !draftLoaded) return@attach false
         if (mime.startsWith("image/")) {
             val image = prepareImage(context, android.net.Uri.fromFile(file))
-            if (currentSessionId != target) return@attach false
+            if (currentSessionId != target || latestInputLocked) return@attach false
             require(images.size < 10 && images.sumOf { it.bytes.size.toLong() } + image.bytes.size <= 40L * 1024 * 1024) { "最多 10 张图片，合计 40 MiB" }
             images = images + image
         } else {
             require(files.size < 16) { "最多 16 个附件" }
             val uploaded = uploadFile(target, name, file)
-            if (currentSessionId != target) return@attach false
+            if (currentSessionId != target || latestInputLocked) return@attach false
             files = files + JSONObject().put("type", "mention").put("name", uploaded.getString("name")).put("path", uploaded.getString("path"))
         }
         true
@@ -287,7 +297,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             TextButton(onClick = onBack, modifier = Modifier.testTag("back_sessions")) { Text("‹") }
             Column { Text("新会话", style = MaterialTheme.typography.titleLarge); Text(pendingTitle, style = MaterialTheme.typography.bodySmall) }
         } else NativeChatHeader(state, usage, onBack, ::openSettings, onRefresh, { developerOpen = true }, { stopConfirm = true },
-            !busy && !blocked && !state.stale && snapshot?.readOnly != true, pinned, canManage, onPin, onArchive)
+            !busy && !blocked && !state.stale && canOperate, pinned, canManage, onPin, onArchive)
         if (pendingTitle == null) NativeWriterStatus(state, nodeName, writerBusy || busy || blocked, onWriterAction)
         if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -379,19 +389,19 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         if (snapshot?.requests?.isNotEmpty() == true) Column(Modifier.fillMaxWidth().heightIn(max = 320.dp)
             .verticalScroll(rememberScrollState()).padding(horizontal = 12.dp).testTag("native_requests_panel")) {
             snapshot.requests.forEach { request -> key(request.key) {
-                NativeRequestPanel(request, !busy && !blocked && !state.stale && !snapshot.readOnly) { onRespond(request, it) }
+                NativeRequestPanel(request, !busy && !blocked && !state.stale && canOperate) { onRespond(request, it) }
             } }
         }
-        recoveryTask?.let { task -> RecoveryTaskPanel(task, !busy && !blocked && !state.stale, readOnly = snapshot?.readOnly == true) { operation ->
+        recoveryTask?.let { task -> RecoveryTaskPanel(task, !busy && !blocked && canOperate, readOnly = !canOperate) { operation ->
             onQueue(JSONObject().put("operation", operation).put("itemId", task.id).put("revision", task.revision), {})
         } }
         if (snapshot?.goalSupported == true) key(state.id) {
-            NativeGoalPanel(snapshot.goal, !busy && !blocked && !state.stale && !snapshot.readOnly, onGoal)
+            NativeGoalPanel(snapshot.goal, !busy && !blocked && !state.stale && canOperate, onGoal)
         }
         NativePlan(snapshot?.plan)
         val waitingQueue = snapshot?.queue.orEmpty().filter { it.status !in setOf("running", "dispatching") && it.id != recoveryTask?.id }
-        if (snapshot != null && waitingQueue.isNotEmpty()) ExecutionQueuePanel(snapshot.id, waitingQueue, !busy && !blocked && !state.stale,
-            canSteer = !snapshot.readOnly && snapshot.activeTurnId.isNotBlank() && snapshot.requests.isEmpty(),
+        if (snapshot != null && waitingQueue.isNotEmpty()) ExecutionQueuePanel(snapshot.id, waitingQueue, !busy && !blocked && canOperate,
+            canSteer = canOperate && snapshot.activeTurnId.isNotBlank() && snapshot.requests.isEmpty(),
             onEdit = ::editQueuedTask, onWithdraw = { removingQueue = it },
             onSteer = { task -> onQueue(JSONObject().put("operation", "steer").put("itemId", task.id).put("revision", task.revision).put("expectedTurnId", snapshot.activeTurnId), {}) },
             onReorder = { ids, expected -> onQueue(JSONObject().put("operation", "reorder").put("ids", JSONArray(ids)).put("expectedIds", JSONArray(expected)), {}) })
@@ -403,7 +413,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             onOpenFile = { reference -> nativeFilePath(reference.string("path"), cwd)?.let(::openFile) },
             preparing = preparing, error = attachmentError, enabled = !busy && !inputLocked && draftLoaded,
             canSend = (draft.isNotBlank() || images.isNotEmpty() || files.isNotEmpty()) && !state.stale && (snapshot != null || pendingTitle != null && pendingReady),
-            isRunning = snapshot?.activeTurnId?.isNotBlank() == true, canStop = !busy && !blocked && !state.stale && snapshot?.readOnly != true, busy = busy,
+            isRunning = snapshot?.activeTurnId?.isNotBlank() == true, canStop = !busy && !blocked && !state.stale && canOperate, busy = busy,
             onAddImage = { focus.clearFocus(); keyboard?.hide(); imagePickerTarget = state.id; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
             onAddFile = { focus.clearFocus(); keyboard?.hide(); filePickerTarget = state.id; filePicker.launch(arrayOf("*/*")) },
             onAddVideo = { focus.clearFocus(); keyboard?.hide(); filePickerTarget = state.id; filePicker.launch(arrayOf("video/*")) },
@@ -412,7 +422,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             onToggleMode = { selectedMode = if ((selectedMode ?: snapshot?.settings?.optJSONObject("collaborationMode")?.string("mode")) == "plan") "default" else "plan" },
             focusRequest = inputFocusRequest, onPasteImages = ::addImages,
             settingsExpanded = settingsOpen, onDismissSettings = { settingsOpen = false }, settingsContent = {
-                NativeComposerSettings(snapshot?.settings, models, selectedModel, selectedEffort, selectedMode, !busy && !blocked && !state.stale && snapshot?.readOnly != true && draftLoaded,
+                NativeComposerSettings(snapshot?.settings, models, selectedModel, selectedEffort, selectedMode, !busy && !blocked && !state.stale && (canOperate || pendingTitle != null && pendingReady) && draftLoaded,
                     onModel = { modelId ->
                         selectedModel = modelId
                         val capability = models.firstOrNull { it.string("model").ifBlank { it.string("id") } == modelId }
@@ -441,9 +451,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             queueing = snapshot != null && (snapshot.readOnly || snapshot.activeTurnId.isNotBlank() || snapshot.requests.isNotEmpty() || snapshot.queue.isNotEmpty()),
         )
     }
-    if (developerOpen && state.id != null) DeveloperToolsDialog(state.id, readTool, submitTool, busy || blocked || state.stale, onDismiss = { developerOpen = false },
-        canCleanup = snapshot?.activeTurnId?.isBlank() == true && snapshot.requests.isEmpty() && snapshot.queue.isEmpty() && !snapshot.readOnly)
-    editingImage?.let { image ->
+    if (developerOpen && state.id != null) DeveloperToolsDialog(state.id, readTool, submitTool, busy || blocked || !canOperate, onDismiss = { developerOpen = false },
+        canCleanup = snapshot?.activeTurnId?.isBlank() == true && snapshot.requests.isEmpty() && snapshot.queue.isEmpty() && canOperate)
+    editingImage?.takeUnless { inputLocked }?.let { image ->
         key(image) {
             AttachmentImageEditor(image, onDismiss = { editingImage = null }, onComplete = { edited ->
                 if (images.sumOf { it.bytes.size.toLong() } - image.bytes.size + edited.bytes.size <= 40L * 1024 * 1024) images = images.map { if (it.id == image.id) edited else it }
@@ -455,17 +465,17 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     removingQueue?.let { task -> AlertDialog(onDismissRequest = { if (!busy) removingQueue = null },
         title = { Text(if (task.status == "unknown") "移除待核对记录？" else "撤回待发任务？") },
         text = { Text(if (task.status == "unknown") "仅移除此队列记录，不会停止或重新发送原任务。请先核对会话历史。" else "该任务将从等待队列移除，不再执行。") },
-        confirmButton = { TextButton(onClick = { onQueue(JSONObject().put("operation", "remove").put("itemId", task.id).put("revision", task.revision)) { removingQueue = null } }, enabled = !busy && !blocked, modifier = Modifier.testTag("queue_remove")) { Text("确认撤回") } },
+        confirmButton = { TextButton(onClick = { onQueue(JSONObject().put("operation", "remove").put("itemId", task.id).put("revision", task.revision)) { removingQueue = null } }, enabled = !busy && !blocked && canOperate, modifier = Modifier.testTag("queue_remove")) { Text("确认撤回") } },
         dismissButton = { TextButton(onClick = { removingQueue = null }) { Text("取消") } }) }
     filePath?.let { FilePreviewDialog(it, readFile, downloadFile, initialAction = fileAction) { filePath = null; fileAction = null } }
-    if (workspaceFileDialog) WorkspaceFilePicker(cwd, readDirectory,
+    if (workspaceFileDialog && !inputLocked) WorkspaceFilePicker(cwd, readDirectory,
         onDismiss = { workspaceFileDialog = false }, onSelect = { file ->
             if (files.size < 16 && files.none { it.string("path") == file.string("path") }) files = files + file
             workspaceFileDialog = false
         })
     if (stopConfirm) AlertDialog(onDismissRequest = { stopConfirm = false }, title = { Text("停止当前任务？") },
         text = { Text("将中断当前 Codex 执行。已产生的内容和改动会保留。") },
-        confirmButton = { Button(onClick = { stopConfirm = false; onStop() }) { Text("停止任务") } },
+        confirmButton = { Button(onClick = { stopConfirm = false; onStop() }, enabled = !busy && !blocked && canOperate) { Text("停止任务") } },
         dismissButton = { TextButton(onClick = { stopConfirm = false }) { Text("取消") } })
     forwardingLink?.let { link -> CodexLinkDestinationDialog(link, readTool,
         onConfirm = { projectId, threadId, source, name -> forwardingLink = null; onForwardLink?.invoke(projectId, threadId, source, name) },

@@ -26,3 +26,15 @@ def execution_projection(status, queue=(), *, read_only=False, requests=()):
                         'recovery_required' if recovery else
                         'external_writer_idle' if read_only and waiting else None),
     }
+
+
+def control_projection(*, read_only, released, workspace_unavailable, runtime):
+    state = ('workspace_unavailable' if workspace_unavailable else 'released' if released
+             else 'external' if read_only else 'writable')
+    if runtime.get('connected') is False:
+        return {'state': 'unknown', 'canOperate': False, 'action': None,
+                'unavailableReason': '原生运行时未连接，等待重新确认操作权限'}
+    action = ('resume' if state == 'released' else 'release' if state == 'writable'
+              else 'takeover' if runtime.get('handoffAvailable') else None)
+    return {'state': state, 'canOperate': state == 'writable', 'action': action,
+            'unavailableReason': runtime.get('handoffUnavailableReason') if action is None else None}

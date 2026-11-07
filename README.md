@@ -6,7 +6,7 @@ Rivo Relay 是一个自托管的 **Codex 移动工作台**，让你在 Android �
 
 2026-11-07 开发代码已对照 QiGuang-Next 最新本地发布版 `1642fc8` 更新 Codex 会话、队列恢复、模型设置、原生交互与文件差异。具体迁移内容、协议适配和未迁入部分见 [Codex 最新对照](docs/qiguang-codex-sync.md)，测试与部署边界见 [验证记录](docs/validation.md)。
 
-当前 Android 测试版为 **0.2.10 / code 22**：[下载 APK](https://github.com/ethanhubin/rivo-relay/releases/download/v0.2.10/rivo-relay-0.2.10-debug.apk) · [发布说明](https://github.com/ethanhubin/rivo-relay/releases/tag/v0.2.10)。沿用此前签名，可覆盖升级。2026-11-07 后续迁移补齐 Desktop 协议适配、实际节点原生历史修复、图片/视频播放器、媒体代理/缩略图/生成溯源与媒体库、流式语音输入；具体行为、测试结果与尚需真实环境验收的边界见 [Codex 对照记录](docs/qiguang-codex-sync.md)。本机 Relay 已更新，Desktop 实际共享仍需宿主加载器，语音识别仍需配置 ASR。
+当前 Android 测试版为 **0.2.12 / code 24**：[下载 APK](https://github.com/ethanhubin/rivo-relay/releases/download/v0.2.12/rivo-relay-0.2.12-debug.apk) · [发布说明](https://github.com/ethanhubin/rivo-relay/releases/tag/v0.2.12)。沿用此前签名，可覆盖升级。2026-11-07 后续迁移补齐 Desktop 协议适配、实际节点原生历史修复、图片/视频播放器、媒体代理/缩略图/生成溯源与媒体库、流式语音输入；具体行为、测试结果与尚需真实环境验收的边界见 [Codex 对照记录](docs/qiguang-codex-sync.md)。本机 Relay 已更新，Desktop 实际共享仍需宿主加载器，语音识别仍需配置 ASR。
 
 ## 可以做什么
 

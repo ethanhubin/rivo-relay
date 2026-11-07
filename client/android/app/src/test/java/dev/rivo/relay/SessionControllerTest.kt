@@ -1,6 +1,7 @@
 package dev.rivo.relay
 
 import dev.rivo.relay.codex.SessionController
+import dev.rivo.relay.codex.control
 import dev.rivo.relay.data.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
@@ -26,6 +27,71 @@ class SessionControllerTest {
     private fun error(status: Int) = MockResponse().setResponseCode(status)
         .setBody("""{"error":{"code":"native_rejected","message":"读取暂时失败"}}""")
     private suspend fun await(latch: CountDownLatch) = withContext(Dispatchers.IO) { assertTrue(latch.await(5, TimeUnit.SECONDS)) }
+
+    @Test fun slowReadLocksInputAndTimeoutOnlyRecoversFromFreshRead() = runBlocking {
+        val server = MockWebServer()
+        val reads = AtomicInteger()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                return when (reads.incrementAndGet()) {
+                    1 -> snapshot("t", "initial")
+                    2 -> snapshot("t", "late").setBodyDelay(500, TimeUnit.MILLISECONDS)
+                    else -> snapshot("t", "fresh")
+                }
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = SessionController(api(server), scope, slowReadMillis = 50, readTimeoutMillis = 250) { fail(it.message) }
+        try {
+            controller.open("t")
+            withTimeout(5000) { controller.state.first { it.snapshot?.name == "initial" && !it.stale } }
+            controller.refresh()
+            val slow = withTimeout(5000) { controller.state.first { it.controlNotice?.contains("响应较慢") == true } }
+            assertFalse(slow.control().canOperate)
+            assertEquals("initial", slow.snapshot?.name)
+            controller.refresh()
+            val fresh = withTimeout(5000) { controller.state.first { it.snapshot?.name == "fresh" && !it.stale } }
+            assertTrue(fresh.control().canOperate)
+            assertNull(fresh.controlNotice)
+        } finally { controller.close(); scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun responseStartedBeforeInvalidationCannotRestorePermission() = runBlocking {
+        val server = MockWebServer()
+        val reads = AtomicInteger()
+        val secondStarted = CountDownLatch(1)
+        val releaseSecond = CountDownLatch(1)
+        val thirdStarted = CountDownLatch(1)
+        val releaseThird = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                return when (reads.incrementAndGet()) {
+                    1 -> snapshot("t", "initial")
+                    2 -> { secondStarted.countDown(); releaseSecond.await(5, TimeUnit.SECONDS); snapshot("t", "obsolete") }
+                    else -> { thirdStarted.countDown(); releaseThird.await(5, TimeUnit.SECONDS); snapshot("t", "fresh") }
+                }
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = SessionController(api(server), scope) { fail(it.message) }
+        try {
+            controller.open("t")
+            withTimeout(5000) { controller.state.first { it.snapshot?.name == "initial" && !it.stale } }
+            controller.refresh(); await(secondStarted)
+            controller.invalidateControl()
+            releaseSecond.countDown(); await(thirdStarted)
+            assertTrue(controller.state.value.stale)
+            assertFalse(controller.state.value.control().canOperate)
+            assertEquals("initial", controller.state.value.snapshot?.name)
+            releaseThird.countDown()
+            withTimeout(5000) { controller.state.first { it.snapshot?.name == "fresh" && !it.stale } }
+            Unit
+        } finally { releaseSecond.countDown(); releaseThird.countDown(); controller.close(); scope.cancel(); server.shutdown() }
+    }
 
     @Test fun transportResetDoesNotLeaveSessionLoadingForever() = runBlocking {
         val server = MockWebServer()

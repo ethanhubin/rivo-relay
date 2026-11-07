@@ -22,6 +22,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.codex.SessionState
+import dev.rivo.relay.codex.control
+import dev.rivo.relay.codex.ControlState
 import dev.rivo.relay.data.*
 import dev.rivo.relay.ui.common.CodexQuotaProgressBar
 import org.json.JSONObject
@@ -32,18 +34,36 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
     var runtimeDetails by remember(state.id) { mutableStateOf(false) }
     val runtime = snapshot?.nativeRuntime
     val trusted = !state.stale && !state.loading && snapshot != null
-    val owner = if (!trusted) "unknown" else snapshot!!.writerOwner.ifBlank { if (snapshot.readOnly) "external" else "unknown" }
-    val external = owner in setOf("external", "other")
-    val owned = owner in setOf("self", "relay", "rivo", "qiguang")
-    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp).testTag("writer_status"),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("$nodeName · 写权限 · " + when { external -> "外部 Codex"; owned -> if (runtime?.optBoolean("desktopShared") == true) "Desktop 共享" else "Rivo"; owner in setOf("idle", "none", "free") -> "空闲"; else -> "待确认" },
-            Modifier.weight(1f).then(if (runtime != null) Modifier.clickable { runtimeDetails = true } else Modifier).then(if (external) Modifier.testTag("external_writer_notice") else Modifier),
-            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        if (trusted && onAction != null && (external || owned) && (!external || runtime?.optBoolean("handoffAvailable", true) != false)) TextButton(onClick = { onAction(if (external) "takeover" else "release") }, enabled = !busy,
-            contentPadding = PaddingValues(horizontal = 4.dp), modifier = Modifier.heightIn(min = 32.dp).testTag("writer_action")) {
-            Text(if (busy) "处理中…" else if (external) "强制接管" else "释放权限", style = MaterialTheme.typography.labelSmall)
+    val control = state.control()
+    val external = control.state == ControlState.EXTERNAL
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).testTag("writer_status")) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("$nodeName · " + when (control.state) {
+                ControlState.WRITABLE -> if (runtime?.optBoolean("desktopShared") == true) "可操作 · Desktop 共享" else "可操作"
+                ControlState.EXTERNAL -> "当前 App 无操作权限 · 外部 Codex 占用"
+                ControlState.RELEASED -> "当前 App 无操作权限 · 已主动释放"
+                ControlState.WORKSPACE_UNAVAILABLE -> "当前会话不可操作 · 工作目录不可用"
+                ControlState.UNKNOWN -> "操作权限待确认 · 正在等待同步"
+            }, Modifier.weight(1f).then(if (runtime != null) Modifier.clickable { runtimeDetails = true } else Modifier)
+                .then(if (external) Modifier.testTag("external_writer_notice") else Modifier),
+                style = MaterialTheme.typography.labelSmall,
+                color = if (control.canOperate) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
+            control.action?.let { action ->
+                if (onAction != null) TextButton(onClick = { onAction(action) }, enabled = !busy,
+                    modifier = Modifier.testTag("writer_action")) {
+                    Text(if (busy) "处理中…" else when (action) { "resume" -> "恢复操作"; "takeover" -> "强制接管"; else -> "释放权限" })
+                }
+            }
         }
+        state.controlNotice?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        if (control.state == ControlState.RELEASED) {
+            Text("恢复操作会尝试重新连接会话；若被其他 Codex 占用，需要接管后才能操作。", style = MaterialTheme.typography.bodySmall)
+            if (runtime?.optBoolean("handoffAvailable") == true && onAction != null)
+                TextButton(onClick = { onAction("takeover") }, enabled = !busy) { Text("强制接管") }
+        }
+        if (control.state == ControlState.WORKSPACE_UNAVAILABLE)
+            Text("请恢复工作目录；支持重绑时，可通过接管确认新的工作目录。", style = MaterialTheme.typography.bodySmall)
+        if (control.reason.isNotBlank()) Text(control.reason, style = MaterialTheme.typography.bodySmall)
     }
     if (runtimeDetails && runtime != null) AlertDialog(onDismissRequest = { runtimeDetails = false }, title = { Text("Codex 连接") },
         text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

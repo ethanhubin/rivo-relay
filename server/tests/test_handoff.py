@@ -34,6 +34,43 @@ class HandoffTests(unittest.TestCase):
         writers.busy.return_value = False
         return service, native, writers
 
+    def test_resume_released_shared_desktop_without_killing_or_starting_turn(self):
+        service, native, writers = self.service()
+        native.status = lambda: {'connected': True, 'runtime': 'desktop', 'desktopShared': True}
+        service._observe(TID, 'ownership', '', {'released': True})
+        preview = service.preview_handoff(TID, 'resume', 'phone')
+        service.handoff(TID, 'resume', owner='phone', ticket=preview['ticket'])
+        self.assertNotIn(('ownership', ''), service.observations_for(TID))
+        self.assertIn(TID, service._joined)
+        writers.terminate.assert_not_called()
+        self.assertNotIn('turn/start', [m for m, _ in native.calls])
+        with self.assertRaises(CodexError):
+            service.handoff(TID, 'resume', owner='phone', ticket=preview['ticket'])
+
+    def test_resume_failure_keeps_release_intent(self):
+        service, native, writers = self.service()
+        service._observe(TID, 'ownership', '', {'released': True})
+        preview = service.preview_handoff(TID, 'resume', 'phone')
+        original = native.request
+        def request(method, params, **kwargs):
+            if method == 'thread/resume':
+                raise CodexError('already has an active writer', code='native_rejected')
+            return original(method, params, **kwargs)
+        native.request = request
+        with self.assertRaises(CodexError):
+            service.handoff(TID, 'resume', owner='phone', ticket=preview['ticket'])
+        self.assertTrue(service.observations_for(TID)[('ownership', '')]['released'])
+        writers.terminate.assert_not_called()
+
+    def test_resume_ticket_cannot_release_or_cross_owners(self):
+        for action, owner in [('release', 'phone'), ('resume', 'other')]:
+            service, native, writers = self.service()
+            preview = service.preview_handoff(TID, 'resume', 'phone')
+            with self.assertRaises(CodexError):
+                service.handoff(TID, action, owner=owner, ticket=preview['ticket'])
+            self.assertNotIn('thread/resume', [m for m, _ in native.calls])
+            self.assertNotIn('thread/unsubscribe', [m for m, _ in native.calls])
+
     def test_kill_then_acquire_and_preserve_other_queue_pause(self):
         service, native, writers = self.service()
         steps = []
