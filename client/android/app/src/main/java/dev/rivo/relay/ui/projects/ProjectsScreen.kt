@@ -60,7 +60,7 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
     onProject: (ProjectSummary) -> Unit, onConnection: () -> Unit, onRefresh: () -> Unit, onAdd: (() -> Unit)? = null,
     usage: CodexUsage? = null, usageLoading: Boolean = false, usageError: String? = null, onRefreshUsage: (() -> Unit)? = null, canAdd: Boolean = true,
     savedNodes: List<dev.rivo.relay.connection.SavedNode> = emptyList(), currentBase: String = "",
-    onSelectNode: (String) -> Unit = {}, onAddNode: () -> Unit = {}, canSwitchNode: Boolean = true, nodeConnected: Boolean? = null,
+    onSelectNode: (String) -> Unit = {}, onAddNode: () -> Unit = {}, canAddNode: Boolean = true, nodeConnected: Boolean? = null,
     pinnedProjectIds: List<String> = emptyList(), onPinProject: ((String, Boolean) -> Unit)? = null) {
     var nodeMenuOpen by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -73,7 +73,7 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text("Codex 项目", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Box {
-                        TextButton(onClick = { nodeMenuOpen = true }, enabled = canSwitchNode, modifier = Modifier.widthIn(max = 180.dp).testTag("node_settings")) {
+                        TextButton(onClick = { nodeMenuOpen = true }, modifier = Modifier.widthIn(max = 180.dp).testTag("node_settings")) {
                             val statusColor = when (nodeConnected) {
                                 true -> Color(0xFF2E9B59)
                                 false -> MaterialTheme.colorScheme.error
@@ -98,12 +98,11 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                                 val selected = saved.base == currentBase
                                 DropdownMenuItem(text = { Text(saved.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
                                     leadingIcon = { Text(if (selected) "✓" else "", Modifier.width(20.dp)) },
-                                    enabled = canSwitchNode,
-                                    onClick = { nodeMenuOpen = false; if (!selected && canSwitchNode) onSelectNode(saved.base) },
+                                    onClick = { nodeMenuOpen = false; if (!selected) onSelectNode(saved.base) },
                                     modifier = Modifier.testTag("switch_node_${saved.base}"))
                             }
                             HorizontalDivider()
-                            DropdownMenuItem(text = { Text("添加节点") }, enabled = canSwitchNode, onClick = { nodeMenuOpen = false; if (canSwitchNode) onAddNode() },
+                            DropdownMenuItem(text = { Text("添加节点") }, enabled = canAddNode, onClick = { nodeMenuOpen = false; onAddNode() },
                                 modifier = Modifier.testTag("add_node"))
                             DropdownMenuItem(text = { Text("节点详情") }, onClick = { nodeMenuOpen = false; onConnection() },
                                 modifier = Modifier.testTag("node_details"))

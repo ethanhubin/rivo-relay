@@ -265,8 +265,9 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         catalog.projectsLoading -> null
                         else -> false
                     },
-                    onSelectNode = { if ((!submission.busy || submission.reconciling) && !handoffLoading) selectNode(it) },
-                    onAddNode = { if (!submission.busy && !handoffLoading) disconnect() }, canSwitchNode = (!submission.busy || submission.reconciling) && !handoffLoading)
+                    // A stalled request must not trap the user on this node; pending IDs are stored per node.
+                    onSelectNode = selectNode,
+                    onAddNode = disconnect, canAddNode = !submission.busy && !handoffLoading)
                 "sessions" -> SessionsScreen(catalog.selectedProject?.name ?: "会话", catalog.threads.filterNot { thread -> visiblePending.any { node.conversations.pendingThreadId(it.id) == thread.id } }, catalog.loading, threadsWritable,
                     ::back, { openChat(it.id, "sessions") }, { if (node.catalog.state.value.threadsFresh) catalog.selectedProject?.let { openPending(it) } }, { node.catalog.refreshThreads() },
                     onPin = { thread, pinned ->
