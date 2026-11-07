@@ -22,7 +22,7 @@ class Config:
     workspace: Path
     host: str = "127.0.0.1"
     port: int = 8765
-    name: str = "Rivo Relay"
+    name: str = ""  # Legacy constructor/CLI compatibility; discovery supplies the display name.
     public_url: str = "http://10.0.2.2:8765"
     cert: Path | None = None
     key: Path | None = None

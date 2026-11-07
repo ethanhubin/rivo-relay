@@ -1,5 +1,8 @@
 package dev.rivo.relay
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
 import android.Manifest
 import android.app.Application
 import android.content.Context
@@ -17,9 +20,15 @@ import dev.rivo.relay.ui.todos.TodoReminderScheduler
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
-class NodeRuntime(val connection: NodeConnection, private val scope: CoroutineScope, vault: CredentialStore, context: Context,
+class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope, vault: CredentialStore, context: Context,
     val conversations: ConversationStore,
     requestNotificationPermission: () -> Unit, private val failure: (Throwable) -> Unit) {
+    var connection by mutableStateOf(connection)
+        private set
+    fun updateName(updated: NodeConnection) {
+        connection = updated
+        notifications.nodeName = updated.name
+    }
     val api = connection.api()
     private var transportNetwork = defaultNetwork(context)
     val network = observeDefaultNetwork(context).onEach {
@@ -114,11 +123,24 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
                 mutable.value = AppState(node = node, savedNodes = pairing.saved())
                 openThread?.let(node::openNotificationThread)
                 if (openTodos) node.openNotificationTodos()
+                syncNodeName(node, scope)
                 node.catalog.refreshProjects()
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
                 if (nodeJob === job) { mutable.update { it.copy(reconnecting = false) }; fail(e) }
             }
+        }
+    }
+    private fun syncNodeName(node: NodeRuntime, scope: CoroutineScope) {
+        scope.launch {
+            try {
+                val updated = node.connection.withNodeInfo(node.api.call("/v1/node"))
+                if (mutable.value.node !== node || updated === node.connection) return@launch
+                pairing.updateName(updated)
+                node.updateName(updated)
+                mutable.update { it.copy(savedNodes = pairing.saved()) }
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { /* Cosmetic metadata must not block offline use or reconnect. */ }
         }
     }
     fun pair(input: String, code: String) {
@@ -184,6 +206,7 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
         reconnectJob = viewModelScope.launch {
             try {
                 node.api.resetTransport()
+                syncNodeName(node, this)
                 if (mutable.value.node !== node) return@launch
                 // Read the actual visible state immediately; a preliminary node
                 // probe must not gate recovery of the conversation.

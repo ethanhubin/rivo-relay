@@ -7,6 +7,13 @@ import org.json.JSONObject
 
 class NodeConnection(val base: String, val name: String, val nodeId: String, val deviceId: String, private val token: String, val storageBase: String = base) {
     fun api(dns: okhttp3.Dns = dev.rivo.relay.data.TailnetDns()) = RelayApi(base, token, dns)
+    fun withNodeInfo(info: JSONObject): NodeConnection {
+        // A display-name refresh must never migrate credentials or local storage.
+        if (info.optString("id") != nodeId) return this
+        val updated = (info.opt("name") as? String)?.trim().orEmpty()
+        if (updated.isBlank() || updated == name) return this
+        return NodeConnection(base, updated, nodeId, deviceId, token, storageBase)
+    }
     fun serialized() = JSONObject().put("base", base).put("name", name).put("nodeId", nodeId).put("deviceId", deviceId).put("token", token).put("storageBase", storageBase).toString()
 }
 data class SavedNode(val base: String, val name: String, val authorized: Boolean)
@@ -64,6 +71,12 @@ class PairingRepository(private val credentials: CredentialStore) {
         remember(connection.base, connection)
         credentials.save("connection", connection.serialized())
         return connection
+    }
+    fun updateName(connection: NodeConnection) {
+        remember(connection.base, connection)
+        val active = restore()
+        if (active?.base == connection.base && active.nodeId == connection.nodeId && active.deviceId == connection.deviceId)
+            credentials.save("connection", connection.serialized())
     }
     fun forget() { credentials.remove("connection") }
 }

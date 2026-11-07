@@ -91,7 +91,7 @@ data class TaskNotificationTarget(val base: String, val threadId: String) {
 
 /** Live process subscription, not a push service: Android may suspend/kill it in the background. */
 class TaskNotifications(private val context: Context, private val api: RelayApi, private val scope: CoroutineScope,
-    private val nodeBase: String, private val nodeName: String, private val requestPermission: () -> Unit,
+    private val nodeBase: String, var nodeName: String, private val requestPermission: () -> Unit,
     private val failure: (Throwable) -> Unit, private val sync: NodeSessionSync? = null) {
     private data class Watch(val tracker: TaskChangeTracker, val job: Job, val signal: Channel<Unit>, var busy: Boolean = false, var lastReadNanos: Long = 0)
     private val watches = linkedMapOf<String, Watch>()

@@ -363,7 +363,7 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.app.pairing.exchange(required(body, "code", 512),
                     required(body, "deviceName", 100), client_key=self.client_address[0])
                 self.send_json(200, {"token": result["token"], "deviceId": result["connection_id"],
-                    "node": {"id": self.app.config.node_id, "name": self.app.config.name}})
+                    "node": {"id": self.app.config.node_id, "name": self.app.node_name.get()}})
                 return
             if self.command == "GET" and len(path) == 3 and path[:2] == ["v1", "download-links"]:
                 with self.app.download_lock:

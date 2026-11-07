@@ -104,6 +104,12 @@ PYTHONPATH=server .venv/bin/python -m unittest discover -s server/tests -v
 消息发送结果不确定时，App 保存原提交并提供核对；可查看已知原会话，再明确选择“结束核对”解除手机等待。该操作不会取消或重发原任务，也不会删除节点提交记录。
 
 运行数据库、私密配对产物和验证附件放在已忽略的 `workspace/`。本机用户 LaunchAgent 已安装，APK 通过 GitHub 测试版 Release 发布；正式签名和通用安装/升级程序尚未交付。
+## 节点名称
+
+节点显示名称自动读取 `tailscale status --json` 中本机 `Self.DNSName` 的机器名部分（不含 tailnet 域名）。读取不到时，macOS 回退到系统电脑名称，其他系统回退到 hostname。发现结果缓存 30 秒，之后重新读取；旧 `--name` 参数保留命令行兼容，但不再覆盖自动名称。
+
+Android 在启动连接、切换节点、回到前台或手动重连时异步读取 `/v1/node`，同步界面、通知和保存的节点名称。读取失败保留缓存名称，不阻塞原有连接；名称更新不改变节点 ID、授权和本地数据目录，无需重新配对。
+
 ## 当前本机部署记录
 
 本机已安装用户 LaunchAgent `local.rivo-relay`，登录时启动、异常退出后由 launchd 拉起。配置位于 `~/Library/LaunchAgents/local.rivo-relay.plist`，程序使用本仓库 `.venv`，数据目录为 `workspace/local-node`，日志位于该目录的 `logs/`。它监听 `127.0.0.1:18765`，通过 Tailscale TCP 18767 转发供手机以 `http://100.124.150.1:18767` 访问，原 HTTPS 18766 入口保留兼容，原生 socket 显式指向本机 `~/.codex/app-server-control/app-server-control.sock`。

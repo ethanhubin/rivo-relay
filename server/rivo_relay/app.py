@@ -12,6 +12,7 @@ from .submissions import SubmissionStore, SubmissionConflict, SubmissionNotFound
 from .todos import TodoStore
 from .media import MediaService
 from .speech import SpeechService
+from .node_name import NodeName
 
 
 def public_submission(record: dict) -> dict:
@@ -29,6 +30,7 @@ class RelayApp:
     def __init__(self, config: Config, codex, events: EventBus | None = None):
         config.prepare()
         self.config = config
+        self.node_name = NodeName()
         self.codex = codex
         self.events = events or EventBus()
         self.db = Database(config.database_path)
@@ -61,7 +63,7 @@ class RelayApp:
 
     def node(self) -> dict:
         native = self.codex.status()
-        return {"id": self.config.node_id, "name": self.config.name,
+        return {"id": self.config.node_id, "name": self.node_name.get(),
                 "connected": bool(native.get("connected")),
                 "capabilities": {**native.get("capabilities", {}), **self.media_capabilities()}, "runtime": native}
 

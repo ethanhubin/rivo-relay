@@ -12,6 +12,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 from rivo_relay.api import Handler
 from rivo_relay.app import RelayApp
@@ -115,6 +116,9 @@ class PausingEventBus(EventBus):
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
+        discovery = patch('rivo_relay.node_name.discover_name', return_value='test-machine')
+        discovery.start()
+        self.addCleanup(discovery.stop)
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         workspace = Path(self.directory.name)
@@ -125,6 +129,16 @@ class ApiTests(unittest.TestCase):
         self.addCleanup(self._stop)
         self.paired = self._pair()
         self.token = self.paired["token"]
+
+    def test_node_rename_preserves_existing_authorization(self):
+        self.assertEqual('test-machine', self.paired['node']['name'])
+        with patch('rivo_relay.node_name.discover_name', return_value='renamed-tailnet-node'):
+            self.app.node_name._expires = 0
+            status, node, _ = self.request('GET', '/v1/node', token=self.token)
+        self.assertEqual(200, status)
+        self.assertEqual('renamed-tailnet-node', node['name'])
+        self.assertEqual(self.paired['node']['id'], node['id'])
+        self.assertEqual(401, self.request('GET', '/v1/node')[0])
 
     def test_mobile_session_and_history_strip_command_payloads(self):
         command = {"id": "cmd", "type": "commandExecution", "status": "completed",
