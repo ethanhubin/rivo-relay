@@ -95,5 +95,22 @@ private class NativePlanPositionProvider(private val gap: Int): PopupPositionPro
 internal fun ChangeSummary(changes: JSONObject?, onOpen: () -> Unit) {
     val files = changes?.objects("files").orEmpty()
     if (files.isEmpty()) return
-    TextButton(onClick = onOpen) { Text("${files.size} 个文件 · +${files.sumOf { it.optInt("added") }} / −${files.sumOf { it.optInt("removed") }} · 查看改动") }
+    var expanded by rememberSaveable(changes?.string("turnId")) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth()) {
+        TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("turn_change_summary")) {
+            Text("${files.size} 个文件 · ")
+            Text("+${files.sumOf { it.optInt("added") }}", color = androidx.compose.ui.graphics.Color(0xFF34804A))
+            Text(" / ")
+            Text("−${files.sumOf { it.optInt("removed") }}", color = MaterialTheme.colorScheme.error)
+            Text(if (expanded) " ▴" else " ▾")
+        }
+        if (expanded) {
+            files.forEach { file -> Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(file.string("path"), Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(file.string("status"), style = MaterialTheme.typography.labelSmall)
+                Text("+${file.optInt("added")} / −${file.optInt("removed")}", style = MaterialTheme.typography.labelSmall)
+            } }
+            TextButton(onClick = onOpen, contentPadding = PaddingValues(0.dp)) { Text("查看工作区差异") }
+        }
+    }
 }

@@ -98,16 +98,13 @@ class ChatRenderingUiTest {
         compose.onNodeWithText("查看了图片 inspection.png").assertIsDisplayed()
         compose.onNodeWithTag("native_image").assertDoesNotExist()
         compose.runOnIdle { org.junit.Assert.assertEquals(0, reads) }
-        compose.onNodeWithTag("native_activity_toggle").performClick()
-        compose.onNodeWithText("/tmp/inspection.png").assertIsDisplayed()
-        compose.runOnIdle { org.junit.Assert.assertEquals(0, reads) }
         evidence("image-tool-collapsed-0.1.6")
-        compose.onNodeWithText("/tmp/inspection.png").performClick()
+        compose.onNodeWithTag("native_activity_toggle").performClick()
         compose.onNodeWithTag("file_preview").assertIsDisplayed()
         compose.waitUntil(5000) { reads == 1 }
     }
 
-    @Test fun externallyOwnedHistoryOffersQueueButCannotStop() {
+    @Test fun externallyOwnedHistoryLocksNewInputAndCannotStop() {
         val snapshot = sessionSnapshot(JSONObject().put("thread", JSONObject().put("id", "external").put("name", "已有会话")
             .put("turns", JSONArray().put(JSONObject().put("id", "turn").put("items", JSONArray().put(
                 JSONObject().put("id", "answer").put("type", "agentMessage").put("text", "已有历史仍可阅读"))))))
@@ -120,10 +117,9 @@ class ChatRenderingUiTest {
         } } }
         compose.onNodeWithTag("external_writer_notice").assertIsDisplayed()
         compose.onNodeWithText("已有历史仍可阅读").assertIsDisplayed()
-        compose.onNodeWithTag("message_input").performTextInput("新的输入")
-        compose.onNodeWithTag("send_message").assertIsEnabled()
-        compose.onNodeWithText("↑ 排队").assertIsDisplayed()
-        compose.onNodeWithTag("stop_turn").assertDoesNotExist()
+        compose.onNodeWithTag("message_input").assertIsNotEnabled()
+        compose.onNodeWithTag("add_attachment").assertIsNotEnabled()
+        compose.onNodeWithTag("stop_turn").assertIsNotEnabled()
         compose.onNodeWithTag("conversation_more_button").performClick()
         compose.onNodeWithTag("header_stop_turn").assertIsNotEnabled()
     }

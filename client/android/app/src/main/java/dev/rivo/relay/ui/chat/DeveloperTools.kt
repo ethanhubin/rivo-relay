@@ -19,6 +19,8 @@ import dev.rivo.relay.data.encoded
 import dev.rivo.relay.data.objects
 import dev.rivo.relay.data.string
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
 import org.json.JSONObject
 
 /** Read-only previews and explicit native mutations; caller owns submission IDs and reconciliation. */
@@ -29,6 +31,7 @@ internal fun DeveloperToolsDialog(
     submit: (String, JSONObject, () -> Unit) -> Unit,
     busy: Boolean,
     onDismiss: () -> Unit,
+    canCleanup: Boolean = true,
 ) {
     val base = "/v1/threads/${encoded(threadId)}"
     var tab by remember(threadId) { mutableIntStateOf(0) }
@@ -36,19 +39,23 @@ internal fun DeveloperToolsDialog(
     var diff by remember(threadId) { mutableStateOf<JSONObject?>(null) }
     var context by remember(threadId) { mutableStateOf<JSONObject?>(null) }
     var workspace by remember(threadId) { mutableStateOf<JSONObject?>(null) }
+    var externalWorkspace by remember(threadId) { mutableStateOf<JSONObject?>(null) }
     var loaded by remember(threadId, tab, generation) { mutableStateOf(false) }
     var error by remember(threadId, tab, generation) { mutableStateOf<String?>(null) }
-    var cleanupConfirm by remember { mutableStateOf(false) }
-    var discardConfirm by remember { mutableStateOf(false) }
+    var cleanupConfirm by remember(threadId) { mutableStateOf<JSONObject?>(null) }
+    var discardConfirm by remember(threadId) { mutableStateOf<JSONObject?>(null) }
+    var alive by remember { mutableStateOf(true) }
+    val currentThread by rememberUpdatedState(threadId)
+    DisposableEffect(Unit) { onDispose { alive = false } }
     LaunchedEffect(threadId, tab, generation) {
         try {
-            when (tab) {
-                0 -> diff = read("$base/diff").optJSONObject("diff") ?: error("节点未返回差异内容")
-                1 -> context = read("$base/review-context")
-                else -> workspace = read("$base/workspace").optJSONObject("workspace")
-            }
+            val response = read(when (tab) { 0 -> "$base/diff"; 1 -> "$base/review-context"; else -> "$base/workspace" })
+            coroutineContext.ensureActive()
+            when (tab) { 0 -> diff = response.optJSONObject("diff") ?: error("节点未返回差异内容"); 1 -> context = response; else -> {
+                workspace = response.optJSONObject("workspace"); externalWorkspace = response.optJSONObject("externalWorkspace")
+            } }
         } catch (e: Exception) { if (e is CancellationException) throw e; error = e.message ?: "无法读取开发信息" }
-        finally { loaded = true }
+        finally { coroutineContext.ensureActive(); loaded = true }
     }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize()) {
@@ -69,16 +76,26 @@ internal fun DeveloperToolsDialog(
                     0 -> if (loaded && error == null) {
                         val current = diff
                         if (current != null) {
-                            DeveloperDiffContent(current, Modifier.weight(1f).fillMaxWidth())
+                            if (current.optInt("schemaVersion") >= 1) StructuredDeveloperDiffContent(threadId, current, read, Modifier.weight(1f).fillMaxWidth())
+                            else DeveloperDiffContent(current, Modifier.weight(1f).fillMaxWidth())
                         }
                     }
                     1 -> if (loaded && error == null && context != null) ReviewControls(context!!, busy) { target ->
-                        submit("$base/review", JSONObject().put("target", target), onDismiss)
+                        submit("$base/review", JSONObject().put("target", target)) { if (alive && currentThread == threadId) onDismiss() }
                     }
                     else -> if (loaded && error == null) {
                         val current = workspace
                         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            if (current == null) Text("此会话使用项目目录，没有可清理的独立工作树。")
+                            if (current == null && externalWorkspace != null) {
+                                val external = externalWorkspace!!
+                                Text("外部工作树", style = MaterialTheme.typography.titleMedium)
+                                SelectionContainer { Text(external.string("path")) }
+                                Text("来源：${external.string("projectRoot")}", style = MaterialTheme.typography.bodySmall)
+                                Text("提交：${external.string("commit")}", style = MaterialTheme.typography.bodySmall)
+                                Text(if (external.string("status") == "missing") "原工作树目录已不存在；会话仍归属此项目。" else "此工作树由外部 Codex 或 Git 创建。")
+                                Text("请在创建它的工具中管理和清理。", style = MaterialTheme.typography.bodySmall)
+                            }
+                            else if (current == null) Text("此会话使用项目目录，没有可清理的独立工作树。")
                             else {
                                 Text("会话工作树", style = MaterialTheme.typography.titleMedium)
                                 SelectionContainer { Text(current.string("path")) }
@@ -88,7 +105,7 @@ internal fun DeveloperToolsDialog(
                                 current.string("status").takeIf { it.isNotBlank() }?.let { Text("状态：$it", style = MaterialTheme.typography.bodySmall) }
                                 current.string("archivePath").takeIf { it.isNotBlank() }?.let { archived -> SelectionContainer { Text("归档位置：$archived", style = MaterialTheme.typography.bodySmall) } }
                                 Text("清理会移除该工作树目录。会话历史仍保留，清理后无法继续在原目录执行。", style = MaterialTheme.typography.bodySmall)
-                                OutlinedButton(onClick = { cleanupConfirm = true }, enabled = !busy && current.string("revision").isNotBlank() && current.string("status") == "ready", modifier = Modifier.testTag("cleanup_workspace")) { Text(if (current.string("status") == "removed") "工作树已清理" else "清理工作树") }
+                                OutlinedButton(onClick = { cleanupConfirm = JSONObject(current.toString()) }, enabled = !busy && canCleanup && current.string("revision").isNotBlank() && current.string("status") == "ready", modifier = Modifier.testTag("cleanup_workspace")) { Text(if (current.string("status") == "removed") "工作树已清理" else "清理工作树") }
                             }
                         }
                     }
@@ -96,19 +113,19 @@ internal fun DeveloperToolsDialog(
             }
         }
     }
-    if (cleanupConfirm) AlertDialog(onDismissRequest = { cleanupConfirm = false }, title = { Text("清理当前工作树？") },
+    cleanupConfirm?.let { confirmed -> AlertDialog(onDismissRequest = { cleanupConfirm = null }, title = { Text("清理当前工作树？") },
         text = { Text("将移除此会话的工作树目录。请确认工作已经完成，且没有正在使用此目录的任务。") },
         confirmButton = { TextButton(onClick = {
-            cleanupConfirm = false
-            if (workspace?.optBoolean("dirty") == true) discardConfirm = true
-            else workspace?.let { current -> submit("$base/workspace/cleanup", JSONObject().put("discard", false).put("revision", current.string("revision"))) { generation++ } }
-        }, enabled = !busy) { Text("继续") } }, dismissButton = { TextButton(onClick = { cleanupConfirm = false }) { Text("取消") } })
-    if (discardConfirm) AlertDialog(onDismissRequest = { discardConfirm = false }, title = { Text("工作树包含未提交改动") },
+            cleanupConfirm = null
+            if (confirmed.optBoolean("dirty")) discardConfirm = confirmed
+            else submit("$base/workspace/cleanup", JSONObject().put("discard", false).put("revision", confirmed.string("revision"))) { if (alive && currentThread == threadId) generation++ }
+        }, enabled = !busy && canCleanup) { Text("继续") } }, dismissButton = { TextButton(onClick = { cleanupConfirm = null }) { Text("取消") } }) }
+    discardConfirm?.let { confirmed -> AlertDialog(onDismissRequest = { discardConfirm = null }, title = { Text("工作树包含未提交改动") },
         text = { Text("继续后节点会先归档当前脏目录，再移除工作树。未提交改动将不再留在原工作目录中。确定归档并清理？") },
         confirmButton = { TextButton(onClick = {
-            workspace?.let { current -> submit("$base/workspace/cleanup", JSONObject().put("discard", true).put("revision", current.string("revision"))) { discardConfirm = false; generation++ } }
-        }, enabled = !busy, modifier = Modifier.testTag("confirm_discard_workspace")) { Text("归档并清理") } },
-        dismissButton = { TextButton(onClick = { discardConfirm = false }) { Text("保留工作树") } })
+            submit("$base/workspace/cleanup", JSONObject().put("discard", true).put("revision", confirmed.string("revision"))) { if (alive && currentThread == threadId) { discardConfirm = null; generation++ } }
+        }, enabled = !busy && canCleanup, modifier = Modifier.testTag("confirm_discard_workspace")) { Text("归档并清理") } },
+        dismissButton = { TextButton(onClick = { discardConfirm = null }) { Text("保留工作树") } }) }
 }
 
 /** QiGuang CodexReviewScreen's unified/file controls and metadata placeholders. */

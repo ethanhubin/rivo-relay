@@ -5,7 +5,7 @@
 ## 通用约定
 
 - 正式连接使用 HTTPS。`GET /health`、`POST /v1/pair` 与持有临时文件票据的 `GET /v1/download-links/{ticket}` 无需 Bearer；其余接口必须携带一个 `Authorization: Bearer <token>`。
-- POST/PATCH 使用 JSON object 和 `Content-Type: application/json`，提供单个 `Content-Length`；不支持 chunked request，JSON 请求上限 **8 MiB**，不接受 NaN/Infinity。文件上传另支持 `application/octet-stream`，见文件接口。
+- POST/PATCH 使用 JSON object 和 `Content-Type: application/json`，提供单个 `Content-Length`；不支持 chunked request，JSON 请求上限 **64 MiB**，不接受 NaN/Infinity。文件上传另支持 `application/octet-stream`，见文件接口。
 - 正常 JSON 响应为 HTTP 200，不使用 `ok=true` 外层包装；错误为 `{"error":{"code":"…","message":"…"}}`。客户端根据 code/status 判断，不依赖中文 message。
 - URL 中的 ID、路径与 cursor 应正确编码。时间字段来自原生接口时保持原生值；Rivo 自有记录时间使用 Unix 秒，待办 `details.reminderAt` 明确使用 Unix **毫秒**。
 - token、完整配对链接、正文和秘密回答不得写日志。连接令牌撤销后读写返回 401，已有 SSE 发 `revoked` 后退出。
@@ -21,13 +21,13 @@
 | `POST /v1/projects` | `{submissionId,path,folderName?}`，path 是节点绝对路径 | 提交记录；接受时 receipt 含 `projectId` |
 | `GET /v1/project-directories?path=…` | path 可省略，起点为原生节点当前目录 | `{path,parentPath,entries}`；条目结构同 `/v1/directories` |
 | `GET /v1/projects/{projectId}/git` | Bearer | `{git:{available,head?,branch?,dirty?,refs:[{id,commit,name}],reason?}}` |
-| `GET /v1/models` | Bearer | `{models:[…]}`，保留原生模型字段，不使用固定清单 |
+| `GET /v1/models` | Bearer | `{models:[…],catalog:{source,stale,updatedAt}}`，原生模型目录及最近成功缓存；不使用固定模型清单 |
 | `GET /v1/usage` | Bearer | `{usage:{…}}`；原生 `account/rateLimits/read` 响应 |
 | `GET /v1/threads?projectId=…&archived=false` | 必填 projectId；archived 仅接受 `true` / `false`，默认 false | `{threads:[{id,name,preview,status,updatedAt,cwd,projectId,pinned}]}` |
 
 配对码只由电脑本地 `pair` CLI 生成，没有远程生成码路由。默认 5 分钟且只兑换一次；大小写和分组连字符可归一化，过期/已消费/无效码均返回 401，限流返回 429。节点连接 token 与 OpenAI/Codex 登录 token 不同。
 
-`runtime` 当前包含连接方式、runtimeId、generation 等诊断字段；`desktopShared=null` 与 `desktopVerification=requires_desktop_confirmation` 表示 Desktop UI 尚未确认。`capabilities` 当前不是完整功能支持矩阵，调用方不能因为某字段缺省就推断所有 Desktop 能力已可用。
+`runtime` 包含连接方式、runtimeId、generation、runtimeMode、preferredWriter 与 bridge 就绪/验证状态。只有已验证的 Desktop 桥接连接可报告 `desktopShared=true`；普通 daemon 或未知状态不能推断为 Desktop 共享。`capabilities.media/speech` 明确广告可用媒体/语音能力，缺省字段不能推断支持。
 
 添加项目时，省略 `folderName` 表示添加已有目录；提供它则在 path 下新建单层文件夹并添加项目。名称不能是 `.`、`..` 或包含路径分隔符、NUL。Git 信息中的 refs 最多包含当前 HEAD 和 200 条本地/远程分支；`worktreeRef` 使用其 commit ID，不传用户拼接的工作树路径。`outstandingWorkCount` 统计项目中的原生活跃会话，不包含 Relay 等待队列。
 
@@ -40,7 +40,8 @@
 | `POST /v1/threads` | `{submissionId,projectId,worktreeRef?}` | 提交记录；接受时 `{threadId}` |
 | `GET /v1/threads/{threadId}` | 可选 `cursor`、`limit`（默认 30，钳制到 1–100） | `{thread,requests,settings,activeTurnId,status,readOnly,nextCursor,backwardsCursor,queue,plan,tokenUsage,changes,turnSettings}`；`thread.turns` 是本页原生 turns |
 | `GET /v1/threads/{threadId}/history` | 同上 | `{turns,nextCursor,backwardsCursor}` |
-| `POST /v1/threads/{threadId}/turns` | `{submissionId,text,model?,effort?,mode?}`，或用 `input` 数组 | 提交记录；接受时 `{threadId,turnId}` |
+| `POST /v1/threads/{threadId}/turns` | `{submissionId,text,model?,effort?,mode?,serviceTier?}`，或用 `input` 数组 | 提交记录；接受时 `{threadId,turnId}` |
+| `POST /v1/threads/{threadId}/settings` | `{submissionId,model?,effort?,serviceTier?}` | 更新原生 thread settings；至少一个设置；`serviceTier` 为 `default` / `priority`；不改审批和权限 |
 | `POST /v1/threads/{threadId}/steer` | `{submissionId,expectedTurnId,text}`，或用 `input` 数组 | 提交记录；接受时 `{threadId,turnId}` |
 | `POST /v1/threads/{threadId}/interrupt` | `{submissionId,turnId}` | 提交记录；接受时 `{threadId,turnId}` |
 | `POST /v1/threads/{threadId}/archive` | `{submissionId,archived:boolean}` | 提交记录；接受时 `{threadId}`；false 为恢复 |
@@ -63,7 +64,7 @@
 }
 ```
 
-`image` 也接受原生 `fileId` 字段，但该形式尚未真实执行验收；audio/localAudio 不在当前 HTTP 支持列表，不提供语音转写接口。节点路径不是 Android `content://` URI；系统选图由 App 转为图片 data URL，普通文件先上传取得 mention。输入保留原生结构，由原生运行时进一步校验。不传 model/effort 时沿用该 thread 的原生设置；不接受调用方任意替换审批策略、sandbox 或整套运行配置。
+`image` 也接受原生 `fileId` 字段，但该形式尚未真实执行验收；audio/localAudio 不在原生 turn HTTP 输入列表；语音输入由独立 speech 流式接口转成文本。节点路径不是 Android `content://` URI；系统选图由 App 转为图片 data URL，普通文件先上传取得 mention。输入保留原生结构，由原生运行时进一步校验。不传 model/effort 时沿用该 thread 的原生设置；不接受调用方任意替换审批策略、sandbox 或整套运行配置。
 
 `mode` 可省略，或为 `plan` / `default`。Plan 通过原生 collaboration mode 运行，并将当前 turn sandbox 收紧为 `readOnly`；切回 default 仅在当前配置仍匹配 Relay 保存的 Plan 设置时恢复原先 sandbox，避免覆盖其他端修改。已有原生只读配置不会因此提升权限。`readOnly=true` 表示另一运行时占用了 thread writer，仍可读取持久历史。
 
@@ -86,7 +87,7 @@
 
 | 方法与路径 | 请求 | HTTP 200 响应 |
 | --- | --- | --- |
-| `GET /v1/threads/{threadId}/workspace` | Bearer | `{workspace:null}`，或 `{workspace:{id,path,sourcePath,commit,status,dirty,revision,archivePath}}` |
+| `GET /v1/threads/{threadId}/workspace` | Bearer | `{workspace:null}`，或 `{workspace:{id,path,sourcePath,commit,status,dirty,revision,archivePath}}`；外部工作树另含 `externalWorkspace:{path,projectRoot,projectId,commit,status,managed:false}` |
 | `POST /v1/threads/{threadId}/workspace/cleanup` | `{submissionId,revision,discard?:boolean}`，默认 false | 提交记录；接受时 `{threadId}` |
 | `GET /v1/threads/{threadId}/diff` | Bearer | `{diff:{patch,revision,files:[{path,added,removed,binary}],truncated}}` |
 | `GET /v1/threads/{threadId}/review-context` | Bearer | `{branch,branches:[…],commits:[{id,subject}]}`，最近 30 个提交 |
@@ -94,7 +95,11 @@
 
 创建会话时指定 `worktreeRef`，Relay 在节点上建立独立 Git worktree，再以该 cwd 启动原生会话。只允许清理 Relay 创建并关联的工作树。清理必须使用最新 `revision`，会拒绝活跃、被占用或仍有队列的会话；有改动时必须显式 `discard=true`。清理先归档会话，再把改动目录打包到节点上的 `archivePath`，复核内容指纹后才移除 worktree。调用结果不确定时保留状态供核对，不自动重试删除；已移除或待核对的工作树不能回退到来源目录继续执行。
 
-`diff` 对比 HEAD，包含已跟踪改动及最多 100 个未跟踪文件，patch 上限 2 MiB。`truncated=true` 表示不能据此视为完整差异；当前没有差异分页 cursor。`revision` 是该响应 patch 的摘要，与工作树清理的内容指纹 revision 不可互换。
+`diff` 对比 HEAD，包含已跟踪改动及最多 100 个未跟踪文件，patch 上限 2 MiB。`truncated=true` 表示不能据此视为完整差异。`revision` 是该响应 patch 的摘要，与工作树清理的内容指纹 revision 不可互换。
+
+2026-11-07 起，差异响应增加 `schemaVersion:1`、`structured:true`、文件身份与结构化行。文件字段为 `id/path/oldPath/newPath/status/binary/added/removed/truncated/malformed`。`lines` 每项含 `fileId/path/kind/text/oldLine/newLine`；kind 为 file、hunk、addition、deletion、context 或 notice。首屏保留旧客户端需要的 patch，结构化客户端不解析 patch。
+
+差异分页传 `revision`、可选 `fileId`、`offset` 和 `limit`（默认 400，最大 1000）。返回 `offset/nextOffset/totalLines`；`nextOffset:null` 表示结束。后续页不重复传 patch。revision、文件身份或分页位置失效返回 409，客户端重新读取快照并按路径恢复选择；不能拼接不同 revision 的内容。
 
 Review 使用原生 `review/start`，通过会话执行队列等到可执行时启动。target 只接受以下四种范围，不执行 Git commit/push/merge：
 
@@ -131,6 +136,10 @@ branch / sha 最长 500 字符，自定义说明最长 20,000 字符；服务端
 
 原生写操作进入 claim 后，即使原生明确拒绝，也可能以 HTTP 200 返回 `status=failed`；必须检查提交状态。请求格式、认证或 claim 冲突等错误仍使用 4xx/5xx。`GET submissions` 当前只查已知持久状态，**不会自动对比原生历史并把 unknown 改成 accepted**；unknown 需结合原生身份/历史人工核对，不提供强制重试或一键丢弃未知执行的接口。去重记录无按时间删除策略。App 的“结束核对”是用户明确确认后的本地等待解除，不调用取消/重发接口，不修改服务记录或把 unknown 改成成功；提交 404 也不能自动推断原请求从未发生。
 
+会话快照另含 `reviewDiagnostics:[{turnId,status,readOnlyViolation,message}]`。`status` 为 `verified`、`changed` 或 `unavailable`；Review 执行前后核对 HEAD、index、工作区与状态指纹，完成后结果持久保存。变化提示不意味着修改一定来自审查，不会自动回滚。诊断独立于原生正文和 item。
+
+外部工作树仅在原生节点的 Git 注册与 common-dir 验证后归属项目。已验证路径被删除时，只在原项目根未变且旧路径确实缺失时保留关联；`externalWorkspace` 不提供清理授权。新旧路径都无法验证时，不猜测项目归属。
+
 ## 文件、目录和附件
 
 | 方法与路径 | 请求 | HTTP 200 响应 |
@@ -139,7 +148,9 @@ branch / sha 最长 500 字符，自定义说明最长 20,000 字符；服务端
 | `GET /v1/files?path=…` | 节点绝对路径 | 下述预览 JSON，文件最大 4 MiB |
 | `GET /v1/files/download?path=…` | Bearer 和节点绝对路径 | `application/octet-stream`，单文件最大 1 GiB |
 | `POST /v1/threads/{threadId}/attachments?name=…` | `application/octet-stream` 与明确 Content-Length，最大 1 GiB | `{type:"mention",name,path,size}` |
-| `POST /v1/threads/{threadId}/attachments` | `{name,dataBase64}`；仍受 8 MiB JSON 请求限制 | 同上；兼容小文件调用 |
+| `POST /v1/threads/{threadId}/attachments` | `{name,dataBase64}`；仍受 64 MiB JSON 请求限制 | 同上；兼容小文件调用 |
+| `POST /v1/projects/{projectId}/attachments?name=…` | 同上，按已选项目根暂存首条消息附件 | 同一 mention 回执；不会创建或恢复原生 thread |
+| `POST /v1/projects/{projectId}/attachments` | `{name,dataBase64}`，64 MiB JSON 限制 | 项目级小文件兼容入口 |
 | `POST /v1/download-links` | `{path}` | `{url,expiresAt}`；expiresAt 为 Unix 秒 |
 | `GET /v1/download-links/{ticket}` | 临时 URL，无需 Bearer | 与 `/v1/files/download` 相同的文件流 |
 
@@ -149,9 +160,15 @@ branch / sha 最长 500 字符，自定义说明最长 20,000 字符；服务端
 {"path":"/node/path/notes.txt","size":53,"mimeType":"text/plain","encoding":"utf-8","text":"…"}
 ```
 
-二进制响应将 `encoding` 改为 `base64`，返回 `dataBase64`。仅读取普通文件，超限 413，原生不支持 FS RPC 时 501。服务端先核对节点文件大小，再通过原生命令按最多 4 MiB 块读取，下载不会在 Relay 内存中拼接整份 1 GiB 文件。当前 HTTP 下载不提供 Range 续传。
+二进制响应将 `encoding` 改为 `base64`，返回 `dataBase64`。仅读取普通文件，超限 413，原生不支持 FS RPC 时 501。服务端先核对节点文件大小，再通过原生命令按最多 4 MiB 块读取，下载不会在 Relay 内存中拼接整份 1 GiB 文件。
+
+两个下载端点返回强 `ETag` 和 `Accept-Ranges: bytes`，支持单个 `bytes=start-end`、`start-` 或 `-suffix` 范围（206 与 `Content-Range`）。无效、多段或不可满足范围返回 416，并带 `Content-Range: bytes */size` 与 ETag。`If-Range` 与当前强 ETag 不同则返回完整 200，客户端必须重新写入；每个原生块核对文件版本，中途变化会中止连接。Android 的部分缓存按节点地址和凭据隔离，只有同一强 ETag 可以追加，完成缓存也先验证；公开 URL 使用独立客户端，不携带节点令牌。已发布缓存使用不可变路径，避免播放或系统分享期间重试下载使路径失效。
 
 文件上传写入会话 cwd 下新建的 `.rivo-attachments/<随机目录>/`，返回节点文件引用；不会直接发送给模型，调用方在后续 turns/queue 中加入该 mention。上传不使用 submissionId；丢失响应后重传会产生另一份文件。上传和下载共享有界传输槽，繁忙返回 429。
+
+项目级附件使用已认证节点的 `project/read` 获取准确项目根，再复用同一原生 FS 上传与分块清理流程。待发送工作树尚未创建时，附件先保存在来源项目的随机附件目录，最终以绝对节点路径 mention 引用；不会复制到不存在的工作树或提前创建空会话。
+
+实际发送/引导时，mention 的可见引用保持原样；文本附件由同一原生节点读取，并通过 `additionalContext` 的 `untrusted` 项提供内容（单个 UTF-8 文本 4 MiB，总上下文 8 MiB）。视频提供文件路径与明确的检查/抽帧处理说明；其他二进制附件提供路径供原生工具读取。编码错误、二进制伪装文本和超限在发送原生 turn 前明确失败。
 
 临时下载链接限定一条节点文件路径，有效期 1 小时，服务重启失效；最多保留 128 条未过期票据。它允许系统下载器无需携带连接令牌访问该文件，持有链接即可读取，请勿记录或公开。路径固定但文件内容并非快照，连接令牌撤销不会单独撤销已经生成的票据。
 
@@ -207,7 +224,7 @@ data: {}
 
 普通事件为 `event: native`、`data: {"method":"turn/started","params":{…}}`；其中也会包含 `relay/submission`、`relay/todos` 等 Relay 通知。撤销发 `event: revoked` 后关闭，空闲约 15 秒发注释 heartbeat。cursor 可能只附在一个批次的最后事件；重连允许重复到达，客户端按原生 ID 合并。
 
-当前事件流是该认证节点的全局通知，`threadId` query 不做服务端过滤。它不是历史或持久消息队列：遇到 reset 必须重读当前原生快照，再合并后续通知。当前 Android 不保存 SSE cursor，重连走 reset/快照刷新。默认最多 4 条 SSE，超额 429；普通 HTTP worker 耗尽可能直接关闭新连接，不能假定所有容量拒绝均有 JSON 响应。
+当前事件流是该认证节点的全局通知，`threadId` query 不做服务端过滤。它不是历史或持久消息队列：遇到 reset 必须重读当前原生快照，再合并后续通知。Android 在当前连接状态中保留可信 SSE cursor 并携带 Last-Event-ID 重连；进程重建或节点切换仍先读取快照，不从显示缓存恢复权威 cursor。默认最多 4 条 SSE，超额 429；普通 HTTP worker 耗尽可能直接关闭新连接，不能假定所有容量拒绝均有 JSON 响应。
 
 ## 常见错误
 
@@ -236,5 +253,71 @@ data: {}
 - `operation=remove`：`itemId,revision`；撤回待发项或移除已核对的不确定记录，不中断已运行 turn。
 - `operation=reorder`：`ids,expectedIds` 均为完整 waiting ID 列表；预期顺序过时则拒绝。
 - `operation=steer`：`itemId,revision,expectedTurnId`；只把 waiting 项引导到该原生 turn，成功后不再排队执行。Review 和 Plan 项不能转为中途引导。
+- `operation=recover`：`itemId,revision`；为未确认或已中断的恢复项建立新的安全续接请求，保留设置，不复制原指令、附件或 Review；回执含新 `itemId` 和 `recoveredItemId`。
+- `operation=dismiss`：`itemId,revision`；明确忽略恢复项，仅解除队列阻塞。
 
-状态：waiting → dispatching → running → done。明确失败为 failed；不确定写结果或重启时的 dispatching 为 unknown，禁止自动重放。完成/撤回项不在快照中显示。`relay/queueChanged` 触发快照刷新。unknown 仅允许用户核对后移除，不允许编辑后再次派发。
+状态：waiting → dispatching → running → done。明确失败为 failed；不确定写结果或重启时的 dispatching 为 unknown，禁止自动重放。完成/撤回项不在快照中显示。`relay/queueChanged` 触发快照刷新。unknown 和已经启动过的失败任务不允许编辑后重发，只能明确续接、忽略或核对后移除。
+
+unknown 状态会定期只读核对原生历史：仅在唯一 `clientId` 或已有 turn ID 精确匹配时采用该 turn 的实际状态；历史尚在收敛或身份有歧义则保持未知。不会通过正文匹配、新建 turn 或重放输入来消除未知状态。
+
+会话增加 `nativeExecution/deliveryState/displayState/writerOwner/queueDepth/recoveryRequired/recoveryTask`。这些状态不由历史缓存或本地乐观气泡推断。历史增加 `nativeRevision` 与 `nativeSync.state`；更早页请求携带首页 revision，不一致返回 409；`converging` 时保留上一份成功内容并暂缓拼页。
+
+ownership 预览可能含 `workspaceRebind:{path,missingPath}`。仅当旧目录确认不存在且原项目目录可唯一确认时提供。手机展示准确目录后，提交同票据、`confirmed:true` 与 `rebindWorkspace:path`；服务端再次验证，原会话恢复到明确确认的目录，不重放原任务。
+
+
+### 0.2.2 SSE 文本位置扩展
+
+`native` 事件中，`item/agentMessage/delta` 与 `item/commandExecution/outputDelta` 可携带 `params.relayOffset`，表示追加该 `delta` 之前的 Unicode code point 数量（不是 UTF-8 字节数，也不是 UTF-16 code unit 数）。原生 `delta` 与 thread/turn/item ID 保留。Android 对可信快照中相同 item 核对位置与重叠文本；重复片段忽略，缺失基线或不一致时重新读取快照。旧客户端可忽略此字段；新客户端连接缺少此字段的旧服务时回退到快照读取。事件仍是短期同步数据，原生历史仍为最终依据。
+
+#### Session handoff (0.2.7)
+
+`GET /v1/threads/{id}/ownership?operation=takeover|release` previews the actual
+OS lock holder and affected threads. Returns `ticket`, `requiresConfirmation`,
+`affectedThreads` (IDs/titles), `affectedThreadIds`, `processIds`, `childProcessCount`.
+Tickets expire after 120 seconds, are one-use and bound to the authenticated
+connection, action and thread. Commands/environment/credentials are not exposed.
+
+`POST /v1/threads/{id}/ownership` takes `submissionId`, `operation`, `ticket`,
+and `confirmed: true` when more than one thread is affected. Standard durable
+submission receipts contain threadId only. It revalidates process identity, locks
+and descendants, pauses affected Relay subscriptions/queues, sends SIGTERM and
+escalates to SIGKILL after two seconds if the same process remains. Verified
+surviving descendants are terminated too. OS lock release must be observed.
+For takeover, thread/resume must succeed and the new runtime PID must hold the lock.
+Release leaves the thread unowned by Relay. If the current native daemon was killed,
+its verified binary/arguments restore the existing endpoint; this starts no turn.
+No automatic original-instruction replay. A shared-process confirmation is required
+for release as well as takeover. Changed/expired previews must be fetched again.
+
+
+## Desktop 与原生历史能力（2026-11-07）
+
+运行模式：`--codex-runtime auto|desktop|app_server`，桥接目录参数 `--desktop-bridge-dir`。`/v1/node.runtime` 提供所选 writer、桥接可用/就绪、验证状态；会话快照 `nativeRuntime` 绑定该 thread 的实际 writer。原生历史修复通过实际节点执行，`nativeSync.state` 为 ready/converging/unavailable；收敛期间暂停分页，修复成功发送 `relay/historyInvalidated` 并改变 nativeRevision。旧游标不得继续使用。所有原生写入仍受稳定 submission ID 与 writer 边界约束。
+
+图片 input：最多10张，单张20MiB、合计40MiB；仅允许 JPEG/PNG/WebP data URI。服务端校验后分块上传到实际原生节点，改为 localImage 再发原生RPC。普通原生URL/fileId引用仍由原生服务校验。
+
+## 认证媒体与语音
+
+以下接口均需当前配对连接的 Bearer token，不能向源站转发该 token。
+
+| 接口 | 行为 |
+| --- | --- |
+| GET `/v1/media/capabilities` | `{media,speech}`；未配置ASR时speech能力为false并返回原因。 |
+| GET `/v1/media/content?source=...` | 原生绝对路径或公网图片/音视频；有大小、DNS/重定向及内容类型限制；支持Range、If-Range、ETag。 |
+| GET `/v1/media/thumbnail?source=...` | 图片1536px以内WebP q82；按源版本缓存，ETag校验。 |
+| GET `/v1/media/library?threadId=...&favorite=true&source=...` | 最多500条，`{items:[...]}`；source为精确只读查询，不自动导入。 |
+| POST `/v1/media/library` | `{source,threadId?}` 显式导入副本，返回record。 |
+| PATCH `/v1/media/library/{id}` | `{favorite:boolean}`，返回record。 |
+| DELETE `/v1/media/library/{id}` | 删除副本并保留tombstone，不修改原生会话和源文件。 |
+| GET `/v1/media/library/{id}/content`、`thumbnail` | 已保存副本/缩略图，认证Range/ETag。 |
+| GET `/v1/media/library/{id}/provenance` | record含原生threadId/turnId/itemId及provenance.facts、promptKind（original/revised/unknown）。 |
+| GET `/v1/media/generated?threadId=...` 及 `/{id}/content`、`thumbnail`、`provenance` | 生成媒体查询/读取别名。 |
+| POST `/v1/speech/streams` | 创建当前配对连接拥有的转写流。 |
+| POST `/v1/speech/streams/{id}/chunks` | `application/octet-stream` 原始16kHz单声道PCM16LE，不自动重发。 |
+| POST `/v1/speech/streams/{id}/finish`、`cancel` | 完成或取消流；跨配对连接访问被拒绝。 |
+| POST `/v1/speech/transcriptions` | 有界multipart整段音频转写。 |
+
+媒体记录含 `id,source,threadId,turnId,itemId,status,mediaType,mimeType,favorite,hasGenerationInfo,originalUrl,thumbnailUrl`；API相对URL只在当前认证节点使用，不能当作远端原生文件路径。pending记录不能用于读取成品。公网图片40MiB，原生生成图片64MiB，媒体传输上限1GiB；缓存2GiB/24小时。ASR通过 `RIVO_SPEECH_BACKEND_URL` / `RIVO_SPEECH_BACKEND_TOKEN` 显式配置，不自动部署模型或服务。
+
+
+进程级 ownership takeover 仅适用于已核实的本地主机 daemon，描述符、原生HOME、PID启动时间/二进制/socket在预览和执行时重复核对。已有本连接订阅的 release 使用 `thread/unsubscribe`，返回 `releaseScope=relay-subscription`，Desktop/远程均不杀进程，也不宣称释放了其他客户端的锁。`nativeRuntime.handoffAvailable` 仅表达强制接管能力；正常释放不依赖该值。

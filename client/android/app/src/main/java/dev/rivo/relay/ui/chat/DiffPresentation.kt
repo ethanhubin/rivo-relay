@@ -117,7 +117,7 @@ internal fun DiffPatchPreview(patch: String, modifier: Modifier = Modifier, meta
 }
 
 @Composable
-private fun DiffLineRow(line: DiffDisplayLine) {
+internal fun DiffLineRow(line: DiffDisplayLine) {
     val marker = when (line.kind) { "addition" -> "+"; "deletion" -> "−"; else -> " " }
     val background = when (line.kind) {
         "addition" -> Color(0xFF1B5E20).copy(alpha = 0.16f)

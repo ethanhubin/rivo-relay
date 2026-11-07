@@ -17,14 +17,17 @@ import dev.rivo.relay.data.*
 
 /** QiGuang CodexActivityGroup: one compact summary row; native outputs expand on demand. */
 @Composable
-internal fun NativeActivityGroup(row: NativeTimelineRow.Activities, onFile: (String) -> Unit) {
+internal fun NativeActivityGroup(row: NativeTimelineRow.Activities, isCurrent: Boolean = false, onFile: (String) -> Unit) {
     var expanded by rememberSaveable(row.key) { mutableStateOf(false) }
     val failedCount = row.messages.count { it.activity?.status == "failed" }
+    val imagePath = row.messages.singleOrNull()?.activity?.takeIf { it.kind == "image" }?.filePaths?.firstOrNull()
     Column(Modifier.fillMaxWidth().padding(vertical = 3.dp).testTag("native_activity_group"), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Row(Modifier.fillMaxWidth().heightIn(min = 32.dp).clickable(role = Role.Button) { expanded = !expanded }.testTag("native_activity_toggle"),
+        Row(Modifier.fillMaxWidth().heightIn(min = 32.dp).clickable(role = Role.Button) { if (imagePath != null) onFile(imagePath) else expanded = !expanded }.testTag("native_activity_toggle"),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(if (expanded) "▾" else "›", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(nativeActivityGroupLabel(row.messages), maxLines = 1, overflow = TextOverflow.Ellipsis,
+            if (isCurrent) ShimmeringStageText(nativeActivityGroupLabel(row.messages),
+                modifier = Modifier.weight(1f).testTag("activity_group_shimmer"), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            else Text(nativeActivityGroupLabel(row.messages), maxLines = 1, overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f).testTag("activity_group_summary"))
             if (failedCount > 0) Text("${failedCount} 项未完成", style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("activity_failure_count"))

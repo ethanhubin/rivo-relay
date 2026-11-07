@@ -4,6 +4,10 @@ Rivo Relay 是一个自托管的 **Codex 移动工作台**，让你在 Android �
 
 项目由 Android App 和运行在你自己电脑上的 Relay 服务组成。Codex 在电脑端运行，手机通过 Relay 连接已有的 Codex 运行时，复用节点上的登录、项目、原生会话和运行配置。无需在手机上另行登录 OpenAI，Desktop/OpenAI 登录凭据保留在原节点。
 
+2026-11-07 开发代码已对照 QiGuang-Next 最新本地发布版 `1642fc8` 更新 Codex 会话、队列恢复、模型设置、原生交互与文件差异。具体迁移内容、协议适配和未迁入部分见 [Codex 最新对照](docs/qiguang-codex-sync.md)，测试与部署边界见 [验证记录](docs/validation.md)。
+
+当前 Android 测试版为 **0.2.10 / code 22**：[下载 APK](https://github.com/ethanhubin/rivo-relay/releases/download/v0.2.10/rivo-relay-0.2.10-debug.apk) · [发布说明](https://github.com/ethanhubin/rivo-relay/releases/tag/v0.2.10)。沿用此前签名，可覆盖升级。2026-11-07 后续迁移补齐 Desktop 协议适配、实际节点原生历史修复、图片/视频播放器、媒体代理/缩略图/生成溯源与媒体库、流式语音输入；具体行为、测试结果与尚需真实环境验收的边界见 [Codex 对照记录](docs/qiguang-codex-sync.md)。本机 Relay 已更新，Desktop 实际共享仍需宿主加载器，语音识别仍需配置 ASR。
+
 ## 可以做什么
 
 - **处理 Codex 会话**：浏览项目和历史会话，新建或继续会话，发送文本与图片，查看流式输出，停止任务并响应原生提问与审批。
@@ -11,7 +15,7 @@ Rivo Relay 是一个自托管的 **Codex 移动工作台**，让你在 Android �
 - **查看代码与文件**：使用 Plan 讨论模式和 Review 代码审查，查看工作空间 diff，创建独立工作树，预览源码、Markdown、图片和 PDF，下载或分享文件。单文件上传和下载支持 1 GiB。
 - **管理并交付待办**：创建待办、子任务、截止日期和提醒，关联节点文件，将待办交给指定项目的 Codex 会话执行，并保留会话关联。待办离线修改可在恢复连接后同步。
 
-当前聚焦 Android、Codex 会话与待办，不包含语音输入或通用桌面远程控制。具体功能与限制见[功能记录](docs/feature-parity.md)。
+当前聚焦 Android、Codex 会话与待办，支持通过可选现有 ASR 后端进行语音输入，不包含通用桌面远程控制。具体功能与限制见[功能记录](docs/feature-parity.md)。
 
 ## 如何工作
 
@@ -24,7 +28,7 @@ Android App  →  你电脑上的 Relay 服务  →  已运行的 Codex 运行�
 
 App 沿用原生节点的权限与运行设置，不另设项目白名单、设备权限等级或额外审批；Codex 原生要求的提问与审批仍由用户处理。会话历史以 Codex 原生数据为准，Relay 保存自己的待办、连接和必要运行状态。
 
-**项目目标是成为 Codex Desktop 在手机上的完整延续，但 Desktop UI 双向接续尚未完成验收。** 当前连接的是指定的既有 Codex daemon，必须确认它与目标 Desktop 的连接关系；仅能连接节点不代表已经共享桌面会话。未知扩展表单与原生身份签名挑战也仍有未解决或未验收边界，详见[原生验证记录](docs/native-validation.md)。
+**项目目标是成为 Codex Desktop 在手机上的完整延续，但 Desktop UI 双向接续尚未完成验收。** 支持既有 Codex daemon 与 QiGuang 协议 Desktop 桥接，桥接需要实际宿主加载集成；仅能连接节点不代表已经共享桌面会话。未知扩展表单与原生身份签名挑战也仍有未解决或未验收边界，详见[原生验证记录](docs/native-validation.md)。
 
 ## 开始使用
 
@@ -33,7 +37,7 @@ App 沿用原生节点的权限与运行设置，不另设项目白名单、设�
 3. 安装 Android App，在电脑端生成配对二维码，用手机扫码或手动输入配对信息。
 4. 在手机选择项目，开始或继续会话，也可以创建待办并交给 Codex 执行。
 
-Android 当前开发构建为 **Android 0.2.1**（versionCode 13）：[本地 APK](workspace/artifacts/rivo-relay-0.2.1-debug.apk)。本轮按栖光源码核对并迁移会话列表、聊天、文件弹窗、目录浏览和待办交互；不支持语音输入，不新增服务、模型或部署依赖。范围及保留差异见[功能记录](docs/feature-parity.md)，验证见[验证记录](docs/validation.md)。此前已发布的 [0.1.10 APK](https://github.com/ethanhubin/rivo-relay/releases/download/v0.1.10/rivo-relay-0.1.10-debug.apk) 保留，0.2.1 尚未发布到 GitHub Release。单文件上传和下载继续支持 1 GiB。
+此前 Android 0.2.7 开发构建（versionCode 19）：[本地 APK](workspace/artifacts/rivo-relay-0.2.7-debug.apk)。本轮将全局提示与会话交接操作移至底部浮动面板，结果核对改为自动查询。强制接管/主动释放会核实并结束持锁进程与其存活子进程，多会话共用进程时先确认影响范围；接管恢复原会话，不重发中断任务。此前已迁移 Tailscale HTTP＋IP 直连并保留登录与本地存储；此前补充只读连接恢复、明确网络错误与重连入口；0.2.2 对照栖光优化实时增量、通知合并、150ms 展示批次、项目列表缓存及重复快照写入；此前 0.2.1 已迁移会话列表、聊天、文件弹窗、目录浏览和待办交互；该历史版本不支持语音输入。范围及保留差异见[功能记录](docs/feature-parity.md)，验证见[验证记录](docs/validation.md)。此前已发布的 [0.1.10 APK](https://github.com/ethanhubin/rivo-relay/releases/download/v0.1.10/rivo-relay-0.1.10-debug.apk) 保留，0.2.7 尚未发布到 GitHub Release。单文件上传和下载继续支持 1 GiB。
 
 - [运行服务](#运行服务)
 - [配对和撤销](#配对和撤销)
@@ -42,7 +46,7 @@ Android 当前开发构建为 **Android 0.2.1**（versionCode 13）：[本地 AP
 
 ## 运行服务
 
-需要 Python 3.11+；当前验证环境使用项目虚拟环境中的 Python 3.13。服务连接**已经运行且经确认的** Codex Unix WebSocket socket，不启动、重启或关闭 Codex runtime。
+需要 Python 3.11+；当前验证环境使用项目虚拟环境中的 Python 3.13。服务连接**已经运行且经确认的** Codex Unix WebSocket socket，普通连接不会启动或停止 Codex runtime；仅用户明确执行进程级交接时会终止核实的持锁进程，并在需要时使用原启动参数恢复被终止的当前 runtime。
 
 ```sh
 python3.11 -m venv .venv
@@ -99,12 +103,14 @@ PYTHONPATH=server .venv/bin/python -m unittest discover -s server/tests -v
 
 消息发送结果不确定时，App 保存原提交并提供核对；可查看已知原会话，再明确选择“结束核对”解除手机等待。该操作不会取消或重发原任务，也不会删除节点提交记录。
 
-运行数据库、私密配对产物和验证附件放在已忽略的 `workspace/`。本机用户 LaunchAgent 已安装；正式签名、通用安装/升级程序和发布尚未作为已交付能力。
+运行数据库、私密配对产物和验证附件放在已忽略的 `workspace/`。本机用户 LaunchAgent 已安装，APK 通过 GitHub 测试版 Release 发布；正式签名和通用安装/升级程序尚未交付。
 ## 当前本机部署记录
 
-本机已安装用户 LaunchAgent `local.rivo-relay`，登录时启动、异常退出后由 launchd 拉起。配置位于 `~/Library/LaunchAgents/local.rivo-relay.plist`，程序使用本仓库 `.venv`，数据目录为 `workspace/local-node`，日志位于该目录的 `logs/`。它监听 `127.0.0.1:18765`，通过原 Tailscale HTTPS 18766 入口供手机访问，原生 socket 显式指向本机 `~/.codex/app-server-control/app-server-control.sock`。
+本机已安装用户 LaunchAgent `local.rivo-relay`，登录时启动、异常退出后由 launchd 拉起。配置位于 `~/Library/LaunchAgents/local.rivo-relay.plist`，程序使用本仓库 `.venv`，数据目录为 `workspace/local-node`，日志位于该目录的 `logs/`。它监听 `127.0.0.1:18765`，通过 Tailscale TCP 18767 转发供手机以 `http://100.124.150.1:18767` 访问，原 HTTPS 18766 入口保留兼容，原生 socket 显式指向本机 `~/.codex/app-server-control/app-server-control.sock`。
 
 手机通过本机节点生成的二维码完成配对。节点可连接并不证明当前 Desktop 的本地 stdio 会话共享该 daemon，Desktop UI 双向接续仍未验收。
+
+2026-11-07 更新至 0.2.10 对应服务源码，平滑重启 Relay 后保留节点身份和原有5个有效授权；21个项目、媒体能力、缩略图和Range读取已验证。更新前已备份节点数据库。此次未修改其他电脑节点，未向真实会话发送测试任务。
 
 ```sh
 launchctl print "gui/$(id -u)/local.rivo-relay"
@@ -113,6 +119,12 @@ launchctl bootout "gui/$(id -u)/local.rivo-relay"
 # 再次启动
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/local.rivo-relay.plist"
 ```
+
+## 额外 Tailscale 节点（2026-10-29）
+
+MacBook Pro 和 e2 Mac mini 已部署用户登录自启动 Relay，安装于各自 `~/Applications/Rivo-Relay`，入口分别为 `https://ethanmacbook-pro.tail791ea5.ts.net:18766` 和 `https://e2mac-mini.tail791ea5.ts.net:18766`。均已验证原生连接及项目读取。
+
+[Android 0.2.8 APK](workspace/artifacts/rivo-relay-0.2.8-debug.apk)（versionCode 20）支持本次部署的既有授权迁移：覆盖安装并打开后，将两个节点加入已保存列表，保留当前登录与各节点独立数据。仅适用于已同步授权的设备；后续授权与撤销仍由各节点独立管理。实体小米手机安装待确认，详见[验证记录](docs/validation.md)。
 
 ## 项目文档
 

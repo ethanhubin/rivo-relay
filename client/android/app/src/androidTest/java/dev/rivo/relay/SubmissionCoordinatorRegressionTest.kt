@@ -5,6 +5,8 @@ import androidx.test.platform.app.InstrumentationRegistry
 import dev.rivo.relay.codex.BatchSubmission
 import dev.rivo.relay.codex.SubmissionCoordinator
 import dev.rivo.relay.connection.CredentialStore
+import dev.rivo.relay.data.ConversationStore
+import dev.rivo.relay.data.ConversationDraft
 import dev.rivo.relay.data.RelayApi
 import kotlinx.coroutines.*
 import okhttp3.mockwebserver.MockResponse
@@ -110,4 +112,66 @@ class SubmissionCoordinatorRegressionTest {
             assertEquals(2, server.requestCount)
         } finally { scope.cancel(); vault.remove(key); server.shutdown() }
     }
+    @Test fun writeWaitsForDurableFrozenDraftBeforeCrossingTheNetworkBoundary() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val directory = java.io.File(context.cacheDir, "submission-durability-${UUID.randomUUID()}")
+        val store = ConversationStore(directory)
+        val server = MockWebServer()
+        val vault = CredentialStore(context)
+        val key = "instrumentation-durable-${UUID.randomUUID()}"
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val writing = CompletableDeferred<Unit>()
+        val allowWrite = CompletableDeferred<Unit>()
+        val failure = AtomicReference<Throwable?>()
+        val prepared = AtomicReference<String?>()
+        server.enqueue(MockResponse().setBody("""{"status":"unknown"}""")); server.start()
+        try {
+            val coordinator = SubmissionCoordinator(RelayApi(server.url("/").newBuilder().host("127.0.0.1").build().toString()), scope, vault, key) { failure.set(it) }
+            store.enqueueDraft("t", ConversationDraft("frozen user input"))
+            val sent = store.captureDraft("t")
+            withContext(Dispatchers.Main) {
+                coordinator.submit("/v1/threads/t/turns", JSONObject().put("text", sent.text), "发送", submissionId = "reserved-client-id",
+                    prepared = { prepared.set(it.id) }, beforeSend = { pending ->
+                    writing.complete(Unit)
+                    allowWrite.await()
+                    store.checkpointSentDraft(pending.id, "t", sent)
+                })
+                assertEquals("reserved-client-id", prepared.get())
+            }
+            withTimeout(5000) { writing.await() }
+            delay(200)
+            assertEquals(0, server.requestCount)
+            allowWrite.complete(Unit)
+            withTimeout(5000) { while (coordinator.state.value.busy) delay(10) }
+            val pending = requireNotNull(coordinator.state.value.pending)
+            val restarted = ConversationStore(directory)
+            assertEquals("frozen user input", restarted.loadDraft("t").text)
+            assertTrue(restarted.sentDraftCheckpoints().containsKey(pending.id))
+            assertEquals(1, server.requestCount)
+            assertNull(failure.get())
+        } finally { allowWrite.complete(Unit); scope.cancel(); vault.remove(key); server.shutdown(); directory.deleteRecursively() }
+    }
+
+    @Test fun localPreparationFailureNeverSendsOrLeavesSubmissionBusy() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val server = MockWebServer(); server.start()
+        val vault = CredentialStore(context)
+        val key = "instrumentation-preflight-${UUID.randomUUID()}"
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val failures = AtomicInteger()
+        try {
+            val coordinator = SubmissionCoordinator(RelayApi(server.url("/").newBuilder().host("127.0.0.1").build().toString()), scope, vault, key) { failures.incrementAndGet() }
+            withContext(Dispatchers.Main) {
+                coordinator.submit("/v1/threads/t/turns", JSONObject(), "发送", prepared = { error("disk unavailable") })
+                assertFalse(coordinator.state.value.busy)
+                assertNull(coordinator.state.value.pending)
+                coordinator.submit("/v1/threads/t/turns", JSONObject(), "发送", beforeSend = { error("durable save failed") })
+            }
+            withTimeout(5000) { while (coordinator.state.value.busy) delay(10) }
+            assertNull(coordinator.state.value.pending)
+            assertEquals(0, server.requestCount)
+            assertEquals(2, failures.get())
+        } finally { scope.cancel(); vault.remove(key); server.shutdown() }
+    }
+
 }

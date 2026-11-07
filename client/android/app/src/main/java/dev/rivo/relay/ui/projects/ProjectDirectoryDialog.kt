@@ -20,6 +20,9 @@ import dev.rivo.relay.data.objects
 import dev.rivo.relay.data.string
 import dev.rivo.relay.ui.theme.RivoSpacing
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import org.json.JSONObject
 import java.text.Normalizer
 
@@ -45,10 +48,12 @@ fun ProjectDirectoryDialog(readDirectory: suspend (String) -> JSONObject, writab
     var retry by remember { mutableIntStateOf(0) }
     var createFolder by remember(path) { mutableStateOf(false) }
     var folderName by remember(path) { mutableStateOf("") }
+    var trustTarget by remember(nodeName, requestedPath) { mutableStateOf<Pair<String, String?>?>(null) }
     LaunchedEffect(requestedPath, retry) {
         loading = true; error = null; entries = emptyList()
         try {
             val result = readDirectory(requestedPath)
+            currentCoroutineContext().ensureActive()
             val resolvedPath = result.string("path")
             require(resolvedPath.isNotBlank()) { "节点未返回有效目录" }
             path = resolvedPath
@@ -57,7 +62,7 @@ fun ProjectDirectoryDialog(readDirectory: suspend (String) -> JSONObject, writab
                 .map { it.string("fileName") }.filter(::validProjectFolderName).distinct().sortedBy { it.lowercase() }
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) { error = e.message ?: "目录读取失败" }
-        finally { loading = false }
+        finally { if (currentCoroutineContext().isActive) loading = false }
     }
     val goBack: () -> Unit = { parentPath?.let { requestedPath = it } ?: onDismiss() }
     Dialog(onDismissRequest = { if (!busy) onDismiss() }, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
@@ -79,7 +84,7 @@ fun ProjectDirectoryDialog(readDirectory: suspend (String) -> JSONObject, writab
                     Row(Modifier.fillMaxWidth().padding(horizontal = RivoSpacing.Page, vertical = RivoSpacing.Sm), horizontalArrangement = Arrangement.spacedBy(RivoSpacing.Sm)) {
                         OutlinedButton(onClick = { folderName = ""; createFolder = true }, enabled = writable && !busy && !loading && error == null && path.isNotBlank(),
                             modifier = Modifier.weight(1f).testTag("project_new_folder")) { Text("新建目录") }
-                        Button(onClick = { onAdd(path, null) }, enabled = writable && !busy && !loading && error == null && path.isNotBlank(),
+                        Button(onClick = { trustTarget = path to null }, enabled = writable && !busy && !loading && error == null && path.isNotBlank(),
                             modifier = Modifier.weight(1f).testTag("confirm_add_project")) { Text(if (busy) "添加中…" else "使用此目录") }
                     }
                 }
@@ -118,7 +123,22 @@ fun ProjectDirectoryDialog(readDirectory: suspend (String) -> JSONObject, writab
             OutlinedTextField(folderName, { folderName = it }, label = { Text("目录名称") }, singleLine = true, enabled = writable,
                 isError = folderName.isNotEmpty() && !validProjectFolderName(folderName.trim()), modifier = Modifier.fillMaxWidth().testTag("project_folder_name"))
         }
-    }, confirmButton = { Button(onClick = { createFolder = false; onAdd(path, Normalizer.normalize(folderName.trim(), Normalizer.Form.NFC)) },
+    }, confirmButton = { Button(onClick = { createFolder = false; trustTarget = path to Normalizer.normalize(folderName.trim(), Normalizer.Form.NFC) },
         enabled = writable && validProjectFolderName(folderName.trim()), modifier = Modifier.testTag("confirm_create_project_folder")) { Text("创建并添加") } },
         dismissButton = { TextButton(onClick = { createFolder = false }) { Text("取消") } })
+    trustTarget?.let { target ->
+        val targetPath = target.second?.let { childDirectory(target.first, it) } ?: target.first
+        AlertDialog(onDismissRequest = { trustTarget = null }, title = { Text("信任此项目文件夹？") },
+            text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (nodeName.isNotBlank()) Text("节点：$nodeName")
+                Text(targetPath, modifier = Modifier.testTag("project_trust_path"))
+                Text("Codex 将使用该文件夹的项目配置和指令。确认后会保存对此文件夹的信任；请只添加你信任的项目。")
+            } },
+            confirmButton = { Button(onClick = {
+                trustTarget = null
+                if (target.first == path && !loading && writable && !busy) onAdd(target.first, target.second)
+            }, enabled = writable && !busy && !loading && target.first == path,
+                modifier = Modifier.testTag("confirm_project_trust")) { Text(if (target.second == null) "信任并添加" else "信任并创建") } },
+            dismissButton = { TextButton(onClick = { trustTarget = null }, modifier = Modifier.testTag("cancel_project_trust")) { Text("取消") } })
+    }
 }

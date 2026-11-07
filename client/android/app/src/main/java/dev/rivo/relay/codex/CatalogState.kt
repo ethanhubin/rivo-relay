@@ -13,6 +13,7 @@ data class CatalogState(
     val unreadThreadIds: Set<String> = emptySet(), val usage: CodexUsage? = null,
     val usageLoading: Boolean = false, val usageError: String? = null,
     val projectsFresh: Boolean = false, val threadsFresh: Boolean = false,
+    val modelsSource: String = "", val modelsStale: Boolean = false, val modelsError: String? = null,
 ) { val loading: Boolean get() = projectsLoading || threadsLoading }
 
 /** Separate catalog/list owner; stale requests cannot overwrite another project or archive filter. */
@@ -86,8 +87,8 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
         refreshThreads()
     }
 
-    fun refreshThreads() {
-        val project = mutable.value.selectedProject ?: return
+    fun refreshThreads(): Job? {
+        val project = mutable.value.selectedProject ?: return null
         val archived = mutable.value.archived
         val cacheKey = "threads:${project.id}:$archived"
         listJob?.cancel()
@@ -106,10 +107,23 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
             } }
             finally { if (generation == targetGeneration) mutable.update { it.copy(threadsLoading = false) } }
         }
+        return listJob
+    }
+
+    /** The visible list owns polling; background navigation must cancel this coroutine. */
+    suspend fun observeThreads(activeIntervalMillis: Long = 15_000, idleIntervalMillis: Long = 60_000) {
+        require(activeIntervalMillis > 0 && idleIntervalMillis > 0)
+        // Reuse an in-flight project/filter read instead of canceling it on entry.
+        (listJob?.takeUnless { it.isCompleted } ?: refreshThreads())?.join()
+        while (currentCoroutineContext().isActive) {
+            delay(if (mutable.value.threads.any(::threadIsActive)) activeIntervalMillis else idleIntervalMillis)
+            refreshThreads()?.join()
+        }
     }
 
     private fun applyThreads(threads: List<ThreadSummary>, fresh: Boolean) {
-        mutable.update { it.copy(threads = threads, unreadThreadIds = unread(threads), threadsFresh = fresh) }
+        mutable.update { current -> current.copy(threads = stableThreadOrder(threads, current.threads.map { it.id }),
+            unreadThreadIds = unread(threads), threadsFresh = fresh) }
     }
 
     private fun unread(threads: List<ThreadSummary>) = threads.filter { thread ->
@@ -148,13 +162,32 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
     }
 
     fun loadModels() = scope.launch {
-        try { val models = api.call("/v1/models").objects("models"); mutable.update { it.copy(models = models) } }
-        catch (e: Exception) { if (e !is CancellationException) failure(e) }
+        try {
+            val response = api.call("/v1/models")
+            val catalog = response.optJSONObject("catalog")
+            mutable.update { it.copy(models = response.objects("models"), modelsSource = catalog?.string("source").orEmpty(),
+                modelsStale = catalog?.optBoolean("stale") == true, modelsError = null) }
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) {
+            if (e is ApiException && e.status == 401) failure(e)
+            mutable.update { it.copy(modelsStale = true, modelsError = "暂时无法更新模型目录，保留上次可用选项") }
+        }
     }
 }
 
 private fun threadsPath(projectId: String, archived: Boolean) = "/v1/threads?projectId=${encoded(projectId)}&archived=$archived"
-fun threadIsActive(thread: ThreadSummary): Boolean = thread.status in setOf("running", "inProgress", "active", "waiting", "queued", "starting")
+fun threadIsActive(thread: ThreadSummary): Boolean = thread.hasOutstandingWork || thread.recoveryRequired ||
+    thread.queueDepth > 0 || thread.nativeExecution == "running" ||
+    thread.status in setOf("running", "inProgress", "active", "waiting", "queued", "starting")
+
+/** QiGuang ordering: pinned/active groups, stable active ranks, newest completed first. */
+fun stableThreadOrder(threads: List<ThreadSummary>, previousIds: List<String> = emptyList()): List<ThreadSummary> {
+    val ranks = previousIds.withIndex().associate { it.value to it.index }
+    return threads.withIndex().sortedWith(compareByDescending<IndexedValue<ThreadSummary>> { it.value.pinned }
+        .thenByDescending { threadIsActive(it.value) }
+        .thenBy { if (threadIsActive(it.value)) ranks[it.value.id] ?: ranks.size + it.index else 0 }
+        .thenByDescending { if (threadIsActive(it.value)) 0L else it.value.updatedAt }).map { it.value }
+}
 
 /** Only current, non-archived server results may restore background observations. */
 fun pinnedThreadsToObserve(state: CatalogState): Set<String> =

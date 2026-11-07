@@ -14,7 +14,7 @@ class Observations:
         with self.db.transaction() as c:
             c.execute("INSERT OR REPLACE INTO native_observations VALUES(?,?,?,?,?)",
                       (thread_id, kind, turn_id or '', encoded, time.time()))
-            c.execute("DELETE FROM native_observations WHERE rowid IN (SELECT rowid FROM native_observations ORDER BY updated_at DESC LIMIT -1 OFFSET 1000)")
+            c.execute("DELETE FROM native_observations WHERE rowid IN (SELECT rowid FROM native_observations WHERE kind NOT IN ('ownership','externalWorkspace') ORDER BY updated_at DESC LIMIT -1 OFFSET 1000)")
 
     def get(self, thread_id):
         with self.db.read() as c:

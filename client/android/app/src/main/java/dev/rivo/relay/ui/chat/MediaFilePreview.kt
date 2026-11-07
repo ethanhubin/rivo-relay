@@ -1,11 +1,11 @@
+@file:androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
+
 package dev.rivo.relay.ui.chat
 
-import android.media.MediaPlayer
+import android.net.Uri
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.MediaController
-import android.widget.VideoView
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -21,53 +21,95 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
 import kotlinx.coroutines.delay
 import java.io.File
 
-/** Same media-viewer flow as QiGuang, using Android's bundled decoder. */
+/** QiGuang WorkspaceAudioPlayer with Relay file actions and lifecycle ownership. */
 @Composable
 internal fun MediaFilePreview(name: String, video: Boolean, file: File?, error: String?, onRetry: () -> Unit,
-    onAction: (FileAction) -> Unit, onDismiss: () -> Unit) {
+    onAction: (FileAction) -> Unit, onDismiss: () -> Unit, source: String? = null) {
+    if (video && file != null && error == null) {
+        val item = remember(file, source) { VideoViewerItem(null, android.net.Uri.fromFile(file).toString(), source = source ?: name, displayName = name, mimeType = fileMimeType(name)) }
+        FullScreenVideo(remember(item) { VideoViewerSource(listOf(item), 0, androidx.compose.ui.geometry.Rect.Zero) }, onDismiss,
+            onDownload = { onAction(FileAction.SAVE) }, onShare = { onAction(FileAction.SHARE) }, onOpenExternal = { onAction(FileAction.OPEN) })
+        return
+    }
     val context = LocalContext.current
     val owner = LocalLifecycleOwner.current
-    var player by remember(file) { mutableStateOf<MediaPlayer?>(null) }
-    var videoView by remember { mutableStateOf<VideoView?>(null) }
+    var player by remember(file) { mutableStateOf<ExoPlayer?>(null) }
     var playing by remember(file) { mutableStateOf(false) }
     var prepared by remember(file) { mutableStateOf(false) }
     var mediaError by remember(file) { mutableStateOf<String?>(null) }
     var position by remember(file) { mutableLongStateOf(0) }
     var duration by remember(file) { mutableLongStateOf(0) }
-    DisposableEffect(file, video) {
-        var audio: MediaPlayer? = null
-        if (file != null && !video) {
+    var seeking by remember(file) { mutableStateOf(false) }
+    var attempt by remember(file) { mutableIntStateOf(0) }
+    DisposableEffect(file, video, error, attempt, owner) {
+        var audio: ExoPlayer? = null
+        var listener: Player.Listener? = null
+        prepared = false; playing = false
+        if (file != null && !video && error == null) {
             try {
-                val created = MediaPlayer()
+                val created = ExoPlayer.Builder(context).build()
                 audio = created
-                created.apply {
-                    setDataSource(file.absolutePath)
-                    setOnPreparedListener { prepared = true; duration = it.duration.toLong(); player = it }
-                    setOnCompletionListener { playing = false; position = duration }
-                    setOnErrorListener { _, _, _ -> mediaError = "手机暂不支持此媒体格式"; playing = false; prepared = false; true }
-                    prepareAsync()
+                val playbackListener = object : Player.Listener {
+                    override fun onEvents(current: Player, events: Player.Events) {
+                        playing = current.isPlaying
+                        prepared = current.playerError == null && current.playbackState in setOf(Player.STATE_READY, Player.STATE_ENDED)
+                        duration = current.duration.takeIf { it != C.TIME_UNSET && it >= 0 } ?: 0L
+                        if (!seeking) position = current.currentPosition.coerceAtLeast(0)
+                    }
+                    override fun onPlayerError(failure: PlaybackException) {
+                        mediaError = when (failure.errorCode) {
+                            in 2000..2999 -> "无法读取音频文件，请重试"
+                            in 3000..4999 -> "手机暂不支持此音频格式，或文件内容已损坏"
+                            else -> "音频播放失败，请重试或使用其他应用打开"
+                        }
+                        created.pause(); playing = false; prepared = false
+                    }
                 }
+                listener = playbackListener
+                created.addListener(playbackListener)
+                created.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
+                created.setHandleAudioBecomingNoisy(true)
+                created.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
+                player = created
+                created.playWhenReady = owner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+                created.prepare()
             } catch (e: Exception) { mediaError = e.message ?: "无法打开媒体" }
         }
-        onDispose { player = null; audio?.release() }
+        onDispose {
+            listener?.let { audio?.removeListener(it) }
+            audio?.release()
+            if (player === audio) player = null
+        }
     }
-    DisposableEffect(owner) {
+    DisposableEffect(owner, player) {
+        val current = player
+        if (!owner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) current?.pause()
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) { runCatching { player?.pause() }; videoView?.pause(); playing = false }
+            if (event == Lifecycle.Event.ON_STOP) { current?.pause(); playing = false }
         }
         owner.lifecycle.addObserver(observer)
-        onDispose { owner.lifecycle.removeObserver(observer); videoView?.stopPlayback() }
+        onDispose { owner.lifecycle.removeObserver(observer) }
     }
     LaunchedEffect(playing, player) {
-        while (playing) { position = runCatching { player?.currentPosition?.toLong() ?: 0L }.getOrDefault(0); delay(250) }
+        while (playing) {
+            if (!seeking) position = player?.currentPosition?.coerceAtLeast(0) ?: 0L
+            delay(250)
+        }
     }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = !video)) {
         Surface(Modifier.then(if (video) Modifier.fillMaxSize() else Modifier.fillMaxWidth()), shape = if (video) androidx.compose.ui.graphics.RectangleShape else MaterialTheme.shapes.extraLarge) {
             Column(Modifier.then(if (video) Modifier.systemBarsPadding() else Modifier.padding(vertical = 12.dp)).testTag(if (video) "video_preview" else "audio_preview")) {
-                if (video) FilePreviewToolbar(name, { onAction(FileAction.SAVE) }, { onAction(FileAction.SHARE) }, onDismiss)
+                if (video) FilePreviewToolbar(name, { onAction(FileAction.SAVE) }, { onAction(FileAction.SHARE) }, onDismiss, source)
                 else Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     Icon(FileIcons.MusicNote, null, Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary)
                     Text(name, style = MaterialTheme.typography.titleMedium)
@@ -76,27 +118,28 @@ internal fun MediaFilePreview(name: String, video: Boolean, file: File?, error: 
                 when {
                     failure != null -> Column(Modifier.padding(24.dp)) {
                         Text(failure, color = MaterialTheme.colorScheme.error)
-                        TextButton(onClick = { mediaError = null; onRetry() }) { Text("重试") }
+                        TextButton(onClick = { mediaError = null; attempt++; onRetry() }, modifier = Modifier.testTag("audio_retry")) { Text("重试") }
                         TextButton(onClick = { onAction(FileAction.OPEN) }) { Text("用其他应用打开") }
                     }
                     file == null -> Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         LinearProgressIndicator(Modifier.fillMaxWidth()); Text("正在载入媒体…")
                     }
-                    video -> key(file.absolutePath) { AndroidView(factory = {
-                        VideoView(context).apply {
-                            videoView = this
-                            setMediaController(MediaController(context).also { it.setAnchorView(this) })
-                            setOnErrorListener { _, _, _ -> mediaError = "手机暂不支持此媒体格式"; true }
-                            setVideoPath(file.absolutePath)
-                            setOnPreparedListener { if (owner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) start() }
-                        }
-                    }, onRelease = { it.stopPlayback(); if (videoView === it) videoView = null }, modifier = Modifier.fillMaxWidth().weight(1f)) }
                     else -> Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        if (!prepared) LinearProgressIndicator(Modifier.fillMaxWidth())
                         Slider(value = position.toFloat().coerceIn(0f, duration.coerceAtLeast(1).toFloat()), onValueChange = {
-                            position = it.toLong(); player?.seekTo(it.toInt())
-                        }, valueRange = 0f..duration.coerceAtLeast(1).toFloat(), enabled = prepared)
-                        Text("${mediaTime(position)} / ${mediaTime(duration)}", style = MaterialTheme.typography.labelMedium)
-                        IconButton(onClick = { if (playing) player?.pause() else { if (position >= duration) player?.seekTo(0); player?.start() }; playing = !playing }, enabled = prepared) {
+                            seeking = true; position = it.toLong()
+                        }, onValueChangeFinished = { player?.seekTo(position); seeking = false },
+                            valueRange = 0f..duration.coerceAtLeast(1).toFloat(), enabled = prepared,
+                            modifier = Modifier.testTag("audio_progress"))
+                        Text("${mediaTime(position)} / ${mediaTime(duration)}", style = MaterialTheme.typography.labelMedium, modifier = Modifier.testTag("audio_position"))
+                        IconButton(onClick = {
+                            player?.let { current ->
+                                if (current.isPlaying) current.pause() else {
+                                    if (current.playbackState == Player.STATE_ENDED) current.seekTo(0)
+                                    current.play()
+                                }
+                            }
+                        }, enabled = prepared, modifier = Modifier.testTag("audio_play_pause")) {
                             Icon(if (playing) FileIcons.Pause else FileIcons.PlayArrow, if (playing) "暂停" else "播放")
                         }
                     }
@@ -104,6 +147,7 @@ internal fun MediaFilePreview(name: String, video: Boolean, file: File?, error: 
                 if (!video) Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = { onAction(FileAction.SHARE) }) { Text("分享") }
                     TextButton(onClick = { onAction(FileAction.SAVE) }) { Text("保存到本机") }
+                    source?.let { ForwardLinkButton(it, name, onDismiss) }
                     TextButton(onClick = onDismiss) { Text("关闭") }
                 }
             }

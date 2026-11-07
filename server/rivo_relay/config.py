@@ -27,8 +27,12 @@ class Config:
     cert: Path | None = None
     key: Path | None = None
     codex_home: Path = Path.home() / ".codex"
+    codex_runtime: str = 'auto'
+    desktop_bridge_dir: Path | None = None
 
     def validate(self) -> None:
+        if self.codex_runtime not in {'auto', 'desktop', 'app_server'}:
+            raise ValueError('codex_runtime must be auto, desktop or app_server')
         if not 1 <= self.port <= 65535:
             raise ValueError("port must be between 1 and 65535")
         if bool(self.cert) != bool(self.key):
@@ -42,8 +46,8 @@ class Config:
         port = url.port
         if port is not None and not 1 <= port <= 65535:
             raise ValueError("invalid public URL port")
-        if url.scheme == "http" and not (is_loopback(url.hostname) or url.hostname == "10.0.2.2"):
-            raise ValueError("HTTP public URLs are limited to local emulator development")
+        if url.scheme == "http" and not (is_loopback(url.hostname) or url.hostname in ("10.0.2.2", "100.124.150.1")):
+            raise ValueError("HTTP public URLs are limited to local development or the configured Tailscale node")
 
     def prepare(self) -> None:
         self.validate()

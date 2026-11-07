@@ -1,6 +1,7 @@
 package dev.rivo.relay.ui.chat
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.text.KeyboardOptions
@@ -24,6 +25,7 @@ fun NativeRequestPanel(request: NativeRequest, enabled: Boolean, onRespond: (JSO
     val answers = remember(request.key) { mutableStateMapOf<String, String>() }
     var questionIndex by remember(request.key) { mutableIntStateOf(0) }
     Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = MaterialTheme.shapes.medium,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         modifier = Modifier.fillMaxWidth().testTag("native_request")) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("toggle_native_request")) { Text(if (expanded) "Codex 需要你的回应 ▴" else "Codex 需要你的回应 ▾") }
@@ -36,6 +38,11 @@ fun NativeRequestPanel(request: NativeRequest, enabled: Boolean, onRespond: (JSO
                             val results = JSONObject(); questions.forEach { q -> results.put(q.string("id"), JSONObject().put("answers", JSONArray().put(answers[q.string("id")]))) }
                             onRespond(JSONObject().put("answers", results))
                         }
+                        if (questions.isNotEmpty() && questions.none { it.optBoolean("isSecret") }) TextButton(onClick = {
+                            val results = JSONObject()
+                            questions.forEach { question -> results.put(question.string("id"), JSONObject().put("answers", JSONArray().put("请按合理假设继续。"))) }
+                            onRespond(JSONObject().put("answers", results))
+                        }, enabled = enabled, modifier = Modifier.testTag("answer_with_assumptions")) { Text("按合理假设继续") }
                     }
                     request.method in setOf("item/commandExecution/requestApproval", "item/fileChange/requestApproval", "execCommandApproval", "applyPatchApproval") -> {
                         params.string("reason").takeIf { it.isNotBlank() }?.let { Text(it) }
@@ -71,12 +78,12 @@ internal fun approvalLabel(decision: Any): String? = when (decision) {
     "cancel", "abort" -> "取消当前请求"
     is JSONObject -> when {
         decision.has("denied") -> "拒绝"
-        decision.has("approved_execpolicy_amendment") -> "允许并记住命令规则：" + decision.getJSONObject("approved_execpolicy_amendment").strings("proposed_execpolicy_amendment").joinToString(" ")
-        decision.has("network_policy_amendment") -> decision.getJSONObject("network_policy_amendment").getJSONObject("network_policy_amendment").let {
+        decision.has("approved_execpolicy_amendment") -> decision.optJSONObject("approved_execpolicy_amendment")?.strings("proposed_execpolicy_amendment")?.takeIf { it.isNotEmpty() }?.let { "允许并记住命令规则：" + it.joinToString(" ") }
+        decision.has("network_policy_amendment") -> decision.optJSONObject("network_policy_amendment")?.optJSONObject("network_policy_amendment")?.takeIf { it.string("action") in setOf("allow", "deny") && it.string("host").isNotBlank() }?.let {
             (if (it.string("action") == "allow") "允许访问并记住：" else "拒绝访问并记住：") + it.string("host")
         }
-        decision.has("acceptWithExecpolicyAmendment") -> "允许并记住命令规则：" + decision.getJSONObject("acceptWithExecpolicyAmendment").strings("execpolicy_amendment").joinToString(" ")
-        decision.has("applyNetworkPolicyAmendment") -> decision.getJSONObject("applyNetworkPolicyAmendment").getJSONObject("network_policy_amendment").let {
+        decision.has("acceptWithExecpolicyAmendment") -> decision.optJSONObject("acceptWithExecpolicyAmendment")?.strings("execpolicy_amendment")?.takeIf { it.isNotEmpty() }?.let { "允许并记住命令规则：" + it.joinToString(" ") }
+        decision.has("applyNetworkPolicyAmendment") -> decision.optJSONObject("applyNetworkPolicyAmendment")?.optJSONObject("network_policy_amendment")?.takeIf { it.string("action") in setOf("allow", "deny") && it.string("host").isNotBlank() }?.let {
             (if (it.string("action") == "allow") "允许访问并记住：" else "拒绝访问并记住：") + it.string("host")
         }
         else -> null

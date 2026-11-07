@@ -7,7 +7,7 @@ name = "rivo-relay"
 version = "0.1.0"
 description = "Mobile continuation of Codex Desktop"
 requires-python = ">=3.11"
-dependencies = ["websockets==15.0.1", "qrcode[pil]==8.2"]
+dependencies = ["websockets==15.0.1", "qrcode[pil]==8.2", "Pillow==13.0.0"]
 
 [project.optional-dependencies]
 # Development-only authenticated Android Emulator camera control.
@@ -19,3 +19,6 @@ rivo-relay = "rivo_relay.__main__:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["rivo_relay*"]
+
+[tool.setuptools.package-data]
+"rivo_relay.codex" = ["*.cjs"]

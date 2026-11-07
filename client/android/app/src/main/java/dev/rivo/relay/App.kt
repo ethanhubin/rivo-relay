@@ -1,10 +1,12 @@
 package dev.rivo.relay
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -24,7 +26,12 @@ import dev.rivo.relay.ui.sessions.SessionsScreen
 import dev.rivo.relay.ui.chat.ChatScreen
 import dev.rivo.relay.ui.todos.TodosScreen
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
 import org.json.JSONObject
+
+private val pendingProjectSaver = Saver<ProjectSummary?, ArrayList<String>>(
+    save = { project -> project?.let { arrayListOf(it.id, it.name, it.path, it.threadCount.toString(), it.outstandingWorkCount.toString()) } ?: arrayListOf() },
+    restore = { values -> if (values.size == 5) ProjectSummary(values[0], values[1], values[2], values[3].toInt(), values[4].toInt()) else null })
 
 @Composable
 fun RelayApp(vm: AppViewModel = viewModel()) {
@@ -33,41 +40,146 @@ fun RelayApp(vm: AppViewModel = viewModel()) {
         Box(Modifier.fillMaxSize().systemBarsPadding()) {
             val node = app.node
             if (node == null) LoginScreen(app.pairing, app.error, vm::pair, vm::setError, app.savedNodes, vm::selectNode)
-            else key(node) { ConnectedApp(node, app.error, vm::setError, vm::disconnect) }
+            else key(node) { ConnectedApp(node, app.error, vm::setError, vm::disconnect, vm::retryConnection, app.savedNodes, vm::selectNode) }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) -> Unit, disconnect: () -> Unit) {
-    var route by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastRoute")?.takeIf { it in setOf("projects", "sessions", "chat", "todos") } ?: "projects") }
+private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) -> Unit, disconnect: () -> Unit, retryConnection: () -> Unit,
+    savedNodes: List<dev.rivo.relay.connection.SavedNode>, selectNode: (String) -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var route by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastRoute")?.let { if (it == "new") "sessions" else it }?.takeIf { it in setOf("projects", "sessions", "chat", "todos") } ?: "projects") }
     var threadId by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastThreadId")) }
     var chatParent by rememberSaveable { mutableStateOf("sessions") }
     var connectionOpen by remember { mutableStateOf(false) }
     var addProject by remember { mutableStateOf(false) }
-    var newConversation by remember { mutableStateOf(false) }
+    var pendingGeneration by rememberSaveable { mutableStateOf(0) }
+    var pendingDraft by remember { mutableStateOf(ConversationDraft()) }
+    var pendingProject by rememberSaveable(stateSaver = pendingProjectSaver) { mutableStateOf<ProjectSummary?>(null) }
+    var pendingId by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingRef by remember(pendingId) { mutableStateOf(pendingId?.let(node.conversations::pendingWorktreeRef)) }
+    var createdThread by remember(pendingId) { mutableStateOf(pendingId?.let(node.conversations::pendingThreadId)) }
+    var pendingReady by remember(pendingId) { mutableStateOf(pendingRef == null || createdThread != null) }
+    var listedPending by remember { mutableStateOf(emptyList<PendingConversation>()) }
+    val pendingRevision by node.pendingRevision.collectAsStateWithLifecycle()
+    var draftReloadKey by remember(node) { mutableLongStateOf(0L) }
+    var defaultSettings by remember(node) { mutableStateOf(node.conversations.defaultSettings()) }
+    fun saveDefaults(settings: JSONObject) {
+        try { node.conversations.saveDefaultSettings(settings); defaultSettings = node.conversations.defaultSettings() }
+        catch (e: Exception) { setError(e.message ?: "无法保存默认模型设置") }
+    }
     var todoAttachment by remember { mutableStateOf<String?>(null) }
     var endingPending by remember { mutableStateOf<PendingSubmission?>(null) }
+    var handoffPrompt by remember { mutableStateOf<Triple<String, String, JSONObject>?>(null) }
+    var handoffLoading by remember { mutableStateOf(false) }
+    val handoffScope = rememberCoroutineScope()
+    fun executeHandoff(id: String, operation: String, preview: JSONObject, confirmed: Boolean) {
+        if (route != "chat" || threadId != id || node.session.state.value.stale || node.submissions.state.value.busy) return
+        node.submissions.submit("/v1/threads/${encoded(id)}/ownership",
+            JSONObject().put("operation", operation).put("ticket", preview.getString("ticket")).put("confirmed", confirmed).apply {
+                preview.optJSONObject("workspaceRebind")?.string("path")?.takeIf(String::isNotBlank)?.let { put("rebindWorkspace", it) }
+            },
+            if (operation == "takeover") "强制接管" else "主动释放") { node.session.refresh() }
+    }
+    fun requestHandoff(operation: String) {
+        val id = threadId ?: return
+        val current = node.session.state.value
+        if (route != "chat" || current.id != id || current.stale || handoffLoading || node.submissions.state.value.busy || node.submissions.state.value.pending != null) return
+        handoffLoading = true
+        handoffScope.launch {
+            try {
+                val preview = node.api.call("/v1/threads/${encoded(id)}/ownership?operation=$operation")
+                if (route == "chat" && threadId == id && !node.session.state.value.stale) {
+                    if (preview.getBoolean("requiresConfirmation") || preview.optJSONObject("workspaceRebind") != null) handoffPrompt = Triple(id, operation, preview)
+                    else executeHandoff(id, operation, preview, false)
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                if (route == "chat" && threadId == id) setError(if (e is ApiException) e.message else node.api.describeFailure(e))
+            } finally { handoffLoading = false }
+        }
+    }
+    fun openPending(project: ProjectSummary, resumeId: String? = null) {
+        val id = try { resumeId ?: node.conversations.createPending(project.id) }
+        catch (e: Exception) { setError(e.message ?: "无法保存待发送会话"); return }
+        pendingGeneration++
+        pendingDraft = ConversationDraft()
+        pendingProject = project
+        pendingId = id
+        pendingRef = node.conversations.pendingWorktreeRef(id)
+        pendingReady = pendingRef == null
+        createdThread = node.conversations.pendingThreadId(id)
+        route = "new"
+        setError(null)
+    }
     val catalog by node.catalog.state.collectAsStateWithLifecycle()
     val session by node.session.state.collectAsStateWithLifecycle()
+    val network by node.network.collectAsStateWithLifecycle()
     val todos by node.todos.state.collectAsStateWithLifecycle()
     val submission by node.submissions.state.collectAsStateWithLifecycle()
     val owner = LocalLifecycleOwner.current
-    val writable = !submission.busy && submission.pending == null
+    val writable = !submission.busy && submission.pending == null && !handoffLoading
     val projectsWritable = writable && catalog.projectsFresh
     val threadsWritable = writable && catalog.threadsFresh
+    val visiblePending = listedPending.filter { it.projectId == catalog.selectedProject?.id }
     // Use only the pinned IDs as the effect key: periodic timestamp refreshes retain tracker baselines.
     val pinnedThreads = pinnedThreadsToObserve(catalog)
     LaunchedEffect(pinnedThreads) { pinnedThreads.forEach { node.notifications.watch(it) } }
     val displayError = error ?: if (route == "chat" && session.id == threadId) session.readError ?: session.historyError else null
+    LaunchedEffect(route, threadId) { handoffPrompt = null }
+    LaunchedEffect(submission.pending?.id, network) {
+        if (submission.pending != null && network != null) {
+            kotlinx.coroutines.delay(3000)
+            while (true) {
+                node.submissions.reconcile()
+                kotlinx.coroutines.delay(10000)
+            }
+        }
+    }
     LaunchedEffect(submission.notice) {
         if (submission.notice != null && submission.pending == null) {
             node.catalog.refreshProjects(); node.catalog.refreshThreads(); node.todos.refresh(); node.session.refresh()
         }
     }
     fun openChat(id: String, parent: String) { node.conversations.putMetadata("lastThreadId", id); threadId = id; chatParent = parent; route = "chat"; setError(null) }
-    fun back() { setError(null); route = if (route == "chat") chatParent else "projects"; if (route == "sessions") node.catalog.refreshThreads(); if (route == "todos") node.todos.refresh() }
-    BackHandler(route in setOf("chat", "sessions"), ::back)
+    fun forwardLink(projectId: String, targetThreadId: String?, source: String, name: String) {
+        val project = node.catalog.state.value.projects.firstOrNull { it.id == projectId }
+        if (project == null) { setError("项目已变化，请重新选择目标"); return }
+        val currentRoute = route
+        val sourceThread = threadId
+        handoffScope.launch {
+            try {
+                val newPendingId = if (targetThreadId == null) node.conversations.createPending(projectId) else null
+                val key = targetThreadId ?: "pending:$newPendingId"
+                val old = node.conversations.loadDraft(key)
+                val attachment = "链接附件：$name\n$source"
+                val merged = old.copy(text = listOf(old.text, attachment).filter(String::isNotBlank).joinToString("\n\n"))
+                node.conversations.saveDraftOrdered(key, merged)
+                if (route == currentRoute && threadId == sourceThread) {
+                    draftReloadKey++
+                    node.catalog.project(project)
+                    if (targetThreadId == null) openPending(project, newPendingId) else openChat(targetThreadId, "sessions")
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { if (route == currentRoute && threadId == sourceThread) setError(e.message ?: "无法转发链接到会话草稿") }
+        }
+    }
+    fun back() {
+        setError(null)
+        if (route == "new" && !submission.busy && submission.pending == null) pendingId?.let { id ->
+            val draft = node.conversations.captureDraft("pending:$id")
+            if (draft.text.isBlank() && draft.images.isEmpty() && draft.files.isEmpty() && node.conversations.pendingThreadId(id) == null) {
+                try { node.conversations.finishPending(id) }
+                catch (e: Exception) { setError(e.message ?: "无法清理空草稿") }
+            }
+        }
+        route = if (route == "new") "sessions" else if (route == "chat") chatParent else "projects"
+        if (route == "sessions") node.catalog.refreshThreads()
+        if (route == "todos") node.todos.refresh()
+    }
+    BackHandler(route in setOf("chat", "sessions", "new"), ::back)
     val todoNavigation by node.todoNavigation.collectAsStateWithLifecycle()
     LaunchedEffect(todoNavigation) { if (todoNavigation) { route = "todos"; node.todos.refresh(); node.consumeTodoNavigation() } }
     val notificationThread by node.navigation.collectAsStateWithLifecycle()
@@ -77,9 +189,26 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
         if (route == "chat" && !session.stale && session.snapshot?.id == threadId) threadId?.let { node.catalog.markRead(it, session.snapshot?.updatedAt ?: 0) }
     }
 
+    LaunchedEffect(route, pendingId, pendingRevision) {
+        val id = pendingId
+        if (route == "new" && id != null) {
+            if (node.conversations.pendingCompleted(id)) {
+                node.conversations.completedPendingThreadId(id)?.let { openChat(it, "sessions") }
+            } else {
+                createdThread = node.conversations.pendingThreadId(id)
+                if (createdThread != null) pendingReady = true
+            }
+        }
+    }
+    LaunchedEffect(route, catalog.selectedProject?.id, pendingRevision) {
+        val projectId = catalog.selectedProject?.id
+        if (route == "sessions" && projectId != null) {
+            listedPending = node.conversations.listPending(projectId)
+        } else listedPending = emptyList()
+    }
     LaunchedEffect(route, catalog.selectedProject?.id, owner) {
         if (route == "sessions" && catalog.selectedProject != null) owner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            while (true) { node.catalog.refreshThreads(); kotlinx.coroutines.delay(15_000) }
+            node.catalog.observeThreads()
         }
     }
     LaunchedEffect(route, owner) {
@@ -90,55 +219,25 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             node.catalog.observeProjects()
         }
     }
-    LaunchedEffect(route, threadId, owner) {
+    LaunchedEffect(route, threadId, owner, network) {
         val id = threadId
         if (route == "chat" && id != null) owner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            node.session.open(id)
+            node.session.open(id, online = network != null)
             try { awaitCancellation() } finally { node.session.pause() }
         } else node.session.close()
     }
-    Column(Modifier.fillMaxSize()) {
-        displayError?.let { message ->
-            Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth().testTag("app_error")) {
-                Row(Modifier.padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)) {
-                    Text(message, Modifier.weight(1f).padding(vertical = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
-                    TextButton(onClick = { if (error != null) setError(null) else node.session.dismissReadError() }) { Text("关闭") }
-                }
-            }
-        }
-        submission.pending?.let { pending ->
-            Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
-                Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
-                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                        Text("${pending.label}结果待核对，不会重复发送", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                        TextButton(node.submissions::reconcile, enabled = !submission.busy, modifier = Modifier.testTag("reconcile_submission")) { Text("核对结果") }
-                    }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        pending.threadId?.let { id -> TextButton(onClick = { openChat(id, if (route == "chat") chatParent else if (route == "todos") "todos" else "sessions") }) { Text("查看原会话") } }
-                        TextButton(onClick = { endingPending = pending }, enabled = !submission.busy, modifier = Modifier.testTag("finish_reconciliation")) { Text("结束核对") }
-                    }
-                }
-            }
-        }
-        if (submission.pending == null) submission.notice?.let { notice ->
-            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                Text(notice, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                TextButton(onClick = node.submissions::clearNotice) { Text("关闭") }
-            }
-        }
-        if ((route == "projects" && !catalog.projectsFresh && catalog.projects.isNotEmpty()) ||
-            (route == "sessions" && !catalog.threadsFresh && catalog.threads.isNotEmpty())) {
-            Text("内容尚未同步，连接节点后可修改", Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).testTag("catalog_cached_notice"),
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+    Column(Modifier.fillMaxSize().imePadding()) {
         Box(Modifier.weight(1f)) {
             when (route) {
                 "projects" -> ProjectsScreen(catalog.projects, node.connection.name, catalog.loading, { project -> node.catalog.project(project); route = "sessions"; setError(null) },
                     { connectionOpen = true }, { node.catalog.refreshProjects() }, { if (node.catalog.state.value.projectsFresh) addProject = true },
                     usage = catalog.usage, usageLoading = catalog.usageLoading, usageError = catalog.usageError,
-                    onRefreshUsage = { node.catalog.refreshUsage(true) }, canAdd = projectsWritable)
-                "sessions" -> SessionsScreen(catalog.selectedProject?.name ?: "会话", catalog.threads, catalog.loading, threadsWritable,
-                    ::back, { openChat(it.id, "sessions") }, { if (node.catalog.state.value.threadsFresh) newConversation = true }, node.catalog::refreshThreads,
+                    onRefreshUsage = { node.catalog.refreshUsage(true) }, canAdd = projectsWritable,
+                    savedNodes = savedNodes, currentBase = node.connection.base,
+                    onSelectNode = { if (!submission.busy && !handoffLoading) selectNode(it) },
+                    onAddNode = { if (!submission.busy && !handoffLoading) disconnect() }, canSwitchNode = !submission.busy && !handoffLoading)
+                "sessions" -> SessionsScreen(catalog.selectedProject?.name ?: "会话", catalog.threads.filterNot { thread -> visiblePending.any { node.conversations.pendingThreadId(it.id) == thread.id } }, catalog.loading, threadsWritable,
+                    ::back, { openChat(it.id, "sessions") }, { if (node.catalog.state.value.threadsFresh) catalog.selectedProject?.let { openPending(it) } }, { node.catalog.refreshThreads() },
                     onPin = { thread, pinned ->
                         if (node.catalog.state.value.threadsFresh) node.submissions.submit("/v1/threads/${encoded(thread.id)}/pin", JSONObject().put("pinned", pinned), if (pinned) "置顶会话" else "取消置顶") {
                             if (pinned) node.notifications.watch(thread.id, requestPermission = true)
@@ -153,22 +252,143 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     }, onArchive = { threads, archived ->
                         if (node.catalog.state.value.threadsFresh) node.submissions.submitBatch(threads.map { BatchSubmission("/v1/threads/${encoded(it.id)}/archive", JSONObject().put("archived", archived), if (archived) "归档会话" else "恢复会话") }) { node.catalog.refreshThreads() }
                     }, unreadThreadIds = catalog.unreadThreadIds, usage = catalog.usage, usageLoading = catalog.usageLoading,
-                    usageError = catalog.usageError, onRefreshUsage = { node.catalog.refreshUsage(true) }, projectKey = catalog.selectedProject?.id.orEmpty())
+                    usageError = catalog.usageError, onRefreshUsage = { node.catalog.refreshUsage(true) }, projectKey = catalog.selectedProject?.id.orEmpty(),
+                    initialCount = catalog.selectedProject?.threadCount ?: 0,
+                    pendingConversations = visiblePending, canDiscardPending = writable,
+                    onResumePending = { id -> node.catalog.state.value.selectedProject?.takeIf { selected -> visiblePending.any { it.id == id && it.projectId == selected.id } }?.let { openPending(it, id) } },
+                    onDiscardPending = { id ->
+                        try {
+                            node.conversations.finishPending(id)
+                            node.session.pendingMessagesFor("pending:$id").forEach { message ->
+                                node.session.resolveSubmission(message.submissionId, JSONObject().put("status", "failed"))
+                            }
+                            listedPending = listedPending.filterNot { it.id == id }
+                        }
+                        catch (e: Exception) { setError(e.message ?: "无法删除待发送草稿") }
+                    })
+                "new" -> pendingProject?.let { project ->
+                    val localId = pendingId ?: return@let
+                    val draftKey = "pending:$localId"
+                    val generation = pendingGeneration
+                    val pendingMessages = (node.session.pendingMessagesFor(draftKey) + createdThread?.let(node.session::pendingMessagesFor).orEmpty()).distinctBy { it.clientId }
+                    ChatScreen(SessionState(id = draftKey, pendingMessages = pendingMessages, overlayRevision = session.overlayRevision), submission.busy, submission.pending != null, catalog.models,
+                        onBack = ::back, onSend = { _, _, _, _ -> }, onStop = {}, onRespond = { _, _ -> },
+                        onRefresh = {}, onLoadModels = node.catalog::loadModels, onEarlier = {},
+                        readFile = { path -> node.api.call("/v1/files?path=" + encoded(path)) },
+                        pendingTitle = project.name, pendingReady = pendingReady, draftStore = node.conversations, pendingCwd = project.path,
+                        readDirectory = { path -> node.api.call("/v1/directories?path=" + encoded(path)) },
+                        uploadFile = { _, name, file -> node.api.uploadProjectFile(project.id, name, file) },
+                        defaultSettings = defaultSettings, onSaveDefaults = ::saveDefaults,
+                        modelCatalogNotice = catalog.modelsError ?: if (catalog.modelsStale) "模型目录暂未更新，当前使用最近可用选项" else null,
+                        onPersistDraft = { target, draft ->
+                            if (target == draftKey && !node.conversations.pendingCompleted(localId)) {
+                                if (pendingGeneration == generation) pendingDraft = draft
+                                node.persistDraft(draftKey, draft)
+                                node.conversations.pendingThreadId(localId)?.let { node.persistDraft(it, draft) }
+                            }
+                        },
+                        mediaApi = node.api,
+                        cachedFile = { path, progress -> node.api.cachedFile(context.cacheDir, path, progress) },
+                        pendingWorkspace = { PendingWorkspaceSelector(project,
+                            { node.api.call("/v1/projects/${encoded(project.id)}/git") },
+                            writable && createdThread == null, initialRef = pendingRef) { ref, ready ->
+                                if (createdThread == null) {
+                                    pendingRef = ref; pendingReady = ready
+                                    try { node.conversations.setPendingWorktreeRef(localId, ref) }
+                                    catch (e: Exception) { setError(e.message ?: "无法保存工作区选择") }
+                                } else pendingReady = true
+                            } },
+                        onConfiguredSend = sendPending@{ input, model, effort, mode, serviceTier, accepted ->
+                            if (node.conversations.pendingCompleted(localId)) {
+                                node.conversations.completedPendingThreadId(localId)?.let { openChat(it, "sessions") }
+                                return@sendPending
+                            }
+                            val draftForSubmission = pendingDraft
+                            val sendId = java.util.UUID.randomUUID().toString()
+                            val body = JSONObject().put("input", input)
+                            model?.let { body.put("model", it) }; effort?.let { body.put("effort", it) }; mode?.let { body.put("mode", it) }; serviceTier?.let { body.put("serviceTier", it) }
+                            fun clearPreviousCreate() {
+                                node.session.pendingMessagesFor(draftKey).filter { it.kind == "create" }.forEach { message ->
+                                    node.session.resolveSubmission(message.submissionId, JSONObject().put("status", "failed"))
+                                }
+                            }
+                            fun sendFirst(id: String) {
+                                node.submissions.submit("/v1/threads/${encoded(id)}/turns", body, "发送任务",
+                                    submissionId = sendId,
+                                    prepared = { pending ->
+                                        clearPreviousCreate()
+                                        node.session.beginSubmission(id, pending.id, input)
+                                    },
+                                    beforeSend = { pending ->
+                                        node.conversations.checkpointPendingSubmission(localId, pending.id, "send")
+                                        node.conversations.checkpointSentDraft(pending.id, id, draftForSubmission)
+                                        node.session.persistSubmission(pending.id)
+                                    }) { receipt ->
+                                    node.notifications.watch(id, requestPermission = true, turnId = receipt.string("turnId"))
+                                    accepted()
+                                    if (route == "new" && pendingGeneration == generation) openChat(id, "sessions")
+                                }
+                            }
+                            setError(null)
+                            val existing = createdThread ?: node.conversations.pendingThreadId(localId)
+                            if (existing != null) sendFirst(existing)
+                            else {
+                                val create = JSONObject().put("projectId", project.id)
+                                pendingRef?.let { create.put("worktreeRef", it) }
+                                node.submissions.submit("/v1/threads", create, "新建会话",
+                                    prepared = { pending ->
+                                        clearPreviousCreate()
+                                        node.session.beginSubmission(draftKey, pending.id, input, "create", sendId)
+                                    },
+                                    beforeSend = { pending ->
+                                        node.conversations.saveDraftOrdered(draftKey, node.conversations.captureDraft(draftKey))
+                                        node.conversations.checkpointPendingSubmission(localId, pending.id, "create")
+                                        node.session.persistSubmission(pending.id)
+                                    }) { receipt ->
+                                    val id = receipt.string("threadId")
+                                    if (id.isNotBlank()) {
+                                        // The submitted input stays frozen, but late attachment or
+                                        // draft updates belong to the new chat's next composer.
+                                        node.persistDraft(id, node.conversations.captureDraft(draftKey))
+                                        if (pendingGeneration == generation) createdThread = id
+                                        sendFirst(id)
+                                    }
+                                    else setError("创建结果缺少会话 ID，请返回会话列表核对")
+                                }
+                            }
+                        })
+                }
                 "chat" -> ChatScreen(session.takeIf { it.id == threadId } ?: SessionState(id = threadId, loading = true, stale = true), submission.busy, submission.pending != null, catalog.models, ::back,
-                    onSend = { _, _, _, _ -> }, onSendWithMode = { input, model, effort, mode, accepted ->
-                        val current = session.snapshot
+                    nodeName = node.connection.name, writerBusy = handoffLoading, onWriterAction = ::requestHandoff,
+                    defaultSettings = defaultSettings, onSaveDefaults = ::saveDefaults, onForwardLink = ::forwardLink, draftReloadKey = draftReloadKey,
+                    modelCatalogNotice = catalog.modelsError ?: if (catalog.modelsStale) "模型目录暂未更新，当前使用最近可用选项" else null,
+                    onSend = { _, _, _, _ -> }, onConfiguredSend = { input, model, effort, mode, serviceTier, accepted ->
+                        val currentState = node.session.state.value
+                        val current = currentState.snapshot
                         val id = threadId
-                        if (current != null && id != null && session.id == id && current.id == id) {
+                        if (current != null && id != null && currentState.id == id && current.id == id && !currentState.stale &&
+                            current.requests.isEmpty() && !(current.recoveryRequired && current.activeTurnId.isBlank()) && !current.readOnly && writable) {
                             val queued = current.readOnly || current.activeTurnId.isNotBlank() || current.requests.isNotEmpty() || current.queue.isNotEmpty()
                             val body = JSONObject().put("input", input)
                             if (queued) body.put("operation", "enqueue")
-                            model?.let { body.put("model", it) }; effort?.let { body.put("effort", it) }; mode?.let { body.put("mode", it) }
+                            model?.let { body.put("model", it) }; effort?.let { body.put("effort", it) }; mode?.let { body.put("mode", it) }; serviceTier?.let { body.put("serviceTier", it) }
                             setError(null)
-                            node.submissions.submit("/v1/threads/${encoded(id)}/" + if (queued) "queue" else "turns", body, if (queued) "加入队列" else "发送任务") { receipt ->
+                            val sentDraft = node.conversations.captureDraft(id)
+                            node.submissions.submit("/v1/threads/${encoded(id)}/" + if (queued) "queue" else "turns", body, if (queued) "加入队列" else "发送任务",
+                                prepared = { pending -> node.session.beginSubmission(id, pending.id, input, if (queued) "queue" else "turn") },
+                                beforeSend = { pending ->
+                                    node.conversations.checkpointSentDraft(pending.id, id, sentDraft)
+                                    node.session.persistSubmission(pending.id)
+                                }) { receipt ->
                                 node.notifications.watch(id, requestPermission = true, turnId = receipt.string("turnId"))
                                 if (threadId == id) { accepted(); node.session.refresh() }
                             }
                         }
+                    }, onSettingsChange = { settings ->
+                        val current = node.session.state.value
+                        val id = threadId
+                        if (id != null && current.id == id && current.snapshot?.id == id && !current.stale && current.snapshot?.readOnly == false && writable)
+                            node.submissions.submit("/v1/threads/${encoded(id)}/settings", settings, "更新模型设置") { if (threadId == id) node.session.refresh() }
                     }, onStop = {
                         session.snapshot?.takeIf { !it.readOnly && it.id == threadId && session.id == threadId }?.let { snapshot ->
                             node.submissions.submit("/v1/threads/${encoded(snapshot.id)}/interrupt", JSONObject().put("turnId", snapshot.activeTurnId), "停止任务") { node.session.refresh() }
@@ -182,6 +402,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     readDirectory = { path -> node.api.call("/v1/directories?path=" + encoded(path)) },
                     uploadFile = { id, name, file -> node.api.uploadFile(id, name, file) },
                     downloadFile = { path, output, progress -> node.api.downloadFile(path, output, progress) },
+                    mediaApi = node.api,
+                    cachedFile = { path, progress -> node.api.cachedFile(context.cacheDir, path, progress) },
                     draftStore = node.conversations, onPersistDraft = node::persistDraft, usage = catalog.usage, onFillHistory = node.session::ensureVisibleHistory,
                     readTool = { path -> node.api.call(path) }, submitTool = { path, body, accepted ->
                         val targetThreadId = threadId
@@ -211,7 +433,16 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             }
                     }, onQueue = { body, accepted ->
                         val id = threadId
-                        if (id != null && session.id == id) node.submissions.submit("/v1/threads/${encoded(id)}/queue", body, "更新执行队列") { accepted(); node.session.refresh() }
+                        val current = node.session.state.value
+                        if (id != null && current.id == id && !current.stale && writable) node.submissions.submit("/v1/threads/${encoded(id)}/queue", body, "更新执行队列",
+                            prepared = { pending ->
+                                if (body.string("operation") == "steer") current.snapshot?.queue?.firstOrNull { it.id == body.string("itemId") }?.let { task ->
+                                    task.raw.optJSONArray("input")?.let { input -> node.session.beginSubmission(id, pending.id, input, "guidance", task.id) }
+                                }
+                            }, beforeSend = { pending -> node.session.persistSubmission(pending.id) }) {
+                            accepted()
+                            if (route == "chat" && threadId == id) node.session.refresh()
+                        }
                     })
                 "todos" -> TodosScreen(todos, catalog.projects, projectsWritable, node.catalog::threadsFor,
                     node.todos::save, node.todos::toggle, node.todos::delete,
@@ -230,11 +461,65 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     readDirectory = { path -> node.api.call("/v1/directories?path=" + encoded(path)) }, onOpenAttachment = { todoAttachment = it })
             }
         }
+        val cached = (route == "projects" && !catalog.projectsFresh && catalog.projects.isNotEmpty()) ||
+            (route == "sessions" && !catalog.threadsFresh && catalog.threads.isNotEmpty())
+        if (displayError != null || (submission.pending != null && !submission.busy) || submission.notice != null || cached) {
+            Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).testTag("bottom_notice_panel"),
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp), tonalElevation = 3.dp, shadowElevation = 4.dp,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                Column(Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) {
+                    displayError?.let { message ->
+                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, modifier = Modifier.testTag("app_error")) {
+                            Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                            TextButton(onClick = retryConnection, modifier = Modifier.testTag("retry_connection")) { Text("重连") }
+                            TextButton(onClick = { if (error != null) setError(null) else node.session.dismissReadError() }) { Text("关闭") }
+                        }
+                    }
+                    submission.pending?.takeIf { !submission.busy }?.let { pending ->
+                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                            Text("结果确认中，不会重复发送", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                            TextButton(onClick = { endingPending = pending }, enabled = !submission.busy, modifier = Modifier.testTag("finish_reconciliation")) { Text("关闭") }
+                        }
+                    }
+                    if (submission.pending == null) submission.notice?.let { notice ->
+                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                            Text(notice, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                            TextButton(onClick = node.submissions::clearNotice) { Text("关闭") }
+                        }
+                    }
+                    if (cached) Text("当前显示离线内容", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("catalog_cached_notice"))
+                }
+            }
+        }
         if (route == "projects" || route == "todos") NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
             NavigationBarItem(selected = route != "todos", onClick = { route = "projects"; setError(null); node.catalog.refreshProjects() },
                 icon = { Text("⌘") }, label = { Text("Codex") }, modifier = Modifier.testTag("nav_codex"))
             NavigationBarItem(selected = route == "todos", onClick = { route = "todos"; setError(null); node.todos.refresh(); node.catalog.refreshProjects() },
                 icon = { Text("✓") }, label = { Text("待办") }, modifier = Modifier.testTag("nav_todos"))
+        }
+    }
+    handoffPrompt?.let { (id, operation, preview) ->
+        ModalBottomSheet(onDismissRequest = { handoffPrompt = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp).navigationBarsPadding()) {
+                val rebound = preview.optJSONObject("workspaceRebind")
+                Text(if (rebound != null) "确认接管与工作区恢复" else "将中断同进程的其他会话", style = MaterialTheme.typography.titleLarge)
+                Text("节点：${node.connection.name}", style = MaterialTheme.typography.bodyMedium)
+                if (rebound != null) Text("原工作树已不存在，将改用 ${rebound.string("path")} 目录。原路径：${rebound.string("missingPath")}",
+                    modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.error)
+                Text("继续会结束列出的持锁进程及其子进程，停止这些会话的运行任务；不会自动重发。", modifier = Modifier.padding(vertical = 12.dp))
+                Column(Modifier.heightIn(max = 280.dp).verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                    val affected = preview.getJSONArray("affectedThreads")
+                    for (i in 0 until affected.length()) {
+                        val item = affected.getJSONObject(i)
+                        Text("• " + item.getString("title") + "\n" + item.getString("id"), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 10.dp))
+                    }
+                }
+                Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = { handoffPrompt = null }) { Text("取消") }
+                    TextButton(onClick = { handoffPrompt = null; executeHandoff(id, operation, preview, true) },
+                        modifier = Modifier.testTag("confirm_shared_handoff")) { Text(if (operation == "takeover") "结束进程并接管" else "结束进程并释放") }
+                }
+            }
         }
     }
     endingPending?.let { pending -> AlertDialog(onDismissRequest = { endingPending = null }, title = { Text("结束核对？") },
@@ -244,26 +529,15 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
         } }, confirmButton = { TextButton(onClick = { node.submissions.finishReconciliation(pending.id); endingPending = null }, enabled = !submission.busy && submission.pending?.id == pending.id,
             modifier = Modifier.testTag("confirm_finish_reconciliation")) { Text("结束手机等待") } }, dismissButton = { TextButton(onClick = { endingPending = null }) { Text("继续核对") } }) }
     if (connectionOpen) AlertDialog(onDismissRequest = { connectionOpen = false }, title = { Text(node.connection.name) },
-        text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { Text(node.connection.base); Text("连接凭据已加密保存在此设备。移除本机登录后，可重新扫码连接。", style = MaterialTheme.typography.bodySmall) } },
-        confirmButton = { TextButton(onClick = { connectionOpen = false }) { Text("完成") } }, dismissButton = { TextButton(onClick = disconnect) { Text("切换节点") } })
+        text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { Text(node.connection.base); Text("Rivo Relay ${BuildConfig.VERSION_NAME}"); Text("连接凭据已加密保存在此设备。可通过项目页顶部菜单切换节点。", style = MaterialTheme.typography.bodySmall) } },
+        confirmButton = { TextButton(onClick = { connectionOpen = false }) { Text("完成") } })
     todoAttachment?.let { path -> dev.rivo.relay.ui.chat.FilePreviewDialog(path,
         { p -> node.api.call("/v1/files?path=" + encoded(p)) }, { p, output, progress -> node.api.downloadFile(p, output, progress) }) { todoAttachment = null } }
     if (addProject) ProjectDirectoryDialog(
         readDirectory = { path -> node.api.call("/v1/project-directories?path=" + encoded(path)) }, writable = projectsWritable,
         submissionError = error ?: submission.notice, nodeName = node.connection.name, busy = submission.busy,
         onDismiss = { addProject = false }, onAdd = { path, folderName ->
-            val body = JSONObject().put("path", path); folderName?.let { body.put("folderName", it) }
+            val body = JSONObject().put("path", path).put("trustConfirmed", true); folderName?.let { body.put("folderName", it) }
             if (node.catalog.state.value.projectsFresh) node.submissions.submit("/v1/projects", body, "添加项目") { addProject = false; node.catalog.refreshProjects() }
         })
-    if (newConversation) catalog.selectedProject?.let { project ->
-        NewConversationDialog(project, { node.api.call("/v1/projects/${encoded(project.id)}/git") }, threadsWritable,
-            submissionError = error ?: submission.notice, busy = submission.busy,
-            onCreate = { ref ->
-                val body = JSONObject().put("projectId", project.id); ref?.let { body.put("worktreeRef", it) }
-                if (node.catalog.state.value.threadsFresh) node.submissions.submit("/v1/threads", body, "新建会话") { receipt ->
-                    newConversation = false
-                    val id = receipt.string("threadId"); if (id.isNotBlank()) openChat(id, "sessions") else node.catalog.refreshThreads()
-                }
-            }, onDismiss = { newConversation = false })
-    }
 }

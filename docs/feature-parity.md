@@ -1,8 +1,10 @@
 # Relay 与 QiGuang Codex 功能补齐记录
 
-本次以 QiGuang-Next 的 Codex 模块为功能参照，扩展 Relay 现有 Android 客户端和 Python 节点接口。QiGuang Manager、通用助手、媒体生成、NAS 与设备管理不属于比较范围。功能取舍以 Relay 自身的认证、原生 Codex 协议和节点权限边界为准。
+2026-11-07 已按本地最新发布快照 `1642fc8` 再次迁移 Codex 主链路、设置、队列恢复、历史边界和界面交互。当前实现及明确保留差异以 [本次完整对照](qiguang-codex-sync.md) 为准；下方 0.2.1 等条目保留当时记录，不代表本次迁移后的全部状态。
 
-允许扩展现有 Relay API；不新增 ASR、TTS、模型服务或额外部署服务。语音输入明确排除。本文记录代码行为与验证边界，部署及设备验收结果以[验证记录](validation.md)为准。
+本次以 QiGuang-Next 的 Codex 模块为功能参照，扩展 Relay 现有 Android 客户端和 Python 节点接口。QiGuang Manager、通用助手、独立媒体生成服务、NAS 与设备管理不属于比较范围；原生 Codex 图片生成结果的展示、溯源与媒体副本管理已纳入。功能取舍以 Relay 自身的认证、原生 Codex 协议和节点权限边界为准。
+
+当前范围允许扩展 Relay API，并接入可选现有 ASR 服务；不自动部署模型、TTS或Manager。2026-11-07 后续迁移的完整状态以 [Codex 对照记录](qiguang-codex-sync.md) 为准，下方早期版本记录保留历史语境。本文记录代码行为与验证边界，部署及设备验收结果以[验证记录](validation.md)为准。
 
 ## 已实现的入口与行为
 

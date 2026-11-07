@@ -1,4 +1,4 @@
-"""Connect to an existing Codex daemon; never spawn or restart a runtime.
+"""Connect to an existing Codex daemon. Process handoff is handled separately.
 
 The request/notification separation follows QiGuang's app-server transport.
 The Unix WebSocket protocol is verified against Codex 0.159.x. A connection
@@ -13,6 +13,8 @@ import threading
 import uuid
 from pathlib import Path
 from typing import Callable, Optional
+
+from .notifications import NotificationQueue
 
 
 class CodexError(RuntimeError):
@@ -40,7 +42,7 @@ class NativeConnection:
         self._counter = 0
         self._socket = None
         self._ready = False
-        self._events = queue.Queue(maxsize=1024)
+        self._events = NotificationQueue(maxsize=1024)
         self._dispatch_stop = threading.Event()
         self._readers = set()
         self._closed = False
@@ -99,6 +101,10 @@ class NativeConnection:
                     "platform": self._info.get("platformOs"),
                     "version": self._info.get("userAgent"), "error": self._last_error}
 
+    def native_host_info(self):
+        from .host_probe import native_host_info
+        return native_host_info(self)
+
     def request(self, method, params=None, *, timeout=None):
         reply = queue.Queue(maxsize=1)
         with self._lock:
@@ -110,6 +116,9 @@ class NativeConnection:
             self._pending[request_id] = reply
             try:
                 sock.send(json.dumps({"id": request_id, "method": method, "params": params or {}}))
+            except CodexError:
+                self._pending.pop(request_id, None)
+                raise
             except Exception as error:
                 self._pending.pop(request_id, None)
                 raise CodexError("Codex 请求发送中断，需核对结果", request_sent=True) from error
@@ -129,9 +138,10 @@ class NativeConnection:
                 error.get("code") == -32600 and
                 message.startswith(f"Invalid request: unknown variant `{method}`"))
             missing = "thread not found" in message.lower() or "thread does not exist" in message.lower()
+            request_sent = error.get('requestSent', getattr(self, '_error_request_sent', False))
             raise CodexError(message, code="native_method_unsupported" if unsupported else "native_rejected",
                              http_status=501 if unsupported else (404 if missing else 409),
-                             request_sent=False, native_code=error.get("code"))
+                             request_sent=request_sent is not False, native_code=error.get("code"))
         return response.get("result") or {}
 
     def notify(self, method, params=None):

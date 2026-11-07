@@ -1,0 +1,119 @@
+{
+  "version": 2,
+  "cases": [
+    {
+      "name": "clip.mp4",
+      "mime_type": "video/mp4",
+      "candidate": true,
+      "accepted_attachment": true,
+      "header_hex": "000000186674797069736f6d",
+      "container": "mp4",
+      "normalized_mime_type": "video/mp4"
+    },
+    {
+      "name": "clip.m4v",
+      "mime_type": "application/octet-stream",
+      "candidate": true,
+      "accepted_attachment": true,
+      "header_hex": "00000018667479706d703432",
+      "container": "mp4",
+      "normalized_mime_type": "video/mp4"
+    },
+    {
+      "name": "clip.mov",
+      "mime_type": "video/quicktime",
+      "candidate": true,
+      "accepted_attachment": true,
+      "header_hex": "000000186674797071742020",
+      "container": "quicktime",
+      "normalized_mime_type": "video/quicktime"
+    },
+    {
+      "name": "clip.3GP",
+      "mime_type": "application/octet-stream",
+      "candidate": true,
+      "accepted_attachment": true,
+      "header_hex": "000000186674797033677036",
+      "container": "3gpp",
+      "normalized_mime_type": "video/3gpp"
+    },
+    {
+      "name": "clip.webm",
+      "mime_type": "video/webm",
+      "candidate": true,
+      "accepted_attachment": true,
+      "header_hex": "1a45dfa30000000000000000",
+      "container": "webm",
+      "normalized_mime_type": "video/webm"
+    },
+    {
+      "name": "clip.mkv",
+      "mime_type": "video/x-matroska",
+      "candidate": true,
+      "accepted_attachment": true,
+      "header_hex": "1a45dfa30000000000000000",
+      "container": "matroska",
+      "normalized_mime_type": "video/x-matroska"
+    },
+    {
+      "name": "clip.ts",
+      "mime_type": "video/mp2t",
+      "candidate": true,
+      "accepted_attachment": true
+    },
+    {
+      "name": "clip.M2TS",
+      "mime_type": "application/octet-stream",
+      "candidate": true,
+      "accepted_attachment": true
+    },
+    {
+      "name": "clip.mpeg",
+      "mime_type": "video/mpeg",
+      "candidate": true,
+      "accepted_attachment": true,
+      "header_hex": "000001ba44000400040189c3f8",
+      "container": "mpegps",
+      "normalized_mime_type": "video/mpeg"
+    },
+    {
+      "name": "clip.vob",
+      "mime_type": "application/octet-stream",
+      "candidate": true,
+      "accepted_attachment": true,
+      "header_hex": "000001ba44000400040189c3f8",
+      "container": "mpegps",
+      "normalized_mime_type": "video/mpeg"
+    },
+    {
+      "name": "clip.flv",
+      "mime_type": "video/x-flv",
+      "candidate": true,
+      "accepted_attachment": true,
+      "header_hex": "464c56010500000009",
+      "container": "flv",
+      "normalized_mime_type": "video/x-flv"
+    },
+    {
+      "name": "clip.avi",
+      "mime_type": "video/x-msvideo",
+      "candidate": true,
+      "accepted_attachment": true,
+      "header_hex": "524946460000000041564920",
+      "container": "avi",
+      "normalized_mime_type": "video/x-msvideo"
+    },
+    {
+      "name": "clip.wmv",
+      "mime_type": "video/x-ms-wmv",
+      "candidate": true,
+      "accepted_attachment": false
+    },
+    {
+      "name": "notes.txt",
+      "mime_type": "text/plain",
+      "candidate": false,
+      "accepted_attachment": false
+    }
+  ]
+}

@@ -12,7 +12,7 @@ object PairingParser {
         val uri = try { URI(addressOrLink.trim()) } catch (_: Exception) { throw IllegalArgumentException("请输入有效的节点地址或配对链接") }
         require(uri.host != null && uri.userInfo == null && uri.query == null) { "节点地址格式无效" }
         val local = uri.host.lowercase() in setOf("localhost", "127.0.0.1", "10.0.2.2", "::1", "[::1]")
-        require(uri.scheme == "https" || (allowLocalHttp && local && uri.scheme == "http")) { "请使用 HTTPS 节点地址" }
+        require(uri.scheme == "https" || (uri.scheme == "http" && ((allowLocalHttp && local) || uri.host == NodeEndpoints.TAILNET_IP))) { "请使用 HTTPS 或已配置的 Tailscale IP 节点地址" }
         val fragmentParts = uri.rawFragment?.split('&').orEmpty()
         val version = fragmentParts.firstOrNull { it.startsWith("v=") }?.substringAfter('=')
         if (fragmentParts.any { it.startsWith("code=") }) require(version == "1") { "不支持此配对链接版本，请重新生成二维码" }

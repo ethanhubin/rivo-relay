@@ -14,6 +14,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.key
+import dev.hossain.highlight.engine.HighlightLanguage
+import dev.hossain.highlight.ui.HighlightThemeProvider
+import dev.hossain.highlight.ui.SyntaxHighlightedCode
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -40,7 +43,14 @@ internal fun SourceCodePreview(text: String, path: String, modifier: Modifier = 
             onClick = { clipboard.setText(AnnotatedString(text)) },
             modifier = Modifier.align(Alignment.End).testTag("source_copy"),
         ) { Text("复制代码") }
-        SelectionContainer(Modifier.weight(1f)) {
+        if (initialLine == null) {
+            HighlightThemeProvider {
+                SyntaxHighlightedCode(code = text.take(200_000),
+                    language = HighlightLanguage.fromExtension(path.substringAfterLast('.', "").lowercase()) ?: "plaintext",
+                    modifier = Modifier.weight(1f).fillMaxWidth().testTag("syntax_highlighted_code"), showLineNumbers = true)
+            }
+            if (text.length > 200_000) Text("预览已截断，保存文件可查看全部内容。")
+        } else SelectionContainer(Modifier.weight(1f)) {
             LazyColumn(Modifier.fillMaxSize().horizontalScroll(horizontal), state = listState) {
                 itemsIndexed(lines) { index, line ->
                     val styled = remember(line, colors) {
@@ -108,6 +118,7 @@ internal fun fileMimeType(path: String, declared: String = ""): String {
     val extension = path.substringBefore('?').substringBefore('#').substringAfterLast('.', "").lowercase()
     if (extension in setOf("md", "mdx", "markdown")) return "text/markdown"
     if (declared.isNotBlank() && !declared.substringBefore(';').trim().equals("application/octet-stream", true)) return declared
+    if (extension != "ts" && extension in dev.rivo.relay.data.VideoFormatPolicy.acceptedExtensions) dev.rivo.relay.data.VideoFormatPolicy.playbackMimeType(path, null)?.let { return it }
     return when (extension) {
         "md", "mdx", "markdown" -> "text/markdown"
         "kt", "kts", "java", "py", "js", "jsx", "ts", "tsx", "swift", "rs", "go", "c", "h", "cpp", "hpp", "cc", "cs", "rb", "php", "lua", "r", "dart", "vue", "svelte", "css", "scss", "less", "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd", "toml", "yaml", "yml", "log", "txt", "ini", "conf", "cfg", "sql", "diff", "patch", "srt", "vtt", "gradle", "properties", "env", "gitignore" -> "text/plain"

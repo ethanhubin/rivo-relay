@@ -1,5 +1,6 @@
 """Native parity behavior: mode permissions, observations and ordered reviews."""
 import copy
+import json
 import unittest
 
 from rivo_relay.codex.connection import CodexError
@@ -16,6 +17,7 @@ class ParityNative(FakeNative):
         self.sandbox = {'type': 'workspaceWrite', 'writableRoots': ['/workspace'], 'networkAccess': False,
                         'excludeTmpdirEnvVar': True, 'excludeSlashTmp': True}
         self.fail = None
+        self.thread['cwd'] = '/workspace'
 
     def request(self, method, params, **kwargs):
         result = super().request(method, params, **kwargs)
@@ -26,6 +28,8 @@ class ParityNative(FakeNative):
             raise self.fail
         if method == 'review/start':
             return {'turn': {'id': 'review-turn'}}
+        if method == 'command/exec':
+            return {'exitCode': 0, 'stdout': json.dumps({'head': 'a', 'index': 'b', 'worktree': 'c', 'status': 'd'})}
         if method == 'account/rateLimits/read':
             return {'rateLimits': {'primary': {'usedPercent': 25}}, 'accountId': 'private-id'}
         return result
@@ -160,6 +164,22 @@ class NativeParityTests(unittest.TestCase):
         self.assertEqual('review-turn', queue.list('thread')[0]['turnId'])
         self.assertEqual(1, len([m for m, _ in self.native.calls if m == 'review/start']))
         self.assertEqual([], self.turns())
+
+    def test_review_completion_exposes_diagnostic_without_mutating_native_message(self):
+        self.service.review('thread', {'type': 'uncommittedChanges'})
+        original = self.native.request
+        def request(method, params, **kwargs):
+            if method == 'thread/turns/list':
+                return {'data': [{'id': 'review-turn', 'status': 'completed', 'items': [
+                    {'id': 'final', 'type': 'agentMessage', 'text': 'Native review result'}]}], 'nextCursor': None}
+            if method == 'command/exec':
+                return {'exitCode': 0, 'stdout': json.dumps({'head': 'a', 'index': 'changed', 'worktree': 'c', 'status': 'd'})}
+            return original(method, params, **kwargs)
+        self.native.request = request
+        snapshot = self.service.get_session('thread')
+        self.assertTrue(snapshot['reviewDiagnostics'][0]['readOnlyViolation'])
+        self.assertEqual('review-turn', snapshot['reviewDiagnostics'][0]['turnId'])
+        self.assertEqual('Native review result', snapshot['thread']['turns'][0]['items'][0]['text'])
 
 
 if __name__ == '__main__':

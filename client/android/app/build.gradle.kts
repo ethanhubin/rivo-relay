@@ -6,8 +6,8 @@ android {
         applicationId = "dev.rivo.relay"
         minSdk = 26
         targetSdk = 36
-        versionCode = 13
-        versionName = "0.2.1"
+        versionCode = 22
+        versionName = "0.2.10"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
@@ -27,6 +27,11 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("io.coil-kt:coil-video:2.7.0")
+    implementation("androidx.media3:media3-exoplayer:1.11.0")
+    implementation("androidx.media3:media3-ui:1.11.0")
+    implementation("dev.hossain:compose-highlight:0.34.0")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation("com.google.zxing:core:3.5.3")
     testImplementation("junit:junit:4.13.2")

@@ -32,6 +32,9 @@ def parser():
             sub.add_argument("--key", type=Path)
             sub.add_argument("--native-socket", type=Path)
             sub.add_argument("--codex-home", type=Path, default=Path.home() / ".codex")
+            sub.add_argument('--codex-runtime', choices=('auto', 'desktop', 'app_server'),
+                             default=os.environ.get('RIVO_CODEX_RUNTIME', 'auto'))
+            sub.add_argument('--desktop-bridge-dir', type=Path)
         if name == "pair":
             sub.add_argument("--url", required=True)
             sub.add_argument("--ttl", type=int, default=300)
@@ -51,7 +54,9 @@ def main(argv=None):
         port=getattr(args, "port", 8765), name=getattr(args, "name", "Rivo Relay"),
         public_url=getattr(args, "url", "http://10.0.2.2:8765"),
         cert=getattr(args, "cert", None), key=getattr(args, "key", None),
-        codex_home=getattr(args, "codex_home", Path.home() / ".codex"))
+        codex_home=getattr(args, "codex_home", Path.home() / ".codex"),
+        codex_runtime=getattr(args, 'codex_runtime', 'auto'),
+        desktop_bridge_dir=getattr(args, 'desktop_bridge_dir', None))
     try:
         config.prepare()
         if args.command == "serve":
@@ -110,7 +115,8 @@ def serve(config: Config, native_socket: Path | None):
         except BlockingIOError:
             raise ValueError("A Relay service already owns this workspace")
         bus = EventBus()
-        native = CodexService(socket_path=native_socket, codex_home=config.codex_home, on_event=bus.publish)
+        native = CodexService(socket_path=native_socket, codex_home=config.codex_home, on_event=bus.publish,
+                              runtime_mode=config.codex_runtime, desktop_bridge_dir=config.desktop_bridge_dir)
         app = RelayApp(config, native, bus)
         server = None
         try:

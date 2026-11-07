@@ -46,7 +46,7 @@ fun nativeActivity(item: JSONObject): NativeActivity? {
     }
     val status = when (item.string("status").replace("_", "").lowercase()) {
         "inprogress", "running", "started", "pending" -> "running"
-        "failed", "error", "declined", "interrupted" -> "failed"
+        "failed", "error", "declined", "interrupted", "canceled", "cancelled" -> "failed"
         else -> "completed"
     }
     return NativeActivity(kind, title, summary, detail, status, paths,
@@ -76,7 +76,7 @@ sealed interface NativeTimelineRow {
 }
 
 /** Same-turn adjacent activity runs collapse together; user/final/process messages keep their positions. */
-fun nativeTimelineRows(messages: List<NativeMessage>): List<NativeTimelineRow> {
+fun nativeTimelineRows(messages: List<NativeMessage>, activeTurnId: String? = null): List<NativeTimelineRow> {
     val rows = mutableListOf<NativeTimelineRow>()
     val pending = mutableListOf<NativeMessage>()
     fun flush() { if (pending.isNotEmpty()) { rows += NativeTimelineRow.Activities(pending.toList()); pending.clear() } }
@@ -86,7 +86,25 @@ fun nativeTimelineRows(messages: List<NativeMessage>): List<NativeTimelineRow> {
             pending += message
         } else { flush(); rows += NativeTimelineRow.Message(message) }
     }
-    flush(); return rows
+    flush()
+    // QiGuang keeps older execution segments collapsed. The latest segment in each
+    // turn exposes each tool, grouping only adjacent commands so file/web details
+    // remain directly reachable instead of disappearing inside one summary.
+    val lastByTurn = rows.withIndex().filter { it.value is NativeTimelineRow.Activities }
+        .associate { it.value.let { row -> (row as NativeTimelineRow.Activities).messages.first().turnId } to it.index }
+    return rows.flatMapIndexed { index, row ->
+        if (row !is NativeTimelineRow.Activities || row.messages.first().turnId != activeTurnId ||
+            lastByTurn[row.messages.first().turnId] != index) listOf(row)
+        else {
+            val groups = mutableListOf<MutableList<NativeMessage>>()
+            row.messages.forEach { message ->
+                val current = groups.lastOrNull()
+                if (message.activity?.kind == "command" && current?.all { it.activity?.kind == "command" } == true) current += message
+                else groups += mutableListOf(message)
+            }
+            groups.map { NativeTimelineRow.Activities(it.toList()) }
+        }
+    }
 }
 
 fun nativeActivityGroupLabel(messages: List<NativeMessage>): String {

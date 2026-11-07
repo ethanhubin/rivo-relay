@@ -5,12 +5,25 @@ import dev.rivo.relay.data.RelayApi
 import dev.rivo.relay.data.string
 import org.json.JSONObject
 
-class NodeConnection(val base: String, val name: String, val nodeId: String, val deviceId: String, private val token: String) {
-    fun api() = RelayApi(base, token)
-    fun serialized() = JSONObject().put("base", base).put("name", name).put("nodeId", nodeId).put("deviceId", deviceId).put("token", token).toString()
+class NodeConnection(val base: String, val name: String, val nodeId: String, val deviceId: String, private val token: String, val storageBase: String = base) {
+    fun api(dns: okhttp3.Dns = dev.rivo.relay.data.TailnetDns()) = RelayApi(base, token, dns)
+    fun serialized() = JSONObject().put("base", base).put("name", name).put("nodeId", nodeId).put("deviceId", deviceId).put("token", token).put("storageBase", storageBase).toString()
 }
 data class SavedNode(val base: String, val name: String, val authorized: Boolean)
 class PairingRepository(private val credentials: CredentialStore) {
+    init {
+        for (key in listOf("connection", "nodes")) {
+            credentials.read(key)?.let { raw ->
+                val migrated = NodeEndpoints.migrateStored(raw, key == "nodes")
+                if (migrated != raw) credentials.save(key, migrated)
+            }
+        }
+    }
+    init {
+        val old = credentials.read("nodes") ?: "[]"
+        val provisioned = NodeEndpoints.provisionedNodes(old, credentials.read("connection"))
+        if (provisioned != old) credentials.save("nodes", provisioned)
+    }
     private fun records() = runCatching { org.json.JSONArray(credentials.read("nodes") ?: "[]") }.getOrDefault(org.json.JSONArray())
     private fun remember(base: String, connection: NodeConnection? = null) {
         val old = records()
@@ -27,7 +40,7 @@ class PairingRepository(private val credentials: CredentialStore) {
     }
     fun select(base: String): NodeConnection? {
         val all = records()
-        val item = (0 until all.length()).map { all.getJSONObject(it) }.firstOrNull { it.string("base") == base && it.string("token").isNotBlank() } ?: return null
+        val item = (0 until all.length()).map { all.getJSONObject(it) }.firstOrNull { it.string("base") == (if (base.trimEnd('/') == NodeEndpoints.LEGACY) NodeEndpoints.DIRECT else base) && it.string("token").isNotBlank() } ?: return null
         credentials.save("connection", item.toString())
         return restore()
     }
@@ -39,7 +52,7 @@ class PairingRepository(private val credentials: CredentialStore) {
         forget()
     }
     fun restore(): NodeConnection? = credentials.read("connection")?.let { value -> runCatching {
-        val j = JSONObject(value); NodeConnection(j.getString("base"), j.getString("name"), j.string("nodeId"), j.string("deviceId"), j.getString("token"))
+        val j = JSONObject(value); NodeConnection(j.getString("base"), j.getString("name"), j.string("nodeId"), j.string("deviceId"), j.getString("token"), j.optString("storageBase", j.getString("base")))
     }.getOrElse { credentials.remove("connection"); null } }
     suspend fun pair(input: String, code: String): NodeConnection {
         val address = PairingParser.parse(input, code.ifBlank { "address-only" }, BuildConfig.DEBUG).baseUrl
@@ -47,7 +60,7 @@ class PairingRepository(private val credentials: CredentialStore) {
         val pairing = PairingParser.parse(input, code, BuildConfig.DEBUG)
         val j = RelayApi(pairing.baseUrl).call("/v1/pair", "POST", JSONObject().put("code", pairing.code).put("deviceName", "Android · Rivo Relay"))
         val node = j.getJSONObject("node")
-        val connection = NodeConnection(pairing.baseUrl, node.string("name"), node.string("id"), j.string("deviceId"), j.getString("token"))
+        val connection = NodeConnection(pairing.baseUrl, node.string("name"), node.string("id"), j.string("deviceId"), j.getString("token"), pairing.baseUrl)
         remember(connection.base, connection)
         credentials.save("connection", connection.serialized())
         return connection

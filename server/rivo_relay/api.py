@@ -3,12 +3,16 @@ from __future__ import annotations
 import base64
 import secrets
 import json
+import os
 import time
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, unquote, urlsplit, quote
 
 from .app import public_submission, public_todo
 from .codex.files import MAX_TRANSFER_BYTES, native_path
+from .codex.native_download import byte_range
+from .speech import MAX_SPEECH_BYTES, MAX_CHUNK_BYTES
+from .media import MediaError
 
 
 class ApiError(Exception):
@@ -30,6 +34,8 @@ def native_input(body: dict) -> list[dict] | None:
         return None
     if not isinstance(items, list) or not 1 <= len(items) <= 64:
         raise ApiError(400, "invalid_input", "input must contain 1–64 native items")
+    if sum(isinstance(item, dict) and item.get('type') in ('image', 'localImage') for item in items) > 10:
+        raise ApiError(400, 'invalid_input', '最多添加 10 张图片')
     for item in items:
         if not isinstance(item, dict):
             raise ApiError(400, "invalid_input", "Invalid native input item")
@@ -39,6 +45,12 @@ def native_input(body: dict) -> list[dict] | None:
         elif kind == "image":
             if not (isinstance(item.get("url"), str) and item["url"] or isinstance(item.get("fileId"), str) and item["fileId"]):
                 raise ApiError(400, "invalid_input", "Image needs a URL or native file ID")
+            if isinstance(item.get('url'), str):
+                limit = ((20 * 1024 * 1024 + 2) // 3) * 4 + 64 if item['url'].startswith('data:') else 8192
+                if len(item['url']) > limit:
+                    raise ApiError(413, 'image_too_large', '图片数据或地址超过大小限制')
+            if isinstance(item.get('fileId'), str) and len(item['fileId']) > 512:
+                raise ApiError(400, 'invalid_input', 'Image file ID is too long')
         elif kind in {"localImage", "mention", "skill"}:
             required(item, "path", 4096)
             if kind != "localImage":
@@ -78,10 +90,28 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(429, "transfer_busy", "文件传输繁忙，请稍后重试")
         try:
             self.connection.settimeout(120)
-            size, chunks = self.app.codex.stream_download(path)
-            self.send_response(200)
+            try:
+                download = self.app.codex.prepare_download(path, self.headers.get('Range'), self.headers.get('If-Range'))
+            except Exception as error:
+                if getattr(error, 'http_status', None) != 416 or not hasattr(error, 'range_size'):
+                    raise
+                self.send_response(416)
+                self.send_header('Content-Range', 'bytes */' + str(error.range_size))
+                self.send_header('ETag', error.range_etag)
+                self.send_header('Accept-Ranges', 'bytes')
+                self.send_header('Content-Length', '0')
+                self.send_header('Connection', 'close')
+                self.end_headers()
+                self.close_connection = True
+                return
+            size, start, end = download['size'], download['start'], download['end']
+            self.send_response(206 if download['partial'] else 200)
             self.send_header("Content-Type", "application/octet-stream")
-            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Length", str(max(0, end - start + 1)))
+            self.send_header('Accept-Ranges', 'bytes')
+            self.send_header('ETag', download['etag'])
+            if download['partial']:
+                self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
             name = path.replace("\\", "/").rsplit("/", 1)[-1]
             self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(name, safe=""))
             self.send_header("Cache-Control", "no-store")
@@ -90,12 +120,12 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self._file_started = True
             self.close_connection = True
-            for data in chunks:
+            for data in download['chunks']:
                 self.wfile.write(data)
         finally:
             self.app.file_transfer_slots.release()
 
-    def receive_file(self, thread_id, query):
+    def receive_file(self, target_id, query, *, project=False):
         if self.headers.get("Transfer-Encoding"):
             raise ApiError(400, "invalid_request", "不支持无长度上传")
         lengths = self.headers.get_all("Content-Length", [])
@@ -112,11 +142,57 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(429, "transfer_busy", "文件传输繁忙，请稍后重试")
         try:
             self.connection.settimeout(120)
-            return self.app.codex.upload_attachment_stream(thread_id, name, self.rfile, size)
+            upload = self.app.codex.upload_project_attachment_stream if project else self.app.codex.upload_attachment_stream
+            return upload(target_id, name, self.rfile, size)
         finally:
             self.app.file_transfer_slots.release()
 
-    def read_body(self) -> dict:
+    def read_bounded(self, limit):
+        lengths = self.headers.get_all('Content-Length', [])
+        if self.headers.get('Transfer-Encoding') or len(lengths) != 1:
+            raise ApiError(411, 'invalid_request', '需要明确的请求长度')
+        try: length = int(lengths[0])
+        except ValueError: raise ApiError(400, 'invalid_request', '请求长度无效')
+        if not 0 < length <= limit: raise ApiError(413, 'request_too_large', '请求超过大小限制')
+        raw = self.rfile.read(length)
+        if len(raw) != length: raise ApiError(400, 'invalid_request', '请求不完整')
+        return raw
+
+    def send_media(self, value):
+        stream, mime, etag = value
+        with stream:
+            size = os.fstat(stream.fileno()).st_size
+            effective_range = self.headers.get('Range') if self.headers.get('If-Range') in (None, etag) else None
+            try: start, end, partial = byte_range(effective_range, size)
+            except Exception as error:
+                if getattr(error, 'http_status', None) != 416: raise
+                self.send_response(416)
+                self.send_header('Content-Range', f'bytes */{size}')
+                self.send_header('ETag', etag)
+                self.send_header('Accept-Ranges', 'bytes')
+                self.send_header('Content-Length', '0')
+                self.send_header('Connection', 'close'); self.end_headers(); self.close_connection = True
+                return
+            if not effective_range and self.headers.get('If-None-Match') == etag:
+                self.send_response(304); self.send_header('ETag', etag)
+                self.send_header('Content-Length', '0'); self.send_header('Connection', 'close')
+                self.end_headers(); self.close_connection = True; return
+            self.send_response(206 if partial else 200)
+            self.send_header('Content-Type', mime)
+            self.send_header('Content-Length', str(max(0, end - start + 1)))
+            self.send_header('ETag', etag); self.send_header('Accept-Ranges', 'bytes')
+            if partial: self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+            self.send_header('Cache-Control', 'private, no-cache')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.send_header('Connection', 'close'); self.end_headers()
+            self._file_started = True; self.close_connection = True
+            stream.seek(start); remaining = max(0, end - start + 1)
+            while remaining:
+                block = stream.read(min(65536, remaining))
+                if not block: raise OSError('media representation truncated')
+                self.wfile.write(block); remaining -= len(block)
+
+    def read_body(self, limit=64 * 1024 * 1024) -> dict:
         if self.headers.get("Transfer-Encoding"):
             raise ApiError(400, "invalid_request", "Chunked requests are not supported")
         lengths = self.headers.get_all("Content-Length", [])
@@ -126,8 +202,8 @@ class Handler(BaseHTTPRequestHandler):
             length = int(lengths[0])
         except ValueError:
             raise ApiError(400, "invalid_request", "Invalid Content-Length")
-        if not 0 < length <= 8 * 1024 * 1024:
-            raise ApiError(413, "request_too_large", "Request must be at most 8 MiB")
+        if not 0 < length <= limit:
+            raise ApiError(413, "request_too_large", "Request exceeds the size limit")
         if self.headers.get_content_type() != "application/json":
             raise ApiError(415, "invalid_request", "JSON required")
         raw = self.rfile.read(length)
@@ -176,7 +252,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {"status": "ok"})
                 return
             if path == ["v1", "pair"] and self.command == "POST":
-                body = self.read_body()
+                body = self.read_body(limit=4096)
                 result = self.app.pairing.exchange(required(body, "code", 512),
                     required(body, "deviceName", 100), client_key=self.client_address[0])
                 self.send_json(200, {"token": result["token"], "deviceId": result["connection_id"],
@@ -190,18 +266,37 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_file(ticket[0])
                 return
             token, connection = self.authenticate()
+            if self.command == 'GET' and path in (['v1', 'media', 'content'], ['v1', 'media', 'thumbnail']):
+                source = required({'source': query.get('source', [None])[0]}, 'source', 8192)
+                self.send_media(self.app.media.open_source(source, thumbnail=path[-1] == 'thumbnail'))
+                return
+            if self.command == 'GET' and len(path) == 5 and path[:3] in (['v1', 'media', 'library'], ['v1', 'media', 'generated']) and path[4] in ('content', 'thumbnail'):
+                self.send_media(self.app.media.open_stored(path[3], thumbnail=path[4] == 'thumbnail'))
+                return
+            if self.command == 'POST' and path == ['v1', 'speech', 'transcriptions']:
+                self.send_json(200, self.app.speech.transcribe(self.read_bounded(MAX_SPEECH_BYTES + 64 * 1024), self.headers.get('Content-Type', '')))
+                return
+            if self.command == 'POST' and len(path) == 5 and path[:3] == ['v1', 'speech', 'streams'] and path[-1] == 'chunks':
+                if self.headers.get_content_type() != 'application/octet-stream': raise ApiError(415, 'invalid_speech', '语音分片需要 PCM 数据')
+                self.send_json(200, self.app.speech.stream(connection.get('id', connection.get('connection_id')), path[3], 'chunks', self.read_bounded(MAX_CHUNK_BYTES)))
+                return
             if self.command == "GET" and path == ["v1", "files", "download"]:
                 self.send_file(required({"path": query.get("path", [None])[0]}, "path", 4096))
                 return
-            if (self.command == "POST" and len(path) == 4 and path[:2] == ["v1", "threads"]
+            if (self.command == "POST" and len(path) == 4 and path[:2] in (["v1", "threads"], ["v1", "projects"])
                     and path[3] == "attachments" and self.headers.get_content_type() == "application/octet-stream"):
-                self.send_json(200, self.receive_file(path[2], query))
+                self.send_json(200, self.receive_file(path[2], query, project=path[1] == 'projects'))
                 return
             if self.command == "GET" and path == ["v1", "events"]:
                 self.stream_events(token)
                 return
             body = self.read_body() if self.command in {"POST", "PATCH"} else {}
             result = self.route(path, query, body, connection)
+            if self.command == 'GET' and isinstance(result, dict) and isinstance(result.get('thread'), dict):
+                try:
+                    self.app.media.observe_thread(result['thread'])
+                except Exception:
+                    pass  # Derived media state cannot prevent native history delivery.
             self.send_json(200, result)
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             self.close_connection = True
@@ -215,7 +310,7 @@ class Handler(BaseHTTPRequestHandler):
             code = str(getattr(error, "code", "invalid_request" if status == 400 else "native_unavailable"))
             # RPC messages may contain private paths/content. Only expose our
             # own validation messages; native diagnostics stay out of responses.
-            message = str(error) if isinstance(error, ApiError) else {
+            message = str(error) if isinstance(error, (ApiError, MediaError)) else {
                 400: "请求内容无效", 401: "配对码无效或已过期", 404: "记录不存在",
                 409: "操作状态已变化，请刷新", 429: "尝试过于频繁，请稍后再试",
                 501: "当前节点版本暂不支持此功能",
@@ -237,6 +332,21 @@ class Handler(BaseHTTPRequestHandler):
         connection_id = connection.get("id", connection.get("connection_id"))
         if path == ["v1", "node"] and method == "GET":
             return self.app.node()
+        if path == ['v1', 'media', 'capabilities'] and method == 'GET':
+            return self.app.media_capabilities()
+        if path == ['v1', 'speech', 'streams'] and method == 'POST':
+            return self.app.speech.start(connection_id, body.get('context', ''))
+        if len(path) == 5 and path[:3] == ['v1', 'speech', 'streams'] and path[4] in ('finish', 'cancel') and method == 'POST':
+            return self.app.speech.stream(connection_id, path[3], path[4])
+        if path in (['v1', 'media', 'library'], ['v1', 'media', 'generated']) and method == 'GET':
+            return {'items': self.app.media.list(thread_id=query.get('threadId', [None])[0],
+                favorite=query.get('favorite', ['false'])[0] == 'true', generated=path[-1] == 'generated', source=query.get('source', [None])[0])}
+        if path == ['v1', 'media', 'library'] and method == 'POST':
+            return self.app.media.import_source(required(body, 'source', 8192), body.get('threadId'))
+        if len(path) in (4, 5) and path[:3] in (['v1', 'media', 'library'], ['v1', 'media', 'generated']):
+            if method == 'GET' and (len(path) == 4 or path[4] == 'provenance'): return self.app.media.info(path[3])
+            if method == 'PATCH' and len(path) == 4: return self.app.media.favorite(path[3], body.get('favorite'))
+            if method == 'DELETE' and len(path) == 4: return self.app.media.delete(path[3])
         if path == ["v1", "download-links"] and method == "POST":
             target = native_path(required(body, "path", 4096))
             key = secrets.token_urlsafe(32)
@@ -248,6 +358,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.app.download_links[key] = (target, expiry)
             return {"url": self.app.config.public_url.rstrip("/") + "/v1/download-links/" + key, "expiresAt": expiry}
         if path == ["v1", "models"] and method == "GET":
+            if hasattr(codex, 'capabilities'):
+                return codex.capabilities(refresh=query.get('refresh', ['0'])[0] == '1')
             return {"models": codex.models()}
         if path == ['v1', 'usage'] and method == 'GET':
             return {'usage': codex.usage()}
@@ -262,14 +374,19 @@ class Handler(BaseHTTPRequestHandler):
             return codex.read_directory(required({"path": query.get("path", [None])[0]}, "path", 4096))
         if len(path) == 4 and path[:2] == ["v1", "threads"] and path[3] == "attachments" and method == "POST":
             return codex.upload_attachment(path[2], required(body, "name", 200), body.get("dataBase64"))
+        if len(path) == 4 and path[:2] == ["v1", "projects"] and path[3] == "attachments" and method == "POST":
+            return codex.upload_project_attachment(path[2], required(body, "name", 200), body.get("dataBase64"))
         if path == ["v1", "projects"]:
             if method == "GET":
                 return {"projects": codex.list_projects()}
             if method == "POST":
                 project_path = required(body, "path", 4096)
                 sid = required(body, "submissionId")
+                if 'trustConfirmed' in body and not isinstance(body['trustConfirmed'], bool):
+                    raise ApiError(400, 'invalid_request', 'trustConfirmed must be boolean')
+                options = {'trust_confirmed': body['trustConfirmed']} if 'trustConfirmed' in body else {}
                 return self.app.submit(connection_id, sid, "project.add", project_path, body,
-                    lambda: codex.add_project(project_path, idempotency_key=sid, folder_name=body.get('folderName')))
+                    lambda: codex.add_project(project_path, idempotency_key=sid, folder_name=body.get('folderName'), **options))
         if path == ["v1", "threads"]:
             if method == "GET":
                 project = query.get("projectId", [""])[0]
@@ -284,22 +401,33 @@ class Handler(BaseHTTPRequestHandler):
                 return self.app.submit(connection_id, sid, "thread.create", project, body,
                     lambda: codex.create_session(project, worktree_ref=body['worktreeRef']) if body.get('worktreeRef') else codex.create_session(project))
         if len(path) >= 3 and path[:2] == ["v1", "threads"]:
+            if len(path) == 4 and path[3] == "ownership" and method == "GET":
+                return codex.preview_handoff(path[2], query.get("operation", ["takeover"])[0], connection_id)
             thread_id = path[2]
             if len(path) == 3 and method == "GET":
-                result = codex.get_session(thread_id, cursor=query.get("cursor", [None])[0], limit=int(query.get("limit", ["30"])[0]))
+                options = {'native_revision': query['nativeRevision'][0]} if query.get('nativeRevision') else {}
+                result = codex.get_session(thread_id, cursor=query.get("cursor", [None])[0], limit=int(query.get("limit", ["30"])[0]), **options)
                 result["queue"] = self.app.queue.list(thread_id)
                 return result
             if len(path) == 4 and path[3] == "history" and method == "GET":
+                options = {'native_revision': query['nativeRevision'][0]} if query.get('nativeRevision') else {}
                 return codex.history(thread_id, cursor=query.get("cursor", [None])[0],
-                                     limit=int(query.get("limit", ["30"])[0]))
+                                     limit=int(query.get("limit", ["30"])[0]), **options)
             if len(path) == 4 and method == 'GET':
                 if path[3] == 'diff':
-                    return {'diff': codex.diff(thread_id)}
+                    from .codex.diff_projection import diff_page
+                    offset = int(query.get('offset', ['0'])[0])
+                    if offset > 0 and not query.get('revision'):
+                        raise ApiError(400, 'invalid_request', 'revision required for pagination')
+                    return {'diff': diff_page(codex.diff(thread_id), revision=query.get('revision', [None])[0],
+                        file_id=query.get('fileId', [None])[0], offset=offset,
+                        limit=int(query.get('limit', ['400'])[0]))}
                 if path[3] == 'review-context':
                     return codex.review_context(thread_id)
                 if path[3] == 'workspace':
                     codex.start()
-                    return {'workspace': codex.workspaces.inspect(thread_id) if codex.workspaces else None}
+                    return {'workspace': codex.workspaces.inspect(thread_id) if codex.workspaces else None,
+                            'externalWorkspace': codex.external_workspace(thread_id)}
             if len(path) == 5 and path[3:] == ['workspace', 'cleanup'] and method == 'POST':
                 sid, revision = required(body, 'submissionId'), required(body, 'revision')
                 discard = body.get('discard', False)
@@ -319,13 +447,15 @@ class Handler(BaseHTTPRequestHandler):
                             raise ApiError(400, "invalid_request", "Invalid model settings")
                     if body.get('mode') not in (None, 'default', 'plan'):
                         raise ApiError(400, 'invalid_request', 'Invalid mode')
-                    fn = lambda: self.app.queue.enqueue(thread_id, sid, connection_id, {"input": items, "model": body.get("model"), "effort": body.get("effort"), 'mode': body.get('mode')})
+                    if body.get('serviceTier') not in (None, 'default', 'priority'):
+                        raise ApiError(400, 'invalid_request', 'Invalid serviceTier')
+                    fn = lambda: self.app.queue.enqueue(thread_id, sid, connection_id, {"input": items, "model": body.get("model"), "effort": body.get("effort"), 'mode': body.get('mode'), 'serviceTier': body.get('serviceTier')})
                 elif operation == "reorder":
                     ids = body.get("ids")
                     if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
                         raise ApiError(400, "invalid_request", "ids required")
                     fn = lambda: self.app.queue.reorder(thread_id, ids, body.get("expectedIds"))
-                elif operation in {"edit", "remove", "steer"}:
+                elif operation in {"edit", "remove", "steer", "recover", "dismiss"}:
                     item_id = required(body, "itemId")
                     revision = body.get("revision")
                     if not isinstance(revision, int) or isinstance(revision, bool):
@@ -333,6 +463,8 @@ class Handler(BaseHTTPRequestHandler):
                     if operation == "steer":
                         turn_id = required(body, "expectedTurnId")
                         fn = lambda: self.app.queue.steer(thread_id, item_id, revision, turn_id)
+                    elif operation == 'recover':
+                        fn = lambda: self.app.queue.recover(thread_id, item_id, revision, sid, connection_id)
                     else:
                         fn = lambda: self.app.queue.change(thread_id, item_id, revision, operation, body.get("text"))
                 else:
@@ -344,6 +476,15 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(body.get("pinned"), bool):
                         raise ApiError(400, "invalid_request", "pinned must be boolean")
                     fn = lambda: codex.pin_session(thread_id, body["pinned"])
+                elif action == 'settings':
+                    if not any(body.get(key) is not None for key in ('model', 'effort', 'serviceTier')):
+                        raise ApiError(400, 'invalid_request', 'Settings required')
+                    for key in ('model', 'effort'):
+                        if body.get(key) is not None:
+                            required(body, key, 200)
+                    if body.get('serviceTier') not in (None, 'default', 'priority'):
+                        raise ApiError(400, 'invalid_request', 'Invalid serviceTier')
+                    fn = lambda: codex.update_settings(thread_id, model=body.get('model'), effort=body.get('effort'), service_tier=body.get('serviceTier'))
                 elif action == 'archive':
                     if not isinstance(body.get('archived'), bool):
                         raise ApiError(400, 'invalid_request', 'archived must be boolean')
@@ -366,6 +507,10 @@ class Handler(BaseHTTPRequestHandler):
                         raise ApiError(400, 'invalid_request', 'Invalid mode')
                     if body.get('mode') is not None:
                         kwargs['mode'] = body['mode']
+                    if body.get('serviceTier') not in (None, 'default', 'priority'):
+                        raise ApiError(400, 'invalid_request', 'Invalid serviceTier')
+                    if body.get('serviceTier') is not None:
+                        kwargs['service_tier'] = body['serviceTier']
                     if items is not None:
                         kwargs["input_items"] = items
                     fn = lambda: codex.send(thread_id, text, **kwargs)
@@ -377,6 +522,13 @@ class Handler(BaseHTTPRequestHandler):
                     if items is not None:
                         kwargs["input_items"] = items
                     fn = lambda: codex.steer(thread_id, text, **kwargs)
+                elif action == "ownership":
+                    operation = body.get("operation")
+                    if operation not in ("takeover", "release"):
+                        raise ApiError(400, "invalid_request", "Invalid ownership operation")
+                    ticket = required(body, "ticket", 128)
+                    options = {'rebind_workspace': required(body, 'rebindWorkspace', 4096)} if 'rebindWorkspace' in body else {}
+                    fn = lambda: codex.handoff(thread_id, operation, owner=connection_id, ticket=ticket, confirmed=body.get("confirmed") is True, **options)
                 elif action == "interrupt":
                     turn_id = required(body, "turnId")
                     fn = lambda: codex.interrupt(thread_id, turn_id=turn_id)

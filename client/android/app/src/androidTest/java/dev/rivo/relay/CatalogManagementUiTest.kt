@@ -57,7 +57,24 @@ class CatalogManagementUiTest {
         compose.onNodeWithTag("project_folder_name").performTextInput("new-project")
         compose.runOnIdle { assertNull(selected) }
         compose.onNodeWithTag("confirm_create_project_folder").performClick()
+        compose.runOnIdle { assertNull(selected) }
+        compose.onNodeWithTag("project_trust_path").assertTextEquals("/home/work/new-project")
+        compose.onNodeWithTag("confirm_project_trust").performClick()
         compose.runOnIdle { assertEquals("/home/work", selected); assertEquals("new-project", folder) }
+    }
+
+    @Test fun cancellingDirectoryTrustDoesNotRegisterTheProject() {
+        var selected: String? = null
+        compose.setContent { RivoTheme { ProjectDirectoryDialog(readDirectory = {
+            JSONObject().put("path", "/home/project").put("entries", JSONArray())
+        }, writable = true, onDismiss = {}, onAdd = { path, _ -> selected = path }, nodeName = "测试节点") } }
+        compose.onNodeWithTag("confirm_add_project").performClick()
+        compose.onNodeWithTag("project_trust_path").assertTextEquals("/home/project")
+        compose.onNodeWithTag("cancel_project_trust").performClick()
+        compose.runOnIdle { assertNull(selected) }
+        compose.onNodeWithTag("confirm_add_project").performClick()
+        compose.onNodeWithTag("confirm_project_trust").performClick()
+        compose.runOnIdle { assertEquals("/home/project", selected) }
     }
 
     @Test fun sessionsUseCompactRowsAndSearchClearsHiddenSelection() {

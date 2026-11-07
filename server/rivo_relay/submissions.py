@@ -25,7 +25,7 @@ def _json(value: Any) -> str:
         result = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     except (ValueError, TypeError) as error:
         raise ValueError("Submission fields must be finite JSON values") from error
-    if len(result.encode("utf-8")) > 8 * 1024 * 1024:
+    if len(result.encode("utf-8")) > 64 * 1024 * 1024:
         raise ValueError("Submission field is too large")
     return result
 
@@ -37,7 +37,7 @@ def _identifier(value: str, name: str) -> str:
 
 
 _IDENTITY_KEYS = {
-    alias: name for name in ("thread", "turn", "item", "request", "project", "runtime", "connection", "todo")
+    alias: name for name in ("thread", "turn", "item", "recoveredItem", "request", "project", "runtime", "connection", "todo")
     for alias in (name + "Id", name + "_id")
 }
 

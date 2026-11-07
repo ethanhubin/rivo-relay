@@ -20,6 +20,7 @@ import androidx.compose.ui.window.DialogProperties
 @Composable
 internal fun AttachmentSourceDialog(imageSlots: Int, fileSlots: Int, onDismiss: () -> Unit,
     onImage: () -> Unit, onFile: () -> Unit, onVideo: () -> Unit, onWorkspace: () -> Unit) {
+    val hasMedia = LocalCodexMediaClient.current != null
     var tab by rememberSaveable { mutableIntStateOf(0) }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Box(Modifier.fillMaxSize().padding(horizontal = 24.dp), contentAlignment = Alignment.Center) {
@@ -32,12 +33,14 @@ internal fun AttachmentSourceDialog(imageSlots: Int, fileSlots: Int, onDismiss: 
                     PrimaryTabRow(selectedTabIndex = tab) {
                         Tab(tab == 0, { tab = 0 }, modifier = Modifier.testTag("attachment_tab_local"), text = { Text("本地") })
                         Tab(tab == 1, { tab = 1 }, modifier = Modifier.testTag("attachment_tab_node"), text = { Text("节点") })
+                        if (hasMedia) Tab(tab == 2, { tab = 2 }, modifier = Modifier.testTag("attachment_tab_media"), text = { Text("媒体库") })
                     }
                     if (tab == 0) {
                         AttachmentSourceOption("图", "从相册选择图片", "可多选；还可添加 ${imageSlots.coerceAtLeast(0)} 张，支持裁剪与标注", "add_image", imageSlots > 0, onImage)
                         AttachmentSourceOption("文", "浏览文件", "可多选；上传至当前节点，单个最大 1 GiB", "add_file", fileSlots > 0, onFile)
                         AttachmentSourceOption("视", "选择视频", "作为文件上传至当前节点，单个最大 1 GiB", "add_video", fileSlots > 0, onVideo)
-                    } else AttachmentSourceOption("工", "节点工作区文件", "浏览当前会话工作区并附加文件引用", "add_workspace_file", fileSlots > 0, onWorkspace)
+                    } else if (tab == 2 && hasMedia) CodexMediaLibrary(imageSlots, fileSlots, onDismiss)
+                    else AttachmentSourceOption("工", "节点工作区文件", "浏览当前会话工作区并附加文件引用", "add_workspace_file", fileSlots > 0, onWorkspace)
                     OutlinedButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth().height(48.dp).testTag("attachment_cancel"), shape = RoundedCornerShape(16.dp)) { Text("取消") }
                 }
             }

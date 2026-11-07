@@ -27,6 +27,59 @@ class SessionControllerTest {
         .setBody("""{"error":{"code":"native_rejected","message":"读取暂时失败"}}""")
     private suspend fun await(latch: CountDownLatch) = withContext(Dispatchers.IO) { assertTrue(latch.await(5, TimeUnit.SECONDS)) }
 
+    @Test fun liveOutputUpdatesWithoutAnotherHistoryRequest() = runBlocking {
+        val server = MockWebServer()
+        val reads = AtomicInteger()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path!!.startsWith("/v1/events")) return MockResponse()
+                    .setHeader("Content-Type", "text/event-stream")
+                    .setBodyDelay(1, TimeUnit.SECONDS)
+                    .setBody("event: native\ndata: {\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"t\",\"turnId\":\"turn-current\",\"itemId\":\"current\",\"relayOffset\":2,\"delta\":\" there\"}}\n\n")
+                reads.incrementAndGet()
+                return snapshot("t", "Hi")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = SessionController(api(server), scope) { fail(it.message) }
+        try {
+            controller.open("t")
+            withTimeout(5_000) { controller.state.first { it.snapshot?.messages?.singleOrNull()?.text == "Hi there" } }
+            // Initial read and stream-connected calibration only; the delta needs no GET.
+            assertTrue("unexpected history reads: ${reads.get()}", reads.get() <= 2)
+        } finally { controller.close(); scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun offlineRouteCancelsReadsAndReconnectKeepsSnapshotUntilFresh() = runBlocking {
+        val server = MockWebServer()
+        val reads = AtomicInteger()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                reads.incrementAndGet()
+                return snapshot("t", "saved")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = SessionController(api(server), scope) { fail(it.message) }
+        try {
+            controller.open("t")
+            withTimeout(5000) { controller.state.first { it.snapshot?.name == "saved" && !it.stale } }
+            controller.open("t", online = false)
+            withTimeout(5000) { controller.state.first { it.stale && !it.loading } }
+            assertEquals("saved", controller.state.value.snapshot?.name)
+            val baseline = reads.get()
+            controller.refresh()
+            delay(250)
+            assertEquals(baseline, reads.get())
+            controller.open("t", online = true)
+            withTimeout(5000) { controller.state.first { !it.stale } }
+            assertTrue(reads.get() > baseline)
+        } finally { controller.close(); scope.cancel(); server.shutdown() }
+    }
+
     @Test fun cachedHistoryStaysReadOnlyUntilAnAuthoritativeReadSucceeds() = runBlocking {
         val directory = java.nio.file.Files.createTempDirectory("relay-history-test").toFile()
         val store = ConversationStore(directory)
@@ -139,7 +192,13 @@ class SessionControllerTest {
         } finally { releaseOld.countDown(); controller.close(); scope.cancel(); server.shutdown() }
     }
 
-    @Test fun streamResetCancelsOldPaginationAndCannotRestoreStaleCursor() = runBlocking {
+    @Test fun streamResetCancelsOldPaginationAndCannotRestoreStaleCursor() =
+        assertHistoryInvalidationCancelsPagination("event: reset\ndata: {}\n\n")
+
+    @Test fun nativeReprojectionCancelsOldPaginationAndCannotRestoreStaleCursor() =
+        assertHistoryInvalidationCancelsPagination("event: native\ndata: {\"method\":\"relay/historyInvalidated\",\"params\":{\"threadId\":\"t\",\"reason\":\"native_reprojection\"}}\n\n")
+
+    private fun assertHistoryInvalidationCancelsPagination(invalidationEvent: String) = runBlocking {
         val server = MockWebServer()
         val allowReset = CountDownLatch(1)
         val pageStarted = CountDownLatch(1)
@@ -152,7 +211,7 @@ class SessionControllerTest {
                 if (request.path!!.startsWith("/v1/events")) {
                     if (streams.incrementAndGet() > 1) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
                     allowReset.await(5, TimeUnit.SECONDS); reset.set(true)
-                    return MockResponse().setHeader("Content-Type", "text/event-stream").setBody("event: reset\ndata: {}\n\n")
+                    return MockResponse().setHeader("Content-Type", "text/event-stream").setBody(invalidationEvent)
                 }
                 if (request.path!!.contains("cursor=")) {
                     pageStarted.countDown(); releasePage.await(5, TimeUnit.SECONDS); pageReturned.countDown()

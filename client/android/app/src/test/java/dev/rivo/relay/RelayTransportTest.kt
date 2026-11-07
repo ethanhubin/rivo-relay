@@ -8,6 +8,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RelayTransportTest {
+    @Test fun readFallsBackFromUnreachableDnsAddressWithoutEnablingWriteReplay() = runBlocking {
+        val server = MockWebServer()
+        server.start(java.net.InetAddress.getByName("127.0.0.1"), 0)
+        server.enqueue(MockResponse().setBody("{\"ok\":true}"))
+        val dns = object : okhttp3.Dns { override fun lookup(hostname: String) = listOf(java.net.InetAddress.getByName("::1"), java.net.InetAddress.getByName("127.0.0.1")) }
+        try {
+            val api = RelayApi(server.url("/").newBuilder().host("relay.test").build().toString(), dns = dns)
+            assertTrue(withTimeout(5000) { api.call("/v1/node") }.getBoolean("ok"))
+            assertEquals(1, server.requestCount)
+        } finally { server.shutdown() }
+    }
+
     @Test fun binaryUploadAndDownloadStreamBeyondPreviewLimit() = runBlocking {
         val server = MockWebServer()
         val bytes = ByteArray(6 * 1024 * 1024) { (it % 251).toByte() }

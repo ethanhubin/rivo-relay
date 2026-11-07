@@ -59,6 +59,24 @@ class NativeActivityProjectionTest {
         }
     }
 
+    @Test fun latestExecutionSegmentExposesNoncommandsAndOnlyGroupsAdjacentCommands() {
+        val web = JSONObject().put("id", "web").put("type", "webSearch").put("query", "test")
+        val process = JSONObject().put("id", "p").put("type", "agentMessage").put("phase", "commentary").put("text", "继续检查")
+        val rows = nativeTimelineRows(snapshot(turn("one", command("a", "first"), web, process,
+            command("b", "second"), command("c", "third"), JSONObject(web.toString()).put("id", "web-latest"))).messages, activeTurnId = "one")
+        assertEquals(4, rows.size)
+        assertEquals(2, (rows[0] as NativeTimelineRow.Activities).messages.size)
+        assertEquals(listOf("b", "c"), (rows[2] as NativeTimelineRow.Activities).messages.map { it.id })
+        assertEquals("web-latest", (rows[3] as NativeTimelineRow.Activities).messages.single().id)
+    }
+
+    @Test fun terminalNativeTurnStopsPersistedToolSpinnerWithoutChangingRawHistory() {
+        val item = command("a", "read").put("status", "inProgress")
+        val message = snapshot(turn("done", item).put("status", "interrupted")).messages.single()
+        assertEquals("failed", message.activity?.status)
+        assertEquals("inProgress", message.raw.string("status"))
+    }
+
     @Test fun commandExitCodePreservesZeroNonzeroAndMissingWithoutInventingReason() {
         assertEquals(0, nativeActivity(command("ok", "read").put("exitCode", 0))?.exitCode)
         val failed = nativeActivity(command("bad", "read").put("status", "failed").put("exitCode", 2))!!

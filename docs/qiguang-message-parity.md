@@ -1,5 +1,7 @@
 # QiGuang 消息解析与展示对照
 
+本文保留早期消息迁移记录。2026-11-07 对本地最新版本 `1642fc8` 的后续迁移（包括执行动画、变更统计、队列恢复、链接转发和写权限交互）见 [Codex 实现对照](qiguang-codex-sync.md)；下文“保留的差异”描述的是早期状态。
+
 本次对照 QiGuang 当前工作区的实际解析和 Compose 实现。来源仓库 HEAD 为 `f31333c248b862827a0179260ce5d9c571f441be`；`qiguang_codex.py` 存在未提交修改，因此以读取时的 SHA-256 为准。逐文件来源、摘要和调整记录见 [migration-sources.json](../client/android/migration-sources.json)。未修改 QiGuang 源仓库。
 
 | QiGuang 来源 | Rivo 采用的规则 |

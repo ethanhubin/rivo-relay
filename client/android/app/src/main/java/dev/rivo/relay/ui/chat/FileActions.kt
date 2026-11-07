@@ -7,6 +7,7 @@ import android.net.Uri
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
@@ -14,6 +15,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.*
@@ -24,11 +26,14 @@ import java.io.OutputStream
 import java.net.URI
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import dev.rivo.relay.data.ResumableDownload
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 internal enum class FileAction { SAVE, OPEN, SHARE, COPY }
 internal enum class FileOpenKind { IMAGE, VIDEO, AUDIO, TEXT, PDF, APK, EXTERNAL }
+internal typealias NativeCachedDownload = suspend (String, (Long, Long) -> Unit) -> File
+internal val LocalNativeFileCache = staticCompositionLocalOf<NativeCachedDownload?> { null }
 
 /** Type routing and action-sheet layout adapted from QiGuang ChatResourceResolver/MainScreen. */
 internal fun fileDisplayName(source: String): String {
@@ -44,7 +49,7 @@ internal fun fileOpenKind(source: String, mime: String = ""): FileOpenKind {
         extension == "apk" || normalizedMime == "application/vnd.android.package-archive" -> FileOpenKind.APK
         extension == "svg" || normalizedMime == "image/svg+xml" -> FileOpenKind.TEXT
         normalizedMime.startsWith("image/") || extension in setOf("png", "jpg", "jpeg", "webp", "gif", "avif", "bmp", "heic", "heif") -> FileOpenKind.IMAGE
-        normalizedMime.startsWith("video/") || extension in setOf("3gp", "avi", "m2ts", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "webm") -> FileOpenKind.VIDEO
+        normalizedMime.startsWith("video/") || extension in (dev.rivo.relay.data.VideoFormatPolicy.acceptedExtensions - "ts") -> FileOpenKind.VIDEO
         normalizedMime.startsWith("audio/") || extension in setOf("aac", "flac", "m4a", "mp3", "ogg", "opus", "wav", "weba") -> FileOpenKind.AUDIO
         extension == "pdf" || normalizedMime == "application/pdf" -> FileOpenKind.PDF
         normalizedMime.startsWith("text/") || normalizedMime in setOf("application/json", "application/xml") || extension in setOf("md", "mdx", "markdown", "txt", "kt", "kts", "java", "py", "js", "jsx", "ts", "tsx", "json", "jsonl", "ipynb", "geojson", "yaml", "yml", "xml", "xsl", "xsd", "html", "htm", "css", "scss", "sh", "zsh", "bash", "sql", "cs", "c", "h", "cc", "cpp", "hpp", "rs", "go", "toml", "gradle", "properties", "swift", "log") -> FileOpenKind.TEXT
@@ -53,12 +58,13 @@ internal fun fileOpenKind(source: String, mime: String = ""): FileOpenKind {
 }
 
 @Composable
-internal fun FileOpenActions(name: String, isApk: Boolean, onAction: (FileAction) -> Unit, onDismiss: () -> Unit) {
+internal fun FileOpenActions(name: String, isApk: Boolean, onAction: (FileAction) -> Unit, onDismiss: () -> Unit, source: String? = null) {
     AlertDialog(onDismissRequest = onDismiss, modifier = Modifier.testTag("file_open_actions"),
         title = { Text(name) },
         text = { Column {
             Text(if (isApk) "选择保存到本机或打开 APK。" else "选择打开文件、保存到本机或分享。")
             if (!isApk) TextButton(onClick = { onAction(FileAction.SHARE) }, modifier = Modifier.testTag("share_file")) { Text("分享") }
+            source?.let { ForwardLinkButton(it, name, onDismiss) }
         } },
         confirmButton = { TextButton(onClick = { onAction(FileAction.OPEN) }, modifier = Modifier.testTag("open_file")) { Text(if (isApk) "打开" else "用其他应用打开") } },
         dismissButton = { Row {
@@ -101,12 +107,13 @@ internal fun formatTransferBytes(bytes: Long): String = when {
 private val publicFileClient = OkHttpClient.Builder().retryOnConnectionFailure(false).followRedirects(true)
     .followSslRedirects(false).callTimeout(0, TimeUnit.MILLISECONDS).readTimeout(180, TimeUnit.SECONDS).build()
 
-/** Public links never pass through the authenticated node client. Cancellation closes the HTTP call. */
+/** Generic public files omit node credentials; media viewers choose their authenticated proxy first. */
 internal suspend fun downloadFileSource(source: String, output: OutputStream, progress: (Long, Long) -> Unit,
     nativeDownload: suspend (String, OutputStream, (Long, Long) -> Unit) -> Unit) {
     if (source.startsWith("data:image/")) {
-        require(source.length <= 6 * 1024 * 1024 && source.substringBefore(',').endsWith(";base64")) { "图片编码无法读取" }
+        require(source.length <= 28 * 1024 * 1024 && source.substringBefore(',').endsWith(";base64")) { "图片编码无法读取" }
         val bytes = android.util.Base64.decode(source.substringAfter(','), android.util.Base64.DEFAULT)
+        require(bytes.size <= 20 * 1024 * 1024) { "单张图片最大支持 20 MiB" }
         withContext(Dispatchers.IO) { output.write(bytes); output.flush() }
         progress(bytes.size.toLong(), bytes.size.toLong()); return
     }
@@ -158,7 +165,12 @@ internal suspend fun readFileSource(source: String, nativeRead: suspend (String)
 }
 
 internal suspend fun cacheFileSource(context: Context, source: String,
-    download: suspend (String, OutputStream, (Long, Long) -> Unit) -> Unit, progress: (Long, Long) -> Unit): File = withContext(Dispatchers.IO) {
+    download: suspend (String, OutputStream, (Long, Long) -> Unit) -> Unit,
+    nativeCache: NativeCachedDownload? = null, progress: (Long, Long) -> Unit): File = withContext(Dispatchers.IO) {
+    if (isHttpWebLink(source) && nativeCache != null && fileOpenKind(source) in setOf(FileOpenKind.IMAGE, FileOpenKind.VIDEO, FileOpenKind.AUDIO)) return@withContext nativeCache(source, progress)
+    if (isHttpWebLink(source)) return@withContext ResumableDownload.get(File(context.cacheDir, "downloads"), "public", source,
+        publicFileClient, Request.Builder().url(source).build(), progress)
+    if (!source.startsWith("data:") && nativeCache != null) return@withContext nativeCache(source, progress)
     val directory = File(context.cacheDir, "previews").apply { mkdirs() }
     directory.listFiles()?.filter { System.currentTimeMillis() - it.lastModified() > TimeUnit.DAYS.toMillis(1) }?.forEach { it.delete() }
     val name = fileDisplayName(source).replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").takeLast(160).ifBlank { "file" }
@@ -180,8 +192,46 @@ internal fun openCachedFile(context: Context, file: File, name: String, mime: St
     context.startActivity(if (share) Intent.createChooser(intent, "发送到微信 / 企业微信等应用") else intent)
 }
 
-internal fun copyCachedImage(context: Context, file: File, name: String) {
-    val uri = FileProvider.getUriForFile(context, context.packageName + ".files", file, name)
+internal suspend fun copyCachedImage(context: Context, file: File, name: String) {
+    val typed = typedMediaCache(context, file, fileMimeType(name))
+    val uri = FileProvider.getUriForFile(context, context.packageName + ".files", typed, name)
     val clipboard = context.getSystemService(android.content.ClipboardManager::class.java) ?: error("无法访问剪贴板")
     clipboard.setPrimaryClip(ClipData.newUri(context.contentResolver, "图片", uri))
+}
+
+internal fun mediaActionMetadata(source: String, assets: List<JSONObject>, image: Boolean): Pair<String, String> {
+    val asset = assets.firstOrNull { it.optString("originalUrl") == source || it.optString("source") == source }
+    val declared = asset?.optString("mimeType").orEmpty()
+    var name = if (source.startsWith("/v1/media/")) asset?.optString("name")?.takeIf { it.isNotBlank() } ?: "image" else fileDisplayName(source)
+    val mime = fileMimeType(name, declared).let { if (image && it == "application/octet-stream") "image/png" else it }
+    if (source.startsWith("/v1/media/")) {
+        val extension = when (mime) { "image/jpeg" -> "jpg"; "image/png" -> "png"; "image/webp" -> "webp"; "video/mp4" -> "mp4"; "audio/mpeg" -> "mp3"; else -> mime.substringAfter('/').substringBefore('+').takeIf { it.all(Char::isLetterOrDigit) } ?: "bin" }
+        if (!name.endsWith(".$extension", true)) name += ".$extension"
+    }
+    return name to mime
+}
+
+/** FileProvider resolves MIME from the real file suffix, not its displayName query. */
+internal suspend fun typedMediaCache(context: Context, file: File, mime: String): File = withContext(Dispatchers.IO) {
+    val extension = when (mime) { "image/jpeg" -> "jpg"; "image/png" -> "png"; "image/webp" -> "webp"; "image/gif" -> "gif"; else -> error("此图片格式不能复制到剪贴板") }
+    if (fileMimeType(file.name) == mime) return@withContext file
+    val directory = File(context.cacheDir, "previews").apply { mkdirs() }
+    var total = directory.listFiles()?.sumOf { it.length() } ?: 0L
+    directory.listFiles()?.sortedBy { it.lastModified() }?.forEach { cached ->
+        if (System.currentTimeMillis() - cached.lastModified() > TimeUnit.DAYS.toMillis(1) || total > 2L * 1024 * 1024 * 1024) {
+            val size = cached.length(); if (cached.delete()) total -= size
+        }
+    }
+    val key = java.security.MessageDigest.getInstance("SHA-256").digest("${file.absolutePath}:${file.length()}:${file.lastModified()}:$mime".toByteArray()).joinToString("") { "%02x".format(it) }
+    val target = File(directory, "shared-$key.$extension")
+    if (target.isFile && target.length() == file.length()) return@withContext target
+    val temporary = File.createTempFile("typed-", ".part", directory)
+    try {
+        file.inputStream().use { input -> temporary.outputStream().use { output ->
+            val buffer = ByteArray(65536)
+            while (true) { kotlinx.coroutines.currentCoroutineContext().ensureActive(); val count = input.read(buffer); if (count < 0) break; output.write(buffer, 0, count) }
+        } }
+        check(temporary.renameTo(target)) { "无法准备图片剪贴板" }
+        target
+    } finally { temporary.delete() }
 }

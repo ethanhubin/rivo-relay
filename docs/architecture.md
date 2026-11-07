@@ -10,7 +10,7 @@ App 的目标是 Codex Desktop 的完整延续，范围是 Codex 与待办。共
 
 ```mermaid
 flowchart LR
-    A[Android App] -->|HTTPS JSON / SSE| R[单进程 Relay]
+    A[Android App] -->|HTTP over Tailscale / HTTPS JSON / SSE| R[单进程 Relay]
     R --> S[(Rivo SQLite)]
     R --> C[Codex 适配器]
     C -->|Unix WebSocket| N[选定的既有 Codex daemon]
@@ -78,7 +78,7 @@ workspace/               # 忽略的运行数据、私密配对文件、验证�
 
 App 用 Keystore 保护连接凭据，重启后直接恢复项目页。普通离线保留登录；认证失败清除本地连接并回到授权页。撤销通过电脑 CLI，HTTP 每次认证，已有 SSE 在读取事件前后重新认证并退出。本地“断开”仅删除手机保存的凭据，不等于撤销服务端连接。
 
-服务默认监听 loopback；非 loopback 必须配置 TLS。正式地址用受信任 HTTPS，不关闭证书或 hostname 校验。debug App 仅允许指定本机/模拟器地址的 HTTP；release 不继承该例外。请求体、Bearer 与配对链接不进入服务请求日志。
+服务默认监听 loopback；非 loopback 必须配置 TLS。本机部署使用 `http://100.124.150.1:18767`，经 tailnet-only TCP 转发到 loopback 18765，避免 DNS 和 TLS 证书依赖。Android debug/release 均仅额外允许此明确 IP 的 HTTP；debug 另允许本机/模拟器地址。其他节点使用受信任 HTTPS，不关闭证书或 hostname 校验。0.2.5 仅迁移已确认的旧本机 HTTPS 地址，保留 token/nodeId/deviceId，并通过 storageBase 保留原草稿、历史、待发任务及提醒的存储键。请求体、Bearer 与配对链接不进入服务请求日志。
 
 ## 原生 Codex 接入
 
@@ -90,7 +90,7 @@ thread/turn/item 身份与已完成历史来自 Codex 分页。未落盘的新�
 
 提问与审批 key 绑定连接 generation 和原生 request ID；断连、turn 结束或 `serverRequest/resolved` 使其失效。回答前先移除本地 pending，避免丢失回执后重发。手机提供提问、命令/文件审批、原生权限请求和常见嵌套 MCP 表单/URL 交互；未知 schema 与 userVerification 签名挑战仍需 Desktop。语音输入按用户要求排除。
 
-`GET /v1/files` 经该 daemon 的 FS RPC 读取节点文件，不用 Relay 本机打开远端路径。它属于原生节点级文件访问，没有 thread sandbox 参数，也没有 Rivo 额外项目白名单。预览解码后上限 4 MiB；当前协议没有范围读取，这只是响应大小限制。服务接收原生 text/image/localImage/mention/skill 输入，HTTP JSON 上限 8 MiB；`content://` 不是节点路径。
+`GET /v1/files` 经该 daemon 的 FS RPC 读取节点文件，不用 Relay 本机打开远端路径。它属于原生节点级文件访问，没有 thread sandbox 参数，也没有 Rivo 额外项目白名单。预览解码后上限 4 MiB；当前协议没有范围读取，这只是响应大小限制。服务接收原生 text/image/localImage/mention/skill 输入，HTTP JSON 上限 16 MiB；`content://` 不是节点路径。
 
 ## 提交、增量与待办
 
@@ -114,4 +114,36 @@ SQLite schema 4 保存配对码、连接、提交、待办、待执行队列、�
 
 `queued_tasks` 保存 Relay 自己接受的待发输入，原生 turn 仍是执行和历史权威。单 worker 轮询原生快照，空闲时提交一项，收到原生完成状态后继续下一项；调用前先持久化 dispatching，重启将其变成 unknown，不自动重发。稳定提交 ID 防止重复入队；编辑用 revision，排序用完整预期顺序做竞争校验。被撤销连接的任务不会自动派发。数据库 v1→v2 原位增加一张表，保留配对、登录和旧提交记录。
 
-另一运行时占有 writer 时仅保存待发项并等待，不抢占；这不解决 Desktop 独立 stdio 的跨运行时执行问题。队列数据不与 QiGuang 旧 sidecar 队列共享，不把其历史待发项显示为已迁移。没有迁入通用调度、离线同步或第二套执行历史。
+普通队列在另一运行时占有 writer 时仅等待，不自动抢占。0.2.7 增加显式进程级交接：预览持锁 PID/启动身份/关联会话与子进程，绑定当前授权连接的短期票据；多会话共用时须确认，执行前重新核实。终止持锁进程并确认 OS 写锁释放后，才 resume 原会话并核验新持锁 PID。若当前 daemon 被终止，以原二进制和参数恢复，其他受影响会话的 Relay 队列与自动订阅保持暂停。不自动重发原任务。队列数据不与 QiGuang 旧 sidecar 队列共享，不把其历史待发项显示为已迁移。没有迁入通用调度、离线同步或第二套执行历史。
+
+
+## 2026-10-29 请求链路优化
+
+- 会话 SSE 的 `item/agentMessage/delta` 和 `item/commandExecution/outputDelta` 增加 `params.relayOffset`（追加前的 Unicode code point 数）。客户端有可信快照且 item/turn ID 匹配时，直接更新对应消息及活动投影，不再为每个文本片段请求最近 30 轮历史。重复、部分重叠事件按位置核对，不重复追加；emoji 按 code point 转换为 Kotlin 字符串位置。
+- 缺少位置字段的旧服务器、未知 item、内容不一致、快照读取期间的事件仍触发合并后的权威读取。首次进入、重连、reset、完成事件和原有 5 秒校准保留；其他 threadId 的事件不触发当前聊天读取。实时展示不写入原生历史。
+- 内容未变化的会话快照不重复写入手机缓存。断线正常结束同样标记 stale，恢复后重新校准。
+- 项目列表以项目 ID / 根目录建立索引，避免每个项目重新扫描所有线程；服务器串行合并并发读取，成功结果缓存 2 秒。原生线程/项目通知、轮次开始/结束、连接代际变化和项目创建使缓存失效；读取中的失效不会被旧结果覆盖。单客户端的原有首页 5 秒轮询仍会读取原生列表。
+- HTTP 连接关闭策略保持现状：当前有界 worker 按连接占用，直接启用长连接需要一起调整空闲连接调度，不能只移除响应头。
+
+
+### 对照栖光后补充的优化
+
+对照仓库 `/Users/ethan/Documents/QiGuang-Next`，HEAD `f31333c248b862827a0179260ce5d9c571f441be`，读取工作区源码，未修改栖光。
+
+| 栖光实现 | Relay 采用方式 |
+| --- | --- |
+| `qiguang/server/qiguang_codex_notifications.py::NotificationQueue` 合并积压文本通知 | `codex/notifications.py` 只合并相邻、同连接代际/线程/轮次/item/方法的文本片段；24,000 字符为单个合并块上限，达到上限另开队列项，不截断正文。结构事件是顺序边界。 |
+| `qiguang_codex.py` 的 `LIVE_ACTIVITY_EMIT_INTERVAL_SECONDS = 0.15` | Android 每 150ms 批量应用增量，仅发布一次展示状态；结构/结束事件立即冲刷，积压最多 128 条后提前冲刷。 |
+| `CodexHistoryController.kt::refreshCodexHistoryAfterSignal` 合并刷新与代际检查 | 保留 Relay 的 CONFLATED 请求通道、页面代际、历史 epoch 校验。读取期间的增量回退为下一次权威读取，不在不可信快照上追加。 |
+| `CodexResponseCache.kt` 将本地缓存仅作为启动展示 | 保留 Relay 的 stale 写保护，增量不持久化；权威快照内容不变时跳过重复保存。 |
+
+来源 SHA-256：notifications `affe095a17745212ac86494877138550c3de54cce7526d2bdd29a0631d89e1cf`；codex `b2a933ce83d20d41cc6e4c05d513d25204a6492ff39a7ac12bed28259eb3058b`；HistoryController `8d633c1d2d8d9c5a901138822703bfcff03d4856164a79ea601496d3198e8ce2`。
+
+栖光使用裁剪后的展示文本和 sidecar 投影；Relay 的 `relayOffset` 必须对应完整文本，因此没有迁入其头尾截断策略。没有复制栖光的 writer 接管、任务数据库或部署拓扑。连接池也没有直接改大：实际诊断表明会话列表约 0.53 秒主要花在原生 `thread/list(cwd=...)`，`project/read` 和 `thread/list(projectId=...)` 约 1ms 内，并行化二者不能消除前者开销。cwd 查询用于保留未归属项目的旧会话，不能为测速省略。
+
+
+### 网络切换后的快速恢复
+
+实际 e2mac 模拟器验证发现：失去网络后，已有 HTTP/2 socket 可能迟迟不报错，恢复读取会等到 90 秒 read timeout。新增 `ACCESS_NETWORK_STATE` 正常权限与默认网络回调；网络丢失时聊天取消旧读取，缓存保留并标记 stale，默认路由恢复或切换时重新订阅并校准快照。`onLost` 按回调中的网络身份清空状态，不在回调内用可能尚未更新的 `activeNetwork` 推断连接仍可用。
+
+`RelayApi.resetTransport` 在 IO dispatcher 重建连接池、取消旧 JSON GET/SSE 并清理空闲连接；TLS close 也可能产生网络写入，因此不得在 Main dispatcher 执行。内部取消以 `CancellationException` 结束旧读取，不显示错误横幅。已经发出的 POST/写请求不被该操作取消或重发，继续使用现有 submission 核对机制。

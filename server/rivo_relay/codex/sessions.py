@@ -1,24 +1,37 @@
 """Native threads are the sole history and execution authority.
 
 Only live native notifications are held in memory here. Relay waiting tasks are
-stored separately; no writer takeover, history database or permission override.
+stored separately; explicit handoff terminates only previewed native lock holders.
 """
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import logging
+import secrets
 import threading
 import time
+from pathlib import Path
+from .writers import WriterProcesses
 from collections import OrderedDict
 
 from .connection import CodexError, NativeConnection
 from .history import NativeHistoryAdapter, NativeHistoryProtocolError
+from .native_journal import NativeJournal
 from .interactions import Interactions
 from .projects import ProjectCatalog, pages
 from .files import read_file, read_directory, upload_attachment, download_file, upload_attachment_stream, stream_download
 from .developer import (project_directory, project_git, review_context, workspace_diff,
                         diff_summary, validate_review, Workspaces)
 from .observations import Observations
+from .projection import execution_projection
+from .models import ModelCatalog
+from .attachment_context import attachment_context
+from .image_inputs import needs_image_staging, prepare_image_inputs
+from .external_worktrees import ExternalWorktrees
+from .native_download import prepare_download
+from .review_guard import ReviewGuard
 
 
 def thread_status(thread):
@@ -37,31 +50,73 @@ def awaiting_rollout(error):
         ('not materialized', 'no rollout', 'missing source rollout')) or ('rollout' in text and 'is empty' in text))
 
 
+def missing_workspace(error):
+    text = str(error).lower()
+    return error.code == 'native_rejected' and any(word in text for word in ('cwd', 'working directory', 'workspace')) and any(
+        word in text for word in ('no such file', 'does not exist', 'not found', 'missing'))
+
+
 class CodexService:
-    def __init__(self, socket_path=None, on_event=None, codex_home=None, *, connection=None):
+    def __init__(self, socket_path=None, on_event=None, codex_home=None, *, connection=None,
+                 runtime_mode='app_server', desktop_bridge_dir=None):
         self.on_event = on_event or (lambda event: None)
         self._lock = threading.RLock()
         self._operations = threading.RLock()
         self._subscriptions = threading.RLock()
         self._live = OrderedDict()
+        self._pending_terminal = set()
         self._active = {}
         self._settings = {}
         self._created = {}
         self._materializing = {}
         self._joined = set()
+        self._handoff_workspaces = OrderedDict()
+        self._handoff_hosts = OrderedDict()
+        self._subscription_releases = OrderedDict()
+        self._handoff_capabilities = OrderedDict()
         self._generation = None
         self.observations = None
         self.workspaces = None
         self._observed = OrderedDict()
+        if connection is None and runtime_mode != 'app_server':
+            from .runtime import RuntimeConnection
+            connection = RuntimeConnection(socket_path, self._event, codex_home,
+                                           mode=runtime_mode, bridge_directory=desktop_bridge_dir)
         self.connection = connection or NativeConnection(socket_path, self._event, codex_home)
         if connection is not None:
             connection.on_event = self._event
+        self.writers = WriterProcesses(getattr(self.connection, 'codex_home', codex_home or Path.home() / '.codex'))
+        self._handoff_log = self.writers.home / 'rivo-handoff-runtime.log'
         self.projects = ProjectCatalog(self.connection)
+        self.projects.external_worktrees = ExternalWorktrees(self.connection, self._observe, self.observations_for)
+        self.review_guard = ReviewGuard(self.connection, self._observe, self.observations_for, self._forget_observation)
         self.interactions = Interactions(self.connection)
         self.history_adapter = NativeHistoryAdapter()
+        self.native_journal = NativeJournal(self.connection, self.history_adapter, self._history_repaired)
+        self.model_catalog = ModelCatalog(self._load_models, lambda: str(self.connection.generation))
+
+    def _history_repaired(self, thread_id, result):
+        # Keep the native body/IDs authoritative and force clients to discard
+        # cursors from the projection that was replaced while its writer was idle.
+        self.on_event({'method': 'relay/historyInvalidated', 'params': {
+            'threadId': thread_id, 'reason': 'native_reprojection'}})
+
+    def _native_history_state(self, thread_id):
+        with self._lock:
+            cwd = self._settings.get(thread_id, {}).get('cwd', '')
+        state = self.native_journal.ensure(thread_id, workspace_root=cwd)
+        first_rollout_pending = self._materializing_thread(thread_id) is not None and (
+            awaiting_rollout(CodexError(state.error, code='native_rejected'))
+            or state.error == 'Codex 原生会话历史不存在')
+        if state.state == 'unavailable' and not first_rollout_pending:
+            raise CodexError(state.error or 'Codex 原生历史尚未完成同步，请稍后重试',
+                             code='native_history_unavailable', http_status=503)
+        return state
 
     def configure_storage(self, db):
+        self._handoff_log = Path(db.path).parent / "handoff-runtime.log"
         self.observations = Observations(db)
+        self.model_catalog.configure(self.observations)
         self.workspaces = Workspaces(db, self)
 
     def _observe(self, thread_id, kind, turn_id, payload):
@@ -98,12 +153,14 @@ class CodexService:
         status = self.connection.start()
         with self._lock:
             if self._generation != self.connection.generation:
+                self.projects.invalidate()
                 self._settings.clear()
                 self._created.clear()
                 self._materializing.clear()
                 self._joined.clear()
                 self._active.clear()
                 self._live.clear()
+                self._pending_terminal.clear()
                 self._generation = self.connection.generation
         return status
 
@@ -114,43 +171,114 @@ class CodexService:
     def status(self):
         return self.connection.status()
 
+    def _thread_connection(self, thread_id):
+        bind = getattr(self.connection, 'history_host_connection', None)
+        return bind(thread_id) if bind else self.connection
+
+    def _thread_runtime(self, thread_id):
+        connection = self._thread_connection(thread_id)
+        status = connection.status()
+        bridge = status.get('bridge') or {}
+        available = False
+        reason = '实际运行节点尚未确认，不能执行进程级交接'
+        if not status.get('connected'):
+            reason = '原生运行时尚未连接，不能执行进程级交接'
+        elif status.get('runtime') == 'desktop' or status.get('desktopShared') is True:
+            reason = '共享 Desktop 不支持进程级接管；当前会话可以正常停止或释放订阅'
+        else:
+            descriptor = self.native_journal.cached_host(thread_id)
+            if descriptor:
+                key = json.dumps(descriptor, sort_keys=True)
+                with self._lock:
+                    cached = self._handoff_capabilities.get(key)
+                if cached is None:
+                    try:
+                        self.writers.verify_native_host(descriptor, status.get('runtimeId'), getattr(connection, 'socket_path', None))
+                        cached = (True, '')
+                    except Exception as error:
+                        cached = (False, str(error))
+                    with self._lock:
+                        self._handoff_capabilities[key] = cached
+                        while len(self._handoff_capabilities) > 16:
+                            self._handoff_capabilities.popitem(last=False)
+                available, reason = cached
+        return {'runtime': status.get('runtime', 'unknown'), 'connected': bool(status.get('connected')),
+                'desktopShared': status.get('desktopShared'),
+                'desktopVerification': status.get('desktopVerification'),
+                'handoffAvailable': available, 'handoffUnavailableReason': reason or None,
+                'bridge': {**{key: bridge.get(key) for key in ('available', 'writerReady', 'connectionState')},
+                           'error': bridge.get('error') or status.get('error')}}
+
+    def _handoff_connection(self, thread_id):
+        connection = self._thread_connection(thread_id)
+        status = connection.status()
+        if status.get('runtime') == 'desktop' or status.get('desktopShared') is True:
+            raise CodexError('共享 Desktop 会话请使用原生停止或释放；不能强制结束共享 Desktop 进程',
+                             code='handoff_desktop_shared', http_status=409)
+        probe = getattr(connection, 'native_host_info', None)
+        if not callable(probe):
+            raise CodexError('无法核对所选原生主机，不能执行进程级交接', code='handoff_host_unverified', http_status=409)
+        generation = str(connection.generation)
+        descriptor = probe()
+        if generation != str(connection.generation) or str(descriptor.get('generation')) != generation:
+            raise CodexError('原生运行时已变化，请重新预览交接', code='handoff_host_changed', http_status=409)
+        self.writers.verify_native_host(descriptor, status.get('runtimeId'), getattr(connection, 'socket_path', None))
+        return connection, descriptor
+
     def list_projects(self):
         self.start()
+        self.projects.queue_provider = lambda: self.execution_queue.by_thread() if hasattr(self, 'execution_queue') else {}
         return self.projects.list()
 
-    def add_project(self, path, name=None, idempotency_key=None, folder_name=None):
+    def add_project(self, path, name=None, idempotency_key=None, folder_name=None, trust_confirmed=False):
         self.start()
+        if not isinstance(trust_confirmed, bool):
+            raise CodexError('文件夹信任确认必须是布尔值', code='invalid_request', http_status=400)
         if folder_name is not None:
             import posixpath
             if not isinstance(folder_name, str) or not folder_name.strip() or folder_name in ('.', '..') or any(c in folder_name for c in '/\\\0'):
                 raise CodexError('目录名称无效', code='invalid_path', http_status=400)
             path = posixpath.join(path, folder_name)
             self.connection.request('fs/createDirectory', {'path': path, 'recursive': False})
-        project = self.projects.add(path, name=name, idempotency_key=idempotency_key)
+        project = self.projects.add(path, name=name, idempotency_key=idempotency_key, trust_confirmed=trust_confirmed)
         return {"projectId": project["id"]}
 
     def list_sessions(self, project_id, archived=False):
         self.start()
         project = self.projects.get(project_id)
         roots = [r["path"] for r in project.get("roots", [])]
-        # Older Desktop threads may lack projectId. Exact root matching adds them
-        # without assigning or rewriting their native metadata.
+        # Legacy Desktop worktree threads can lack projectId and use a cwd
+        # outside every project root. Verify Git membership on the native host.
         threads = list(pages(self.connection, "thread/list", {
-            "cwd": roots, "archived": archived, "modelProviders": [],
+            "archived": archived, "modelProviders": [],
             "sortKey": "updated_at", "sortDirection": "desc",
         })) if roots else []
+        associations = self.projects.external_worktrees.associations(threads, [project])
         by_id = {t["id"]: t for t in threads
-                 if t.get("projectId") in (None, project_id)}
+                 if t.get("projectId") == project_id or (not t.get('projectId') and
+                     (t.get('cwd') in roots or t['id'] in associations))}
         for thread in pages(self.connection, "thread/list", {
             "projectId": project_id, "archived": archived, "modelProviders": [],
             "sortKey": "updated_at", "sortDirection": "desc",
         }):
             by_id[thread["id"]] = thread
+        queues = self.execution_queue.by_thread() if hasattr(self, 'execution_queue') else {}
+        managed = {}
+        if self.workspaces:
+            with self.workspaces.db.read() as c:
+                managed = {row['thread_id']: dict(row) for row in c.execute('SELECT * FROM workspaces WHERE project_id=?', (project_id,))}
         return [{"id": t["id"], "name": t.get("name") or t.get("preview") or "新会话",
                  "preview": t.get("preview", ""), "status": thread_status(t),
                  "pinned": str((t.get("section") or {}).get("name", "")).casefold() == "pinned",
                  "updatedAt": t.get("updatedAt"), "cwd": t.get("cwd"),
-                 "projectId": t.get("projectId") or project_id}
+                 "projectId": t.get("projectId") or project_id,
+                 "source": t.get('source'), "gitInfo": t.get('gitInfo'),
+                 "externalWorkspace": associations.get(t['id']) if t['id'] not in managed else None,
+                 "executionMode": 'worktree' if t['id'] in managed else 'local',
+                 "workspace": ({'id': managed[t['id']]['id'], 'path': managed[t['id']]['path'],
+                     'commit': managed[t['id']]['commit_id'], 'status': managed[t['id']]['status']}
+                     if t['id'] in managed else None),
+                 **execution_projection(thread_status(t), queues.get(t['id'], []))}
                 for t in sorted(by_id.values(), key=lambda t: t.get("updatedAt", 0), reverse=True)]
 
     def pin_session(self, thread_id, pinned):
@@ -210,6 +338,8 @@ class CodexService:
 
     def _resume(self, thread_id):
         with self._subscriptions:
+            if self.observations_for(thread_id).get(('ownership', ''), {}).get('released'):
+                raise CodexError("会话已主动释放", code="writer_released", http_status=409)
             with self._lock:
                 # Codex's first turn must use the connection that started the
                 # not-yet-materialized thread. Resuming it can fail before rollout
@@ -239,20 +369,29 @@ class CodexService:
                 self._joined.add(thread_id)
             return response["thread"]
 
-    def get_session(self, thread_id, cursor=None, limit=30):
+    def get_session(self, thread_id, cursor=None, limit=30, native_revision=None):
         self.start()
+        # Reconcile the idle persisted history before resume takes a writer lock.
+        # A live Desktop/CLI writer remains authoritative and is never released.
+        history = self.history(thread_id, cursor=cursor, limit=limit, native_revision=native_revision)
         # Join once per connection, then read metadata without new notifications.
         # No cwd/model/permission values are supplied.
         read_only = False
+        workspace_unavailable = False
         try:
+            workspace = self.workspaces.row(thread_id) if self.workspaces else None
+            if workspace and workspace['status'] != 'ready':
+                # A removed managed worktree does not erase its native history.
+                # Reading must not resume the thread into a missing/rebound cwd.
+                raise CodexError('工作树不可执行', code='workspace_unavailable', http_status=409)
             thread = self._resume(thread_id)
         except CodexError as error:
-            if error.code != "native_rejected" or "already has an active writer" not in str(error):
+            workspace_unavailable = error.code == 'workspace_unavailable' or missing_workspace(error)
+            if not workspace_unavailable and error.code != 'writer_released' and (error.code != "native_rejected" or "already has an active writer" not in str(error)):
                 raise
             # Persisted history is readable without acquiring another runtime's writer.
             thread = self.connection.request("thread/read", {"threadId": thread_id, "includeTurns": False})["thread"]
             read_only = True
-        history = self.history(thread_id, cursor=cursor, limit=limit)
         thread = {**thread, "turns": history["turns"]}
         requests = self.interactions.list(thread_id)
         with self._lock:
@@ -275,33 +414,76 @@ class CodexService:
         usage = next((value for (kind, _), value in reversed(list(observations.items())) if kind == 'usage'), None)
         changes = [{'turnId': turn_id, **value} for (kind, turn_id), value in observations.items() if kind == 'changes']
         turn_settings = [{'turnId': turn_id, **value} for (kind, turn_id), value in observations.items() if kind == 'turnSettings']
+        queue = self.execution_queue.list(thread_id) if hasattr(self, 'execution_queue') else []
+        review_diagnostics = self.review_guard.diagnostics(thread_id, thread['turns'])
+        rebind = None
+        if workspace_unavailable:
+            try:
+                rebind = self._workspace_rebind(thread)
+            except CodexError:
+                # Missing/revoked source metadata cannot hide native history.
+                pass
         return {"thread": thread, "requests": requests, "settings": settings, 'plan': plan,
                 'tokenUsage': usage, 'changes': changes, 'turnSettings': turn_settings,
                 "activeTurnId": active, "status": status, "readOnly": read_only, "nextCursor": history["nextCursor"],
-                "backwardsCursor": history["backwardsCursor"]}
+                "backwardsCursor": history["backwardsCursor"],
+                "nativeRevision": history['nativeRevision'], "nativeSync": history['nativeSync'],
+                'nativeRuntime': self._thread_runtime(thread_id),
+                "writerOwner": 'none' if observations.get(('ownership', ''), {}).get('released') or (workspace and workspace['status'] != 'ready') else 'external' if read_only else 'relay',
+                'workspaceUnavailable': workspace_unavailable, 'workspaceRebind': rebind,
+                'reviewDiagnostics': review_diagnostics,
+                **execution_projection(status, queue, read_only=read_only, requests=requests)}
 
-    def history(self, thread_id, cursor=None, limit=30):
+    def _history_revision(self, thread_id, turns):
+        # Include mutable native item content, not only IDs: an in-progress
+        # turn can change without changing its identity or status.
+        encoded = json.dumps([self.connection.generation, self.native_journal.generation(thread_id), thread_id, turns[-2:]],
+                             sort_keys=True, ensure_ascii=True, separators=(',', ':')).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    def history(self, thread_id, cursor=None, limit=30, native_revision=None):
         self.start()
         with self._lock:
             if thread_id in self._created:
-                return {"turns": [], "nextCursor": None, "backwardsCursor": None}
+                return {"turns": [], "nextCursor": None, "backwardsCursor": None,
+                        'nativeRevision': self._history_revision(thread_id, []), 'nativeSync': {'state': 'ready'}}
+        native_state = self._native_history_state(thread_id)
+        if cursor is not None and (not native_state.ready or native_state.reprojected):
+            raise CodexError('原生历史已变化，请重新读取最近消息', code='history_changed', http_status=409)
         try:
+            if cursor is not None:
+                head = self.history_adapter.read_page(self.connection, thread_id, limit=2)
+                revision = self._history_revision(thread_id, list(head.turns))
+                if native_revision is not None and native_revision != revision:
+                    raise CodexError('原生历史已变化，请重新读取最近消息', code='history_changed', http_status=409)
+                if self._merge_live(thread_id, copy.deepcopy(list(head.turns))) != list(head.turns):
+                    raise CodexError('原生历史正在同步，请稍后读取更早消息', code='history_converging', http_status=409)
             page = self.history_adapter.read_page(self.connection, thread_id,
                     limit=max(1, min(100, int(limit))), cursor=cursor)
             turns = copy.deepcopy(list(page.turns))
             result = {"turns": turns, "nextCursor": page.next_cursor, "backwardsCursor": page.backwards_cursor}
+            result['nativeRevision'] = revision if cursor is not None else self._history_revision(thread_id, turns)
             if turns:
                 with self._lock:
                     self._materializing.pop(thread_id, None)
         except CodexError as error:
             if self._materializing_thread(thread_id) is not None and awaiting_rollout(error):
-                result = {"turns": [], "nextCursor": None, "backwardsCursor": None}
+                result = {"turns": [], "nextCursor": None, "backwardsCursor": None,
+                          'nativeRevision': self._history_revision(thread_id, [])}
             else:
                 raise
         except NativeHistoryProtocolError as error:
             raise CodexError(str(error), code="native_protocol") from error
         if cursor is None:
+            canonical = copy.deepcopy(result['turns'])
             result["turns"] = self._merge_live(thread_id, result["turns"])
+            converging = not native_state.ready or canonical != result['turns']
+            if converging:
+                result['nextCursor'] = None
+                result['backwardsCursor'] = None
+            result['nativeSync'] = {**native_state.public(), 'state': 'converging' if converging else 'ready'}
+        else:
+            result['nativeSync'] = native_state.public()
         return result
 
     def create_session(self, project_id, title="", worktree_ref=None):
@@ -354,18 +536,30 @@ class CodexService:
             raise CodexError("请输入消息", code="invalid_message", http_status=400)
         return [{"type": "text", "text": text, "text_elements": []}]
 
-    def send(self, thread_id, text, model=None, effort=None, client_message_id=None, *, input_items=None, mode=None):
+    def send(self, thread_id, text, model=None, effort=None, client_message_id=None, *, input_items=None, mode=None, service_tier=None):
         self.start()
         with self._operations:
             self._assert_workspace(thread_id)
+            self._assert_submission_ready(thread_id)
             self._resume(thread_id)
             with self._lock:
                 inherited_settings = copy.deepcopy(self._settings.get(thread_id, {}))
             params = {"threadId": thread_id, "input": input_items if input_items is not None else self._input(text)}
+            context = attachment_context(self.connection, params['input'])
+            if context:
+                params['additionalContext'] = context
+            if needs_image_staging(params['input']):
+                params['input'] = prepare_image_inputs(self.connection, self._attachment_cwd(thread_id), params['input'])
             if model is not None:
                 params["model"] = model
             if effort is not None:
                 params["effort"] = effort
+            if service_tier is not None:
+                if service_tier not in ('default', 'priority'):
+                    raise CodexError('处理模式无效', code='invalid_settings', http_status=400)
+                params['serviceTier'] = service_tier
+            elif inherited_settings.get('serviceTier') is not None:
+                params['serviceTier'] = inherited_settings['serviceTier']
             if client_message_id is not None:
                 params["clientUserMessageId"] = client_message_id
             saved_baseline = False
@@ -413,21 +607,45 @@ class CodexService:
                 if self._live[key].get('status') == 'inProgress':
                     self._active[thread_id] = turn['id']
                 settings = self._settings.setdefault(thread_id, {})
-                for key, source in (('sandbox', 'sandboxPolicy'), ('collaborationMode', 'collaborationMode'), ('model', 'model'), ('reasoningEffort', 'effort')):
+                for key, source in (('sandbox', 'sandboxPolicy'), ('collaborationMode', 'collaborationMode'), ('model', 'model'), ('reasoningEffort', 'effort'), ('serviceTier', 'serviceTier')):
                     if source in params:
                         settings[key] = copy.deepcopy(params[source])
                 selected_model = (params.get('collaborationMode') or {}).get('settings', {}).get('model') or model or inherited_settings.get('model')
                 observed = self.observations_for(thread_id).get(('turnSettings', turn['id']), {})
                 if selected_model and not observed.get('rerouted'):
-                    self._observe(thread_id, 'turnSettings', turn['id'], {'model': selected_model,
-                        'effort': effort if effort is not None else inherited_settings.get('reasoningEffort')})
+                    turn_settings = {'model': selected_model,
+                        'effort': effort if effort is not None else inherited_settings.get('reasoningEffort')}
+                    if params.get('serviceTier') is not None:
+                        turn_settings['serviceTier'] = params['serviceTier']
+                    self._observe(thread_id, 'turnSettings', turn['id'], turn_settings)
             if mode == 'default':
                 self._forget_observation(thread_id, 'modeBaseline')
             return {"threadId": thread_id, "turnId": turn.get("id")}
 
+    def _assert_submission_ready(self, thread_id, *, allow_active_queue=False):
+        with self._lock:
+            created = thread_id in self._created
+        if not created:
+            self._native_history_state(thread_id)
+        if self.interactions.list(thread_id):
+            raise CodexError('请先回答当前问题或处理审批', code='interaction_pending', http_status=409)
+        queue = self.execution_queue.list(thread_id) if hasattr(self, 'execution_queue') else []
+        if any(item.get('recoveryRequired') for item in queue):
+            if allow_active_queue:
+                # A newer explicit Desktop/mobile turn owns the input while it
+                # runs. Preserve the old recovery record without seizing that
+                # active turn's answers or subsequent queued instructions.
+                thread = self.connection.request('thread/read', {'threadId': thread_id, 'includeTurns': False})['thread']
+                with self._lock:
+                    active = self._active.get(thread_id)
+                if thread_status(thread) == 'running' or active:
+                    return
+            raise CodexError('请先继续或忽略待恢复任务', code='recovery_required', http_status=409)
+
     def validate_queue_target(self, thread_id):
         self.start()
         self._assert_workspace(thread_id)
+        self._assert_submission_ready(thread_id, allow_active_queue=True)
         with self._lock:
             if thread_id in self._created:
                 return
@@ -448,12 +666,218 @@ class CodexService:
             params = {"threadId": thread_id,
                       "input": input_items if input_items is not None else self._input(text),
                       "expectedTurnId": expected_turn_id}
+            context = attachment_context(self.connection, params['input'])
+            if context:
+                params['additionalContext'] = context
+            if needs_image_staging(params['input']):
+                params['input'] = prepare_image_inputs(self.connection, self._attachment_cwd(thread_id), params['input'])
             if client_message_id is not None:
                 params["clientUserMessageId"] = client_message_id
             result = self.connection.request("turn/steer", params)
             if not isinstance(result.get("turnId"), str) or not result["turnId"]:
                 raise CodexError("Codex 没有返回可核对的 turn ID", code="native_protocol", request_sent=True)
             return {"threadId": thread_id, "turnId": result.get("turnId")}
+
+    def preview_handoff(self, thread_id, action, owner):
+        self.start()
+        with self._lock:
+            joined = thread_id in self._joined
+        if action == 'release' and joined:
+            connection = self._thread_connection(thread_id)
+            ticket = secrets.token_urlsafe(32)
+            with self._lock:
+                self._subscription_releases[ticket] = {'threadId': thread_id, 'owner': owner,
+                    'generation': str(connection.generation), 'connection': connection,
+                    'expires': time.monotonic() + 120}
+                while len(self._subscription_releases) > 128:
+                    self._subscription_releases.popitem(last=False)
+            return {'ticket': ticket, 'threadId': thread_id, 'operation': action,
+                    'releaseScope': 'relay-subscription', 'requiresConfirmation': False,
+                    'affectedThreadIds': [thread_id], 'affectedThreads': [{'id': thread_id, 'title': thread_id}],
+                    'processIds': [], 'childProcessCount': 0, 'workspaceRebind': None}
+        connection, descriptor = self._handoff_connection(thread_id)
+        thread = self.connection.request("thread/read", {"threadId": thread_id, "includeTurns": False})['thread']
+        rebind = self._workspace_rebind(thread, require_target=True) if action == 'takeover' else None
+        preview = self.writers.preview(thread_id, owner, action)
+        preview['workspaceRebind'] = rebind
+        if rebind:
+            preview['requiresConfirmation'] = True
+        with self._lock:
+            self._handoff_workspaces[preview['ticket']] = copy.deepcopy(rebind)
+            self._handoff_hosts[preview['ticket']] = copy.deepcopy(descriptor)
+            while len(self._handoff_workspaces) > 128:
+                self._handoff_workspaces.popitem(last=False)
+            while len(self._handoff_hosts) > 128:
+                self._handoff_hosts.popitem(last=False)
+        threads = []
+        for affected in preview['affectedThreadIds']:
+            try:
+                thread = self.connection.request('thread/read', {'threadId': affected, 'includeTurns': False})['thread']
+                title = thread.get('name') or thread.get('preview') or affected
+            except CodexError:
+                title = affected
+            threads.append({'id': affected, 'title': str(title)[:160]})
+        preview['affectedThreads'] = threads
+        return preview
+
+    def _release_subscription(self, thread_id, owner, ticket):
+        with self._lock:
+            preview = self._subscription_releases.pop(ticket, None)
+        if preview is None:
+            return None
+        connection = self._thread_connection(thread_id)
+        if (preview['threadId'] != thread_id or preview['owner'] != owner
+                or preview['connection'] is not connection or preview['generation'] != str(connection.generation)
+                or preview['expires'] < time.monotonic()):
+            raise CodexError('释放订阅预览已失效，请重新操作', code='handoff_changed', http_status=409)
+        # Freeze automatic queue/resume before dispatch. An uncertain response
+        # must keep this intent rather than reacquiring the writer automatically.
+        self._observe(thread_id, 'ownership', '', {'released': True})
+        try:
+            self.connection.request('thread/unsubscribe', {'threadId': thread_id})
+            if str(connection.generation) != preview['generation']:
+                raise CodexError('原生连接已变化，释放结果待核对', code='handoff_changed', http_status=409, request_sent=True)
+        except CodexError as error:
+            if error.definite:
+                self._forget_observation(thread_id, 'ownership')
+            raise
+        with self._lock:
+            self._joined.discard(thread_id)
+            self._created.pop(thread_id, None)
+            self._materializing.pop(thread_id, None)
+            self._settings.pop(thread_id, None)
+        self.on_event({'method': 'relay/ownershipChanged', 'params': {'threadId': thread_id}})
+        return {'threadId': thread_id, 'released': True, 'releaseScope': 'relay-subscription'}
+
+    def _workspace_rebind(self, thread, *, require_target=False):
+        """Offer only the original native project's root for a missing cwd."""
+        path = thread.get('cwd')
+        if not isinstance(path, str) or not path:
+            return None
+        try:
+            # Any existing entry, including a file/symlink, is not a removed cwd.
+            self.connection.request('fs/getMetadata', {'path': path})
+            return None
+        except CodexError as error:
+            if error.code != 'native_rejected' or not error.definite or not any(
+                    token in str(error).lower() for token in ('no such file', 'does not exist', 'not found')):
+                raise
+        managed = self.workspaces.row(thread.get('id')) if self.workspaces else None
+        previous = self.observations_for(thread.get('id')).get(('externalWorkspace', ''))
+        association = previous if previous and previous.get('path') == path else None
+        project_id = thread.get('projectId') or (managed.get('project_id') if managed else None) or (association or {}).get('projectId')
+        if not project_id:
+            if require_target:
+                raise CodexError('原工作目录已不存在，无法确认来源项目', code='workspace_unavailable', http_status=409)
+            return None
+        project = self.projects.get(project_id)
+        roots = [root['path'] for root in project.get('roots', []) if isinstance(root, dict) and root.get('path')]
+        if association and association.get('projectRoot') not in roots:
+            raise CodexError('原项目目录已变化，不能重绑工作目录', code='workspace_unavailable', http_status=409)
+        if len(roots) != 1 or roots[0] == path:
+            if require_target:
+                raise CodexError('原工作目录已不存在，无法确定唯一来源目录', code='workspace_unavailable', http_status=409)
+            return None
+        metadata = self.connection.request('fs/getMetadata', {'path': roots[0]})
+        if metadata.get('isDirectory') is not True:
+            if require_target:
+                raise CodexError('来源项目目录已不可用', code='workspace_unavailable', http_status=409)
+            return None
+        return {'path': roots[0], 'missingPath': path}
+
+    def handoff(self, thread_id, action, *, owner, ticket, confirmed=False, rebind_workspace=None):
+        # Queue dispatch and read-side resume remain blocked until handoff finishes.
+        with getattr(self, 'queue_lock', self._operations), self._operations, self._subscriptions:
+            self.start()
+            if action == 'release' and rebind_workspace is None:
+                released = self._release_subscription(thread_id, owner, ticket)
+                if released is not None:
+                    return released
+            connection, descriptor = self._handoff_connection(thread_id)
+            with self._lock:
+                expected_host = self._handoff_hosts.pop(ticket, None)
+            if expected_host != descriptor:
+                raise CodexError('原生主机或交接预览已变化，请重新预览', code='handoff_host_changed', http_status=409)
+            if action == 'takeover':
+                thread = self.connection.request('thread/read', {'threadId': thread_id, 'includeTurns': False})['thread']
+                current_rebind = self._workspace_rebind(thread, require_target=True)
+                with self._lock:
+                    preview_rebind = self._handoff_workspaces.pop(ticket, None)
+                if current_rebind is not None or rebind_workspace is not None:
+                    if (confirmed is not True or not current_rebind or current_rebind != preview_rebind
+                            or rebind_workspace != current_rebind['path']):
+                        raise CodexError('工作目录已变化，请确认原项目目录后重新接管', code='workspace_rebind_confirmation_required', http_status=409)
+            elif rebind_workspace is not None:
+                raise CodexError('释放操作不能修改工作目录', code='invalid_request', http_status=400)
+            snapshot = self.writers.consume(thread_id, owner, action, ticket, confirmed)
+            restart_args = self.writers.restart_command(snapshot, descriptor['pid'], connection.socket_path)
+            _current_connection, current_host = self._handoff_connection(thread_id)
+            if current_host != descriptor or _current_connection is not connection:
+                raise CodexError('原生主机已变化，未结束任何进程', code='handoff_host_changed', http_status=409)
+            affected = {thread_id, *(t for holder in snapshot['holders'] for t in holder['threads'])}
+            # Pause all affected Relay queues/automatic subscriptions before killing
+            # the writer. Interrupted instructions are never resumed or replayed.
+            for affected_id in affected:
+                if self.observations:
+                    self.observations.put(affected_id, 'ownership', '', {'released': True})
+                self._observe(affected_id, 'ownership', '', {'released': True})
+            self.writers.terminate(snapshot)
+            for affected_id in affected:
+                with self._lock:
+                    self._joined.discard(affected_id)
+                    self._active.pop(affected_id, None)
+                    self._created.pop(affected_id, None)
+                    self._materializing.pop(affected_id, None)
+                    for key in [key for key in self._live if key[0] == affected_id]:
+                        self._live.pop(key, None)
+                        self._pending_terminal.discard(key)
+            # A supervisor may already have restored the same endpoint. Otherwise
+            # replace only the daemon we just terminated using its verified argv.
+            if restart_args:
+                try:
+                    connection.start()
+                except CodexError:
+                    self.writers.restart(restart_args, self._handoff_log)
+                deadline = time.monotonic() + 15
+                while True:
+                    try:
+                        connection.start()
+                        break
+                    except CodexError:
+                        if time.monotonic() >= deadline:
+                            raise CodexError('原持锁进程已结束，但原生运行时尚未恢复；不会重发任务', code='handoff_runtime_unavailable', http_status=503, request_sent=True)
+                        time.sleep(.2)
+            if action == 'takeover':
+                self.start()
+                if rebind_workspace is None:
+                    # Preserve the idle lock window after explicit takeover so
+                    # an orphan terminal record can be repaired before resume.
+                    self._native_history_state(thread_id)
+                resume = {'threadId': thread_id, 'excludeTurns': True}
+                if rebind_workspace is not None:
+                    resume['cwd'] = rebind_workspace
+                response = self.connection.request('thread/resume', resume)
+                if rebind_workspace is not None and (response.get('thread') or {}).get('cwd') != rebind_workspace:
+                    raise CodexError('原生未确认指定工作目录，接管结果待核对', code='workspace_rebind_unconfirmed', http_status=409, request_sent=True)
+                acquired = self.writers.snapshot(thread_id)
+                runtime_id = self._thread_connection(thread_id).status().get('runtimeId')
+                if not acquired['holders'] or any(str(h['pid']) != str(runtime_id) for h in acquired['holders']):
+                    raise CodexError('原进程已结束，但未确认新运行时持锁', code='handoff_acquire_failed', http_status=409)
+                if self.observations:
+                    self.observations.delete(thread_id, 'ownership')
+                self._forget_observation(thread_id, 'ownership')
+                with self._lock:
+                    self._joined.add(thread_id)
+                    self._settings[thread_id] = self._settings_from(response)
+                if rebind_workspace is not None and self.workspaces:
+                    with self.workspaces.db.transaction() as c:
+                        # Keep the original worktree/archive record, but this
+                        # thread now executes in the verified original project.
+                        c.execute('UPDATE workspaces SET thread_id=NULL WHERE thread_id=?', (thread_id,))
+            elif self.writers.busy(thread_id):
+                raise CodexError('会话被其他进程重新持有，未确认释放成功', code='writer_still_held', http_status=409)
+            self.on_event({'method': 'relay/ownershipChanged', 'params': {'threadId': thread_id}})
+            return {'threadId': thread_id}
 
     def interrupt(self, thread_id, turn_id):
         self.start()
@@ -468,6 +892,12 @@ class CodexService:
         return result
 
     def models(self):
+        return self.model_catalog.public()['models']
+
+    def capabilities(self, refresh=False):
+        return self.model_catalog.public(refresh=refresh)
+
+    def _load_models(self):
         self.start()
         return list(pages(self.connection, "model/list", {"includeHidden": False}))
 
@@ -494,19 +924,31 @@ class CodexService:
     def review_context(self, thread_id):
         return review_context(self.connection, self._attachment_cwd(thread_id))
 
+    def external_workspace(self, thread_id):
+        self.start()
+        if self.workspaces and self.workspaces.row(thread_id):
+            return None
+        thread = self.connection.request('thread/read', {'threadId': thread_id, 'includeTurns': False})['thread']
+        projects = [self.projects.get(thread['projectId'])] if thread.get('projectId') else list(pages(self.connection, 'project/list'))
+        return self.projects.external_worktrees.associations([thread], projects).get(thread_id)
+
     def review(self, thread_id, target):
         target = validate_review(target)
         self.start()
         with self._operations:
             self._assert_workspace(thread_id)
+            self._assert_submission_ready(thread_id)
             snapshot = self.get_session(thread_id)
             if snapshot.get('readOnly') or snapshot.get('activeTurnId') or snapshot.get('requests'):
                 return None
+            cwd = snapshot['thread'].get('cwd') or snapshot.get('settings', {}).get('cwd')
+            baseline = self.review_guard.begin(thread_id, cwd)
             result = self.connection.request('review/start', {'threadId': thread_id, 'target': target, 'delivery': 'inline'})
             turn_id = (result.get('turn') or {}).get('id')
             if not turn_id:
                 raise CodexError('原生审查没有返回执行身份', code='native_protocol', request_sent=True)
             self._created.pop(thread_id, None)
+            self.review_guard.bind(thread_id, turn_id, baseline)
             return {'threadId': thread_id, 'turnId': turn_id}
 
     def read_file(self, path):
@@ -517,6 +959,10 @@ class CodexService:
         self.start()
         return stream_download(self.connection, path)
 
+    def prepare_download(self, path, range_header=None, if_range=None):
+        self.start()
+        return prepare_download(self.connection, path, range_header, if_range)
+
     def read_directory(self, path):
         self.start()
         return read_directory(self.connection, path)
@@ -524,6 +970,22 @@ class CodexService:
     def upload_attachment_stream(self, thread_id, name, stream, size):
         self.start()
         return upload_attachment_stream(self.connection, self._attachment_cwd(thread_id), name, stream, size)
+
+    def _project_attachment_cwd(self, project_id):
+        self.start()
+        project = self.projects.get(project_id)
+        roots = project.get('roots') or []
+        if not roots or not isinstance(roots[0], dict) or not roots[0].get('path'):
+            raise CodexError('项目没有工作目录', code='invalid_project', http_status=409)
+        return roots[0]['path']
+
+    def upload_project_attachment_stream(self, project_id, name, stream, size):
+        # Staging is scoped to the selected native project; a pending composer
+        # must not create an empty thread simply to obtain an upload location.
+        return upload_attachment_stream(self.connection, self._project_attachment_cwd(project_id), name, stream, size)
+
+    def upload_project_attachment(self, project_id, name, encoded):
+        return upload_attachment(self.connection, self._project_attachment_cwd(project_id), name, encoded)
 
     def _attachment_cwd(self, thread_id):
         self.start()
@@ -536,14 +998,30 @@ class CodexService:
     def upload_attachment(self, thread_id, name, encoded):
         return upload_attachment(self.connection, self._attachment_cwd(thread_id), name, encoded)
 
-    def update_settings(self, thread_id, *, model=None, effort=None):
+    def update_settings(self, thread_id, *, model=None, effort=None, service_tier=None):
         self.start()
+        self._assert_workspace(thread_id)
         params = {"threadId": thread_id}
         if model is not None:
             params["model"] = model
         if effort is not None:
             params["effort"] = effort
-        return self.connection.request("thread/settings/update", params)
+        if service_tier is not None:
+            if service_tier not in ('default', 'priority'):
+                raise CodexError('处理模式无效', code='invalid_settings', http_status=400)
+            params['serviceTier'] = service_tier
+        with self._operations:
+            self._resume(thread_id)
+            response = self.connection.request("thread/settings/update", params)
+            with self._lock:
+                settings = self._settings.setdefault(thread_id, {})
+                settings.update(self._settings_from(params))
+                settings.update(self._settings_from(response.get('threadSettings') or response))
+            if model is not None or effort is not None:
+                for kind, turn_id in list(self.observations_for(thread_id)):
+                    if kind == 'usage':
+                        self._forget_observation(thread_id, 'usage', turn_id)
+        return {'threadId': thread_id}
 
     def _event(self, event):
         if event.get("connectionId", self.connection.generation) != self.connection.generation:
@@ -551,6 +1029,9 @@ class CodexService:
         self.interactions.receive(event)
         method, params = event.get("method"), event.get("params", {})
         thread_id, turn_id = params.get("threadId"), params.get("turnId")
+        if method.startswith(("thread/", "project/")) or method in {
+                "turn/started", "turn/completed", "relay/nativeDisconnected", "relay/writerDisconnected"}:
+            self.projects.invalidate()
         with self._lock:
             if thread_id and turn_id and method == 'turn/plan/updated':
                 self._observe(thread_id, 'plan', turn_id, {'turnId': turn_id, 'plan': params.get('plan', []), 'explanation': params.get('explanation')})
@@ -564,10 +1045,21 @@ class CodexService:
             if method == "relay/nativeDisconnected":
                 self._active.clear()
                 self._live.clear()
+                self._pending_terminal.clear()
                 self._settings.clear()
                 self._created.clear()
                 self._materializing.clear()
                 self._joined.clear()
+            elif method == 'relay/writerDisconnected':
+                lost = set(params.get('threadIds', []))
+                for tid in lost:
+                    self._active.pop(tid, None)
+                    self._settings.pop(tid, None)
+                    self._created.pop(tid, None)
+                    self._materializing.pop(tid, None)
+                    self._joined.discard(tid)
+                self._live = OrderedDict((key, value) for key, value in self._live.items() if key[0] not in lost)
+                self._pending_terminal = {key for key in self._pending_terminal if key[0] not in lost}
             elif method == "thread/settings/updated" and thread_id:
                 settings = params.get("threadSettings")
                 if isinstance(settings, dict):
@@ -586,6 +1078,11 @@ class CodexService:
                 turn = copy.deepcopy(params.get("turn", {}))
                 turn_id = turn.get("id")
                 if turn_id:
+                    previous = self._live.get((thread_id, turn_id))
+                    if previous and not turn.get('items'):
+                        turn['items'] = copy.deepcopy(previous.get('items', []))
+                    if method == 'turn/completed' and self._active.get(thread_id) == turn_id:
+                        self._pending_terminal.add((thread_id, turn_id))
                     self._live[(thread_id, turn_id)] = turn
                     if method == "turn/started":
                         self._active[thread_id] = turn_id
@@ -608,9 +1105,14 @@ class CodexService:
                         items.append(item)
                     if item is not None:
                         field = "text" if "agentMessage" in method else "aggregatedOutput"
-                        item[field] = str(item.get(field) or "") + str(params.get("delta") or "")
-                while len(self._live) > 128:
-                    self._live.popitem(last=False)
+                        previous = str(item.get(field) or "")
+                        item[field] = previous + str(params.get("delta") or "")
+                        # Unicode code-point offset makes snapshot/SSE overlap idempotent
+                        # without copying accumulated output into every buffered event.
+                        event = {**event, "params": {**params, "relayOffset": len(previous)}}
+            while len(self._live) > 128:
+                key, _ = self._live.popitem(last=False)
+                self._pending_terminal.discard(key)
         # Account / remote-control notifications can carry personal account
         # metadata and do not belong in a chat event stream.
         if ("id" in event or method.startswith(("thread/", "turn/", "item/", "serverRequest/", "relay/"))
@@ -620,15 +1122,24 @@ class CodexService:
     def _merge_live(self, thread_id, turns):
         with self._lock:
             live = [copy.deepcopy(t) for (tid, _), t in self._live.items() if tid == thread_id]
+            pending_terminal = set(self._pending_terminal)
         by_id = {t["id"]: t for t in turns}
         for current in live:
             if current["id"] not in by_id:
-                # Only a live in-progress turn belongs after the latest page.
-                if current.get("status") == "inProgress":
+                # A just-completed observed turn can still be ahead of persisted
+                # history. Keep its temporary projection until native catches up;
+                # otherwise a terminal event could publish a false ready/empty page.
+                pending = (thread_id, current['id']) in pending_terminal
+                started = current.get('startedAt')
+                newer = isinstance(started, (int, float)) and any(
+                    isinstance(turn.get('startedAt'), (int, float)) and turn['startedAt'] > started for turn in turns)
+                if current.get("status") == "inProgress" or pending and not newer:
                     turns.append(current)
                 continue
             target = by_id[current["id"]]
             if target.get("status") not in {"inProgress", "notStarted", "interrupted"}:
+                with self._lock:
+                    self._pending_terminal.discard((thread_id, current['id']))
                 continue
             existing = {i["id"]: i for i in target.get("items", [])}
             for item in current.get("items", []):
@@ -638,6 +1149,6 @@ class CodexService:
                 elif len(item.get("text", "")) >= len(old.get("text", "")) and (
                         not old.get("text") or item.get("text", "").startswith(old.get("text", ""))):
                     old.update(item)
-            if current.get("status") == "inProgress":
-                target["status"] = "inProgress"
+            if current.get("status") == "inProgress" or (thread_id, current['id']) in pending_terminal:
+                target["status"] = current['status']
         return turns

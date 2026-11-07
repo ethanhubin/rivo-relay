@@ -1,6 +1,7 @@
 package dev.rivo.relay
 
 import android.graphics.Bitmap
+import android.os.SystemClock
 import android.view.WindowManager
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -88,16 +90,26 @@ class QueueAndPinUiTest {
         compose.onNodeWithTag("queue_steer_1").performClick()
         compose.runOnIdle { assertEquals("active-turn", operations.last().getString("expectedTurnId")) }
         compose.onNodeWithTag("queue_edit_2").performClick()
-        compose.onNodeWithTag("queue_edit_text").performTextReplacement("修改后的任务")
-        compose.onNodeWithTag("queue_save").performClick()
+        compose.onNodeWithTag("message_input").assertTextContains("待执行任务 2", substring = true)
         compose.runOnIdle {
-            assertEquals("edit", operations.last().getString("operation")); assertEquals(0, operations.last().getInt("revision"))
-            assertEquals("修改后的任务", operations.last().getString("text"))
+            assertEquals("remove", operations.last().getString("operation")); assertEquals(0, operations.last().getInt("revision"))
+            assertEquals("2", operations.last().getString("itemId"))
+        }
+        // Restoring a task focuses the composer and opens the system IME. Wait for
+        // its resize to finish before injecting another touch into the moving queue.
+        var previousBounds: Rect? = null
+        var stableSince = SystemClock.uptimeMillis()
+        compose.waitUntil(10000) {
+            val bounds = compose.onNodeWithTag("queue_edit_3").fetchSemanticsNode().boundsInRoot
+            val keyboardVisible = ViewCompat.getRootWindowInsets(compose.activity.window.decorView)?.isVisible(WindowInsetsCompat.Type.ime()) == true
+            val now = SystemClock.uptimeMillis()
+            if (bounds != previousBounds || !keyboardVisible) stableSince = now
+            previousBounds = bounds
+            keyboardVisible && now - stableSince >= 250
         }
         compose.onNodeWithTag("queue_edit_3").performClick()
-        compose.onNodeWithText("撤回").performClick()
-        compose.onNodeWithTag("queue_remove").performClick()
         compose.runOnIdle { assertEquals("remove", operations.last().getString("operation")); assertEquals("3", operations.last().getString("itemId")) }
+        compose.onNodeWithTag("message_input").assertTextContains("待执行任务 3", substring = true)
         evidence("execution-queue-0.1.4")
         compose.onNodeWithTag("message_input").performClick().performTextInput("继续下一项")
         compose.waitUntil(10000) { ViewCompat.getRootWindowInsets(compose.activity.window.decorView)?.isVisible(WindowInsetsCompat.Type.ime()) == true }

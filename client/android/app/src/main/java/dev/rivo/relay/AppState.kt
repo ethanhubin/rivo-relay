@@ -20,13 +20,43 @@ import kotlinx.coroutines.flow.*
 class NodeRuntime(val connection: NodeConnection, private val scope: CoroutineScope, vault: CredentialStore, context: Context,
     requestNotificationPermission: () -> Unit, private val failure: (Throwable) -> Unit) {
     val api = connection.api()
+    private var transportNetwork = defaultNetwork(context)
+    val network = observeDefaultNetwork(context).onEach {
+        if (it != transportNetwork) { transportNetwork = it; api.resetTransport() }
+    }.stateIn(scope, SharingStarted.Eagerly, transportNetwork)
     val conversations = ConversationStore(ConversationStore.nodeDirectory(File(context.filesDir, "conversations"),
-        "${connection.nodeId}:${connection.deviceId}:${connection.base}"))
+        "${connection.nodeId}:${connection.deviceId}:${connection.storageBase}"))
     val notifications = TaskNotifications(context.applicationContext, api, scope, connection.base, connection.name, requestNotificationPermission, failure)
     val catalog = CatalogController(api, scope, failure, store = conversations)
     val session = SessionController(api, scope, conversations, notifications::observe, notifications::setVisibleThread, failure)
-    val submissions = SubmissionCoordinator(api, scope, vault, "pending:${connection.nodeId}:${connection.deviceId}:${connection.base}", failure)
-    private val todoReminders = TodoReminderScheduler(context.applicationContext, "${connection.nodeId}:${connection.deviceId}:${connection.base}", connection.base)
+    private val pendingRevisionMutable = MutableStateFlow(0L)
+    val pendingRevision = pendingRevisionMutable.asStateFlow()
+    val submissions = SubmissionCoordinator(api, scope, vault, "pending:${connection.nodeId}:${connection.deviceId}:${connection.storageBase}",
+        onResolved = { pending, response ->
+            session.resolveSubmission(pending.id, response)
+            if (conversations.markSentDraftResolved(pending.id, response)) scope.launch {
+                try { conversations.clearAcceptedSentDraft(pending.id) }
+                catch (e: CancellationException) { throw e }
+                catch (e: Exception) { failure(e) }
+            }
+            if (conversations.resolvePendingSubmission(pending.id, response) != null) pendingRevisionMutable.value++
+        }, failure = failure)
+    init {
+        // These are known submission receipts, never requests to repeat a write.
+        scope.launch {
+            for ((id, checkpoint) in conversations.sentDraftCheckpoints()) try {
+                val accepted = if (checkpoint.string("status") == "accepted") true else {
+                    val response = api.call("/v1/submissions/${encoded(id)}")
+                    session.resolveSubmission(id, response)
+                    if (conversations.resolvePendingSubmission(id, response) != null) pendingRevisionMutable.value++
+                    conversations.markSentDraftResolved(id, response)
+                }
+                if (accepted) conversations.clearAcceptedSentDraft(id)
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { /* Keep the durable checkpoint for the next connection. */ }
+        }
+    }
+    private val todoReminders = TodoReminderScheduler(context.applicationContext, "${connection.nodeId}:${connection.deviceId}:${connection.storageBase}", connection.base)
     val todos = TodosController(api, scope, failure, store = conversations, onChanged = { items ->
         todoReminders.update(items)
         if (items.any { !it.completed && it.details.optLong("reminderAt", 0) > System.currentTimeMillis() }) requestNotificationPermission()
@@ -43,10 +73,11 @@ class NodeRuntime(val connection: NodeConnection, private val scope: CoroutineSc
         conversations.enqueueDraft(threadId, draft) { error ->
             scope.launch { failure(IllegalArgumentException(error.message ?: "无法保存手机草稿，请检查可用空间")) }
         }
+        if (threadId.startsWith("pending:")) pendingRevisionMutable.value++
     }
 }
 data class AppState(val node: NodeRuntime? = null, val pairing: Boolean = false, val error: String? = null,
-    val savedNodes: List<SavedNode> = emptyList(), val requestNotificationPermission: Boolean = false)
+    val savedNodes: List<SavedNode> = emptyList(), val requestNotificationPermission: Boolean = false, val reconnecting: Boolean = false)
 class AppViewModel(application: Application): AndroidViewModel(application) {
     private val vault = CredentialStore(application)
     private val pairing = PairingRepository(vault)
@@ -107,7 +138,30 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
         if (error is CancellationException) return
         if (error is ApiException && error.status == 401) {
             nodeJob?.cancel(); pairing.invalidate(); mutable.value = AppState(error = "节点授权已失效，请重新扫码连接。", savedNodes = pairing.saved())
-        } else mutable.update { it.copy(error = when (error) { is ApiException, is IllegalArgumentException -> error.message; else -> "无法连接节点，请检查网络。已提交操作不会自动重发。" }) }
+        } else mutable.update { it.copy(error = when (error) { is ApiException, is IllegalArgumentException -> error.message; else -> mutable.value.node?.api?.describeFailure(error) ?: connectionFailure(error) }) }
+    }
+    private var reconnectJob: Job? = null
+    fun retryConnection() {
+        if (reconnectJob?.isActive == true) return
+        val node = mutable.value.node ?: return
+        mutable.update { it.copy(error = null, reconnecting = true) }
+        reconnectJob = viewModelScope.launch {
+            try {
+                node.api.resetTransport()
+                withTimeout(15_000) { node.api.call("/v1/node") }
+                if (mutable.value.node !== node) return@launch
+                node.catalog.refreshProjects()
+                if (node.catalog.state.value.selectedProject != null) node.catalog.refreshThreads()
+                node.session.refresh()
+            } catch (e: TimeoutCancellationException) {
+                if (mutable.value.node === node) fail(java.net.SocketTimeoutException("Reconnect timed out"))
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                if (mutable.value.node === node) fail(e)
+            } finally {
+                if (mutable.value.node === node) mutable.update { it.copy(reconnecting = false) }
+            }
+        }
     }
     fun disconnect() {
         // Clear the active selection; saved node credentials remain available for switching.

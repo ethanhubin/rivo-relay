@@ -46,7 +46,7 @@ class ChatInteractionParityUiTest {
             JSONObject("""{"model":"model-b","displayName":"模型 B","supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}"""))
         var submitted: List<String?>? = null
         var loads = 0
-        compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize()) {
+        compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize().systemBarsPadding()) {
             ChatScreen(SessionState(id = snapshot.id, snapshot = snapshot), false, false, models, {},
                 onSend = { _, _, _, _ -> error("Mode-aware callback must be used") }, onStop = {}, onRespond = { _, _ -> },
                 onRefresh = {}, onLoadModels = { loads++ }, onEarlier = {}, readFile = { JSONObject() },
@@ -66,10 +66,14 @@ class ChatInteractionParityUiTest {
         // Compose's node gesture injection targets its owner directly. Use WindowManager dispatch
         // so the separate non-focusable Popup window receives ACTION_OUTSIDE as a real tap would.
         val titleCenter = compose.onNodeWithTag("conversation_title").fetchSemanticsNode().boundsInWindow.center
+        val windowOrigin = IntArray(2)
+        compose.runOnIdle { compose.activity.window.decorView.getLocationOnScreen(windowOrigin) }
+        val screenX = titleCenter.x + windowOrigin[0]
+        val screenY = titleCenter.y + windowOrigin[1]
         val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
         val downTime = SystemClock.uptimeMillis()
-        val down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, titleCenter.x, titleCenter.y, 0)
-        val up = MotionEvent.obtain(downTime, downTime + 20, MotionEvent.ACTION_UP, titleCenter.x, titleCenter.y, 0)
+        val down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, screenX, screenY, 0)
+        val up = MotionEvent.obtain(downTime, downTime + 20, MotionEvent.ACTION_UP, screenX, screenY, 0)
         try {
             down.source = InputDevice.SOURCE_TOUCHSCREEN; up.source = InputDevice.SOURCE_TOUCHSCREEN
             assertTrue(automation.injectInputEvent(down, true))
@@ -89,7 +93,7 @@ class ChatInteractionParityUiTest {
         var pinned by mutableStateOf(false)
         var archives = 0
         var refreshes = 0
-        compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize()) {
+        compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize().systemBarsPadding()) {
             ChatScreen(SessionState(id = snapshot.id, snapshot = snapshot), false, false, emptyList(), {},
                 onSend = { _, _, _, _ -> error("This fixture must not send") }, onStop = {}, onRespond = { _, _ -> },
                 onRefresh = { refreshes++ }, onLoadModels = {}, onEarlier = {}, readFile = { JSONObject() },

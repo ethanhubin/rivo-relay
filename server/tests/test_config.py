@@ -61,6 +61,13 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             replace(self.config, public_url="http://127.0.0.1.example.test").validate()
 
+    def test_configured_tailnet_proxy_public_url(self):
+        replace(self.config, public_url="http://100.124.150.1:18767").validate()
+        with self.assertRaises(ValueError):
+            replace(self.config, public_url="http://100.124.150.1.evil.test:18767").validate()
+        with self.assertRaises(ValueError):
+            replace(self.config, host="0.0.0.0", public_url="http://100.124.150.1:18767").validate()
+
     def test_listener_port_and_workspace_identity(self):
         for port in (0, -1, 65536):
             with self.assertRaises(ValueError):

@@ -46,7 +46,7 @@ internal class TaskChangeTracker {
                     if (id in running || (initialized && overlap && id == latest && id !in known))
                         result += TaskNotice("turn:$id:$status", if (status == "failed") "failed" else "completed")
                     running -= id
-                } else if (status == "interrupted") running -= id
+                } else if (status in setOf("interrupted", "canceled", "cancelled")) running -= id
                 known += id
             }
         }
@@ -141,10 +141,12 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
     private fun ensureSharedStream() {
         if (streamJob?.isActive == true) return
         streamJob = scope.launch {
+            var eventCursor: String? = null
             while (isActive) {
                 try {
                     // Relay currently broadcasts the node event bus; one socket serves every watched thread.
-                    api.events("").collect { event ->
+                    api.events("", eventCursor).collect { event ->
+                        event.cursor?.let { eventCursor = it.takeIf(String::isNotBlank) }
                         if (event.type == "revoked") {
                             failure(ApiException(401, "revoked", "节点授权已失效"))
                             return@collect

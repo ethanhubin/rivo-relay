@@ -2,6 +2,10 @@
 
 单个 `:app` 模块，包名 `dev.rivo.relay`，不会覆盖 QiGuang。采用 Kotlin、Compose、Moonlight 主题、StateFlow 和 OkHttp。QiGuang 的来源与调整记录见 [migration-sources.json](migration-sources.json)。
 
+2026-11-07 对照 QiGuang 最新本地发布版的 Codex 迁移见 [完整对照](../../docs/qiguang-codex-sync.md)。包括模型/快速模式与节点默认设置、写权限条、恢复面板、精确身份消息接管、草稿恢复、10 图附件、链接转发及结构化差异分页，以及 Desktop 运行时状态、原生历史失效、Coil 图片查看器、Media3 音视频、媒体库和流式语音输入；验证以根目录 `docs/validation.md` 为准。
+
+当前安装包版本为 **0.2.10 / versionCode 22**，包名和签名沿用此前测试版，可覆盖升级已有 Rivo Relay 并保留登录与本地数据。[下载 APK](https://github.com/ethanhubin/rivo-relay/releases/download/v0.2.10/rivo-relay-0.2.10-debug.apk)；本地构建、签名、校验摘要位于 `workspace/artifacts/release-0.2.10/`。该包继续使用原有 debug 签名，Desktop 共享需要节点实际加载宿主桥接，语音识别需要节点配置 ASR。
+
 ## 构建
 
 需要 JDK 17、Android SDK 37。设置 `JAVA_HOME` 和 `ANDROID_HOME` 后，在本目录执行：
@@ -10,7 +14,7 @@
 ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug
 ```
 
-应用位于 `app/build/outputs/apk/debug/app-debug.apk`；测试包位于 `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk`。Release 配对要求 HTTPS；Debug 只允许 localhost、127.0.0.1、10.0.2.2 的 HTTP，适用于本机模拟器联调。
+应用位于 `app/build/outputs/apk/debug/app-debug.apk`；测试包位于 `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk`。通常使用受信任 HTTPS；当前各构建仅为明确配置的本机 Tailscale IP 增加 HTTP 例外，Debug 另允许 localhost、127.0.0.1、10.0.2.2 的 HTTP，适用于本机模拟器联调。
 
 ## 职责
 
@@ -20,7 +24,7 @@
 - `ui`：登录、项目、会话、聊天、原生审批/提问、待办；系统选图和节点文件只读预览。
 - `AppState`/`App`：节点生命周期和导航组合，不负责原生协议业务。
 
-扫码使用 ZXing 的真实相机帧解码。系统 Photo Picker 的图片草稿只在内存中保留，经方向修正和压缩后以原生 `image` 输入发送；没有额外媒体上传服务。未知原生消息保留内容，无法处理的请求明确提示在 Desktop 继续。
+扫码使用 ZXing 的真实相机帧解码。系统 Photo Picker 保留 JPEG/PNG/WebP 原始字节并按节点持久保存草稿；最多10张、单张20MiB、合计40MiB。编辑和预览按像素预算解码并处理EXIF，提交时由节点分块写入实际Codex主机并转为 `localImage`。媒体能力经认证代理访问；语音由可选既有ASR提供，未配置时禁用麦克风。未知原生消息保留内容，无法处理的请求明确提示在 Desktop 继续。
 
 写入先保存提交 ID，再发送一次。断线后只核对原 ID，不自动重发。SSE 用来触发原生快照读取；暂停应用时保留会话身份与草稿，恢复后重新核对。文件引用通过节点原生文件接口读取，不将节点路径交给手机浏览器。
 
@@ -54,7 +58,7 @@
 
 已提供原生命令/文件修改审批、权限请求、密码遮蔽的问题输入、MCP 简单类型表单和 URL 交互。复杂嵌套 MCP / OpenAI 表单及 `openai/userVerification` 需要在 Desktop 完成；界面明确提示，不让用户填写协议 JSON。未知原生请求与未知历史 item 不会被当成已处理。
 
-文件预览通过原生节点 FS，只读，预览响应上限 4 MiB；独立下载支持 1 GiB，不受预览限制。手机显示文本前 200,000 个字符，并说明截断；不支持的二进制格式明确提示在 Desktop 查看。原生 `text`、`image`、`mention` 输入有正常 UI；历史 `skill` 输入仍可查看；音频输入尚未提供采集 UI。图片草稿最多三张，单张压缩为不超过 1 MiB 的 JPEG。
+文件预览通过原生节点 FS，只读，预览响应上限 4 MiB；独立下载支持 1 GiB，不受预览限制。手机显示文本前 200,000 个字符，并说明截断；不支持的二进制格式明确提示在 Desktop 查看。原生 `text`、`image`、`mention` 输入有正常 UI；历史 `skill` 输入仍可查看。麦克风经已配置的 ASR 转写文字后提交，音频文件可作为普通附件；图片草稿最多十张，保留 JPEG/PNG/WebP 原始字节，单张 20 MiB、合计 40 MiB。
 
 模拟器真实扫码、文本会话和待办交付已由实际节点执行并获得回复；测试是否整例通过及最终截图以根目录验收记录为准，不能把测试包成功构建记作流程已通过。
 
@@ -81,3 +85,9 @@
 当前单文件上传、下载上限统一为 1 GiB（1,073,741,824 字节）。手机端采用缓存文件/输出流，节点 HTTP 上传流按块交给原生文件接口；不再先读完整请求和生成整份 Base64。下载通过原生默认权限的命令读取文件长度及 4 MiB 范围，再逐块发送 HTTP，预览也先检查大小，不会为预览小段内容读取整个大文件。POSIX 参数通过 argv 传入；Windows 路径经过 PowerShell 字符串转义并使用 EncodedCommand。未覆盖权限设置。Windows 分支暂无真实设备验证。
 
 取消传输总时长 10 分钟限制，保留连接及读写空闲超时，支持慢速持续传输。文件失败不自动重试；临时上传分块由现有清理逻辑回收。真实本机节点经 HTTPS 完成整整 1 GiB 上传/下载并校验 SHA-256 一致。Android 的手机文件选择和保存交互仍未在设备上实测。
+
+## 新会话交互
+
+会话列表的“＋”直接进入待发送会话页，工作区选择放在输入区上方。默认本地目录不请求 Git；选工作树后才读取来源分支，读取失败可重试或切回本地目录。发送第一条消息才创建原生会话，未发送即返回不会产生空会话。创建与首条发送分别沿用提交 ID 核对；首条发送失败时保留草稿并复用已创建的会话。首条支持文字、图片、手机文件、视频、工作区引用和模型/思考/模式设置。文件通过当前项目的原生 FS 暂存接口上传，选择附件不会提前创建空会话。
+
+`PendingConversationUiTest` 在模拟器覆盖本地目录无需 Git、工作树失败后切回，以及待发送页面的发送与草稿清除时机。真实节点的创建和发送联调仍由 `LiveSmokeTest.nativeConversationRoundTrip` 验收。

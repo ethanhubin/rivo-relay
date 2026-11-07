@@ -13,6 +13,7 @@ import uuid
 
 from .connection import CodexError
 from .files import native_path, read_directory
+from .diff_projection import structured_diff
 
 CAP = 2 * 1024 * 1024
 
@@ -32,22 +33,10 @@ def git(connection, cwd, *args, cap=CAP, allowed=(0,)):
 
 
 def diff_summary(patch):
-    files, current = [], None
-    for line in patch.splitlines():
-        if line.startswith('diff --git '):
-            path = line.rsplit(' b/', 1)[-1]
-            current = {'path': path, 'added': 0, 'removed': 0, 'binary': False}
-            files.append(current)
-        elif current is not None:
-            if line.startswith('+++ b/'):
-                current['path'] = line[6:].split('\t', 1)[0]
-            elif line.startswith('Binary files ') or line.startswith('GIT binary patch'):
-                current['binary'] = True
-            elif line.startswith('+') and not line.startswith('+++'):
-                current['added'] += 1
-            elif line.startswith('-') and not line.startswith('---'):
-                current['removed'] += 1
-    return files
+    files = structured_diff({'patch': patch})['files']
+    if any(file.get('malformed') for file in files):
+        return []
+    return [{key: value for key, value in file.items() if key != 'hunks'} for file in files]
 
 
 def project_directory(connection, path=None):

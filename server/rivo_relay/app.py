@@ -10,6 +10,8 @@ from .events import EventBus
 from .pairing import PairingStore
 from .submissions import SubmissionStore, SubmissionConflict, SubmissionNotFound
 from .todos import TodoStore
+from .media import MediaService
+from .speech import SpeechService
 
 
 def public_submission(record: dict) -> dict:
@@ -39,6 +41,18 @@ class RelayApp:
         self.download_links = {}
         self.download_lock = threading.Lock()
         self.file_transfer_slots = threading.BoundedSemaphore(2)
+        self.media = MediaService(config.workspace, codex)
+        self.speech = SpeechService()
+        if hasattr(codex, 'on_event'):
+            native_event = codex.on_event
+            def media_event(event):
+                try:
+                    self.media.observe_event(event)
+                except Exception:
+                    # A derived media receipt cannot block canonical event delivery.
+                    pass
+                native_event(event)
+            codex.on_event = media_event
         self._todo_dispatch_lock = threading.RLock()
         # serve holds an exclusive file lock before constructing the app.
         self.submissions.recover_pending()
@@ -47,7 +61,12 @@ class RelayApp:
         native = self.codex.status()
         return {"id": self.config.node_id, "name": self.config.name,
                 "connected": bool(native.get("connected")),
-                "capabilities": native.get("capabilities", {}), "runtime": native}
+                "capabilities": {**native.get("capabilities", {}), **self.media_capabilities()}, "runtime": native}
+
+    def media_capabilities(self):
+        return {'media': {'proxy': True, 'thumbnails': True, 'thumbnailProfile': 'max-1536-webp-q82-v2',
+                          'generatedProvenance': True, 'library': True, 'favorites': True},
+                'speech': self.speech.capabilities()}
 
     def submit(self, connection_id: str, submission_id: str, operation: str,
                target, payload: dict, action: Callable[[], dict]) -> dict:
@@ -128,6 +147,7 @@ class RelayApp:
 
     def close(self):
         self.queue.close()
+        self.media.close()
         self.events.close()
         self.codex.close()
         self.db.close()

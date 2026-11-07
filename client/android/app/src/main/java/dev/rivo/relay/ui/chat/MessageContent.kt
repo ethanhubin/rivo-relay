@@ -17,6 +17,7 @@ fun MessageContent(
     cwd: String = "",
     onQuoteText: ((String) -> Unit)? = null,
     onSaveFile: ((String) -> Unit)? = null,
+    inlineImage: (@Composable (String) -> Unit)? = null,
     onFile: (String) -> Unit = {},
 ) {
     val clipboard = LocalClipboardManager.current
@@ -39,13 +40,26 @@ fun MessageContent(
             is ReviewMessagePart.Text -> {
                 val blocks = remember(part.value) { parseChatMarkdownBlocks(part.value) }
                 blocks.forEachIndexed { blockIndex, block -> key(blockIndex) { when (block) {
-                    is ChatMarkdownBlock.Text -> MessageText(block.markdown, onCopyText, onQuoteText, openRegularLink, openImage)
+                    is ChatMarkdownBlock.Text -> {
+                        MessageText(block.markdown, onCopyText, onQuoteText, openRegularLink, openImage)
+                        if (inlineImage != null) {
+                            val sources = remember(block.markdown) { markdownImageSources(block.markdown) }
+                            sources.forEach { source -> key(source) { inlineImage(source) } }
+                        }
+                    }
                     is ChatMarkdownBlock.Table -> ChatMarkdownTable(block, "message_$partIndex", blockIndex, onCopyText, onQuoteText, openRegularLink, openImage)
                 } } }
             }
             is ReviewMessagePart.Finding -> ReviewFindingCard(part.comment, cwd, onFile, onQuoteText, onCopyText, openRegularLink, openImage)
         } } }
     }
+}
+
+/** The Markdown parser excludes code spans/fences and recognizes balanced link destinations. */
+internal fun markdownImageSources(markdown: String): List<String> {
+    val rendered = renderChatMarkdown(markdown, androidx.compose.ui.graphics.Color.Unspecified,
+        androidx.compose.ui.graphics.Color.Unspecified, androidx.compose.ui.graphics.Color.Unspecified)
+    return rendered.getStringAnnotations(MARKDOWN_IMAGE_LINK_TAG, 0, rendered.length).map { it.item }.distinct()
 }
 
 @Composable

@@ -66,6 +66,7 @@ internal fun rememberConfirmedWebLinkOpener(
         Column(Modifier.verticalScroll(rememberScrollState())) {
           Text("可使用浏览器打开，或将链接内容保存到本机：")
           SelectionContainer { Text(target) }
+          ForwardLinkButton(target, webLinkSaveName(target)) { pendingUrl = null }
           TextButton(onClick = {
             runCatching { context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, target) }, null)) }
               .onSuccess { pendingUrl = null }

@@ -26,6 +26,37 @@ import dev.rivo.relay.data.*
 import dev.rivo.relay.ui.common.CodexQuotaProgressBar
 import org.json.JSONObject
 
+@Composable
+internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boolean, onAction: ((String) -> Unit)?) {
+    val snapshot = state.snapshot
+    var runtimeDetails by remember(state.id) { mutableStateOf(false) }
+    val runtime = snapshot?.nativeRuntime
+    val trusted = !state.stale && !state.loading && snapshot != null
+    val owner = if (!trusted) "unknown" else snapshot!!.writerOwner.ifBlank { if (snapshot.readOnly) "external" else "unknown" }
+    val external = owner in setOf("external", "other")
+    val owned = owner in setOf("self", "relay", "rivo", "qiguang")
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp).testTag("writer_status"),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("$nodeName · 写权限 · " + when { external -> "外部 Codex"; owned -> if (runtime?.optBoolean("desktopShared") == true) "Desktop 共享" else "Rivo"; owner in setOf("idle", "none", "free") -> "空闲"; else -> "待确认" },
+            Modifier.weight(1f).then(if (runtime != null) Modifier.clickable { runtimeDetails = true } else Modifier).then(if (external) Modifier.testTag("external_writer_notice") else Modifier),
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (trusted && onAction != null && (external || owned) && (!external || runtime?.optBoolean("handoffAvailable", true) != false)) TextButton(onClick = { onAction(if (external) "takeover" else "release") }, enabled = !busy,
+            contentPadding = PaddingValues(horizontal = 4.dp), modifier = Modifier.heightIn(min = 32.dp).testTag("writer_action")) {
+            Text(if (busy) "处理中…" else if (external) "强制接管" else "释放权限", style = MaterialTheme.typography.labelSmall)
+        }
+    }
+    if (runtimeDetails && runtime != null) AlertDialog(onDismissRequest = { runtimeDetails = false }, title = { Text("Codex 连接") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(when { !trusted -> "连接信息待刷新"; runtime.optBoolean("desktopShared") -> "当前会话连接到 Desktop，共享原生运行时"; else -> "当前会话连接到原生 app-server" })
+            runtime.optJSONObject("bridge")?.let { bridge ->
+                Text("Desktop 桥接：" + when { bridge.optBoolean("writerReady") -> "可用"; bridge.optBoolean("available") -> "连接中"; else -> "未连接" })
+                bridge.string("error").takeIf(String::isNotBlank)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            }
+            runtime.string("handoffUnavailableReason").takeIf(String::isNotBlank)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        } }, confirmButton = { TextButton({ runtimeDetails = false }) { Text("关闭") } })
+
+}
+
 /** QiGuang SessionScreens.Header: 64dp title/status row, overflow actions and a bottom quota line. */
 @Composable
 internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: () -> Unit, onSettings: () -> Unit,
@@ -104,9 +135,11 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
 /** The native node supplies model capabilities; draft selections affect only the next submitted task. */
 @Composable
 internal fun NativeComposerSettings(settings: JSONObject?, models: List<JSONObject>, selectedModel: String?, selectedEffort: String?,
-    selectedMode: String?, enabled: Boolean, onModel: (String?) -> Unit, onEffort: (String?) -> Unit, onInheritMode: () -> Unit) {
+    selectedMode: String?, enabled: Boolean, onModel: (String?) -> Unit, onEffort: (String?) -> Unit, onInheritMode: () -> Unit,
+    serviceTier: String? = null, onServiceTier: (String) -> Unit = {}, savesToSession: Boolean = false,
+    defaultSettings: JSONObject? = null, onSaveDefaults: ((JSONObject) -> Unit)? = null, catalogNotice: String? = null) {
     Column(Modifier.verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("下一项任务", style = MaterialTheme.typography.titleSmall)
+        Text(if (savesToSession) "会话设置" else "下一项任务", style = MaterialTheme.typography.titleSmall)
         val modelOptions = models.map { model ->
             val id = model.string("model").ifBlank { model.string("id") }
             id to model.string("displayName").ifBlank { id }
@@ -114,13 +147,30 @@ internal fun NativeComposerSettings(settings: JSONObject?, models: List<JSONObje
         SettingsSelector("模型", selectedModel ?: "继承当前模型", listOf(null to "继承当前模型") + modelOptions,
             enabled, "composer_model", onModel)
         val effectiveModel = selectedModel ?: settings?.string("model")
+        val effectiveEffort = selectedEffort ?: settings?.string("reasoningEffort")
         val capability = models.firstOrNull { it.string("model").ifBlank { it.string("id") } == effectiveModel }
         val efforts = capability?.objects("supportedReasoningEfforts").orEmpty().map { it.string("reasoningEffort") }.filter(String::isNotBlank)
         if (efforts.isNotEmpty()) SettingsSelector("思考强度", selectedEffort ?: "继承当前设置", listOf(null to "继承当前设置") + efforts.map { it to it },
             enabled, "composer_effort", onEffort)
         if (models.isEmpty()) Text("暂未取得可用模型，可继续沿用当前设置。", style = MaterialTheme.typography.labelSmall)
+        catalogNotice?.let { Text(it, Modifier.testTag("model_catalog_notice"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("快速模式", style = MaterialTheme.typography.bodyMedium)
+                Text("提升响应速度，会更快消耗额度", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Switch(checked = serviceTier == "priority", onCheckedChange = { onServiceTier(if (it) "priority" else "default") }, enabled = enabled,
+                modifier = Modifier.testTag("codex_fast_mode_switch"))
+        }
+        if (onSaveDefaults != null) {
+            val tier = if (serviceTier == "priority") "priority" else "default"
+            val isDefault = !effectiveModel.isNullOrBlank() && defaultSettings?.string("model") == effectiveModel &&
+                defaultSettings?.string("effort") == effectiveEffort.orEmpty() && defaultSettings?.string("serviceTier") == tier
+            TextButton(onClick = { onSaveDefaults(JSONObject().put("model", effectiveModel).put("effort", effectiveEffort ?: JSONObject.NULL).put("serviceTier", tier)) },
+                enabled = enabled && !effectiveModel.isNullOrBlank() && !isDefault, modifier = Modifier.testTag("codex_set_default")) { Text(if (isDefault) "已是默认" else "设为默认") }
+        }
         if (selectedMode != null) TextButton(onClick = onInheritMode, enabled = enabled, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("inherit_task_mode")) { Text("恢复继承会话模式") }
-        Text("选择用于下一项任务；当前执行中的任务保持原设置。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(if (savesToSession) "选择会保存到当前会话；具体生效轮次由 Codex 决定。" else "选择用于下一项任务；当前执行中的任务保持原设置。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         settings?.let {
             HorizontalDivider()
             Text(nativePermissionSummary(it), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

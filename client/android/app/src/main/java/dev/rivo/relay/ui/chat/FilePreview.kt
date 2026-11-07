@@ -37,7 +37,12 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -50,7 +55,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.OutputStream
 
-private const val MAX_PREVIEW_BYTES = 4 * 1024 * 1024
+private const val MAX_PREVIEW_BYTES = 20 * 1024 * 1024
 
 internal suspend fun previewBitmap(bytes: ByteArray): ImageBitmap? = withContext(Dispatchers.Default) {
     if (bytes.size > MAX_PREVIEW_BYTES) return@withContext null
@@ -62,10 +67,20 @@ internal suspend fun previewBitmap(bytes: ByteArray): ImageBitmap? = withContext
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
 }
 
+internal suspend fun previewBitmap(file: File, maxEdge: Int): ImageBitmap? = withContext(Dispatchers.Default) {
+    require(maxEdge in 1..4096)
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(file.absolutePath, bounds)
+    if (bounds.outWidth < 1 || bounds.outHeight < 1) return@withContext null
+    var sample = 1
+    while (maxOf(bounds.outWidth, bounds.outHeight) / sample > maxEdge) sample *= 2
+    BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
+}
+
 private suspend fun imageBytes(source: String, readFile: suspend (String) -> JSONObject): ByteArray {
     if (source.startsWith("data:image/")) {
-        require(source.length <= 6 * 1024 * 1024 && source.substringBefore(',').endsWith(";base64")) { "图片编码无法预览" }
-        return Base64.decode(source.substringAfter(','), Base64.DEFAULT)
+        require(source.length <= 28 * 1024 * 1024 && source.substringBefore(',').endsWith(";base64")) { "图片编码无法预览" }
+        return withContext(Dispatchers.Default) { Base64.decode(source.substringAfter(','), Base64.DEFAULT).also { require(it.size <= MAX_PREVIEW_BYTES) { "单张图片最大支持 20 MiB" } } }
     }
     val file = readFileSource(source, readFile)
     require(file.string("encoding") == "base64") { "节点返回的内容不是图片" }
@@ -76,38 +91,59 @@ private suspend fun imageBytes(source: String, readFile: suspend (String) -> JSO
 internal fun NativeImage(source: String, readFile: suspend (String) -> JSONObject,
     downloadFile: suspend (String, OutputStream, (Long, Long) -> Unit) -> Unit = { path, output, progress ->
         val bytes = imageBytes(path, readFile); output.write(bytes); progress(bytes.size.toLong(), bytes.size.toLong())
-    }, modifier: Modifier = Modifier) {
+    }, modifier: Modifier = Modifier, identity: String = source) {
     var bitmap by remember(source) { mutableStateOf<ImageBitmap?>(null) }
     var error by remember(source) { mutableStateOf<String?>(null) }
-    var fullscreen by remember(source) { mutableStateOf(false) }
+    var origin by remember(source) { mutableStateOf(Rect.Zero) }
+    var attempt by remember(source) { mutableIntStateOf(0) }
+    var fullscreen by remember(identity) { mutableStateOf(false) }
+    var viewerSource by remember(identity) { mutableStateOf(source) }
     var imageAction by remember(source) { mutableStateOf<FileAction?>(null) }
     var menu by remember(source) { mutableStateOf(false) }
-    LaunchedEffect(source) {
-        try { bitmap = previewBitmap(imageBytes(source, readFile)); if (bitmap == null) error = "此图片格式暂不支持预览" }
+    val windowSize = LocalWindowInfo.current.containerSize
+    val density = LocalDensity.current
+    val context = LocalContext.current
+    val nativeCache = LocalNativeFileCache.current
+    val mediaClient = LocalCodexMediaClient.current
+    val forwardSource = if (source.startsWith("/v1/media/") || source.startsWith("data:")) LocalMediaAssets.current.firstOrNull { it.string("originalUrl") == source }?.string("source")?.takeIf(String::isNotBlank) else source
+    val previewEdge = (maxOf(windowSize.width, windowSize.height) / 2).coerceIn(1, 1536)
+    LaunchedEffect(source, previewEdge, mediaClient, attempt) {
+        error = null
+        try {
+            bitmap = if (mediaClient != null && !source.startsWith("data:")) {
+                val request = mediaClient.imageRequest(context, source, true).size(previewEdge).allowHardware(false).build()
+                val result = mediaClient.imageLoader.execute(request)
+                (result.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap?.asImageBitmap()
+            } else if (isHttpWebLink(source) || (!source.startsWith("data:") && nativeCache != null))
+                previewBitmap(cacheFileSource(context, source, downloadFile, nativeCache) { _, _ -> }, previewEdge)
+            else previewBitmap(imageBytes(source, readFile))
+            if (bitmap == null) error = "此图片格式暂不支持预览"
+        }
         catch (e: Exception) { if (e is CancellationException) throw e; error = e.message ?: "图片暂时无法读取" }
     }
     when {
         bitmap != null -> Box(modifier) {
-            Image(bitmap!!, "会话图片，点击放大", Modifier.fillMaxWidth().heightIn(max = 280.dp)
-                .combinedClickable(onClick = { imageAction = null; fullscreen = true }, onLongClick = { menu = true }).testTag("native_image"), contentScale = ContentScale.Fit)
+            Image(bitmap!!, "会话图片，点击放大", Modifier.widthIn(max = with(density) { (windowSize.width / 2).toDp() }).heightIn(max = with(density) { (windowSize.height / 2).toDp() })
+                .onGloballyPositioned { origin = it.boundsInWindow() }.combinedClickable(onClick = { imageAction = null; viewerSource = source; fullscreen = true }, onLongClick = { menu = true }).testTag("native_image"), contentScale = ContentScale.Fit)
             if (menu) Popup(alignment = Alignment.TopCenter, onDismissRequest = { menu = false }, properties = PopupProperties(focusable = true)) {
                 Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh, shadowElevation = 4.dp) {
                     Row(Modifier.testTag("image_actions").padding(horizontal = 8.dp)) {
+                        forwardSource?.let { ForwardLinkButton(it, fileDisplayName(it)) { menu = false } }
                         listOf("复制" to FileAction.COPY, "保存" to FileAction.SAVE, "分享" to FileAction.SHARE).forEach { (label, action) ->
-                            TextButton(onClick = { menu = false; imageAction = action; fullscreen = true }, modifier = Modifier.testTag("image_action_${action.name.lowercase()}")) { Text(label) }
+                            TextButton(onClick = { menu = false; imageAction = action; viewerSource = source; fullscreen = true }, modifier = Modifier.testTag("image_action_${action.name.lowercase()}")) { Text(label) }
                         }
                     }
                 }
             }
         }
-        error != null -> Text(error!!, modifier, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        error != null -> Text("${error!!} · 点击重试", modifier.clickable { attempt++ }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         else -> LinearProgressIndicator(modifier.fillMaxWidth().padding(vertical = 16.dp))
     }
-    if (fullscreen) FilePreviewDialog(source, readFile, downloadFile, initialAction = imageAction) { fullscreen = false; imageAction = null }
+    if (fullscreen) FilePreviewDialog(viewerSource, readFile, downloadFile, initialAction = imageAction, forceKind = FileOpenKind.IMAGE, origin = origin) { fullscreen = false; imageAction = null }
 }
 
 @Composable
-internal fun ImageViewerDialog(bitmap: ImageBitmap, onSave: (() -> Unit)? = null, onShare: (() -> Unit)? = null, onDismiss: () -> Unit) {
+internal fun ImageViewerDialog(bitmap: ImageBitmap, onSave: (() -> Unit)? = null, onShare: (() -> Unit)? = null, onDismiss: () -> Unit, source: String? = null) {
     var scale by remember(bitmap) { mutableFloatStateOf(1f) }
     var offset by remember(bitmap) { mutableStateOf(Offset.Zero) }
     val transform = rememberTransformableState { zoom, pan, _ ->
@@ -123,6 +159,7 @@ internal fun ImageViewerDialog(bitmap: ImageBitmap, onSave: (() -> Unit)? = null
             }, contentScale = ContentScale.Fit)
             Row(Modifier.fillMaxWidth().align(Alignment.TopCenter).background(Color.Black.copy(alpha = .6f)), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onDismiss) { Icon(FileIcons.Close, "关闭", tint = Color.White) }
+                source?.let { ForwardLinkButton(it, fileDisplayName(it), onDismiss) }
                 Spacer(Modifier.weight(1f))
                 onShare?.let { IconButton(it, Modifier.testTag("share_file")) { Icon(FileIcons.Share, "分享", tint = Color.White) } }
                 onSave?.let { IconButton(it, Modifier.testTag("save_file")) { Icon(FileIcons.SaveAlt, "保存到本机", tint = Color.White) } }
@@ -135,23 +172,30 @@ internal fun ImageViewerDialog(bitmap: ImageBitmap, onSave: (() -> Unit)? = null
 @Composable
 internal fun FilePreviewDialog(path: String, readFile: suspend (String) -> JSONObject,
     downloadFile: suspend (String, OutputStream, (Long, Long) -> Unit) -> Unit,
-    initialAction: FileAction? = null, onDismiss: () -> Unit) {
+    initialAction: FileAction? = null, forceKind: FileOpenKind? = null, origin: Rect = Rect.Zero, onDismiss: () -> Unit) {
     val requestedLine = remember(path) { Regex("(?::|#L)([0-9]+)(?::[0-9]+)?$").find(path)?.groupValues?.get(1)?.toIntOrNull()?.takeIf { it > 0 } }
     val initialPath = remember(path) { if (isHttpWebLink(path)) path.replace(Regex("#L[0-9]+$"), "") else nativeFilePath(path, "") ?: path }
     var currentPath by remember(path) { mutableStateOf(initialPath) }
     var currentLine by remember(path) { mutableStateOf(requestedLine) }
-    val name = fileDisplayName(currentPath)
+    val mediaAssets = LocalMediaAssets.current
+    val mediaAsset = mediaAssets.firstOrNull { it.string("originalUrl") == currentPath || it.string("source") == currentPath }
+    val name = if (currentPath.startsWith("/v1/media/")) "image." + (mediaAsset?.string("mimeType")?.substringAfter('/') ?: "png") else fileDisplayName(currentPath)
     var file by remember(currentPath) { mutableStateOf<JSONObject?>(null) }
-    val mime = fileMimeType(name, file?.string("mimeType").orEmpty())
-    val kind = fileOpenKind(currentPath, mime)
+    val mime = fileMimeType(name, mediaAsset?.string("mimeType") ?: file?.string("mimeType").orEmpty())
+    val kind = forceKind ?: fileOpenKind(currentPath, mime)
     val compact = kind in setOf(FileOpenKind.APK, FileOpenKind.EXTERNAL)
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val mediaClient = LocalCodexMediaClient.current
+    val nativeCache = LocalNativeFileCache.current
     var transfer by remember(path) { mutableStateOf<FileTransferState?>(null) }
     var transferJob by remember(path) { mutableStateOf<Job?>(null) }
+    val transferJobHolder = remember(path) { arrayOfNulls<Job>(1) }
     var lastAction by remember(path) { mutableStateOf<FileAction?>(null) }
     var actionSource by remember(path) { mutableStateOf(initialPath) }
     val transferGeneration = remember(path) { AtomicLong() }
+    DisposableEffect(path) { onDispose { transferGeneration.incrementAndGet(); transferJobHolder[0]?.cancel() } }
+    var pickerRequest by remember { mutableStateOf<Pair<String, String>?>(null) }
     var pickerOpen by remember(path) { mutableStateOf(false) }
     var bitmap by remember(currentPath) { mutableStateOf<ImageBitmap?>(null) }
     var error by remember(currentPath) { mutableStateOf<String?>(null) }
@@ -159,9 +203,13 @@ internal fun FilePreviewDialog(path: String, readFile: suspend (String) -> JSONO
     var media by remember(currentPath) { mutableStateOf<File?>(null) }
     var formatted by remember(currentPath) { mutableStateOf(currentLine == null) }
 
+    suspend fun cachedSource(source: String, progress: (Long, Long) -> Unit): File {
+        val mediaKind = kind in setOf(FileOpenKind.IMAGE, FileOpenKind.VIDEO, FileOpenKind.AUDIO) || fileOpenKind(source) in setOf(FileOpenKind.IMAGE, FileOpenKind.VIDEO, FileOpenKind.AUDIO)
+        return if (mediaClient != null && mediaKind && !source.startsWith("data:") && !source.startsWith("content:") && !source.startsWith("file:")) mediaClient.cached(context, source, progress)
+        else cacheFileSource(context, source, downloadFile, nativeCache, progress)
+    }
     fun startTransfer(action: FileAction, source: String, target: Uri? = null) {
-        val filename = fileDisplayName(source)
-        val contentType = fileMimeType(filename)
+        val (filename, contentType) = mediaActionMetadata(source, mediaAssets, kind == FileOpenKind.IMAGE)
         val operation = transferGeneration.incrementAndGet()
         transferJob?.cancel()
         actionSource = source
@@ -189,12 +237,23 @@ internal fun FilePreviewDialog(path: String, readFile: suspend (String) -> JSONO
             try {
                 if (action == FileAction.SAVE) {
                     requireNotNull(target)
+                    val cached = cachedSource(source, report)
+                    ensureActive()
                     withContext(Dispatchers.IO) {
-                        context.contentResolver.openOutputStream(target, "w")?.use { output -> downloadFileSource(source, output, report, downloadFile) } ?: error("无法写入所选位置")
+                        context.contentResolver.openOutputStream(target, "w")?.use { output ->
+                            cached.inputStream().use { input ->
+                                val buffer = ByteArray(65536)
+                                while (true) {
+                                    ensureActive()
+                                    val size = input.read(buffer); if (size < 0) break
+                                    output.write(buffer, 0, size)
+                                }
+                            }
+                        } ?: error("无法写入所选位置")
                     }
                     transfer = FileTransferState(title, running = false, message = "已保存到本机")
                 } else {
-                    val cached = media?.takeIf { source == currentPath } ?: cacheFileSource(context, source, downloadFile, report)
+                    val cached = media?.takeIf { source == currentPath } ?: cachedSource(source, report)
                     ensureActive()
                     if (transferGeneration.get() != operation) return@launch
                     if (action == FileAction.COPY) {
@@ -212,17 +271,25 @@ internal fun FilePreviewDialog(path: String, readFile: suspend (String) -> JSONO
                     message = if (e is android.content.ActivityNotFoundException) "手机上没有可打开此格式的应用，可以保存到本机。" else e.message ?: "下载失败，请重试")
             }
         }
+        transferJobHolder[0] = transferJob
     }
     val saveFile = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         pickerOpen = false
+        val request = pickerRequest
+        pickerRequest = null
         val uri = result.data?.data?.takeIf { result.resultCode == Activity.RESULT_OK }
-        if (uri != null) startTransfer(FileAction.SAVE, actionSource, uri) else if (initialAction != null) onDismiss()
+        if (uri != null && request?.first == path) startTransfer(FileAction.SAVE, request.second, uri)
+        else if (uri != null) scope.launch(Dispatchers.IO) { runCatching { DocumentsContract.deleteDocument(context.contentResolver, uri) } }
+        else if (request?.first == path && initialAction != null) onDismiss()
     }
     fun performAction(action: FileAction, source: String = currentPath) {
         if (action == FileAction.SAVE) {
+            if (pickerRequest != null) return
             lastAction = action; actionSource = source; transfer = null; pickerOpen = true
+            pickerRequest = path to source
             saveFile.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE); type = fileMimeType(fileDisplayName(source)); putExtra(Intent.EXTRA_TITLE, fileDisplayName(source))
+                val (filename, contentType) = mediaActionMetadata(source, mediaAssets, kind == FileOpenKind.IMAGE)
+                addCategory(Intent.CATEGORY_OPENABLE); type = contentType; putExtra(Intent.EXTRA_TITLE, filename)
             })
         } else startTransfer(action, source)
     }
@@ -232,21 +299,28 @@ internal fun FilePreviewDialog(path: String, readFile: suspend (String) -> JSONO
         error = null
         try {
             when (kind) {
-                FileOpenKind.IMAGE -> bitmap = previewBitmap(imageBytes(currentPath, readFile)) ?: error("此图片格式暂不支持预览")
-                FileOpenKind.AUDIO, FileOpenKind.VIDEO -> media = cacheFileSource(context, currentPath, downloadFile) { _, _ -> }
+                FileOpenKind.IMAGE -> {
+                    if (mediaClient != null) return@LaunchedEffect
+                    bitmap = if (isHttpWebLink(currentPath) || (!currentPath.startsWith("data:") && nativeCache != null))
+                        previewBitmap(cachedSource(currentPath) { _, _ -> }, 4096)
+                    else previewBitmap(imageBytes(currentPath, readFile))
+                    if (bitmap == null) error("此图片格式暂不支持预览")
+                }
+                FileOpenKind.AUDIO, FileOpenKind.VIDEO -> media = cachedSource(currentPath) { _, _ -> }
                 else -> file = readFileSource(currentPath, readFile)
             }
         } catch (e: Exception) { if (e is CancellationException) throw e; error = e.message ?: "无法读取文件" }
     }
     if (initialAction == null) when {
-        compact -> if (transfer == null && !pickerOpen) FileOpenActions(name, kind == FileOpenKind.APK, { performAction(it) }, onDismiss)
-        kind == FileOpenKind.IMAGE && bitmap != null -> ImageViewerDialog(bitmap!!, { performAction(FileAction.SAVE) }, { performAction(FileAction.SHARE) }, onDismiss)
+        compact -> if (transfer == null && !pickerOpen) FileOpenActions(name, kind == FileOpenKind.APK, { performAction(it) }, onDismiss, currentPath)
+        kind == FileOpenKind.IMAGE && LocalCodexMediaClient.current != null -> CodexImageGallery(currentPath, origin = origin, onSave = { performAction(FileAction.SAVE, it) }, onShare = { performAction(FileAction.SHARE, it) }, onDismiss = onDismiss)
+        kind == FileOpenKind.IMAGE && bitmap != null -> ImageViewerDialog(bitmap!!, { performAction(FileAction.SAVE) }, { performAction(FileAction.SHARE) }, onDismiss, currentPath)
         kind == FileOpenKind.AUDIO || kind == FileOpenKind.VIDEO -> MediaFilePreview(name, kind == FileOpenKind.VIDEO, media, error,
-            onRetry = { media = null; previewAttempt++ }, onAction = { performAction(it) }, onDismiss = onDismiss)
+            onRetry = { media = null; previewAttempt++ }, onAction = { performAction(it) }, onDismiss = onDismiss, source = currentPath)
         else -> Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
             Surface(Modifier.fillMaxSize()) {
                 Column(Modifier.fillMaxSize().systemBarsPadding().testTag("file_preview")) {
-                    FilePreviewToolbar(name, { performAction(FileAction.SAVE) }, { performAction(FileAction.SHARE) }, onDismiss)
+                    FilePreviewToolbar(name, { performAction(FileAction.SAVE) }, { performAction(FileAction.SHARE) }, onDismiss, currentPath)
                     when {
                         error != null -> Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             Text(error!!, color = MaterialTheme.colorScheme.error)
@@ -285,11 +359,12 @@ internal fun FilePreviewDialog(path: String, readFile: suspend (String) -> JSONO
 }
 
 @Composable
-internal fun FilePreviewToolbar(name: String, onSave: () -> Unit, onShare: () -> Unit, onDismiss: () -> Unit) {
+internal fun FilePreviewToolbar(name: String, onSave: () -> Unit, onShare: () -> Unit, onDismiss: () -> Unit, source: String? = null) {
     Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
         Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onDismiss) { Icon(FileIcons.Close, "关闭") }
             Text(name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            source?.let { ForwardLinkButton(it, name, onDismiss) }
             IconButton(onShare, Modifier.testTag("share_file")) { Icon(FileIcons.Share, "分享") }
             IconButton(onSave, Modifier.testTag("save_file")) { Icon(FileIcons.SaveAlt, "保存到本机") }
         }

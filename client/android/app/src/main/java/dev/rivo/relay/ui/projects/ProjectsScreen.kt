@@ -19,6 +19,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -52,7 +55,10 @@ data class ProjectSummary(
 @Suppress("UNUSED_PARAMETER")
 fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Boolean,
     onProject: (ProjectSummary) -> Unit, onConnection: () -> Unit, onRefresh: () -> Unit, onAdd: (() -> Unit)? = null,
-    usage: CodexUsage? = null, usageLoading: Boolean = false, usageError: String? = null, onRefreshUsage: (() -> Unit)? = null, canAdd: Boolean = true) {
+    usage: CodexUsage? = null, usageLoading: Boolean = false, usageError: String? = null, onRefreshUsage: (() -> Unit)? = null, canAdd: Boolean = true,
+    savedNodes: List<dev.rivo.relay.connection.SavedNode> = emptyList(), currentBase: String = "",
+    onSelectNode: (String) -> Unit = {}, onAddNode: () -> Unit = {}, canSwitchNode: Boolean = true) {
+    var nodeMenuOpen by remember { mutableStateOf(false) }
     val context = LocalContext.current
     LazyColumn(Modifier.fillMaxSize().testTag("projects_page"), contentPadding = PaddingValues(horizontal = RivoSpacing.Page),
         verticalArrangement = Arrangement.spacedBy(RivoSpacing.Sm, Alignment.CenterVertically)) {
@@ -60,8 +66,27 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
             Column(Modifier.fillMaxWidth().padding(top = RivoSpacing.Md), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Xs)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text("Codex 项目", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    TextButton(onClick = onConnection, modifier = Modifier.widthIn(max = 144.dp).testTag("node_settings")) {
-                        Text(nodeName, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge)
+                    Box {
+                        TextButton(onClick = { nodeMenuOpen = true }, enabled = canSwitchNode, modifier = Modifier.widthIn(max = 180.dp).testTag("node_settings")) {
+                            Text(nodeName, Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge)
+                            Text(" ▾", style = MaterialTheme.typography.labelLarge)
+                        }
+                        DropdownMenu(expanded = nodeMenuOpen, onDismissRequest = { nodeMenuOpen = false },
+                            modifier = Modifier.widthIn(max = 320.dp).testTag("node_switch_menu")) {
+                            savedNodes.filter { it.authorized }.forEach { saved ->
+                                val selected = saved.base == currentBase
+                                DropdownMenuItem(text = { Text(saved.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                                    leadingIcon = { Text(if (selected) "✓" else "", Modifier.width(20.dp)) },
+                                    enabled = canSwitchNode,
+                                    onClick = { nodeMenuOpen = false; if (!selected && canSwitchNode) onSelectNode(saved.base) },
+                                    modifier = Modifier.testTag("switch_node_${saved.base}"))
+                            }
+                            HorizontalDivider()
+                            DropdownMenuItem(text = { Text("添加节点") }, enabled = canSwitchNode, onClick = { nodeMenuOpen = false; if (canSwitchNode) onAddNode() },
+                                modifier = Modifier.testTag("add_node"))
+                            DropdownMenuItem(text = { Text("节点详情") }, onClick = { nodeMenuOpen = false; onConnection() },
+                                modifier = Modifier.testTag("node_details"))
+                        }
                     }
                     if (onAdd != null) Surface(onClick = onAdd, enabled = canAdd, modifier = Modifier.size(34.dp).testTag("add_project"),
                         shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.primaryContainer) {

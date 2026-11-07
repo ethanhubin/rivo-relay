@@ -5,6 +5,7 @@ import json
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from rivo_relay.codex.connection import CodexError, NativeConnection
@@ -145,13 +146,24 @@ class NativeSemanticsTests(unittest.TestCase):
                          [t["id"] for t in page.turns])
         self.assertEqual("PASS", page.turns[-1]["items"][-1]["text"])
 
-    def test_structured_inputs_use_native_array_without_text_wrappers(self):
+    @patch('rivo_relay.codex.attachment_context.download_file', return_value=b'preview')
+    def test_structured_inputs_use_native_array_without_text_wrappers(self, _read):
         fixture = json.loads((Path(__file__).parent / "fixtures/native-structured-input-0.159.0.json").read_text())
         native = FakeNative()
+        native.thread['cwd'] = '/remote/native/project'
         service = CodexService(connection=native)
+        original_input = copy.deepcopy(fixture['input'])
         service.send("thread", "", input_items=fixture["input"], client_message_id="image-submission")
         params = next(params for method, params in native.calls if method == "turn/start")
-        self.assertEqual(fixture["input"], params["input"])
+        self.assertEqual(original_input, fixture['input'])
+        for original, staged in zip(original_input, params['input']):
+            if original.get('type') == 'image' and original.get('url', '').startswith('data:'):
+                self.assertEqual('localImage', staged['type'])
+                self.assertTrue(staged['path'].startswith('/remote/native/project/.rivo-attachments/'))
+                write = next(value for method, value in native.calls if method == 'fs/writeFile' and value['path'] == staged['path'])
+                self.assertEqual(original['url'].split(',', 1)[1], write['dataBase64'])
+            else:
+                self.assertEqual(original, staged)
         self.assertEqual("image-submission", params["clientUserMessageId"])
         self.assertFalse({"sandboxPolicy", "permissions", "approvalPolicy"} & params.keys())
 

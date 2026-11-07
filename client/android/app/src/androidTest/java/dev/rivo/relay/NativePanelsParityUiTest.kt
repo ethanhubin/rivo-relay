@@ -64,7 +64,8 @@ class NativePanelsParityUiTest {
     @Test fun discussionAndReviewQueueItemsCannotBeSteeredIntoAnExecutingTask() {
         fun task(id: String, raw: JSONObject) = QueueTask(id, "待办 $id", "waiting", 3, "", raw)
         val tasks = listOf(task("plan", JSONObject().put("mode", "plan")),
-            task("review", JSONObject().put("review", JSONObject().put("type", "uncommittedChanges"))), task("normal", JSONObject()))
+            task("review", JSONObject().put("review", JSONObject().put("type", "uncommittedChanges"))),
+            task("normal", JSONObject("""{"input":[{"type":"image","url":"data:image/jpeg;base64,AQID"},{"type":"mention","name":"source","path":"/project/source.kt"}]}""")))
         var steered: String? = null
         compose.setContent { RivoTheme { Surface { ExecutionQueuePanel("thread", tasks, true, true,
             onEdit = {}, onWithdraw = {}, onSteer = { steered = it.id }, onReorder = { _, _ -> }) } } }

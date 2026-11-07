@@ -195,5 +195,309 @@
     }
   ],
   "scope": "One app module. QiGuang MainScreen, extra agents, authority management, offline queues, reminder/category systems and attachment services were not migrated.",
-  "licenseNote": "No repository LICENSE/NOTICE found; provenance retained without assigning an open-source license."
+  "licenseNote": "No repository LICENSE/NOTICE found; provenance retained without assigning an open-source license.",
+  "syncPasses": [
+    {
+      "date": "2026-11-07",
+      "sourceHead": "1642fc810f543a7995ca334e0e4916c20968d858",
+      "sourceSelection": "Local Nov 4 published snapshot; origin/dev remains Oct 2 at 8e0e67e745c2aacce63aa17225c657deff3342e4.",
+      "details": "../../docs/qiguang-codex-sync.md",
+      "method": "Behavior and UI migration adapted to Relay authenticated native-daemon API. Earlier entries retain their original provenance.",
+      "sources": [
+        {
+          "path": "qiguang/server/qiguang_codex.py",
+          "sha256": "32f9489dff1cd86f3337c53eb04db887172de836576c8d83cdc7e3c67e26589a"
+        },
+        {
+          "path": "qiguang/server/qiguang_codex_status_projection.py",
+          "sha256": "388d858f9565ef735ad41cd57a9c5f15e852c93858d9e70da4ad83ac0d5168b8"
+        },
+        {
+          "path": "qiguang/server/qiguang_codex_review.py",
+          "sha256": "d88c7aa7f410e1e83c3f9b31482ef202dbc92487d42f3264c8cf24f373e4d5bb"
+        },
+        {
+          "path": "qiguang/server/qiguang_codex_changes.py",
+          "sha256": "0e5bff9a06937635856e6604ca1b3bbb56e30464c09a8257b30d5ed37812a1d4"
+        },
+        {
+          "path": "qiguang/server/qiguang_codex_projects.py",
+          "sha256": "3b4da72cead33b628905f0abc81bcca115526a384d221eea409afd3054d05197"
+        },
+        {
+          "path": "qiguang/server/qiguang_codex_native_history.py",
+          "sha256": "313983afdc2450872b17fca8ef679ce08795c189fd4e7957f64842d218f62cb0"
+        },
+        {
+          "path": "qiguang/server/qiguang_codex_notifications.py",
+          "sha256": "affe095a17745212ac86494877138550c3de54cce7526d2bdd29a0631d89e1cf"
+        },
+        {
+          "path": "qiguang/server/qiguang_codex_account_usage.py",
+          "sha256": "edd7ad379e503db3b05555993ef436471b6ca3c4238aeb2e97370734a99e55ed"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexHistoryController.kt",
+          "sha256": "8d633c1d2d8d9c5a901138822703bfcff03d4856164a79ea601496d3198e8ce2"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexHistoryProjection.kt",
+          "sha256": "5ee71e46a1bc393f568ba28088f222988914b9a0df72cdc431910dbd154ea29c"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexControlReducer.kt",
+          "sha256": "bd1577dd0a1e0cd0b649f61b5b0e9738f04b43485c9f42ccc4c36d1500ae3b45"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexSessionController.kt",
+          "sha256": "ead8e313add2160004c8ba028ae4405eb7f587a6fe888c8c75d9d33042b177d6"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexTimelineReducer.kt",
+          "sha256": "f1b98d10c3cba5be2e2bc323de83f58d2eda4417e4dd3814846ff0d50088e987"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexQueueController.kt",
+          "sha256": "6c2ee8bfe0f71ae2605f56bb308c9f6783db17a7f8e9b7c292d6d7f8451a21a2"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexExecutionProjection.kt",
+          "sha256": "5a9772581f6b6d20b6355f34bc53e5512c0400ddde511b0f3700bda64092786c"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexProjectBrowserController.kt",
+          "sha256": "8cf074188b968a3f77351e0abe76bf9746af0f96c6654bb7f73e021a31897f40"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexReviewScreen.kt",
+          "sha256": "5290283d655c2bddb3dfd913277080c8afec026f2cf1aa515cdc03071eb41dc0"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexReviewController.kt",
+          "sha256": "e76ba45cd51dc336766f22ede040edf6e609d16aeb8306aa95df4d38130ab100"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexActivityContent.kt",
+          "sha256": "45c76e6b33a177a94c84c065accaabc1f321bbb17a784c6dc22f25c7f145a0ca"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/ChatComposerContent.kt",
+          "sha256": "b21a998415b9f0dbaa179dcbdbfbbb77e523f0deb9ace32b6199cb32505c37f5"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/SessionScreens.kt",
+          "sha256": "d36e203a768da013f799a5be5fe5ee70bd3912686cb460b825a40c3871035856"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexSubmissionCoordinator.kt",
+          "sha256": "2ecab53ed7e59c9862af25ea72a030dcce3b77068174dfe5b53f3c9ef6194e80"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexCatalogStateHolder.kt",
+          "sha256": "30a460e44ffb6f317856ea5ad51b6bf06d056597a9c08914df3d0a6c581677f1"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexSessionListStateHolder.kt",
+          "sha256": "8e9d0d9ed4b8b3fa143800dd2182b458c3a44f770eaa5a09361add10cc6a60e9"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexActiveSessionStateHolder.kt",
+          "sha256": "f0a9b5e369d9e00a3eabf4e47548be6485449e2f03139a394c473d5c1fbdcfc9"
+        },
+        {
+          "path": "qiguang/server/qiguang_codex_capabilities.py",
+          "sha256": "c0914da6cc075398e9c76404d38bbc314692334ef10745058dc7a2145feea218"
+        },
+        {
+          "path": "qiguang/server/qiguang_codex_native_reprojection.py",
+          "sha256": "3a6d48d535b54ca1c8856df983c14b784fa8c7d415cae6f66aba2172a2449c05"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexLinkDestinationDialog.kt",
+          "sha256": "4b4d4d6b319cf539945429fd3f555ca8714d30806862135cbd885ec1d1a2f28f"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexLinkAttachment.kt",
+          "sha256": "e98b64dd5fcc32ce872280b40c68fc3d6b8ffbbea1acdde90bd977e2551fccea"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/CodexChatTimelineProjection.kt",
+          "sha256": "2e9d4c72b10c282b4e8ac1e177f7569f4f370073747490bcef30455690107df7"
+        },
+        {
+          "path": "qiguang/server/qiguang_codex_external_worktrees.py",
+          "sha256": "95406634cb58c62e583a2dfc29dbf3210e9fcdbab78a333ad184c025f3087d1d"
+        },
+        {
+          "path": "qiguang/server/qiguang_codex_outbox.py",
+          "sha256": "a5c60c8477081f72298871a5abe3a1b2a82f2939e4f7e900570d5731beffe3ba"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/FileTransfer.kt",
+          "sha256": "1b6a980082ca629edca06e558b09ec6a4f5aa5e978e9a4e7ddee2064cae13e19"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/ChatTimelineContent.kt",
+          "sha256": "94eaf2e0ccf822f83d5abdfe838c8f3d6f8c443fb3e66d7e975ea9811d0f88af"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/data/AttachmentPolicy.kt",
+          "sha256": "7a3b62863cee23e396a19023ea9b744f429b23dbcc12a795d2028b3fcf1c2f9f"
+        }
+      ]
+    },
+    {
+      "date": "2026-11-07",
+      "pass": "desktop-native-history-media",
+      "sourceHead": "1642fc810f543a7995ca334e0e4916c20968d858",
+      "details": "../../docs/qiguang-codex-sync.md",
+      "method": "Native history/convergence and Desktop protocol port; source image/video components, voice semantics and behavioral tests adapted to authenticated Relay media, node identity and durable submission boundaries. No external state deployed.",
+      "sources": [
+        {
+          "path": "qiguang/server/qiguang_codex_desktop_bridge.py",
+          "sha256": "a602746e9100347cc6b91ff842957a80faa2a3c8daac03440fcee9a29195db12"
+        },
+        {
+          "path": "qiguang/server/qiguang_codex_native_history.py",
+          "sha256": "313983afdc2450872b17fca8ef679ce08795c189fd4e7957f64842d218f62cb0"
+        },
+        {
+          "path": "qiguang/server/qiguang_codex_native_convergence.py",
+          "sha256": "5a6d677ab0f2129e366e3e26f2d37ec8449070e91d9b88adcb2da7d800fb91dc"
+        },
+        {
+          "path": "qiguang/server/qiguang_codex_native_reprojection.py",
+          "sha256": "3a6d48d535b54ca1c8856df983c14b784fa8c7d415cae6f66aba2172a2449c05"
+        },
+        {
+          "path": "qiguang/server/qiguang_asr_client.py",
+          "sha256": "c78e0060ec1c8a407e0ec41805460d6f8e879d668900528c866be7a697082ab5"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/MediaViewerContent.kt",
+          "sha256": "8fcdb03685f376198b548d9634a463d7a92e2fbef8cd945dc3564f7bafe818b8"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/FullScreenVideoPlayer.kt",
+          "sha256": "4fb3b5d08258cb23e391a60dfdf7320d39608939f90bda1915574efc742d7953"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/VideoPlayback.kt",
+          "sha256": "4f4255356683d5dde09f49ca60dbcce080a729f2f0d4fd9a545351f53b436238"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/ImageTextActionMenu.kt",
+          "sha256": "185c39b498d11cb6e8976debd8a28e0082e54deed138d9fe8d782c3955b75605"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/ImageViewerPan.kt",
+          "sha256": "5aecb9b797634e1f79cc2cb0d82aceff54419730d50698e4230c84bf04cc8e39"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/SyntaxHighlightedFile.kt",
+          "sha256": "cf9b2c63c16f0ce818c410295d3922079eb4ba4f3fb095be1accc3315b9f963a"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/VoiceRecorder.kt",
+          "sha256": "1801b8976eb0436b198e2022b6cf134aab2074c8607d12af6d0afbfaf703e44f"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/VoiceTranscriptionController.kt",
+          "sha256": "cf9296be14efc6a96f3524c677a31ce65e9afed69c43a8e26d71093c4f674a48"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/ChatComposerContent.kt",
+          "sha256": "b21a998415b9f0dbaa179dcbdbfbbb77e523f0deb9ace32b6199cb32505c37f5"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/AudioWaveform.kt",
+          "sha256": "5b7ea2ada0c58ed38c111b4376e1e2a65b83f375df5883fbbbfda1d201fae6fe"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/data/VideoFormatPolicy.kt",
+          "sha256": "f5c4bd4352eea381efc7b974733e4afed386fd29e9636827fc34e4e50e70234c"
+        },
+        {
+          "path": "qiguang/app/app/src/main/res/drawable/ic_video_rewind.xml",
+          "sha256": "e4b86d439894872ca572d7cca01fd2b5c2a0efe284cb9509bbcee5159699f0b3"
+        },
+        {
+          "path": "qiguang/app/app/src/main/res/drawable/ic_video_pause.xml",
+          "sha256": "566c44a4c32e078f4f656fabe7a39af0d7af8eee4886ca8cdb16ebed61888be3"
+        },
+        {
+          "path": "qiguang/app/app/src/main/res/drawable/ic_video_play.xml",
+          "sha256": "e8be6b04fea3eb555ed327713fe73816d0da5fd5d077161f7c1f940f2d5f2fdf"
+        },
+        {
+          "path": "qiguang/app/app/src/main/res/drawable/ic_video_forward.xml",
+          "sha256": "dc3cc4c016f25f6344113a356b48db7f56dc8b51a34c13b2057e1725ab780ce8"
+        },
+        {
+          "path": "qiguang/app/app/src/main/res/drawable/ic_video_orientation.xml",
+          "sha256": "ec653b22c2f9b8b9861c39e550db0c2b57cb7c05b439d4e64366187f3d6d3a58"
+        },
+        {
+          "path": "qiguang/app/app/src/main/res/drawable/ic_video_lock.xml",
+          "sha256": "7701bbae189ae5bb8063b194ccd53192fb53301546d6139a5a15ed313c79a583"
+        },
+        {
+          "path": "qiguang/app/app/src/main/res/layout/fullscreen_video_player.xml",
+          "sha256": "aaeb80e01819a5d2104053ae2f13076bd6091971e6ce189970afd242096e2cf0"
+        },
+        {
+          "path": "qiguang/app/app/src/test/java/com/example/qiguang/ui/main/ImageViewerSwipeTest.kt",
+          "sha256": "a55e0d28fb8c61751c620aca07dc678a8ed3d7a4d09eca563884280884aff5bd"
+        },
+        {
+          "path": "qiguang/app/app/src/test/java/com/example/qiguang/ui/main/VideoPlaybackTest.kt",
+          "sha256": "ef9c0f9f807e00e7234889a2173349315c90468333e49a16d545e3a5c307f620"
+        },
+        {
+          "path": "qiguang/app/app/src/test/java/com/example/qiguang/data/VideoFormatPolicyTest.kt",
+          "sha256": "998bb0fc9185adc66cd9f8d087f8864ca5170d6ef5a4137c54cbb6065595dc43"
+        },
+        {
+          "path": "qiguang/app/app/src/androidTest/java/com/example/qiguang/ui/main/ImageViewerPanUiTest.kt",
+          "sha256": "312f9588a445a941b01800efefcfa92845f02950657dc265051d402c61817b0b"
+        },
+        {
+          "path": "qiguang/app/app/src/androidTest/java/com/example/qiguang/ui/main/ImageViewerSizingUiTest.kt",
+          "sha256": "064bf9e29a80b69b7091fcaf1596fc4670c7efc9015cec868176d4c95108c1dc"
+        },
+        {
+          "path": "qiguang/app/app/src/test/resources/video-format-policy-v2.json",
+          "sha256": "4d4aba1b6fe601ea5d51b071ad94d75b510f7e6aa05cff69e18791d2275e5404"
+        },
+        {
+          "path": "qiguang/server/qiguang_api.py",
+          "sha256": "659d0383df89b3d7b0b6032bce47cffa5882ccbfc5165a404e10f09d1b147357"
+        },
+        {
+          "path": "qiguang/server/qiguang_web.py",
+          "sha256": "a12912f7ae5d8b390e093d20669f979120a00b84589f474b61347da4ad0b5c9d"
+        },
+        {
+          "path": "qiguang/server/qiguang_media_library.py",
+          "sha256": "874c2988cf9be7654b56dd10105c7c53470b8ed17b8366e721960d00dfdeeee5"
+        },
+        {
+          "path": "qiguang/server/qiguang_codex_image_ingest.py",
+          "sha256": "bd93026823cbd541daabd95b95d143dd76e45d671f882195d79059f5360c02ab"
+        },
+        {
+          "path": "qiguang/server/qiguang_codex.py",
+          "sha256": "32f9489dff1cd86f3337c53eb04db887172de836576c8d83cdc7e3c67e26589a"
+        },
+        {
+          "path": "qiguang/server/qiguang_device_daemon.py",
+          "sha256": "99691a25658f1f9314291882a03da7c4969cb4cad0121cc36a87b63c3d11cf7a"
+        },
+        {
+          "path": "qiguang/app/app/src/main/java/com/example/qiguang/ui/main/WorkspaceScreens.kt",
+          "sha256": "5f0daf125125086a73f2d6f5975143a2738429d02021c487f2ac5e6c4e66f72b"
+        }
+      ]
+    }
+  ]
 }

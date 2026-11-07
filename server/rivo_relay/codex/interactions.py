@@ -15,9 +15,15 @@ class Interactions:
 
     def receive(self, event):
         with self._lock:
+            if event.get('connectionId', self.connection.generation) != self.connection.generation:
+                return
             method = event.get("method", "")
             if method == "relay/nativeDisconnected":
                 self._pending.clear()
+            elif method == 'relay/writerDisconnected':
+                expired = set(event.get('params', {}).get('requestIds', []))
+                self._pending = {key: value for key, value in self._pending.items()
+                                 if value['id'] not in expired}
             elif method == "item/tool/call":
                 # Desktop executes dynamic tools. This RPC is not a human
                 # approval/question and Relay must neither display it as one
@@ -32,14 +38,15 @@ class Interactions:
                                       "connectionId": generation}
             elif method in {"serverRequest/resolved", "serverRequest/completed"}:
                 request_id = event.get("params", {}).get("requestId")
-                self._pending = {k: v for k, v in self._pending.items() if v["id"] != request_id}
+                self._pending = {k: v for k, v in self._pending.items()
+                                 if type(v['id']) is not type(request_id) or v['id'] != request_id}
             elif method == "turn/completed":
                 params = event.get("params", {})
                 turn_id = params.get("turn", {}).get("id")
-                thread_id = params.get("threadId")
+                thread_id = params.get("threadId", params.get('conversationId'))
                 self._pending = {k: v for k, v in self._pending.items()
-                                 if not (v["params"].get("threadId") == thread_id and
-                                         (not turn_id or v["params"].get("turnId") == turn_id))}
+                                 if not (v["params"].get("threadId", v['params'].get('conversationId')) == thread_id and
+                                         (not turn_id or not v["params"].get("turnId") or v["params"].get("turnId") == turn_id))}
 
     def list(self, thread_id):
         with self._lock:
@@ -54,7 +61,24 @@ class Interactions:
             request = self._pending.get(key)
             if request is None or request["connectionId"] != self.connection.generation:
                 raise CodexError("此原生请求已失效，请刷新会话", code="interaction_expired", http_status=409)
+            if request['method'].endswith('requestUserInput'):
+                questions = request['params'].get('questions')
+                answers = result.get('answers')
+                ids = [q.get('id') for q in questions] if isinstance(questions, list) and all(isinstance(q, dict) for q in questions) else []
+                if (not ids or not all(isinstance(value, str) and value for value in ids) or len(ids) != len(set(ids))
+                        or not isinstance(answers, dict) or set(answers) != set(ids)):
+                    raise CodexError('请完整回答当前问题', code='invalid_response', http_status=400)
+                for answer in answers.values():
+                    values = answer.get('answers') if isinstance(answer, dict) else None
+                    if (not isinstance(values, list) or not values or len(values) > 20
+                            or any(not isinstance(value, str) or not value.strip() or len(value) > 200000 for value in values)):
+                        raise CodexError('问题答案无效', code='invalid_response', http_status=400)
             # Remove before sending. A lost send must not be automatically repeated.
             del self._pending[key]
-            self.connection.respond(request["id"], result)
-            return {"requestId": key, "threadId": request["params"].get("threadId")}
+            try:
+                self.connection.respond(request["id"], result)
+            except CodexError as error:
+                if error.definite and request['connectionId'] == self.connection.generation:
+                    self._pending[key] = request
+                raise
+            return {"requestId": key, "threadId": request["params"].get("threadId", request['params'].get('conversationId'))}

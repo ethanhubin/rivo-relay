@@ -143,7 +143,14 @@ internal fun AttachmentImageEditor(
   var saving by remember(source) { mutableStateOf(false) }
 
   LaunchedEffect(source) {
-    val result = runCatching { withContext(Dispatchers.IO) { BitmapFactory.decodeByteArray(source.bytes, 0, source.bytes.size) ?: error("无法读取图片") } }
+    val result = runCatching { withContext(Dispatchers.IO) { run {
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(source.bytes, 0, source.bytes.size, options)
+        var sample = 1
+        while (maxOf(options.outWidth, options.outHeight) / sample > EDITOR_MAX_BITMAP_EDGE) sample *= 2
+        val bitmap = BitmapFactory.decodeByteArray(source.bytes, 0, source.bytes.size, BitmapFactory.Options().apply { inSampleSize = sample }) ?: error("无法读取图片")
+        orientDraftBitmap(bitmap, source.bytes)
+      } } }
     withContext(Dispatchers.Main.immediate) {
       result
         .onSuccess { bitmap = it }

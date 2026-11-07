@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import dev.rivo.relay.data.QueueTask
 import dev.rivo.relay.data.string
+import dev.rivo.relay.data.objects
 import kotlin.math.roundToInt
 
 /** QiGuang CodexQueuePanel: three-row summary, expand, edit/withdraw, steer and long-press reorder. */
@@ -30,8 +31,8 @@ fun ExecutionQueuePanel(threadId: String, tasks: List<QueueTask>, enabled: Boole
     onReorder: (List<String>, List<String>) -> Unit) {
     var expanded by rememberSaveable(threadId) { mutableStateOf(false) }
     var order by remember(tasks) { mutableStateOf(tasks) }
-    var dragging by remember { mutableStateOf<String?>(null) }
-    var offset by remember { mutableFloatStateOf(0f) }
+    var dragging by remember(threadId) { mutableStateOf<String?>(null) }
+    var offset by remember(threadId) { mutableFloatStateOf(0f) }
     val threshold = with(LocalDensity.current) { 28.dp.toPx() }
     LaunchedEffect(tasks) { dragging = null; offset = 0f; if (tasks.size <= 3) expanded = false }
     Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp).testTag("execution_queue"),
@@ -49,6 +50,7 @@ fun ExecutionQueuePanel(threadId: String, tasks: List<QueueTask>, enabled: Boole
                     key(task.id) {
                         Row(Modifier.fillMaxWidth().testTag("queue_item_${task.id}")
                             .offset { IntOffset(0, if (dragging == task.id) offset.roundToInt() else 0) }.zIndex(if (dragging == task.id) 1f else 0f)
+                            .codexPanelSwipe(tasks.size, expanded, tasks.size > 3) { expanded = it }
                             .pointerInput(task.id, enabled, tasks) {
                                 if (enabled && task.status == "waiting") detectDragGesturesAfterLongPress(
                                     onDragStart = { dragging = task.id; offset = 0f },
@@ -80,7 +82,7 @@ fun ExecutionQueuePanel(threadId: String, tasks: List<QueueTask>, enabled: Boole
                                 enabled = enabled && dragging == null && task.raw.string("mode") != "plan" && task.raw.optJSONObject("review") == null,
                                 contentPadding = PaddingValues(4.dp), modifier = Modifier.testTag("queue_steer_${task.id}")) { Text("引导") }
                             if (task.status in setOf("waiting", "failed")) TextButton(onClick = { onEdit(task) }, enabled = enabled && dragging == null,
-                                contentPadding = PaddingValues(4.dp), modifier = Modifier.testTag("queue_edit_${task.id}")) { Text("编辑") }
+                                contentPadding = PaddingValues(4.dp), modifier = Modifier.testTag("queue_edit_${task.id}")) { Text(if (canSteer) "编辑" else "撤回") }
                             else if (task.status == "unknown") TextButton(onClick = { onWithdraw(task) }, enabled = enabled && dragging == null) { Text("移除") }
                         }
                         if (itemIndex < visibleTasks.lastIndex) HorizontalDivider(Modifier.padding(start = 24.dp), color = MaterialTheme.colorScheme.outlineVariant)

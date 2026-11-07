@@ -126,6 +126,111 @@ class ApiTests(unittest.TestCase):
         self.paired = self._pair()
         self.token = self.paired["token"]
 
+    def test_fast_settings_are_validated_and_deduplicated(self):
+        writes = []
+        def update(thread_id, **kwargs):
+            writes.append((thread_id, kwargs))
+            return {'threadId': thread_id}
+        self.native.update_settings = update
+        path = '/v1/threads/thread-1/settings'
+        body = {'submissionId': 'settings-parity', 'serviceTier': 'priority', 'effort': 'high'}
+        for _ in range(2):
+            status, result, _ = self.request('POST', path, body, token=self.token)
+            self.assertEqual(200, status)
+            self.assertEqual('accepted', result['status'])
+        self.assertEqual(1, len(writes))
+        self.assertEqual('priority', writes[0][1]['service_tier'])
+        for invalid in ('fast', True, 1):
+            self.assertEqual(400, self.request('POST', path, {**body, 'serviceTier': invalid}, token=self.token)[0])
+
+    def test_pending_project_attachment_auth_and_stream_use_selected_project(self):
+        uploads = []
+        def upload(project, name, stream, size):
+            uploads.append((project, name, stream.read(size)))
+            return {'type': 'mention', 'name': name, 'path': '/node/project/.rivo-attachments/random/movie.mp4'}
+        self.native.upload_project_attachment_stream = upload
+        url = '/v1/projects/selected-project/attachments?name=movie.mp4'
+        headers = {'Content-Type': 'application/octet-stream'}
+        self.assertEqual(401, self.request('POST', url, raw=b'video-bytes', extra_headers=headers)[0])
+        self.assertFalse(uploads)
+        status, result, _ = self.request('POST', url, token=self.token, raw=b'video-bytes', extra_headers=headers)
+        self.assertEqual(200, status)
+        self.assertEqual('mention', result['type'])
+        self.assertEqual([('selected-project', 'movie.mp4', b'video-bytes')], uploads)
+        self.assertFalse(self.native.created)
+
+    def test_ten_full_size_images_fit_json_budget_but_eleventh_is_rejected(self):
+        image = {'type': 'image', 'url': 'data:image/jpeg;base64,' + base64.b64encode(b'\0' * (1024 * 1024)).decode()}
+        body = {'submissionId': 'ten-images-parity', 'input': [image] * 10}
+        status, result, _ = self.request('POST', '/v1/threads/thread-1/turns', body, token=self.token)
+        self.assertEqual(200, status)
+        self.assertEqual('accepted', result['status'])
+        self.assertEqual(10, len(self.native.sent[0][2]['input_items']))
+        too_many = {'submissionId': 'eleven-images-parity', 'input': [{'type': 'image', 'url': 'https://example.invalid/image.jpg'}] * 11}
+        self.assertEqual(400, self.request('POST', '/v1/threads/thread-1/turns', too_many, token=self.token)[0])
+        self.assertEqual(1, len(self.native.sent))
+
+    def test_recovery_receipt_remains_confirmed_and_deduplicated(self):
+        from rivo_relay.queue import ExecutionQueue
+        from test_queue import QueueNative
+        native = QueueNative()
+        queue = ExecutionQueue(self.app.db, native, self.app.events)
+        self.app.queue = queue
+        with self.app.db.read() as c:
+            owner = c.execute('SELECT id FROM connections WHERE revoked_at IS NULL').fetchone()[0]
+        queue.enqueue('thread-1', 'old-parity', owner, {'input': [{'type': 'text', 'text': 'original'}]})
+        queue._set('old-parity', 'unknown')
+        old = queue.list('thread-1')[0]
+        body = {'submissionId': 'recovery-parity', 'operation': 'recover', 'itemId': old['id'], 'revision': old['revision']}
+        for _ in range(2):
+            status, result, _ = self.request('POST', '/v1/threads/thread-1/queue', body, token=self.token)
+            self.assertEqual(200, status)
+            self.assertEqual('accepted', result['status'])
+            self.assertEqual('recovery-parity', result['receipt']['itemId'])
+        self.assertEqual(1, len(queue.list('thread-1')))
+
+    def test_structured_diff_pages_require_matching_revision(self):
+        self.native.diff = lambda thread: {'revision': 'head-one', 'patch': 'diff --git a/test.txt b/test.txt\n--- a/test.txt\n+++ b/test.txt\n@@ -1 +1 @@\n-before\n+after\n', 'truncated': False}
+        path = '/v1/threads/thread-1/diff'
+        status, result, _ = self.request('GET', path + '?limit=2', token=self.token)
+        self.assertEqual(200, status)
+        self.assertEqual('test.txt', result['diff']['files'][0]['path'])
+        self.assertEqual(2, result['diff']['nextOffset'])
+        status, page, _ = self.request('GET', path + '?revision=head-one&offset=2&limit=2', token=self.token)
+        self.assertEqual(200, status)
+        self.assertNotIn('patch', page['diff'])
+        self.assertEqual(['deletion', 'addition'], [line['kind'] for line in page['diff']['lines']])
+        self.assertEqual(409, self.request('GET', path + '?revision=old&offset=2', token=self.token)[0])
+        for query in ('?offset=2', '?offset=nope', '?limit=NaN', '?limit=0'):
+            self.assertEqual(400, self.request('GET', path + query, token=self.token)[0])
+
+    def test_handoff_preview_auth_binding_and_post_are_idempotent(self):
+        previews, writes = [], []
+        def preview(thread, action, owner):
+            previews.append((thread, action, owner))
+            return {"ticket": "fixture-ticket", "requiresConfirmation": True, "affectedThreads": []}
+        def handoff(thread, action, **kwargs):
+            writes.append((thread, action, kwargs))
+            return {"threadId": thread}
+        self.native.preview_handoff = preview
+        self.native.handoff = handoff
+        path = "/v1/threads/thread-1/ownership"
+        self.assertEqual(401, self.request("GET", path)[0])
+        self.assertFalse(previews)
+        status, result, _ = self.request("GET", path + "?operation=release", token=self.token)
+        self.assertEqual(200, status)
+        self.assertEqual("release", previews[0][1])
+        body = {"submissionId": "handoff-fixture", "operation": "release", "ticket": result["ticket"], "confirmed": True}
+        self.assertEqual(401, self.request("POST", path, body)[0])
+        for _ in range(2):
+            status, result, _ = self.request("POST", path, body, token=self.token)
+            self.assertEqual(200, status)
+            self.assertEqual("accepted", result["status"])
+        self.assertEqual(1, len(writes))
+        self.assertEqual(previews[0][2], writes[0][2]["owner"])
+        self.assertTrue(writes[0][2]["confirmed"])
+        self.assertEqual("fixture-ticket", writes[0][2]["ticket"])
+
     def test_attachment_and_directory_routes_require_auth_and_use_native_host(self):
         calls = []
         self.native.read_directory = lambda path: {"path": path, "entries": [{"fileName": "a.pdf", "isFile": True, "isDirectory": False}]}
@@ -153,7 +258,9 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(413, status)
         self.assertEqual(1, len(uploads))
         reads = []
-        self.native.stream_download = lambda path: reads.append(path) or (len(data), iter([data]))
+        self.native.prepare_download = lambda path, *args: reads.append(path) or {
+            'size': len(data), 'start': 0, 'end': len(data) - 1, 'partial': False,
+            'etag': '"fixture"', 'chunks': iter([data])}
         self.assertEqual(401, self.request("GET", "/v1/files/download?path=%2Fremote%2Ftest.zip")[0])
         status, link, _ = self.request("POST", "/v1/download-links", {"path": "/remote/test.zip"}, token=self.token)
         self.assertEqual(200, status)
@@ -172,6 +279,41 @@ class ApiTests(unittest.TestCase):
         self.app.download_links[key] = ("/remote/test.zip", 0)
         self.assertEqual(404, self.request("GET", path)[0])
         self.assertEqual(401, self.request("POST", "/v1/download-links", {"path": "/private"})[0])
+
+    def test_download_ranges_validators_and_ticket_contract(self):
+        from test_native_files_worktrees import NativeHost
+        from rivo_relay.codex.native_download import prepare_download
+        from urllib.parse import quote
+        local = Path(self.directory.name) / 'download 空格.bin'
+        local.write_bytes(b'0123456789')
+        host = NativeHost(self.directory.name)
+        self.native.prepare_download = lambda path, range_header, if_range: prepare_download(host, path, range_header, if_range)
+        path = '/v1/files/download?path=' + quote(str(local), safe='')
+        def download(url, headers=None):
+            client = http.client.HTTPConnection('127.0.0.1', self.port, timeout=4)
+            try:
+                client.request('GET', url, headers={'Authorization': 'Bearer ' + self.token, **(headers or {})})
+                response = client.getresponse()
+                return response.status, response.read(), dict(response.getheaders())
+            finally:
+                client.close()
+        status, data, headers = download(path)
+        self.assertEqual((200, b'0123456789'), (status, data))
+        etag = headers['ETag']
+        self.assertEqual('bytes', headers['Accept-Ranges'])
+        status, data, headers = download(path, {'Range': 'bytes=3-6', 'If-Range': etag})
+        self.assertEqual((206, b'3456', 'bytes 3-6/10'), (status, data, headers['Content-Range']))
+        status, data, headers = download(path, {'Range': 'bytes=10-', 'If-Range': etag})
+        self.assertEqual((416, b'', 'bytes */10', etag), (status, data, headers['Content-Range'], headers['ETag']))
+        self.assertEqual(416, download(path, {'Range': 'bytes=0-1,3-4'})[0])
+        local.write_bytes(b'abcdefghij')
+        status, data, headers = download(path, {'Range': 'bytes=3-', 'If-Range': etag})
+        self.assertEqual((200, b'abcdefghij'), (status, data))
+        self.assertNotEqual(etag, headers['ETag'])
+        status, link, _ = self.request('POST', '/v1/download-links', {'path': str(local)}, token=self.token)
+        ticket = '/v1/download-links/' + link['url'].rsplit('/', 1)[-1]
+        status, data, headers = download(ticket, {'Range': 'bytes=-3'})
+        self.assertEqual((206, b'hij', 'bytes 7-9/10'), (status, data, headers['Content-Range']))
 
     def _start(self, bus=None):
         self.native = NativeStub()

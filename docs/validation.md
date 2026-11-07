@@ -216,3 +216,246 @@ APK：[`rivo-relay-0.2.0-debug.apk`](../workspace/artifacts/rivo-relay-0.2.0-deb
 - 本轮没有更新或重启 Relay 节点，也没有新增服务、模型或客户端库；无需额外部署。不支持语音。系统保存选择器的名称/MIME、文件 Intent 的只读授权、下载取消及类型分流有定向测试；未将模拟器结果当成实际手机的 APK 安装器、第三方分享接收或全部媒体格式验收。
 
 APK：[`rivo-relay-0.2.1-debug.apk`](../workspace/artifacts/rivo-relay-0.2.1-debug.apk)，versionCode **13**，**13,791,737** 字节，SHA-256：`f1c61e941097bce718f6090b7f280301ee0f37fb1d918b23a66e70fd2cd4bc08`。摘要见 `workspace/artifacts/build-summary-0.2.1.json`。本地包与模拟器已更新；Git 提交与 PR 状态以仓库记录为准，尚未发布 GitHub Release。
+
+
+## 2026-10-29 响应链路优化验证
+
+初次优化阶段为本地源码和构建验证；后续 0.2.2 部署和模拟器实测见下方记录。尚未做同条件旧版本/新版本的端到端对照。
+
+- Python：`test_performance.py` 3 项通过，验证缓存过期/失效、并发读取复用、读取中失效、返回值隔离和 SSE 位置字段；`test_codex.py` 24 项通过。
+- Android：`LiveDeltaTest`、`SessionControllerTest`、`CatalogControllerTest` 定向回归；覆盖快照与事件重叠、Unicode、命令输出、旧协议回退、断线历史重置及跨会话读取保护。集成测试验证收到文本增量后无需增加历史 GET。
+- `:app:assembleDebug` 成功，产物为 `client/android/app/build/outputs/apk/debug/app-debug.apk`；版本号未更改，未发布。
+
+这轮证据说明减少了增量路径的历史请求及重复工作，不代表已测得端到端耗时改善百分比。
+
+
+## 0.2.2：部署、栖光性能对照与远程模拟器迭代（2026-10-29）
+
+- 本机 `local.rivo-relay` 已平滑重启加载服务端优化；原有 2 个授权连接保留，Codex runtime ID 仍为 906。部署前 SQLite 在线备份。只更新 Relay，没有更新或重启本机/远端原生 Codex 或栖光服务。
+- 本机 `emulator-5554`（API 37）和 Tailscale e2mac 的 `emulator-5582`（API 35）已安装最终 0.2.2 / versionCode 14。远端使用已有 `MergeDemoMinimalBase_API35` AVD，以 read-only/no-snapshot-save 启动，未操作已连接的实体手机；两个模拟器的网络开关已恢复。远端验证路径为 Android → e2mac 主机 Tailscale → 本机 HTTPS 18766 → Relay，没有 SSH 隧道代替这条应用网络路径。
+- 对照并适配了栖光的积压通知合并、150ms 展示批次、历史刷新合并和缓存边界；来源摘要和保留差异见 architecture.md。Python 定向 29 项通过（原生语义 24 + 性能 5），最终 Android 定向 23 项 JVM 测试通过。
+- 最终包本机 4 项设备回归通过：真实历史断网恢复 + 3 项长历史/流式滚动测试；远端 2 项真实设备流程通过：历史断网恢复，以及从 UI 新建会话、真实命令分段输出、40 段长回复、断网/重连和内容一致性。随后两端各 1 项最终接口延迟测试通过。先前真实配对和本机完整流式流程的日志也保留。
+- 远端完整流程收到 111 个带位置的增量事件，其中 19 个命令输出事件；2535 字符长回复完整显示。断网检测 94ms，恢复 702ms；独立历史流程断网检测 105ms，恢复 379ms，前后 message/turn ID 与文本一致。本机最终历史恢复 155ms。
+- 实际迭代修复：旧验收脚本遗漏新建确认弹窗及恢复页面导航；辅助 SSE 测量任务在断网前未结束；Android `onLost` 中同步查询旧 activeNetwork 的竞态；旧 HTTP/2 连接使恢复等待约 90.65 秒；主动取消只读请求误报错误横幅；TLS 连接清理在主线程触发异常。最终回归覆盖实际网络开关，而非仅模拟 callback。写请求不随连接池重建被取消或重发，专门测试保留一次 POST 的接受回执。
+
+同一原生会话、同一 HTTPS 地址，每接口连续 8 次，以下为最终包中位数（毫秒）：
+
+| 接口 | 本机模拟器 | e2mac 模拟器 |
+| --- | ---: | ---: |
+| 节点状态 | 1.89 | 22.47 |
+| 项目列表（缓存命中） | 2.33 | 24.4 |
+| 会话列表 | 535.87 | 559.4 |
+| 历史页（约 7.7KB） | 4.79 | 29.46 |
+
+Tailscale 本次探测走 peer relay，往返约 15–16ms。项目列表首次未命中时本机 HTTP 样本约 942ms；上表项目连续读取已预热，不能当作冷启动耗时。单独 RPC 诊断显示会话列表约 0.53 秒主要花在 `thread/list(cwd=...)` 的旧会话兼容查询，并行查询不能消除它。以上是两种网络位置的样本，不是栖光与 Relay 的端到端性能比赛，也不代表模型首字速度。
+
+证据目录：`workspace/artifacts/performance-0.2.2/`。最终日志为 `local-final-io.log`、`remote-final-io.log`、`local-latency-final.log`、`remote-latency-final.log`；原始失败和修复过程日志保留。测速 JSON 为 `local-network-final.json`、`remote-network-final.json`，截图 `remote-reconnected-final.png` 已视检。临时 host 验证凭据已撤销并确认 401，私密令牌文件已删除；保留两台模拟器的配对。
+
+最终 APK：[`rivo-relay-0.2.2-debug.apk`](../workspace/artifacts/rivo-relay-0.2.2-debug.apk)，13,454,903 字节；SHA-256：`5af1ad81518d11abfeca72f6faae79f3bb12768b2624e1a3b114ab23b5556803`。未发布 GitHub Release，未安装到实体手机。
+
+
+## 0.2.3：实体手机连接失败的恢复与诊断（2026-10-29）
+
+用户确认实体手机为 0.2.2，保存地址与现有 HTTPS 18766 入口一致，且手机浏览器 `/health` 返回 OK。此时本机与 e2mac 的 HTTPS 健康检查、临时授权的 `/v1/node` 与 `/v1/projects` 均返回 200；停止了此前留在前台的两个模拟器 App，避免测试连接持续占用。上述结果不能替代实体手机 App 的验证，事故的手机侧具体异常仍待新版本提示确认。
+
+对照栖光 `DataRepository.kt` 的 `retryOnConnectionFailure(true)`，发现 Relay 对 GET/SSE 也关闭了连接恢复。0.2.3 为这两种只读请求启用 OkHttp 连接恢复，允许失败地址回退和旧连接恢复；POST/上传仍使用禁止自动重试的客户端，不自动重发操作。新增回归以不可连接 IPv6 + 可连接 IPv4 的 DNS 顺序验证回退，并保留丢失写回执只发送一次的测试。
+
+通用错误改为不含敏感原始异常文本的 DNS/TLS/联网权限/超时/连接失败分类，并显示节点主机与端口；聊天读取也使用同一分类。错误横幅增加“重连”，只重建读取连接并验证节点，不清除登录或提交记录；节点设置显示版本号。最终 14 项定向 JVM 测试通过。设备验证日志在 `workspace/artifacts/connectivity-0.2.3/device-verified.log`，包含已配对真实节点读取及故障提示/重连界面测试（DNS 错误为明确注入的 UI fixture，不是手机事故根因）。
+
+APK：`workspace/artifacts/rivo-relay-0.2.3-debug.apk`，versionCode 15；SHA-256 `4cece2c83dea6ef916e3837b5abfa7effdf1eb26b7270a5cbdacfa7eb16630bc`。已生成限定该 APK 的 1 小时浏览器下载链接并通过 HTTPS 下载校验；临时签发用授权已撤销。未发布 GitHub Release；手机覆盖安装与实际恢复仍需用户确认。
+
+### Android 0.2.4 — observed phone DNS failure (2026-10-29)
+
+The user's updated phone briefly connected, then reported UnknownHost for the correct
+`ethanmac-mini.tail791ea5.ts.net:18766` node. Server health remained healthy. This
+identifies the failing resolution stage; the precise Android/VPN DNS cause is not proven.
+
+Added OS-first `TailnetDns`: only `.ts.net` names can fall back to UDP Quad100
+(1.5 s timeout per query), then a same-host last-successful answer held in memory
+for at most 10 minutes / 32 hosts. Transport resets keep this resolver; process
+restarts discard its cache. Original HTTPS hostname, SNI and normal certificate
+verification remain in place. No public resolver, node-IP hardcoding, new dependency,
+credential reset or write replay. Tailscale documents Quad100 as its local DNS endpoint:
+https://tailscale.com/docs/reference/quad100 . Failure still surfaces if all resolution
+paths fail and no valid cached answer exists.
+
+Validation: Gradle build successful; 11 targeted JVM tests passed (4 DNS tests,
+5 transport tests including no replay of a lost POST response, 1 network reset,
+1 error classification). DNS tests cover OS preference, fallback, host-isolated
+cache expiration, non-tailnet exclusion, malformed reply rejection and actual UDP.
+Local API 37 emulator: 2 instrumentation tests passed, including DNS failure and
+error/retry UI. Remote e2mac API 35 emulator: 1 forced-DNS-failure test passed over
+the real tailnet path. Each DNS test forces OS lookup to throw UnknownHost twice,
+reads authenticated node/projects over HTTPS and repeats after transport reset.
+Whole sequence elapsed: local 2678 ms; remote 596 ms (not individual request latency).
+Remote initial invocation omitted the project fixture and was interrupted; the
+corrected invocation is `remote-device-verified.log`. Test apps were force-stopped
+afterward to release SSE connections. Physical phones and native runtime untouched.
+Artifacts: `workspace/artifacts/connectivity-0.2.4/`. APK delivered through a scoped
+one-hour download link; downloaded bytes verified SHA-256
+`b79b034e23b7a79e8bc03062769ea46bb29cd0d8c5e4ba4ee5e770b4962b7396`.
+The user's actual phone needs the update; long-term recurrence is not yet verified.
+
+### Android 0.2.5 — user-requested HTTP + Tailscale IP migration (2026-10-29)
+
+Deployed tailnet-only TCP 18767 -> 127.0.0.1:18765 and updated the Relay
+LaunchAgent public URL to `http://100.124.150.1:18767`. Only Relay was reloaded;
+its native node reports connected. HTTPS 18766 and unrelated Serve entries remain.
+Initial immediate bootstrap after bootout failed while unloading; subsequent bootstrap
+succeeded and authenticated node plus download endpoints were verified over the IP.
+
+The configured IP is explicitly allowed by release/debug Android network-security
+policy, pairing parser and server public URL validation. Other cleartext remote
+hosts remain rejected; no public/LAN listener was added. Upgrade migrates only the
+exact known old HTTPS endpoint, preserves credentials and identity, and keeps the
+previous storage scope for cached history, drafts, pending submissions and reminders.
+Old notification URLs still select the migrated node. No automatic write replay.
+
+Validation: 9 server config/TLS/process tests and 11 targeted JVM tests passed;
+APK and instrumentation build passed. Remote e2mac API 35: existing HTTPS login
+migrated, authenticated node/projects/history read succeeded with an injected DNS
+implementation that always fails (zero DNS calls), including a transport reset.
+Remote network outage test passed: detection 85 ms, recovery 369 ms, history unchanged.
+Local first run found the emulator at the login screen, so its initial two UI tests
+timed out; these are not counted as passes. Re-established a fixture login through
+0.2.4's real pairing UI without clearing data, then covered it with 0.2.5; both
+IP/no-DNS and network recovery tests passed. No phone result is claimed.
+Test apps were force-stopped to release streams. Artifacts:
+`workspace/artifacts/connectivity-0.2.5/`, final local log `local-device-verified.log`.
+APK scoped download now also uses HTTP + IP; downloaded bytes verified SHA-256
+`eaaf6ebaaaf70ed724f7695fddfd5e5c3e07c70d58313e55870c1f565603128e`.
+
+### Android 0.2.6 — bottom notices and scoped handoff controls (2026-10-29)
+
+Removed top global error/reconciliation/cache banners and the large external-writer
+chat notice. Global states now share a rounded bottom surface, above navigation and
+IME; reconciliation is GET-only every 10 seconds after a 3-second delay, with no
+write replay. Ownership shows one short line and the requested two buttons.
+
+Added POST `/v1/threads/{id}/ownership` through the existing submission ledger.
+Queue dispatch is locked during handoff; an active turn is interrupted and terminal
+history must be observed before attempting unsubscribe/resume. Unknown active-turn
+identity, interruption failure or timeout prevents handoff. Local release intent
+persists so periodic reads and queued tasks cannot silently resume the thread.
+
+IMPORTANT LIMIT: the installed shared native runtime's `thread/unsubscribe` can
+leave its writer loaded even after this client unsubscribes. This is returned as
+`writer_still_held`, never as successful writer release. The native resume protocol
+has no force-takeover parameter; another runtime's writer returns `writer_external`.
+No writer processes are killed and no unrelated tasks/runtime are restarted.
+Thus the requested cross-runtime forced transfer is NOT implemented by this build.
+
+44 targeted server tests passed (handoff ordering/failures, existing native semantics,
+submission receipts). Local isolated real-turn instrumentation: 2 tests passed,
+including interruption before detaching, truthful still-held error, reattachment
+without pending uncertainty, and the bottom DNS error/retry flow. Initial smoke test
+was insufficient (read-only state alone passed despite a failed release); replaced
+with explicit error and pending assertions. Also fixed handoff receipts to contain
+only threadId, as required by the submission ledger. Earlier invalid receipts were
+isolated fixture operations, not user operations. Screenshots inspected under
+`workspace/artifacts/handoff-0.2.6/`. Runtime limitation remains explicit.
+
+Final 0.2.6 APK includes IME-aware bottom-panel placement. e2mac remote emulator
+bottom-error/retry instrumentation passed (1 test). APK download verified SHA-256
+`b39a394aed884b311867340f11d983b2f6f1f1c1340e2f9b7da62044fb8f307f`.
+Test apps force-stopped afterward; temporary delivery credentials revoked.
+
+## 2026-10-29：MacBook Pro / e2 Mac mini 部署与既有授权接入（0.2.8）
+
+- 两台安装目录：`~/Applications/Rivo-Relay`；独立 venv、`workspace/data/relay.sqlite3` 和 `workspace/logs/`。用户 LaunchAgent `local.rivo-relay` 已加载，RunAtLoad / KeepAlive，监听 loopback 18765。
+- Tailscale Serve 新增 HTTPS 18766，保留现有 Serve 配置。入口为 `https://ethanmacbook-pro.tail791ea5.ts.net:18766` 与 `https://e2mac-mini.tail791ea5.ts.net:18766`。TLS 正常，未认证请求均返回 401。
+- 显式连接各自主目录既有 `.codex/app-server-control/app-server-control.sock`，未启动或停止 Codex。认证读取 connected=true，MacBook 返回 5 个项目，e2 返回 7 个项目。临时验证授权已撤销。
+- 按用户要求，同步本机 Relay 的既有 connections 记录（含撤销状态，仅 token_hash，不读取手机明文 token 或 Codex 凭据）。当时共 27 条，其中 5 条有效。此次为授权快照；后续新增/撤销并非跨节点实时同步，各节点仍独立保存授权。
+- Android 0.2.8 / versionCode 20 将明确已同步的 deviceId 从本机已登录记录迁移为两个额外保存节点：复用 Relay token/deviceId，使用目标独立 nodeId/storageBase；保留活动节点、已有目标记录和已失效记录。不向未知地址共享 token，不迁移未同步设备的新授权。
+- 同时修复配对成功响应不含 base 时客户端错误读取 base 的问题，新配对以实际 pairing.baseUrl 建立存储作用域。
+- 4 项 NodeEndpoints JVM 测试及 APK / instrumentation APK 构建通过。现有已登录 emulator-5554 覆盖安装后，ProvisionedNodesTest 实际使用原授权经 HTTPS 读取两个节点身份、连接状态和项目成功，并恢复原活动节点；没有清空数据。
+- APK：`workspace/artifacts/rivo-relay-0.2.8-debug.apk`；证据：`workspace/deploy-multinode/`。小米 17 Pro Max 未连接 ADB，已准备内网下载交付，实体手机安装及界面确认仍待用户完成。
+
+### Android 0.2.7 — explicit process termination and native resume (2026-10-29)
+
+Implements the user's clarified force-takeover semantics, superseding 0.2.6's
+subscription-only limitation. WriterProcesses verifies the local runtime's Unix
+socket/PID relationship (rejects remote-forward PID confusion), checks the actual
+OS lock, identifies a unique Codex holder and all its open thread locks/descendants.
+An authenticated preview returns only PID/affected titles/IDs and a one-use,
+120-second ticket bound to the caller/action/thread. Multiple affected threads
+require explicit confirmation in a bottom sheet. Changed PID/start identity,
+commands, thread scope or descendants reject the stale preview.
+
+Execution pauses affected Relay queues/subscriptions, terminates the verified
+holder (SIGTERM then SIGKILL after 2 seconds), terminates verified surviving
+children and observes OS lock release. Takeover resumes the original native
+thread and verifies the new holder PID. If the terminated holder was Relay's
+current runtime, its exact verified binary/arguments restore the same endpoint.
+Other affected Relay sessions remain paused; no interrupted instruction is replayed.
+A subsequent user message can continue from retained history, not memory state.
+
+Verification: 61 targeted server tests passed, including real file-lock/child-process
+termination, stale/reused identities, ticket expiry/caller/action binding, mandatory
+shared impact confirmation, kill-before-resume, lock verification, queue regressions
+and real HTTP authorization/idempotent POST routing. Isolated native app servers
+used a temporary CODEX_HOME and were cleaned up. Final native test froze the writer
+with SIGSTOP to force SIGKILL escalation, took over while a turn was in progress,
+verified preserved history and no active original turn, killed/replaced the second
+runtime for release, verified the OS lock became free, reacquired the same thread,
+and completed a new continuation turn. Full sequence including continuation:
+12,227 ms; this is not a takeover latency benchmark. Evidence: `native-force.json`
+and `native_force_test.py` under `workspace/artifacts/handoff-0.2.7/`.
+Initial fixture attempts lacked the code_mode_host flag or requested a tool the
+isolated session did not expose; these were corrected before the successful test.
+
+UI validation uses only preview and cancellation on the real production node;
+it never confirms process termination there. Both local and remote e2mac emulator
+flows verify the impact list and unchanged runtime identity after cancellation.
+Final bottom sheet expands fully, with confirm/cancel visibility asserted. Screenshot
+`shared-bottom-sheet-final.png` inspected. Production native PID 47706 remained
+unchanged; only Relay was reloaded. APK download verified SHA-256
+`64b9cb4d7215b28f3ef135b9a43906feef2d628021ecb5a20004ca97aed41291`.
+
+### 0.2.9：节点切换下拉菜单
+
+项目页顶部节点名称打开锚定下拉菜单，列出已授权节点并为当前节点显示勾选；点击其他节点直接切换，不经过登录页。添加节点和节点详情保留在菜单中，点击当前节点仅收起菜单。APK / instrumentation APK 构建通过；模拟器覆盖安装并实际展开菜单、切换至 MacBook Pro，确认项目加载。截图 `workspace/deploy-multinode/dropdown-0.2.9.png` 已视检，APK 为 `workspace/artifacts/rivo-relay-0.2.9-debug.apk`（versionCode 21）。
+
+
+### 2026-11-07：QiGuang 最新 Codex 迁移
+
+来源为本地 `QiGuang-Next@1642fc810f543a7995ca334e0e4916c20968d858`（2026-11-04）；远端 dev 仍是较早的 `8e0e67e`。逐项实现和保留差异见 [Codex 实现对照](qiguang-codex-sync.md)，来源文件摘要追加在 `client/android/migration-sources.json`。
+
+服务端最终组合回归 173 项全部通过，另有 1 项真实临时进程/文件锁交接测试通过。覆盖队列、原生交互、附件上下文、模型目录、历史收敛、结构化 diff、精确身份核对、Review 指纹、外部工作树和 Range/ETag；文件与 Git 测试使用受控 RPC fixture 后面的真实临时文件，不读取用户项目。命令和输出见 `workspace/artifacts/qiguang-codex-sync-20261107/server-validation.txt`。
+
+Android 最终执行 `:app:testDebugUnitTest :app:assembleDebugAndroidTest :app:assembleDebug :app:lintDebug`，构建成功，141 项 JVM 测试全部通过（无失败、错误或跳过）。Lint 为 0 errors、30 warnings、2 hints；未把既有提示记为已修复。验证包括多个独立草稿、创建/发送 checkpoint、较新草稿保护、持久显示 receipt、ready 原生身份接管、跨页位置和顺序、缓存版本/节点隔离及下载取消。
+
+APK 保留当前项目版本 `0.2.9` / versionCode `21`，本次不发布版本。产物为 `workspace/artifacts/qiguang-codex-sync-20261107/rivo-relay-0.2.9-qiguang-codex-debug.apk`（14,146,923 bytes），SHA-256：`71ce839d969bfa3927425c382bf89b0d3f2e09e21e26f486296538268456832c`。构建日志、JSON 测试摘要和四张交互截图保存在同一忽略目录。
+
+本次没有部署或重启实际 Relay/Codex 节点、更新 LaunchAgent、安装到实体手机，也没有提交/推送 Git。真实 Desktop 双向接续、Windows 节点和多个真实设备的运行验收仍需实际环境验证；模拟器和受控 RPC 测试不替代这些结果。
+
+最终模拟器验收使用本次专用的 `medium_phone` / Android 36（1080×2400），12 个测试类共 **43 项全部通过**，耗时 100.513 秒。覆盖模型/快速模式、固定澄清、队列恢复、目录信任、多个 pending 草稿与切换、Review/diff、文本/图片交互、扫光像素变化与终态、提交前落盘、大图按窗口解码、FileProvider 只读分享和外部工作树禁止清理。最终原始日志为 `android-ui-validation.txt`；四张 `codex-latest-*.png` 已检查布局。
+
+此前测试中扫光时钟和合并 semantics、键盘弹出时队列按钮位移导致的点击时序均已修正测试夹具；保留真实触摸、具体操作身份、像素变化和停止状态断言，未通过放宽断言规避失败。最终全组重新执行通过。最后仅测试夹具改动又单独执行 lint 通过，待交付 APK 内容未改变。
+
+
+### 2026-11-07：Desktop、原生历史与媒体后续迁移
+
+继续对照同一 `QiGuang-Next@1642fc810f543a7995ca334e0e4916c20968d858`。Desktop protocol-1、按writer固定的断线/重连代数、实际host原生水位/重投影/备份回滚、原生历史失效、媒体代理/缓存/Range/溯源/墓碑、20/40MiB图片分块落盘、语音流及图片/音视频组件均已接入。此次源文件摘要36项追加到migration manifest，不覆盖上轮记录。实现和实际启用条件见 [完整对照](qiguang-codex-sync.md)、[Desktop桥接](codex-desktop-bridge.md)、[语音输入](codex-voice-input.md)。
+
+服务端全量 **308/308**，零失败、零跳过；实际进程身份/锁/交接只针对临时编译的惰性进程和隔离CODEX_HOME。补充视频扩展名后相关5项再次通过。修复覆盖并发rollout追加、锁inode替换、代数切换、发布失败回滚、不复制auth/config、不自动重放、Desktop仅释放当前订阅及错误runtime不清理另一writer状态。
+
+Android `assembleDebug` / `assembleDebugAndroidTest` / `testDebugUnitTest` / `lintDebug` 全部成功；**172/172 JVM** 无失败/跳过；lint **0 errors、42 warnings、3 hints**。语音13项测试使用fake transport/本地HTTP，覆盖PCM尾块、缓冲上限、光标插入、手改/目标隔离、能力缓存及失效请求不重发，不接真实ASR。
+
+最终模拟器完整回归 **64/64**，201.143秒，使用本次启动的medium_phone / Android36，1080×2400。包含原有聊天、队列、审批、目录、pending、Review/diff及新增图片原版像素/手势、生成溯源只读、代理/凭据隔离、媒体库重新附加、真实FileProvider图片MIME、视频倍速/原地址转发、音频自动播放/暂停/seek/后台暂停/损坏文件重试和语音按钮布局。
+
+大图显示解码被限制到屏幕2倍且每边至多4096px，内存缓存32MiB，保存仍使用原始字节。检查中发现禁用图像内存缓存造成两项缩放中间帧回归，改为有容量上限的缓存后，相关6项图片手势及2项音频复测通过，再完整执行64项通过。未删除或放宽像素/缩放断言。
+
+产物目录：`workspace/artifacts/qiguang-codex-completion-20261107/`。APK `rivo-relay-0.2.9-codex-parity-debug.apk` 保留 versionName0.2.9 / code21；20,346,080 bytes，SHA-256 `3d0e75c73e77e17295c8696e9516e4f06c2faff59ebcc33347cfdc03f907b00c`。目录内包含server/build/UI原始日志和JSON摘要，截图采用受控媒体fixture。
+
+本次未提交/推送Git，未部署节点、修改/重启真实Desktop、注入宿主加载器、写用户真实历史或安装实体手机。真实Desktop共享需要宿主加载适配模块；语音需要配置已有ASR；真实设备/Windows/跨节点运行仍需环境验收，不由模拟器和fixtures替代。
+
+最后仅调整截图夹具（等待稳定帧、使用实际附件弹窗）后另跑5项全部通过，22.337秒；生成溯源、媒体库、视频菜单、语音输入截图已检查，生产APK SHA-256未变。本次启动的模拟器已关闭。
+
+### 2026-11-07：本机节点更新与 Android 0.2.10 发布
+
+用户明确授权更新本机节点，并选择 GitHub Release 永久下载。发布版本升为 `0.2.10` / code `22`，沿用 `dev.rivo.relay` 与原 debug 证书；证书 SHA-256 与已发布0.1.10和既有0.2.9一致：`3f31e18aa34d6144102e35b4640ff94e5fdfa3c92b074df474d02583934e1800`。最终APK 19,764,984 bytes，SHA-256 `ee76a66310348b528801b4dbdcee31f2877f0d0bd0c754b5244e628fa00bfbe5`。本次重新执行 assembleDebug、172项JVM测试与lintDebug，全部通过，lint为0错误、42警告、3提示。暂存检查另清理两个文件末尾空行后，再执行assembleDebug并复验签名，发布采用最后生成的APK。308项服务端与64项模拟器UI结果来自上节相同功能源码，版本发布未重复运行UI，也未安装实体手机。
+
+更新前以SQLite backup API备份 `workspace/local-node/data/relay.sqlite3`，完整性检查为ok，依赖检查通过；无待执行/运行中的Relay队列项或pending提交。以SIGTERM平滑重启 `local.rivo-relay`，Relay PID从64497变为91223，节点ID及5个既有有效授权完全保留，数据库检查仍为ok。重启后的原生连接正常，项目列表21项，媒体代理/缩略图/溯源/媒体库能力已加载，真实原生文件读取产生WebP缩略图并正确返回206 Range内容。临时检查凭据已撤销，没有发送真实Codex任务。Desktop桥接仍未安装宿主加载器，ASR返回unconfigured；没有将代码部署误记为这两项真实服务已启用。
+
+源码与发布记录保存到 `codex/release-0.2.10` 分支及 `v0.2.10` 标签；APK、SHA256SUMS随GitHub测试版Release交付，保留main当前状态。本机备份、源码文件摘要、构建、签名及部署验证记录在忽略目录 `workspace/artifacts/release-0.2.10/`，不上传节点数据库、连接凭据或私有运行日志。

@@ -1,5 +1,11 @@
 package dev.rivo.relay.ui.chat
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Handler
+import android.os.Looper
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
@@ -17,6 +23,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -41,7 +53,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import dev.rivo.relay.data.string
+import dev.rivo.relay.data.SpeechCapability
+import dev.rivo.relay.data.SpeechRepository
 import dev.rivo.relay.ui.theme.RivoSize
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.first
 import org.json.JSONObject
 
 /**
@@ -86,13 +108,116 @@ fun MessageComposer(
     settingsContent: (@Composable () -> Unit)? = null,
 ) {
     var attachmentsOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(enabled) { if (!enabled) attachmentsOpen = false }
     val context = LocalContext.current
     val keyboard = LocalSoftwareKeyboardController.current
     val focusRequester = remember { FocusRequester() }
     var inputValue by remember { mutableStateOf(TextFieldValue(text, selection = TextRange(text.length))) }
-    LaunchedEffect(text) { if (inputValue.text != text) inputValue = TextFieldValue(text, selection = TextRange(text.length)) }
+    val mediaClient = LocalCodexMediaClient.current
+    val api = mediaClient?.api
+    val target = mediaClient?.threadId.orEmpty()
+    val latestTarget by rememberUpdatedState(target)
+    val latestOnTextChange by rememberUpdatedState(onTextChange)
+    val latestOnSend by rememberUpdatedState(onSend)
+    val latestEnabled by rememberUpdatedState(enabled && !preparing)
+    val latestCanSend by rememberUpdatedState(canSend)
+    val latestText by rememberUpdatedState(text)
+    val scope = rememberCoroutineScope()
+    val repository = remember(api) { api?.let { SpeechRepository(it) } }
+    var capability by remember(api) { mutableStateOf(SpeechCapability(false, "正在检查语音服务")) }
+    val recorder = remember { VoiceRecorder() }
+    val recordingEpoch = remember { AtomicLong() }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
+    var recording by remember(api, target) { mutableStateOf(false) }
+    var amplitude by remember(api, target) { mutableStateOf(0f) }
+    var permissionNotice by remember { mutableStateOf<String?>(null) }
+    val controller = remember(api, target) {
+        repository?.let { VoiceTranscriptionController(it, scope, { latestTarget }, { inputValue.text },
+            { value, cursor -> inputValue = TextFieldValue(value, TextRange(cursor)); latestOnTextChange(value) }) }
+    }
+    val voice = controller?.state?.collectAsState()?.value ?: VoiceUiState()
+    fun cancelVoice() {
+        recordingEpoch.incrementAndGet()
+        recording = false; amplitude = 0f
+        recorder.cancel(); controller?.cancel()
+    }
+    val microphonePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        // The permission dialog ends the original tap. Never start capture from its callback.
+        permissionNotice = if (granted) "麦克风权限已开启，请再次点击开始录音" else "需要麦克风权限才能语音输入"
+    }
+    LaunchedEffect(repository) {
+        if (repository != null) try { capability = repository.capability() }
+        catch (error: Exception) {
+            if (error is CancellationException) throw error
+            capability = SpeechCapability(false, "语音服务暂不可用，请重新连接节点后重试")
+        }
+    }
+    LaunchedEffect(text, target) {
+        if (inputValue.text != text) {
+            cancelVoice()
+            inputValue = TextFieldValue(text, selection = TextRange(text.length))
+        }
+    }
+    LaunchedEffect(enabled, preparing) { if (!enabled || preparing) cancelVoice() }
+    LaunchedEffect(voice.transcribing, voice.error) {
+        if (!voice.transcribing && recording) {
+            recordingEpoch.incrementAndGet(); recording = false; amplitude = 0f; recorder.cancel()
+        }
+    }
+    LaunchedEffect(recording, controller) {
+        if (recording) {
+            delay(120_000)
+            recording = false; amplitude = 0f; recorder.stop(); controller?.finish()
+        }
+    }
+    LaunchedEffect(controller, voice.sendReady) {
+        val ready = voice.sendReady
+        if (ready != 0L) {
+            val finalDraft = inputValue.text
+            // A parent may publish its final draft after this child recomposes.
+            // Wait for that exact draft; a frame alone is not an ownership fence.
+            val eligible = withTimeoutOrNull(2_000) {
+                snapshotFlow { latestEnabled && latestCanSend && latestText == finalDraft }.first { it }
+            } == true
+            withFrameNanos { }
+            if (eligible && latestEnabled && latestCanSend && latestText == finalDraft && inputValue.text == finalDraft &&
+                controller?.consumeSendReady(ready) == true) latestOnSend()
+            else controller?.cancel("转写已完成，请确认草稿后发送")
+        }
+    }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(controller, lifecycle) {
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) cancelVoice() }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer); cancelVoice() }
+    }
+    val toggleVoice: () -> Unit = {
+        permissionNotice = null
+        when {
+            recording -> { recording = false; amplitude = 0f; recorder.stop(); controller?.finish() }
+            voice.transcribing -> cancelVoice()
+            controller != null && capability.available && enabled && !preparing -> {
+                if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+                    microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+                else {
+                    val epoch = recordingEpoch.incrementAndGet()
+                    if (controller.start(inputValue.selection.end)) {
+                        recording = true
+                        val started = recorder.start(controller::acceptAudio,
+                            onAmplitude = { value -> mainHandler.post { if (recordingEpoch.get() == epoch) amplitude = value } },
+                            onStopped = { failure -> mainHandler.post {
+                                if (recordingEpoch.get() == epoch && recording) {
+                                    recording = false; amplitude = 0f; recorder.stop()
+                                    if (failure == null) controller.finish() else controller.cancel(failure)
+                                }
+                            } })
+                        if (!started) { recording = false; controller.cancel("录音设备无法启动，请检查麦克风权限") }
+                    }
+                }
+            }
+        }
+    }
     LaunchedEffect(focusRequest) { if (focusRequest > 0) { focusRequester.requestFocus(); keyboard?.show() } }
-    LaunchedEffect(enabled) { if (!enabled) attachmentsOpen = false }
     // QiGuang uses 42dp visible controls; preserve Rivo's 44dp touch target.
     CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides RivoSize.MinTouchTarget) {
         Column(
@@ -105,7 +230,13 @@ fun MessageComposer(
                     verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     images.forEach { image ->
                         val bitmap = remember(image) {
-                            android.graphics.BitmapFactory.decodeByteArray(image.bytes, 0, image.bytes.size)?.asImageBitmap()
+                            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                            android.graphics.BitmapFactory.decodeByteArray(image.bytes, 0, image.bytes.size, bounds)
+                            var sample = 1
+                            while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 128) sample *= 2
+                            android.graphics.BitmapFactory.decodeByteArray(image.bytes, 0, image.bytes.size,
+                                android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
+                                ?.let { orientDraftBitmap(it, image.bytes).asImageBitmap() }
                         }
                         Surface(Modifier.fillMaxWidth().clickable(enabled = enabled && !preparing) { onEditImage(image) },
                             shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
@@ -140,6 +271,11 @@ fun MessageComposer(
                 Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.testTag("attachment_error"))
             }
+            (voice.error ?: permissionNotice ?: capability.reason.takeIf { repository != null && !capability.available })?.let {
+                Text(it, style = MaterialTheme.typography.labelSmall,
+                    color = if (voice.error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("voice_status"))
+            }
             Surface(
                 modifier = Modifier.fillMaxWidth().testTag("composer_surface"),
                 shape = MaterialTheme.shapes.extraLarge,
@@ -147,11 +283,17 @@ fun MessageComposer(
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
             ) {
                 Column {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.align(Alignment.Top).padding(start = 8.dp, top = 5.dp)) {
+                        VoiceInputButton(recording, voice.transcribing, voice.error,
+                            capability.available && controller != null && enabled && !preparing,
+                            capability.reason, amplitude, toggleVoice)
+                    }
                     BasicTextField(
                         value = inputValue,
-                        onValueChange = { inputValue = it; onTextChange(it.text) },
+                        onValueChange = { if (it.text != inputValue.text) cancelVoice(); inputValue = it; onTextChange(it.text) },
                         enabled = enabled,
-                        modifier = Modifier.fillMaxWidth().pasteImageAttachments(context, enabled && !preparing, onPasteImages)
+                        modifier = Modifier.weight(1f).pasteImageAttachments(context, enabled && !preparing, onPasteImages)
                             .focusRequester(focusRequester).heightIn(min = 52.dp)
                             .padding(horizontal = 16.dp, vertical = 14.dp).testTag("message_input"),
                         textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
@@ -169,6 +311,7 @@ fun MessageComposer(
                             }
                         },
                     )
+                    }
                     if (preparing) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp))
                     else HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     Row(
@@ -201,18 +344,25 @@ fun MessageComposer(
                                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), shadowElevation = 10.dp, tonalElevation = 4.dp) { settingsContent() }
                             }
                         }
-                        if (isRunning && text.isBlank() && images.isEmpty() && files.isEmpty()) OutlinedButton(
+                        if (isRunning && text.isBlank() && images.isEmpty() && files.isEmpty() && !voice.transcribing) OutlinedButton(
                             onClick = onStop, enabled = canStop,
                             modifier = Modifier.width(80.dp).height(44.dp).testTag("stop_turn"), shape = RoundedCornerShape(22.dp),
                             contentPadding = PaddingValues(horizontal = 10.dp)) { Text("■ 停止", style = MaterialTheme.typography.labelLarge) }
                         else Button(
-                            onClick = onSend,
-                            enabled = enabled && canSend && !preparing,
+                            onClick = {
+                                if (voice.transcribing) {
+                                    if (controller?.markSendPending() == true) {
+                                        if (recording) { recording = false; amplitude = 0f; recorder.stop() }
+                                        controller.finish()
+                                    }
+                                } else onSend()
+                            },
+                            enabled = enabled && (canSend || voice.transcribing) && !preparing && !voice.sendPending,
                             modifier = Modifier.width(80.dp).height(44.dp).testTag("send_message"),
                             shape = RoundedCornerShape(22.dp),
                             contentPadding = PaddingValues(horizontal = 10.dp),
                         ) {
-                            Text(if (busy) "提交中…" else if (queueing) "↑ 排队" else if (isRunning) "↑ 补充" else "↑ 发送",
+                            Text(if (voice.sendPending) "转写中…" else if (busy) "提交中…" else if (queueing) "↑ 排队" else if (isRunning) "↑ 补充" else "↑ 发送",
                                 style = MaterialTheme.typography.labelLarge, maxLines = 1)
                         }
                     }
@@ -220,7 +370,7 @@ fun MessageComposer(
             }
         }
     }
-    if (attachmentsOpen) AttachmentSourceDialog(3 - images.size, 16 - files.size, onDismiss = { attachmentsOpen = false },
+    if (attachmentsOpen) AttachmentSourceDialog(10 - images.size, 16 - files.size, onDismiss = { attachmentsOpen = false },
         onImage = { attachmentsOpen = false; onAddImage() }, onFile = { attachmentsOpen = false; onAddFile() },
         onVideo = { attachmentsOpen = false; onAddVideo() }, onWorkspace = { attachmentsOpen = false; onAddWorkspaceFile() })
 }

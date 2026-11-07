@@ -102,7 +102,7 @@ class SubmissionTests(unittest.TestCase):
         with self.assertRaises(SubmissionNotFound):
             self.store.get("request-1")
 
-    def test_image_sized_payload_only_persists_hash_and_has_eight_mib_limit(self):
+    def test_image_sized_payload_only_persists_hash_and_has_sixty_four_mib_limit(self):
         image = "data:image/png;base64," + "a" * (2 * 1024 * 1024)
         result = self.claim(payload={"input": [{"type": "image", "url": image}]})
         self.assertTrue(result["should_dispatch"])
@@ -112,7 +112,7 @@ class SubmissionTests(unittest.TestCase):
             self.assertNotIn("data:image/png", dump)
             self.assertLess(len(dump), 20000)
         with self.assertRaises(ValueError):
-            self.claim(submission_id="oversize", payload={"image": "a" * (8 * 1024 * 1024)})
+            self.claim(submission_id="oversize", payload={"image": "a" * (64 * 1024 * 1024)})
         with self.assertRaises(SubmissionNotFound):
             self.store.get("oversize")
 

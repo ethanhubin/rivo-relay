@@ -34,6 +34,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.codex.threadIsActive
+import dev.rivo.relay.data.PendingConversation
 import dev.rivo.relay.data.CodexUsage
 import dev.rivo.relay.data.ThreadSummary
 import dev.rivo.relay.ui.common.CodexQuotaProgressBar
@@ -50,9 +51,18 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
     onArchive: ((List<ThreadSummary>, Boolean) -> Unit)? = null,
     unreadThreadIds: Set<String> = emptySet(), usage: CodexUsage? = null,
     usageLoading: Boolean = false, usageError: String? = null, onRefreshUsage: (() -> Unit)? = null,
-    projectKey: String = projectName) {
+    projectKey: String = projectName, initialCount: Int = 0,
+    pendingConversations: List<PendingConversation> = emptyList(), canDiscardPending: Boolean = true,
+    onResumePending: (String) -> Unit = {}, onDiscardPending: (String) -> Unit = {}) {
     var selectedIds by remember(projectKey, archived) { mutableStateOf(emptySet<String>()) }
     var search by rememberSaveable(projectKey) { mutableStateOf("") }
+    var confirmDiscardId by remember(projectKey) { mutableStateOf<String?>(null) }
+    fun pendingPreview(pending: PendingConversation) = pending.draft.let { draft -> draft.text.ifBlank {
+        listOfNotNull(draft.images.takeIf { it.isNotEmpty() }?.let { "${it.size} 张图片" },
+            draft.files.takeIf { it.isNotEmpty() }?.let { "${it.size} 个附件" }).joinToString(" · ").ifBlank { "继续编辑草稿" }
+    } }
+    val shownPending = pendingConversations.filter { !archived && (search.isBlank() ||
+        pendingPreview(it).contains(search.trim(), true) || "待发送".contains(search.trim(), true)) }
     val shown = threads.sortedWith(compareByDescending<ThreadSummary> { it.pinned }
         .thenByDescending { threadIsActive(it) }.thenByDescending { if (threadIsActive(it)) 0 else it.updatedAt })
         .filter { search.isBlank() || it.name.contains(search.trim(), true) || it.preview.contains(search.trim(), true) }
@@ -86,7 +96,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
             Column(Modifier.fillMaxWidth().weight(1f).padding(horizontal = RivoSpacing.Lg), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Sm)) {
                 SessionSearchField(search) { search = it }
                 Row(horizontalArrangement = Arrangement.spacedBy(RivoSpacing.Sm)) {
-                    SessionFilter(if (archived) "最近会话" else "最近会话 ${threads.size}", !archived, { onArchivedChanged?.invoke(false) }, "sessions_recent")
+                    SessionFilter(if (archived) "最近会话" else "最近会话 ${if (loading && threads.isEmpty()) initialCount + pendingConversations.size else threads.size + pendingConversations.size}", !archived, { onArchivedChanged?.invoke(false) }, "sessions_recent")
                     if (onArchivedChanged != null) SessionFilter("已归档", archived, { onArchivedChanged(true) }, "sessions_archived")
                 }
                 if (selectedIds.isNotEmpty()) Surface(Modifier.fillMaxWidth().testTag("sessions_selection"),
@@ -107,10 +117,25 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                         TextButton(onClick = { selectedIds = emptySet() }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("取消") }
                     }
                 }
-                if (loading && shown.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(28.dp)) }
-                else if (shown.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                if (loading && shown.isEmpty() && shownPending.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(28.dp)) }
+                else if (shown.isEmpty() && shownPending.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                     Text(when { search.isNotBlank() -> "没有匹配的会话"; archived -> "没有已归档会话"; else -> "还没有 Codex 会话，点击右下角新建" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(bottom = 100.dp), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Xs)) {
+                    items(shownPending, key = { "pending:${it.id}" }) { pending ->
+                        Surface(onClick = { onResumePending(pending.id) }, shape = MaterialTheme.shapes.large,
+                            color = MaterialTheme.colorScheme.surfaceContainerLow,
+                            modifier = Modifier.fillMaxWidth().testTag("pending_conversation_${pending.id}")) {
+                            Row(Modifier.padding(horizontal = RivoSpacing.Md, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("◷", Modifier.size(28.dp), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleLarge)
+                                Column(Modifier.weight(1f).padding(start = 8.dp)) {
+                                    Text("待发送", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                                    Text(pendingPreview(pending), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
+                                }
+                                TextButton(onClick = { confirmDiscardId = pending.id }, enabled = canDiscardPending,
+                                    modifier = Modifier.testTag("delete_pending_conversation_${pending.id}"), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("删除") }
+                            }
+                        }
+                    }
                     items(shown, key = { it.id }) { thread ->
                         val isSelected = thread.id in selectedIds
                         Surface(Modifier.fillMaxWidth().testTag("thread_${thread.id}").combinedClickable(
@@ -125,11 +150,16 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                                         isSelected -> Text("✓", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.primary, modifier = Modifier.semantics { contentDescription = "已选择" })
                                         threadIsActive(thread) -> CircularProgressIndicator(Modifier.size(18.dp).semantics { contentDescription = "任务处理中" }, strokeWidth = 2.dp)
+                                        thread.source == "todo" -> Text("☑", Modifier.testTag("session_source_todo_${thread.id}").semantics { contentDescription = "来自待办" }, style = MaterialTheme.typography.titleMedium)
                                         else -> Icon(painterResource(android.R.drawable.sym_action_chat), null, Modifier.size(20.dp))
                                     }
                                 }
                                 Text(thread.name, Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.bodyLarge,
                                     fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                if (thread.workspace != null || thread.externalWorkspace != null) Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.secondaryContainer,
+                                    modifier = Modifier.padding(start = 6.dp).testTag("session_worktree_${thread.id}")) {
+                                    Text(if (thread.externalWorkspace != null) "外部工作树" else "工作树", Modifier.padding(horizontal = 5.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall)
+                                }
                                 if (thread.id in unreadThreadIds) Box(Modifier.padding(start = 7.dp).size(7.dp).background(MaterialTheme.colorScheme.primary, CircleShape)
                                     .testTag("unread_thread_${thread.id}").semantics { contentDescription = "有未读更新" })
                                 if (thread.pinned) SessionPinIcon(Modifier.padding(start = 8.dp).testTag("session_pin_${thread.id}").semantics { contentDescription = "已置顶" })
@@ -147,6 +177,11 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
             Box(contentAlignment = Alignment.Center) { Text("＋", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Light) }
         }
     }
+    pendingConversations.firstOrNull { it.id == confirmDiscardId }?.let { pending -> AlertDialog(onDismissRequest = { confirmDiscardId = null },
+        title = { Text("删除待发送草稿？") }, text = { Text("这会删除手机保存的文字和附件草稿，已经创建的原生会话会保留。") },
+        confirmButton = { TextButton(onClick = { confirmDiscardId = null; onDiscardPending(pending.id) }, enabled = canDiscardPending,
+            modifier = Modifier.testTag("confirm_delete_pending_conversation")) { Text("删除") } },
+        dismissButton = { TextButton(onClick = { confirmDiscardId = null }) { Text("取消") } }) }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
