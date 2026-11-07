@@ -207,3 +207,10 @@ fun stableThreadOrder(threads: List<ThreadSummary>, previousIds: List<String> = 
 fun pinnedThreadsToObserve(state: CatalogState): Set<String> =
     if (!state.threadsFresh || state.archived) emptySet()
     else state.threads.asSequence().filter { it.pinned }.take(12).map { it.id }.toSet()
+
+/** Cached data during a normal refresh is not evidence that the node is offline. */
+internal fun catalogCacheNoticeVisible(route: String, state: CatalogState, online: Boolean): Boolean = when (route) {
+    "projects" -> state.projects.isNotEmpty() && !state.projectsFresh && (!online || !state.projectsLoading)
+    "sessions" -> state.threads.isNotEmpty() && !state.threadsFresh && (!online || !state.threadsLoading)
+    else -> false
+}

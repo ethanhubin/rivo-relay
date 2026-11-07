@@ -35,6 +35,80 @@ class SessionControllerTest {
         MockResponse().setHeader("Content-Type", "application/json").setBody(JSONObject("""{"thread":{"id":"t","name":"$name","turns":[{"id":"turn-$item","items":[{"id":"$item","type":"agentMessage","text":"$name"}]}]},"requests":[],"settings":{},"status":"idle"}""")
             .put("nativeRevision", revision).put("nextCursor", cursor ?: JSONObject.NULL).put("readOnly", readOnly).toString())
 
+    @Test fun unchangedHistoryStillUpdatesControlAndPublishesCompleteSnapshot() = runBlocking {
+        for (shared in listOf(false, true)) {
+            val server = MockWebServer()
+            val tokens = Collections.synchronizedList(mutableListOf<String?>())
+            val full = JSONObject("""{"thread":{"id":"t","turns":[{"id":"turn","status":"completed","items":[{"id":"answer","type":"agentMessage","text":"large answer"}]}]},"nativeHeadRevision":"head1","nativeRevision":"r1","nativeSync":{"state":"ready"},"readOnly":false,"requests":[],"settings":{}}""")
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                    val token = request.requestUrl!!.queryParameter("knownHeadRevision")
+                    tokens += token
+                    return MockResponse().setBody(if (token == null) full.toString() else
+                        JSONObject(full.toString()).apply {
+                            getJSONObject("thread").remove("turns")
+                            put("historyUnchanged", true); put("readOnly", true)
+                        }.toString())
+                }
+            }
+            server.start()
+            val scope = CoroutineScope(coroutineContext + SupervisorJob())
+            val transport = api(server)
+            val published = mutableListOf<JSONObject>()
+            val controller = SessionController(transport, scope, onSnapshot = { _, json -> published += json },
+                sync = if (shared) dev.rivo.relay.codex.NodeSessionSync(transport, scope) else null) { fail(it.message) }
+            try {
+                controller.open("t")
+                val initial = withTimeout(3000) { controller.state.first { it.snapshot != null && !it.stale } }
+                controller.invalidateControl()
+                val fresh = withTimeout(3000) { controller.state.first { it.snapshot?.readOnly == true && !it.stale } }
+                assertSame(initial.snapshot!!.messages, fresh.snapshot!!.messages)
+                assertEquals(listOf(null, "head1"), tokens.toList())
+                assertEquals("answer", published.last().getJSONObject("thread").getJSONArray("turns")
+                    .getJSONObject(0).getJSONArray("items").getJSONObject(0).getString("id"))
+                assertFalse(published.last().has("historyUnchanged"))
+            } finally { controller.close(); scope.cancel(); server.shutdown() }
+        }
+    }
+
+    @Test fun smallHeadRemainsFastWhileOlderContextLoadsOnDemand() = runBlocking {
+        for (shared in listOf(false, true)) {
+            val server = MockWebServer()
+            val requests = Collections.synchronizedList(mutableListOf<String>())
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                    requests += request.path!!
+                    val url = request.requestUrl!!
+                    if (url.queryParameter("cursor") != null)
+                        return revisionSnapshot("older", "r1", null, "older")
+                    if (url.queryParameter("limit") != "2") return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                    return revisionSnapshot("head", "r1", "older", "latest")
+                }
+            }
+            server.start()
+            val scope = CoroutineScope(coroutineContext + SupervisorJob())
+            val transport = api(server)
+            val controller = SessionController(transport, scope,
+                sync = if (shared) dev.rivo.relay.codex.NodeSessionSync(transport, scope) else null) { fail(it.message) }
+            try {
+                controller.open("t")
+                withTimeout(3000) { controller.state.first { it.snapshot?.name == "head" && !it.stale } }
+                assertEquals(listOf("latest"), controller.state.value.snapshot!!.messages.map { it.id })
+                assertFalse(requests.any { it.contains("cursor=") })
+                controller.ensureVisibleHistory()
+                withTimeout(3000) { controller.state.first { it.earlierLoaded && !it.loadingEarlier } }
+                assertEquals(listOf("older", "latest"), controller.state.value.snapshot!!.messages.map { it.id })
+                assertTrue(requests.any { it.contains("cursor=older") && it.contains("limit=30") })
+                controller.invalidateControl()
+                val refreshed = withTimeout(3000) { controller.state.first { !it.stale } }
+                assertEquals(listOf("older", "latest"), refreshed.snapshot!!.messages.map { it.id })
+                assertTrue(refreshed.earlierLoaded)
+            } finally { controller.close(); scope.cancel(); server.shutdown() }
+        }
+    }
+
     @Test fun rapidThreadSwitchRestoresRecentViewImmediatelyButNeverItsPermission() = runBlocking {
         val server = MockWebServer()
         val block = AtomicBoolean(false)

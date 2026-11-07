@@ -59,6 +59,64 @@ class NetworkTransportTest {
         }
     }
 
+    @Test fun stalledTransfersDoNotQueueChatReadsOrWrites() = runBlocking {
+        val server = MockWebServer()
+        val started = CountDownLatch(2)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse =
+                if (request.path!!.startsWith("/v1/threads/thread/attachments")) {
+                    started.countDown()
+                    MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                } else MockResponse().setBody("{\"ok\":true}")
+        }
+        server.start()
+        val file = java.io.File.createTempFile("relay-isolation-", ".txt")
+        file.writeText("attachment")
+        val api = RelayApi(server.url("/").toString())
+        val uploads = (1..6).map { launch { api.uploadFile("thread", "test.txt", file) } }
+        try {
+            withContext(Dispatchers.IO) { assertTrue(started.await(5, TimeUnit.SECONDS)) }
+            assertTrue(withTimeout(2000) { api.call("/control") }.getBoolean("ok"))
+            assertTrue(withTimeout(2000) { api.call("/write", "POST", JSONObject()) }.getBoolean("ok"))
+            assertEquals(4, server.requestCount)
+        } finally {
+            uploads.forEach { it.cancel() }
+            uploads.forEach { it.join() }
+            file.delete()
+            server.shutdown()
+        }
+    }
+
+    @Test fun stalledMediaDoesNotQueueForegroundRequests() = runBlocking {
+        val server = MockWebServer()
+        val started = CountDownLatch(2)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse =
+                if (request.path!!.startsWith("/media")) {
+                    started.countDown()
+                    MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                } else MockResponse().setBody("{\"fresh\":true}")
+        }
+        server.start()
+        val api = RelayApi(server.url("/").toString())
+        val calls = (1..6).map {
+            api.mediaTransport().newCall(okhttp3.Request.Builder().url(server.url("/media/$it")).build()).apply {
+                enqueue(object : okhttp3.Callback {
+                    override fun onFailure(call: okhttp3.Call, e: java.io.IOException) = Unit
+                    override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) { response.close() }
+                })
+            }
+        }
+        try {
+            withContext(Dispatchers.IO) { assertTrue(started.await(5, TimeUnit.SECONDS)) }
+            assertTrue(withTimeout(2000) { api.call("/control") }.getBoolean("fresh"))
+            assertEquals(3, server.requestCount)
+        } finally {
+            calls.forEach { it.cancel() }
+            server.shutdown()
+        }
+    }
+
     @Test fun routeChangeCancelsStalledReadsButPreservesSubmittedWrite() = runBlocking {
         val server = MockWebServer()
         val getStarted = CountDownLatch(1)

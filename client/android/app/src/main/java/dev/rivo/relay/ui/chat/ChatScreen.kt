@@ -363,7 +363,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                                 else -> Text(part.toString(2), style = MaterialTheme.typography.bodySmall)
                             } }
                             message.raw.string("relayDelivery").takeIf(String::isNotBlank)?.let { delivery ->
-                                Text(when (delivery) { "submitting" -> "发送中…"; "accepted" -> "已送达，等待同步"; else -> "结果待核对" },
+                                Text(when (delivery) { "submitting" -> "发送中…"; "accepted" -> "已送达，等待同步"; else -> "正在确认是否送达" },
                                     style = MaterialTheme.typography.labelSmall, modifier = Modifier.testTag("message_delivery_$delivery"))
                             }
                         }

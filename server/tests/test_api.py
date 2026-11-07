@@ -162,6 +162,43 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(command["command"], "private command")
         self.assertEqual(len(command["aggregatedOutput"]), 100000)
 
+    def test_unchanged_head_omits_large_history_but_rechecks_control(self):
+        calls = []
+        source = {"thread": {"id": "thread-1", "turns": [{"id": "turn", "items": [
+            {"id": "answer", "type": "agentMessage", "text": "large reply " * 100000}]}]},
+            "nativeHeadRevision": "content-1", "nativeRevision": "history-1", "nativeSync": {"state": "ready"},
+            "control": {"canOperate": True}, "requests": [], "nextCursor": "older"}
+        def read(*args, **kwargs):
+            calls.append(kwargs)
+            return dict(source)
+        self.app.codex.get_session = read
+        status, full, _ = self.request("GET", "/v1/threads/thread-1?limit=2", token=self.token)
+        self.assertEqual(200, status)
+        source["control"] = {"canOperate": False, "state": "external"}
+        source["requests"] = [{"key": "new-approval"}]
+        path = "/v1/threads/thread-1?limit=2&knownHeadRevision=content-1"
+        status, compact, _ = self.request("GET", path, token=self.token)
+        self.assertEqual(200, status)
+        self.assertTrue(compact["historyUnchanged"])
+        self.assertNotIn("turns", compact["thread"])
+        self.assertEqual(source["control"], compact["control"])
+        self.assertEqual(source["requests"], compact["requests"])
+        self.assertEqual("older", compact["nextCursor"])
+        self.assertLess(len(json.dumps(compact)), len(json.dumps(full)) // 100)
+        self.assertEqual(2, len(calls))
+        self.assertEqual(2, calls[-1]["limit"])
+        for suffix in ("&cursor=older", "&limit=30"):
+            # Use an actual larger page parameter rather than duplicate query keys.
+            changed = path.replace("limit=2", "limit=30") if suffix == "&limit=30" else path + suffix
+            _, result, _ = self.request("GET", changed, token=self.token)
+            self.assertIn("turns", result["thread"])
+        source["nativeSync"] = {"state": "converging"}
+        self.assertIn("turns", self.request("GET", path, token=self.token)[1]["thread"])
+        source["nativeSync"] = {"state": "ready"}
+        source["nativeHeadRevision"] = "content-2"
+        self.assertIn("turns", self.request("GET", path, token=self.token)[1]["thread"])
+        self.assertIn("turns", source["thread"])
+
     def test_public_updates_are_scoped_to_published_artifacts(self):
         import hashlib
         root = self.config.workspace / 'updates'

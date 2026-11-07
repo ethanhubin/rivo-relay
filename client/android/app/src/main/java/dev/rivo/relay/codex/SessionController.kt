@@ -87,6 +87,8 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         val signals = Channel<Unit>(Channel.CONFLATED); updates = signals
         activeJob = scope.launch {
             var reading = false
+            val headCache = SessionHeadCache()
+            var cachedHistoryEpoch = historyEpoch
             var eventCursor: String? = null
             val pendingDeltas = mutableListOf<org.json.JSONObject>()
             val deltaLock = Mutex()
@@ -179,6 +181,8 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                 // A slow transfer must not queue its own immediate full reread.
                 val signal = withTimeoutOrNull(pollIntervalMillis) { signals.receiveCatching() }
                 if (signal?.isClosed == true) break
+                if (cachedHistoryEpoch != historyEpoch) { headCache.clear(); cachedHistoryEpoch = historyEpoch }
+                val knownHeadRevision = headCache.revision
                 val requestHistoryEpoch = historyEpoch
                 val requestControlEpoch = controlEpoch
                 val readStarted = System.nanoTime()
@@ -190,14 +194,20 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                 }
                 try {
                     reading = true
-                    val json = supervisorScope {
+                    val response = supervisorScope {
                         val read = async {
-                            withTimeout(readTimeoutMillis) { sync?.read(id, freshAfterNanos = readStarted) ?: api.call("/v1/threads/" + encoded(id)) }
+                            // Keep control confirmation and live refresh independent of old context.
+                            // Older turns remain available through cursor pagination/viewport fill.
+                            withTimeout(readTimeoutMillis) { sync?.read(id, freshAfterNanos = readStarted, limit = 2, knownHeadRevision = knownHeadRevision)
+                                ?: api.call("/v1/threads/${encoded(id)}?limit=2" +
+                                    knownHeadRevision?.let { "&knownHeadRevision=${encoded(it)}" }.orEmpty()) }
                         }
                         activeRead = read
                         try { read.await() } finally { if (activeRead === read) activeRead = null }
                     }
-                    val head = withContext(Dispatchers.Default) { sessionSnapshot(json) }
+                    val resolved = withContext(Dispatchers.Default) { headCache.resolve(response) }
+                    val json = resolved.json
+                    val head = resolved.snapshot
                     require(head.id == id) { "节点返回了其他会话，请重新同步" }
                     if ((System.nanoTime() - readStarted) / 1_000_000 >= readTimeoutMillis)
                         throw ApiException(408, "control_timeout", "会话同步超时，等待重新确认操作权限")
@@ -227,6 +237,8 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                         slowRead.cancel()
                         reading = false
                         if (revisionChanged) invalidateHistory()
+                        headCache.remember(resolved)
+                        cachedHistoryEpoch = historyEpoch
                         reconcilePending(id, snapshot)
                         mutable.update { current ->
                             current.copy(snapshot = projected, loading = false, stale = false, readError = null, controlNotice = null,
@@ -245,6 +257,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                         if (snapshot.nativeReady) store?.enqueueSnapshot(id, json)
                     }
                 } catch (e: Exception) {
+                    headCache.clear()
                     // Transport reset cancels a Call, not this session. Only a
                     // canceled session job must terminate the refresh loop.
                     if (e is CancellationException) currentCoroutineContext().ensureActive()

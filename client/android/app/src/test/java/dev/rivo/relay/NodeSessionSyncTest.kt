@@ -163,6 +163,58 @@ class NodeSessionSyncTest {
         } finally { release.countDown(); scope.cancel(); server.shutdown() }
     }
 
+    @Test fun differentPageSizesDoNotShareReadsAndInvalidationFencesBoth() = runBlocking {
+        val server = MockWebServer()
+        val started = CountDownLatch(2)
+        val release = CountDownLatch(1)
+        val count = AtomicInteger()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val number = count.incrementAndGet()
+                if (number <= 2) { started.countDown(); release.await(5, TimeUnit.SECONDS) }
+                return MockResponse().setBody("""{"limit":${request.requestUrl!!.queryParameter("limit")},"number":$number}""")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        try {
+            val sync = NodeSessionSync(api(server), scope)
+            val small = async { sync.read("t", limit = 2) }
+            val large = async { sync.read("t", limit = 30) }
+            await(started)
+            sync.invalidate("t")
+            assertEquals(3, sync.read("t", limit = 2).getInt("number"))
+            assertEquals(4, sync.read("t", limit = 30).getInt("number"))
+            release.countDown()
+            assertEquals(2, small.await().getInt("limit"))
+            assertEquals(30, large.await().getInt("limit"))
+        } finally { release.countDown(); scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun conditionalReadCannotSupplyAnUnacknowledgedConsumer() = runBlocking {
+        val server = MockWebServer()
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val known = request.requestUrl!!.queryParameter("knownHeadRevision")
+                if (known != null) { started.countDown(); release.await(5, TimeUnit.SECONDS) }
+                return MockResponse().setBody("""{"historyUnchanged":${known != null}}""")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        try {
+            val sync = NodeSessionSync(api(server), scope)
+            val conditional = async { sync.read("t", limit = 2, knownHeadRevision = "head") }
+            await(started)
+            assertFalse(withTimeout(2000) { sync.read("t", limit = 2) }.getBoolean("historyUnchanged"))
+            release.countDown()
+            assertTrue(conditional.await().getBoolean("historyUnchanged"))
+            assertEquals(2, server.requestCount)
+        } finally { release.countDown(); scope.cancel(); server.shutdown() }
+    }
+
     @Test fun twoObserversUseOneNodeStreamAndDisposalCancelsIt() = runBlocking {
         val server = MockWebServer()
         val streams = AtomicInteger()

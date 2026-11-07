@@ -52,6 +52,16 @@ class SnapshotCompressionTest(unittest.TestCase):
                 self.assertLess(len(encoded), len(plain) // 5)
                 self.assertIn('你好', json.loads(gzip.decompress(encoded))['message'])
 
+    def test_catalogs_are_compressed_losslessly_including_query_strings(self):
+        for path in ('/v1/projects', '/v1/threads?projectId=test', '/v1/models',
+                     '/v1/todos', '/v1/projects/test/threads'):
+            with self.subTest(path=path):
+                _, plain = self.request(path=path)
+                headers, encoded = self.request('gzip', path)
+                self.assertEqual('gzip', headers.get('Content-Encoding'))
+                self.assertEqual(plain, gzip.decompress(encoded))
+                self.assertLess(len(encoded), len(plain) // 5)
+
     def test_explicit_refusal_and_invalid_quality(self):
         for encoding in ('gzip;q=0, *;q=1', 'gzip;q=invalid', 'gzip;q=nan', 'gzip;q=2', 'br', '*;q=0'):
             with self.subTest(encoding=encoding):

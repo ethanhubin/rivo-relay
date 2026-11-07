@@ -39,6 +39,16 @@ class RelayApi(private val base: String, private val token: String = "", private
         .readTimeout(JSON_READ_IDLE_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
         .callTimeout(JSON_READ_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS).build()
     private var reader = readClient()
+    // Bulk bodies occupy callback threads until fully consumed. Reserve a separate
+    // bounded dispatcher so transfers cannot queue chat reads or submissions.
+    private fun transferClient() = client.newBuilder()
+        .dispatcher(Dispatcher().apply { maxRequestsPerHost = 2 })
+        .callTimeout(0, TimeUnit.MILLISECONDS).readTimeout(180, TimeUnit.SECONDS)
+        .writeTimeout(120, TimeUnit.SECONDS).build()
+    @Volatile private var transfers = transferClient()
+    private fun mediaClient() = reader.newBuilder()
+        .dispatcher(Dispatcher().apply { maxRequestsPerHost = 2 }).build()
+    @Volatile private var mediaReader = mediaClient()
     private fun backgroundClient() = reader.newBuilder()
         .dispatcher(Dispatcher().apply { maxRequestsPerHost = 2 }).build()
     private var backgroundReader = backgroundClient()
@@ -54,6 +64,8 @@ class RelayApi(private val base: String, private val token: String = "", private
             val old = client
             client = newClient()
             reader = readClient()
+            transfers = transferClient()
+            mediaReader = mediaClient()
             backgroundReader = backgroundClient()
             eventReader = eventClient()
             (old to reads.toList()).also { reads.clear() }
@@ -99,7 +111,7 @@ class RelayApi(private val base: String, private val token: String = "", private
         val body = file.asRequestBody("application/octet-stream".toMediaType())
         val req = request("$path?name=${encoded(name)}")
             .newBuilder().post(body).build()
-        val call = client.newBuilder().callTimeout(0, TimeUnit.MILLISECONDS).readTimeout(180, TimeUnit.SECONDS).writeTimeout(120, TimeUnit.SECONDS).build().newCall(req)
+        val call = transfers.newCall(req)
         continuation.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) { if (continuation.isActive) continuation.resumeWithException(e) }
@@ -114,7 +126,7 @@ class RelayApi(private val base: String, private val token: String = "", private
     }
 
     suspend fun downloadFile(path: String, output: java.io.OutputStream, progress: (Long, Long) -> Unit): Unit = suspendCancellableCoroutine { continuation ->
-        val call = client.newBuilder().callTimeout(0, TimeUnit.MILLISECONDS).readTimeout(180, TimeUnit.SECONDS).writeTimeout(120, TimeUnit.SECONDS).build()
+        val call = transfers
             .newCall(request("/v1/files/download?path=" + encoded(path)))
         continuation.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {
@@ -150,10 +162,10 @@ class RelayApi(private val base: String, private val token: String = "", private
 
     suspend fun cachedFile(cacheDirectory: java.io.File, path: String, progress: (Long, Long) -> Unit): java.io.File =
         ResumableDownload.get(java.io.File(cacheDirectory, "downloads"), "$base\u0000$token", path,
-            client.newBuilder().callTimeout(0, TimeUnit.MILLISECONDS).readTimeout(180, TimeUnit.SECONDS).build(),
+            transfers,
             request("/v1/files/download?path=" + encoded(path)), progress)
 
-    internal fun mediaTransport(): OkHttpClient = reader
+    internal fun mediaTransport(): OkHttpClient = mediaReader
     internal fun mediaRequest(source: String, thumbnail: Boolean = false): Request {
         val path = if (source.startsWith("/v1/media/")) {
             require(!source.contains("..") && !source.contains('\\'))
@@ -163,7 +175,7 @@ class RelayApi(private val base: String, private val token: String = "", private
     }
     suspend fun cachedMedia(cacheDirectory: java.io.File, source: String, progress: (Long, Long) -> Unit): java.io.File =
         ResumableDownload.get(java.io.File(cacheDirectory, "downloads"), "$base\u0000$token", "media:$source",
-            reader.newBuilder().callTimeout(0, TimeUnit.MILLISECONDS).readTimeout(180, TimeUnit.SECONDS).build(),
+            transfers,
             mediaRequest(source), progress)
 
     /** PCM chunks are writes: cancellation propagates and the transport never retries. */

@@ -17,7 +17,7 @@ from .codex.native_download import byte_range
 from .speech import MAX_SPEECH_BYTES, MAX_CHUNK_BYTES
 from .media import MediaError
 from .updates import latest_update, update_apk
-from .client_projection import client_history
+from .client_projection import client_history, client_session
 
 
 class ApiError(Exception):
@@ -116,13 +116,14 @@ class Handler(BaseHTTPRequestHandler):
         return self.server.app
 
     def send_json(self, status: int, data: dict):
-        raw = json.dumps(data, ensure_ascii=False, allow_nan=False).encode("utf-8")
-        # Large history snapshots dominate reconnect transfer time. Negotiate
-        # lossless compression only for successful thread reads; SSE, downloads,
-        # pairing responses and mutations keep their existing wire contracts.
+        raw = json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+        # Compress large read-only catalogs as well as history. Keep credentials,
+        # mutation responses and streaming/binary endpoints out of this policy.
+        path = urlsplit(self.path).path
         compressible = (
             self.command == "GET" and status == 200
-            and urlsplit(self.path).path.startswith("/v1/threads/")
+            and (path in {"/v1/projects", "/v1/threads", "/v1/models", "/v1/todos"}
+                 or path.startswith(("/v1/threads/", "/v1/projects/")))
         )
         compressed = False
         if compressible and len(raw) >= 4096 and accepts_gzip(self.headers.get("Accept-Encoding", "")):
@@ -522,9 +523,12 @@ class Handler(BaseHTTPRequestHandler):
             thread_id = path[2]
             if len(path) == 3 and method == "GET":
                 options = {'native_revision': query['nativeRevision'][0]} if query.get('nativeRevision') else {}
-                result = codex.get_session(thread_id, cursor=query.get("cursor", [None])[0], limit=int(query.get("limit", ["8"])[0]), **options)
+                limit = int(query.get("limit", ["8"])[0])
+                cursor = query.get("cursor", [None])[0]
+                result = codex.get_session(thread_id, cursor=cursor, limit=limit, **options)
                 result["queue"] = self.app.queue.list(thread_id)
-                return client_history(result)
+                return client_session(result, known_head_revision=query.get("knownHeadRevision", [None])[0],
+                                      limit=limit, cursor=cursor)
             if len(path) == 4 and path[3] == "history" and method == "GET":
                 options = {'native_revision': query['nativeRevision'][0]} if query.get('nativeRevision') else {}
                 return client_history(codex.history(thread_id, cursor=query.get("cursor", [None])[0],

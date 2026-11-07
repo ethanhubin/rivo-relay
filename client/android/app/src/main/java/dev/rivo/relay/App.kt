@@ -20,6 +20,7 @@ import dev.rivo.relay.codex.BatchSubmission
 import dev.rivo.relay.codex.PendingSubmission
 import dev.rivo.relay.codex.SessionState
 import dev.rivo.relay.codex.control
+import dev.rivo.relay.codex.catalogCacheNoticeVisible
 import dev.rivo.relay.codex.canCompose
 import dev.rivo.relay.codex.pinnedThreadsToObserve
 import dev.rivo.relay.ui.login.LoginScreen
@@ -157,8 +158,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             }
         }
     }
-    LaunchedEffect(submission.notice) {
-        if (submission.notice != null && submission.pending == null) {
+    LaunchedEffect(submission.resolvedRevision) {
+        if (submission.resolvedRevision > 0) {
             node.catalog.refreshProjects(); node.catalog.refreshThreads(); node.todos.refresh(); node.session.refresh()
         }
     }
@@ -263,8 +264,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         catalog.projectsLoading -> null
                         else -> false
                     },
-                    onSelectNode = { if (!submission.busy && !handoffLoading) selectNode(it) },
-                    onAddNode = { if (!submission.busy && !handoffLoading) disconnect() }, canSwitchNode = !submission.busy && !handoffLoading)
+                    onSelectNode = { if ((!submission.busy || submission.reconciling) && !handoffLoading) selectNode(it) },
+                    onAddNode = { if (!submission.busy && !handoffLoading) disconnect() }, canSwitchNode = (!submission.busy || submission.reconciling) && !handoffLoading)
                 "sessions" -> SessionsScreen(catalog.selectedProject?.name ?: "会话", catalog.threads.filterNot { thread -> visiblePending.any { node.conversations.pendingThreadId(it.id) == thread.id } }, catalog.loading, threadsWritable,
                     ::back, { openChat(it.id, "sessions") }, { if (node.catalog.state.value.threadsFresh) catalog.selectedProject?.let { openPending(it) } }, { node.catalog.refreshThreads() },
                     onPin = { thread, pinned ->
@@ -507,24 +508,28 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     readDirectory = { path -> node.api.call("/v1/directories?path=" + encoded(path)) }, onOpenAttachment = { todoAttachment = it })
             }
         }
-        val cached = (route == "projects" && !catalog.projectsFresh && catalog.projects.isNotEmpty()) ||
-            (route == "sessions" && !catalog.threadsFresh && catalog.threads.isNotEmpty())
-        if (displayError != null || (submission.pending != null && !submission.busy) || submission.notice != null || cached) {
+        val cached = catalogCacheNoticeVisible(route, catalog, network != null)
+        if (displayError != null || submission.pending != null || submission.notice != null || cached) {
             Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).testTag("bottom_notice_panel"),
                 shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp), tonalElevation = 3.dp, shadowElevation = 4.dp,
                 color = MaterialTheme.colorScheme.surfaceContainerHigh) {
                 Column(Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) {
                     displayError?.let { message ->
                         Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, modifier = Modifier.testTag("app_error")) {
-                            Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                            Text("${node.connection.name}：$message", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                             TextButton(onClick = retryConnection, modifier = Modifier.testTag("retry_connection")) { Text("重连") }
                             TextButton(onClick = { if (error != null) setError(null) else node.session.dismissReadError() }) { Text("关闭") }
                         }
                     }
-                    submission.pending?.takeIf { !submission.busy }?.let { pending ->
+                    submission.pending?.let { pending ->
                         Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                            Text("结果确认中，不会重复发送", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                            TextButton(onClick = { endingPending = pending }, enabled = !submission.busy, modifier = Modifier.testTag("finish_reconciliation")) { Text("关闭") }
+                            Text("${node.connection.name}：正在确认“${pending.label}”是否送达，暂时无法提交新操作。", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                            if (route == "settings") {
+                                TextButton(onClick = { endingPending = pending }, enabled = !submission.busy,
+                                    modifier = Modifier.testTag("finish_reconciliation")) { Text("处理记录") }
+                            } else pending.threadId?.takeIf { it.isNotBlank() && (route != "chat" || threadId != it) }?.let { id ->
+                                TextButton(onClick = { openChat(id, "projects") }) { Text("查看会话") }
+                            }
                         }
                     }
                     if (submission.pending == null) submission.notice?.let { notice ->
@@ -533,7 +538,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             TextButton(onClick = node.submissions::clearNotice) { Text("关闭") }
                         }
                     }
-                    if (cached) Text("当前显示离线内容", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("catalog_cached_notice"))
+                    if (cached) Text("${node.connection.name}：暂未同步，显示上次内容", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("catalog_cached_notice"))
                 }
             }
         }
@@ -570,12 +575,12 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             }
         }
     }
-    endingPending?.let { pending -> AlertDialog(onDismissRequest = { endingPending = null }, title = { Text("结束核对？") },
+    endingPending?.let { pending -> AlertDialog(onDismissRequest = { endingPending = null }, title = { Text("清除手机上的等待记录？") },
         text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("原操作可能仍在执行；请先检查原会话。此操作只解除手机等待，不取消或重新发送原任务，服务记录保留。")
-            Text("提交 ID：${pending.id}", style = MaterialTheme.typography.labelSmall)
+            Text("节点：${node.connection.name}\n操作：${pending.label}\n提交 ID：${pending.id}", style = MaterialTheme.typography.labelSmall)
         } }, confirmButton = { TextButton(onClick = { node.submissions.finishReconciliation(pending.id); endingPending = null }, enabled = !submission.busy && submission.pending?.id == pending.id,
-            modifier = Modifier.testTag("confirm_finish_reconciliation")) { Text("结束手机等待") } }, dismissButton = { TextButton(onClick = { endingPending = null }) { Text("继续核对") } }) }
+            modifier = Modifier.testTag("confirm_finish_reconciliation")) { Text("清除等待记录") } }, dismissButton = { TextButton(onClick = { endingPending = null }) { Text("返回") } }) }
     todoAttachment?.let { path -> dev.rivo.relay.ui.chat.FilePreviewDialog(path,
         { p -> node.api.call("/v1/files?path=" + encoded(p)) }, { p, output, progress -> node.api.downloadFile(p, output, progress) }) { todoAttachment = null } }
     if (addProject) ProjectDirectoryDialog(

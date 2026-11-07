@@ -25,6 +25,22 @@ def client_history(payload: dict) -> dict:
     return result
 
 
+def client_session(payload: dict, *, known_head_revision=None, limit=2, cursor=None) -> dict:
+    """Omit only an explicitly acknowledged two-turn head, never fresh control.
+
+    nativeHeadRevision hashes the complete last two turns and native epochs.
+    It cannot validate a larger page. No response cache or TTL is involved.
+    """
+    if (limit == 2 and cursor is None and known_head_revision
+            and known_head_revision == payload.get("nativeHeadRevision")
+            and payload.get("nativeSync", {}).get("state") == "ready"
+            and isinstance(payload.get("thread", {}).get("turns"), list)
+            and len(payload["thread"]["turns"]) <= 2):
+        return {**payload, "historyUnchanged": True,
+                "thread": {key: value for key, value in payload["thread"].items() if key != "turns"}}
+    return client_history(payload)
+
+
 def client_event(event: dict) -> dict | None:
     # RPC requests (especially command approvals) must retain their full context.
     if "id" in event:

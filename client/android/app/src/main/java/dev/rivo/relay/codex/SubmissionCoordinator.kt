@@ -8,7 +8,7 @@ import org.json.JSONObject
 import java.util.UUID
 
 data class PendingSubmission(val id: String, val path: String, val label: String, val threadId: String? = null)
-data class SubmissionState(val busy: Boolean = false, val pending: PendingSubmission? = null, val notice: String? = null)
+data class SubmissionState(val busy: Boolean = false, val pending: PendingSubmission? = null, val notice: String? = null, val reconciling: Boolean = false, val resolvedRevision: Long = 0)
 data class BatchSubmission(val path: String, val body: JSONObject, val label: String)
 
 /** Never retire the durable submission ID when recording its outcome failed. */
@@ -117,7 +117,7 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
     fun reconcile() {
         val pending = mutable.value.pending ?: return
         if (mutable.value.busy) return
-        mutable.update { it.copy(busy = true) }
+        mutable.update { it.copy(busy = true, reconciling = true) }
         scope.launch {
             var completed: Pair<(JSONObject) -> Unit, JSONObject>? = null
             try {
@@ -128,17 +128,18 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
                         save(null)
                         val completion = afterAccepted; afterAccepted = null
                         val succeeded = response.string("status") == "accepted"
-                        mutable.update { it.copy(notice = if (succeeded) "已确认节点接受该操作" else failureMessage(response, pending.label)) }
+                        mutable.update { it.copy(notice = if (succeeded) null else failureMessage(response, pending.label), resolvedRevision = it.resolvedRevision + 1) }
                         if (succeeded && completion != null)
                             completed = completion to (response.optJSONObject("receipt") ?: JSONObject())
                     }
                     else -> { onResolved(pending, response); retainReceipt(pending, response); mutable.update { it.copy(notice = "节点仍未确认该操作结果，请稍后核对。") } }
                 }
             } catch (e: Exception) {
-                if (e is ApiException && e.status == 404) failure(ApiException(404, e.code, "节点暂未记录此提交，原请求仍可能在处理中。请稍后核对，不要重新发送。"))
-                else if (e !is CancellationException) failure(e)
+                // Background receipt polling must not repeatedly raise global connection errors.
+                // Retain the durable ID and try again; authentication errors still need attention.
+                if (e is ApiException && e.status == 401) failure(e)
             }
-            finally { mutable.update { it.copy(busy = false) } }
+            finally { mutable.update { it.copy(busy = false, reconciling = false) } }
             // Clear the old owner before invoking a continuation. A batch may synchronously
             // start its next submission, whose busy flag/callback must not be reset by this read.
             completed?.let { (completion, receipt) -> completion(receipt) }

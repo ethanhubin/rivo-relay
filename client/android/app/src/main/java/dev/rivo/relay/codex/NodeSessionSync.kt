@@ -10,12 +10,13 @@ class NodeSessionSync(private val api: RelayApi, private val scope: CoroutineSco
     private data class Observation(val event: RelayEvent? = null, val error: Throwable? = null)
     private data class Read(val result: Deferred<JSONObject>, val startedNanos: Long, var users: Int = 0)
     private val lock = Any()
-    private val reads = mutableMapOf<String, Read>()
+    private data class ReadKey(val threadId: String, val limit: Int, val headRevision: String?)
+    private val reads = mutableMapOf<ReadKey, Read>()
     fun invalidate(threadId: String? = null) {
         synchronized(lock) {
             // Existing consumers retain ownership of their requests. Only stop
             // new callers from joining a read predating this invalidation.
-            if (threadId == null) reads.clear() else reads.remove(threadId)
+            if (threadId == null) reads.clear() else reads.keys.removeAll { it.threadId == threadId }
         }
     }
     private fun invalidate(event: RelayEvent) {
@@ -55,15 +56,17 @@ class NodeSessionSync(private val api: RelayApi, private val scope: CoroutineSco
         checkNotNull(observation.event)
     }
 
-    suspend fun read(threadId: String, freshAfterNanos: Long? = null): JSONObject {
-        val key: String
+    suspend fun read(threadId: String, freshAfterNanos: Long? = null, limit: Int = 30, knownHeadRevision: String? = null): JSONObject {
+        require(limit in 2..100)
+        val key: ReadKey
         val read: Read
         synchronized(lock) {
-            key = threadId
+            key = ReadKey(threadId, limit, knownHeadRevision)
             // Control reads own their timeout window; an older notification request
             // must not acquire a new freshness deadline when the chat opens.
             read = reads[key]?.takeUnless { it.result.isCompleted || freshAfterNanos != null && it.startedNanos < freshAfterNanos } ?: Read(scope.async(start = CoroutineStart.LAZY) {
-                api.call("/v1/threads/${encoded(threadId)}", background = freshAfterNanos == null)
+                api.call("/v1/threads/${encoded(threadId)}?limit=$limit" +
+                    knownHeadRevision?.let { "&knownHeadRevision=${encoded(it)}" }.orEmpty(), background = freshAfterNanos == null)
             }, System.nanoTime()).also { reads[key] = it }
             read.users++
         }

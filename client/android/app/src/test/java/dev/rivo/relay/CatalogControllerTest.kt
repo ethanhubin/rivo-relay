@@ -23,6 +23,16 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 class CatalogControllerTest {
+    @Test fun switchingNodesDoesNotDescribeLoadingCacheAsOffline() {
+        val cached = CatalogState(projects = listOf(ProjectSummary("p", "Project", "/p", 1)), projectsLoading = true)
+        assertFalse(dev.rivo.relay.codex.catalogCacheNoticeVisible("projects", cached, true))
+        assertTrue(dev.rivo.relay.codex.catalogCacheNoticeVisible("projects", cached.copy(projectsLoading = false), true))
+        assertTrue(dev.rivo.relay.codex.catalogCacheNoticeVisible("projects", cached, false))
+        assertFalse(dev.rivo.relay.codex.catalogCacheNoticeVisible("projects", cached.copy(projectsFresh = true), true))
+        assertFalse(dev.rivo.relay.codex.catalogCacheNoticeVisible("settings", cached, false))
+        assertFalse(dev.rivo.relay.codex.catalogCacheNoticeVisible("projects", CatalogState(), false))
+    }
+
     private fun api(server: MockWebServer) = RelayApi(server.url("/").newBuilder().host("127.0.0.1").build().toString())
     private fun projects(count: Int) = MockResponse().setBody(
         """{"projects":[{"id":"p","name":"Isolated fixture","path":"/fixture","threadCount":8,"outstandingWorkCount":$count}]}""")
