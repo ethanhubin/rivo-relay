@@ -131,7 +131,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val currentSessionId by rememberUpdatedState(state.id)
     val recoveryTask = snapshot?.recoveryTask?.takeIf { snapshot.activeTurnId.isBlank() }
     val canOperate = state.control().canOperate
-    val inputLocked = blocked || busy || writerBusy || (pendingTitle == null && !state.canCompose()) || snapshot?.requests?.isNotEmpty() == true || recoveryTask != null
+    val inputLocked = blocked || busy || writerBusy || (pendingTitle == null && !state.canCompose()) || snapshot?.requests?.isNotEmpty() == true
     val latestInputLocked by rememberUpdatedState(inputLocked)
     LaunchedEffect(inputLocked) {
         if (inputLocked) {
@@ -521,7 +521,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 else onSend(nativeInputs(draft, images, files), selectedModel, selectedEffort, accepted)
             },
             onStop = { stopConfirm = true },
-            queueing = snapshot != null && (snapshot.readOnly || snapshot.isOngoing || snapshot.requests.isNotEmpty() || snapshot.queue.isNotEmpty()),
+            queueing = snapshot != null && !snapshot.recoveryRequired && canOperate && (snapshot.isOngoing || snapshot.requests.isNotEmpty() || snapshot.queue.isNotEmpty()),
         )
     }
     if (developerOpen && state.id != null) DeveloperToolsDialog(state.id, readTool, submitTool, busy || blocked || !canOperate, onDismiss = { developerOpen = false },

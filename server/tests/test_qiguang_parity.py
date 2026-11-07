@@ -225,13 +225,30 @@ class NativeParityTests(unittest.TestCase):
         self.assertEqual('priority', service.get_session('thread')['settings']['serviceTier'])
         self.assertFalse(any('approvalPolicy' in params or 'sandbox' in params for method, params in native.calls if method == 'thread/settings/update'))
 
+    def test_explicit_message_resumes_released_session_with_recovery_record(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        service.start()
+        service._observe('thread', 'ownership', '', {'released': True})
+        service.execution_queue = Mock()
+        service.execution_queue.list.return_value = [{'id': 'old', 'recoveryRequired': True}]
+        with self.assertRaises(CodexError) as raised:
+            service.send('thread', 'automatic dispatch')
+        self.assertEqual('recovery_required', raised.exception.code)
+        service.send('thread', '继续检查当前状态', acquire_released=True)
+        turns = [params for method, params in native.calls if method == 'turn/start']
+        self.assertEqual(1, len(turns))
+        self.assertEqual('继续检查当前状态', turns[0]['input'][0]['text'])
+        self.assertFalse(service.observations_for('thread').get(('ownership', ''), {}).get('released'))
+        service.execution_queue.change.assert_not_called()
+
     def test_pending_question_blocks_new_turn_before_rpc(self):
         native = FakeNative()
         service = CodexService(connection=native)
         service.start()
         service._event({'id': 1, 'method': 'item/tool/requestUserInput', 'params': {'threadId': 'thread', 'questions': [{'id': 'q'}]}})
         with self.assertRaises(CodexError) as raised:
-            service.send('thread', 'new task')
+            service.send('thread', 'new task', acquire_released=True)
         self.assertEqual('interaction_pending', raised.exception.code)
         self.assertFalse(any(method == 'turn/start' for method, _ in native.calls))
 

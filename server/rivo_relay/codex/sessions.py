@@ -676,7 +676,7 @@ class CodexService:
         self.start()
         with self.operation_gate(thread_id):
             self._assert_workspace(thread_id)
-            self._assert_submission_ready(thread_id)
+            self._assert_submission_ready(thread_id, allow_recovery=acquire_released)
             self._resume(thread_id, acquire_released=acquire_released)
             with self._lock:
                 inherited_settings = copy.deepcopy(self._settings.get(thread_id, {}))
@@ -758,7 +758,7 @@ class CodexService:
                 self._forget_observation(thread_id, 'modeBaseline')
             return {"threadId": thread_id, "turnId": turn.get("id")}
 
-    def _assert_submission_ready(self, thread_id, *, allow_active_queue=False):
+    def _assert_submission_ready(self, thread_id, *, allow_active_queue=False, allow_recovery=False):
         with self._lock:
             created = thread_id in self._created
         if not created:
@@ -766,7 +766,9 @@ class CodexService:
         if self.interactions.list(thread_id):
             raise CodexError('请先回答当前问题或处理审批', code='interaction_pending', http_status=409)
         queue = self.execution_queue.list(thread_id) if hasattr(self, 'execution_queue') else []
-        if any(item.get('recoveryRequired') for item in queue):
+        # An explicit new message can continue interrupted work without replaying it.
+        # Keep the old record; automatic queue dispatch still requires resolution.
+        if not allow_recovery and any(item.get('recoveryRequired') for item in queue):
             if allow_active_queue:
                 # A newer explicit Desktop/mobile turn owns the input while it
                 # runs. Preserve the old recovery record without seizing that

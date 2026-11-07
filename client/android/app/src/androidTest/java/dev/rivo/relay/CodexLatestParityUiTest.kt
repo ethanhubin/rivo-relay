@@ -57,11 +57,11 @@ class CodexLatestParityUiTest {
         val current = snapshot().copy(recoveryTask = recovery, queue = listOf(recovery, QueueTask("waiting", "后续工作", "waiting", 1, "", JSONObject())))
         var operation: JSONObject? = null
         compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize().systemBarsPadding()) { ChatScreen(SessionState(id = current.id, snapshot = current), false, false, emptyList(), {},
-            onSend = { _, _, _, _ -> error("recovery blocks send") }, onStop = {}, onRespond = { _, _ -> }, onRefresh = {}, onLoadModels = {}, onEarlier = {},
+            onSend = { _, _, _, _ -> Unit }, onStop = {}, onRespond = { _, _ -> }, onRefresh = {}, onLoadModels = {}, onEarlier = {},
             readFile = { JSONObject() }, onQueue = { body, _ -> operation = body }) } } }
         compose.onNodeWithTag("codex_recovery_panel").assertIsDisplayed()
         compose.onNodeWithTag("queue_item_waiting").assertIsDisplayed()
-        compose.onNodeWithTag("message_input").assertIsNotEnabled()
+        compose.onNodeWithTag("message_input").assertIsEnabled()
         evidence("codex-latest-recovery")
         compose.onNodeWithTag("codex_recovery_continue").performClick()
         compose.runOnIdle { assertEquals("recover", operation!!.getString("operation")); assertEquals("recovery", operation!!.getString("itemId")); assertEquals(3, operation!!.getInt("revision")) }
