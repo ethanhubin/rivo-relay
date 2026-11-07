@@ -86,8 +86,14 @@ private val MoonlightLightColorScheme =
 
 @Composable
 fun RivoTheme(content: @Composable () -> Unit) {
+    val (mode) = rememberThemePreference()
+    val darkTheme = when (mode) {
+        ThemeMode.SYSTEM -> isSystemInDarkTheme()
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
     MaterialTheme(
-        colorScheme = if (isSystemInDarkTheme()) MoonlightDarkColorScheme else MoonlightLightColorScheme,
+        colorScheme = if (darkTheme) MoonlightDarkColorScheme else MoonlightLightColorScheme,
         typography = Typography,
         shapes = Shapes(small = RoundedCornerShape(12.dp), medium = RoundedCornerShape(18.dp), large = RoundedCornerShape(24.dp)),
         content = content,

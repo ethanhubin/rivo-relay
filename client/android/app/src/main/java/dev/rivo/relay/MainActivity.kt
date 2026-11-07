@@ -7,9 +7,13 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -31,7 +35,16 @@ class MainActivity : ComponentActivity() {
                     if (Build.VERSION.SDK_INT >= 33) permission.launch(Manifest.permission.POST_NOTIFICATIONS)
                 }
             }
-            RivoTheme { RelayApp(model) }
+            RivoTheme {
+                val darkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
+                SideEffect {
+                    enableEdgeToEdge(
+                        statusBarStyle = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT) { darkTheme },
+                        navigationBarStyle = SystemBarStyle.auto(android.graphics.Color.argb(230, 255, 255, 255), android.graphics.Color.argb(128, 27, 27, 27)) { darkTheme },
+                    )
+                }
+                RelayApp(model)
+            }
         }
     }
     override fun onStart() {
