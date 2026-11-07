@@ -6,6 +6,7 @@ from unittest.mock import patch
 from rivo_relay.database import Database, SCHEMA_VERSION
 from rivo_relay.events import EventBus
 from rivo_relay.queue import ExecutionQueue, QueueConflict
+from rivo_relay.submissions import SubmissionStore
 from rivo_relay.codex.sessions import CodexService
 from rivo_relay.codex.connection import CodexError
 from test_codex import FakeNative
@@ -87,6 +88,34 @@ class QueueTests(unittest.TestCase):
         with patch.object(self.queue, '_run'):
             self.queue.start(); self.queue.worker.join()
         self.queue.tick(); self.assertEqual('unknown',self.queue.list('thread')[0]['status']); self.assertFalse(self.native.sent)
+
+    def test_restart_recovers_all_committed_queue_receipts_without_replaying(self):
+        store = SubmissionStore(self.db)
+        for operation in ('thread.queue.enqueue', 'thread.queue.recover', 'thread.review'):
+            for status in ('pending', 'unknown', 'failed'):
+                sid = operation + '-' + status
+                store.claim(sid, 'phone', operation, 'thread', {})
+                payload = {'input': [{'type': 'text', 'text': 'Task'}]}
+                if operation == 'thread.review':
+                    payload['review'] = {'type': 'uncommittedChanges'}
+                if operation == 'thread.queue.recover':
+                    payload['recoveredItemId'] = 'previous'
+                self.queue.enqueue('thread', sid, 'phone', payload)
+                if status == 'unknown': store.mark_unknown(sid)
+                if status == 'failed': store.mark_failed(sid, 'rejected')
+        store.claim('uncommitted', 'phone', 'thread.review', 'thread', {})
+        with patch.object(self.queue, '_run'):
+            self.queue.start(); self.queue.worker.join()
+        for operation in ('thread.queue.enqueue', 'thread.queue.recover', 'thread.review'):
+            for status in ('pending', 'unknown', 'failed'):
+                result = store.get(operation + '-' + status)
+                self.assertEqual('failed' if status == 'failed' else 'accepted', result['status'])
+                if status != 'failed':
+                    expected = {'threadId': 'thread', 'itemId': operation + '-' + status}
+                    if operation == 'thread.queue.recover': expected['recoveredItemId'] = 'previous'
+                    self.assertEqual(expected, result['receipt'])
+        self.assertEqual('pending', store.get('uncommitted')['status'])
+        self.assertFalse(self.native.sent)
     def test_revoked_connection_cannot_auto_dispatch(self):
         self.add('a')
         with self.db.transaction() as c: c.execute("UPDATE connections SET revoked_at=1")

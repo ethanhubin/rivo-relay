@@ -33,7 +33,7 @@ class ExecutionQueue:
             c.execute("UPDATE queued_tasks SET status='unknown', error='结果待核对，请查看原会话；不会自动重发' WHERE status='dispatching'")
             # An inserted queue row proves the local enqueue committed even if
             # the phone lost the acceptance receipt. Reconcile, never re-enqueue.
-            for row in c.execute("SELECT q.id,q.thread_id,q.payload_json FROM queued_tasks q JOIN submissions s ON s.id=q.id WHERE s.operation IN ('thread.queue.enqueue','thread.queue.recover') AND s.status IN ('pending','unknown')").fetchall():
+            for row in c.execute("SELECT q.id,q.thread_id,q.payload_json FROM queued_tasks q JOIN submissions s ON s.id=q.id WHERE s.operation IN ('thread.queue.enqueue','thread.queue.recover','thread.review') AND s.status IN ('pending','unknown')").fetchall():
                 receipt = {'threadId': row['thread_id'], 'itemId': row['id']}
                 recovered = json.loads(row['payload_json']).get('recoveredItemId')
                 if recovered:

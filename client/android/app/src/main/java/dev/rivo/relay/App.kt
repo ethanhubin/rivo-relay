@@ -562,10 +562,9 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     submission.pending?.let { pending ->
                         Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                             Text("${node.connection.name}：正在确认“${pending.label}”是否送达，暂时无法提交新操作。", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                            if (route == "settings") {
-                                TextButton(onClick = { endingPending = pending }, enabled = !submission.busy,
-                                    modifier = Modifier.testTag("finish_reconciliation")) { Text("处理记录") }
-                            } else pending.threadId?.takeIf { it.isNotBlank() && (route != "chat" || threadId != it) }?.let { id ->
+                            TextButton(onClick = { endingPending = pending }, enabled = !submission.busy,
+                                modifier = Modifier.testTag("finish_reconciliation")) { Text("处理记录") }
+                            pending.threadId?.takeIf { it.isNotBlank() && (route != "chat" || threadId != it) }?.let { id ->
                                 TextButton(onClick = { openChat(id, "projects") }) { Text("查看会话") }
                             }
                         }

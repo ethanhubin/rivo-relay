@@ -87,4 +87,8 @@ class Interactions:
                 if error.definite and request['connectionId'] == self.connection.generation:
                     self._pending[key] = request
                 raise
-            return {"requestId": key, "threadId": request["params"].get("threadId", request['params'].get('conversationId'))}
+            receipt = {"requestId": key}
+            thread_id = request["params"].get("threadId") or request['params'].get('conversationId')
+            if isinstance(thread_id, str) and thread_id:
+                receipt["threadId"] = thread_id
+            return receipt

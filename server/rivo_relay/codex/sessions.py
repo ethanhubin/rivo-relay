@@ -1348,8 +1348,10 @@ class CodexService:
             params["status"] = "paused" if operation == "pause" else "active"
         with self.operation_gate(thread_id):
             self._resume(thread_id)
-            result = self.connection.request("thread/goal/clear" if operation == "clear" else "thread/goal/set", params)
-        return {"threadId": thread_id, **result}
+            self.connection.request("thread/goal/clear" if operation == "clear" else "thread/goal/set", params)
+        # Submission receipts contain identities only. Goal contents are read
+        # through the session snapshot, never persisted as receipt fields.
+        return {"threadId": thread_id}
 
     def update_settings(self, thread_id, *, model=None, effort=None, service_tier=None, sandbox=None, approval_policy=None):
         permissions = self._permission_options(sandbox, approval_policy)

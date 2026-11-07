@@ -5,6 +5,7 @@ No user's Codex installation, credentials, projects, or services are accessed.
 """
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 import http.client
 import base64
 import json
@@ -12,11 +13,13 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from rivo_relay.api import Handler
 from rivo_relay.app import RelayApp
 from rivo_relay.config import Config
+from rivo_relay.codex.sessions import CodexService
+from rivo_relay.codex.interactions import Interactions
 from rivo_relay.events import EventBus
 from rivo_relay.http_server import BoundedHTTPServer
 from rivo_relay.pairing import PairingStore
@@ -248,6 +251,49 @@ class ApiTests(unittest.TestCase):
             status, _, _ = self.request('POST', path, {**body, 'requireGoalSupport': value}, token=self.token)
             self.assertEqual(400, status)
         self.assertEqual(1, len(self.native.sent))
+
+    def test_interaction_without_optional_thread_identity_is_accepted_once(self):
+        native = Mock(spec=['respond', 'generation'])
+        native.generation = 'test-generation'
+        interactions = Interactions(native)
+        self.native.respond = interactions.respond
+        for index, params in enumerate(({}, {'threadId': None}, {'conversationId': 'thread-1'})):
+            interactions.receive({'id': index, 'method': 'item/commandExecution/requestApproval', 'params': params})
+            key = 'test-generation:int:' + str(index)
+            body = {'submissionId': 'answer-' + str(index), 'key': key, 'response': {'decision': 'decline'}}
+            for _ in range(2):
+                status, result, _ = self.request('POST', '/v1/requests/respond', body, token=self.token)
+                self.assertEqual(200, status)
+                self.assertEqual('accepted', result['status'])
+                expected = {'requestId': key}
+                if params.get('conversationId'): expected['threadId'] = 'thread-1'
+                self.assertEqual(expected, result['receipt'])
+            self.assertEqual(index + 1, native.respond.call_count)
+
+    def test_native_goal_responses_are_accepted_and_receipt_polling_finishes(self):
+        native = Mock(spec=['request'])
+        service = CodexService(connection=native)
+        self.native.update_goal = service.update_goal
+        with patch.object(service, 'start'), patch.object(service, '_assert_workspace'), \
+             patch.object(service, '_resume'), patch.object(service, 'operation_gate', side_effect=lambda _: nullcontext()):
+            for operation in ('set', 'pause', 'resume', 'clear'):
+                with self.subTest(operation=operation):
+                    native.request.return_value = {} if operation == 'clear' else {
+                        'goal': {'objective': 'Finish', 'status': 'paused' if operation == 'pause' else 'active'}}
+                    sid = 'native-goal-' + operation
+                    body = {'submissionId': sid, 'operation': operation}
+                    if operation == 'set':
+                        body['objective'] = 'Finish'
+                    before = native.request.call_count
+                    for _ in range(2):
+                        status, result, _ = self.request('POST', '/v1/threads/thread-1/goal', body, token=self.token)
+                        self.assertEqual(200, status)
+                        self.assertEqual('accepted', result['status'])
+                        self.assertEqual({'threadId': 'thread-1'}, result['receipt'])
+                    self.assertEqual(before + 1, native.request.call_count)
+                    status, result, _ = self.request('GET', '/v1/submissions/' + sid, token=self.token)
+                    self.assertEqual(200, status)
+                    self.assertEqual('accepted', result['status'])
 
     def test_goal_controls_validate_authentication_and_deduplicate(self):
         writes = []
