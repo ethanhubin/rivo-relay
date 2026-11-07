@@ -29,3 +29,9 @@ class ControlProjectionTests(unittest.TestCase):
         self.assertEqual('unknown', result['state'])
         self.assertFalse(result['canOperate'])
         self.assertIsNone(result['action'])
+
+    def test_missing_cache_does_not_block_explicit_takeover_verification(self):
+        result = control_projection(read_only=True, released=False, workspace_unavailable=False,
+            runtime={'handoffAvailable': False, 'handoffCheckAvailable': True})
+        self.assertEqual('takeover', result['action'])
+        self.assertFalse(result['canOperate'])

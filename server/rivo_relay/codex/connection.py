@@ -102,8 +102,13 @@ class NativeConnection:
                     "version": self._info.get("userAgent"), "error": self._last_error}
 
     def native_host_info(self):
-        from .host_probe import native_host_info
-        return native_host_info(self)
+        from .host_probe import native_host_info, local_native_host_info
+        try:
+            return native_host_info(self)
+        except CodexError as error:
+            if error.code != 'native_host_unverified':
+                raise
+            return local_native_host_info(self)
 
     def request(self, method, params=None, *, timeout=None):
         reply = queue.Queue(maxsize=1)

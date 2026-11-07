@@ -36,21 +36,17 @@ class ActivityFailureUiTest {
         val state = sessionSnapshot(JSONObject().put("thread", JSONObject().put("id", "thread").put("turns", JSONArray().put(JSONObject().put("id", "turn").put("items", items)))))
         val row = nativeTimelineRows(state.messages).single() as NativeTimelineRow.Activities
         var neutral = Color.Unspecified
-        var failure = Color.Unspecified
         compose.setContent { RivoTheme {
             neutral = MaterialTheme.colorScheme.onSurfaceVariant
-            failure = MaterialTheme.colorScheme.error
             Surface { NativeActivityGroup(row) {} }
         } }
-        compose.onNodeWithText("1 项未完成").assertIsDisplayed()
+        compose.onNodeWithTag("activity_failure_count").assertDoesNotExist()
         assertEquals(neutral, color("activity_group_summary"))
         compose.onNodeWithText("No such file or directory").assertDoesNotExist()
-        compose.onNodeWithTag("native_activity_toggle").performClick()
-        assertEquals(neutral, color("activity_summary_success"))
-        assertEquals(failure, color("activity_summary_failure"))
-        assertEquals(neutral, color("activity_group_summary"))
-        compose.onNodeWithText("退出码 0").assertIsDisplayed()
-        compose.onNodeWithText("执行未完成 · 退出码 1").assertIsDisplayed()
-        compose.onNodeWithText("No such file or directory").assertIsDisplayed()
+        compose.onNodeWithTag("native_activity_toggle").assertDoesNotExist()
+        compose.onNodeWithText("运行了 2 条命令 · 成功 1 · 失败 1").assertIsDisplayed()
+        compose.onNodeWithText("cat missing.txt").assertDoesNotExist()
+        compose.onNodeWithText("cat existing.txt").assertDoesNotExist()
+        compose.onNodeWithText("file content").assertDoesNotExist()
     }
 }

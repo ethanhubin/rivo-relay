@@ -15,24 +15,26 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.data.*
 
-/** QiGuang CodexActivityGroup: one compact summary row; native outputs expand on demand. */
+/** QiGuang CodexActivityGroup: one compact summary row; only non-command details expand on demand. */
 @Composable
 internal fun NativeActivityGroup(row: NativeTimelineRow.Activities, isCurrent: Boolean = false, onFile: (String) -> Unit) {
     var expanded by rememberSaveable(row.key) { mutableStateOf(false) }
-    val failedCount = row.messages.count { it.activity?.status == "failed" }
+    val detailMessages = row.messages.filter { it.activity?.kind != "command" }
+    val canExpand = detailMessages.isNotEmpty()
+    val failedCount = detailMessages.count { it.activity?.status == "failed" }
     val imagePath = row.messages.singleOrNull()?.activity?.takeIf { it.kind == "image" }?.filePaths?.firstOrNull()
     Column(Modifier.fillMaxWidth().padding(vertical = 3.dp).testTag("native_activity_group"), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Row(Modifier.fillMaxWidth().heightIn(min = 32.dp).clickable(role = Role.Button) { if (imagePath != null) onFile(imagePath) else expanded = !expanded }.testTag("native_activity_toggle"),
+        Row(Modifier.fillMaxWidth().heightIn(min = 32.dp).then(if (canExpand) Modifier.clickable(role = Role.Button) { if (imagePath != null) onFile(imagePath) else expanded = !expanded }.testTag("native_activity_toggle") else Modifier),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(if (expanded) "▾" else "›", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (canExpand) Text(if (expanded) "▾" else "›", color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (isCurrent) ShimmeringStageText(nativeActivityGroupLabel(row.messages),
-                modifier = Modifier.weight(1f).testTag("activity_group_shimmer"), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            else Text(nativeActivityGroupLabel(row.messages), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).testTag("activity_group_shimmer"), maxLines = if (canExpand) 1 else Int.MAX_VALUE, overflow = TextOverflow.Ellipsis)
+            else Text(nativeActivityGroupLabel(row.messages), maxLines = if (canExpand) 1 else Int.MAX_VALUE, overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f).testTag("activity_group_summary"))
             if (failedCount > 0) Text("${failedCount} 项未完成", style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("activity_failure_count"))
         }
-        if (expanded) row.messages.forEach { message -> message.activity?.let { activity ->
+        if (expanded && canExpand) detailMessages.forEach { message -> message.activity?.let { activity ->
             Column(Modifier.fillMaxWidth().padding(start = 23.dp, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 SelectionContainer { Text(activity.summary, style = MaterialTheme.typography.bodySmall,
                     color = if (activity.status == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -48,8 +50,6 @@ internal fun NativeActivityGroup(row: NativeTimelineRow.Activities, isCurrent: B
                     listOfNotNull(if (activity.status == "failed") "执行未完成" else null, activity.exitCode?.let { "退出码 $it" }).joinToString(" · "),
                     style = MaterialTheme.typography.labelSmall,
                     color = if (activity.status == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
-                if (activity.status == "failed" && activity.kind == "command" && activity.detail.isBlank())
-                    Text("原生记录未提供错误输出", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         } }
     }

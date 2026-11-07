@@ -12,7 +12,7 @@ HOST_PROBE = r'''
 import json, os, pathlib, socket, subprocess, sys
 pid = int(sys.argv[1])
 def ps(field, selected=pid):
-    return subprocess.check_output(['ps', '-p', str(selected), '-o', field+'='], text=True, timeout=3).strip()
+    return subprocess.check_output(['ps', '-ww', '-p', str(selected), '-o', field+'='], text=True, timeout=3).strip()
 before = ps('lstart')
 if not before:
     raise RuntimeError('native process unavailable')
@@ -82,3 +82,31 @@ def native_host_info(connection):
                          code='native_host_unverified', http_status=409) from error
     descriptor['generation'] = connection.generation
     return descriptor
+
+
+def local_native_host_info(connection):
+    """Attest a local daemon through socket ownership and its open state DB.
+
+    Never infer locality from the diagnostics PID or inherited environment.
+    A forwarded socket must fail ownership verification before inspecting home.
+    """
+    import socket
+    import sys
+    from pathlib import Path
+    from .writers import WriterProcesses
+
+    pid = connection.request('server/diagnostics', {}, timeout=5).get('process', {}).get('id')
+    writers = WriterProcesses(connection.codex_home)
+    writers.verify_local_runtime(pid, connection.socket_path)
+    before = writers.identity(int(pid))
+    output = writers.run(['lsof', '-nP', '-a', '-p', str(pid), '-Fn'])
+    homes = {str(Path(line[1:]).parent.resolve()) for line in output.splitlines()
+             if line.startswith('n/') and Path(line[1:]).name.startswith('state_')
+             and Path(line[1:]).suffix in {'.sqlite', '.sqlite3'}}
+    if len(homes) != 1 or before is None or before != writers.identity(int(pid)):
+        raise CodexError('无法核对本机原生进程的状态数据库', code='native_host_unverified', http_status=409)
+    writers.verify_local_runtime(pid, connection.socket_path)
+    return {'pid': int(pid), 'processStart': before['start'], 'processStartMethod': 'ps-lstart',
+            'executable': str(Path(before['executable']).resolve()), 'codexHome': homes.pop(),
+            'platform': sys.platform, 'hostName': socket.gethostname(),
+            'identityMethod': 'local-socket-and-open-state-database', 'generation': connection.generation}

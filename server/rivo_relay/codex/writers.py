@@ -66,15 +66,20 @@ class WriterProcesses:
     def identity(self, pid):
         start = self.run(['ps', '-p', str(pid), '-o', 'lstart=']).strip()
         command = self.run(['ps', '-ww', '-p', str(pid), '-o', 'args=']).strip()
-        executable = self.run(['ps', '-p', str(pid), '-o', 'comm=']).strip()
+        executable = self.run(['ps', '-ww', '-p', str(pid), '-o', 'comm=']).strip()
+        if sys.platform == 'darwin':
+            import ctypes
+            buffer = ctypes.create_string_buffer(4096)
+            size = ctypes.CDLL('/usr/lib/libproc.dylib').proc_pidpath(pid, buffer, len(buffer))
+            executable = os.fsdecode(buffer.value) if size > 0 else ''
         if sys.platform.startswith('linux'):
             executable = os.path.realpath(f'/proc/{pid}/exe')
         if not start or not command or not executable:
             return None
         return {'pid': pid, 'start': start, 'command': command, 'executable': executable}
 
-    def validate_executable(self, identity):
-        if Path(identity['executable']).name != 'codex' or identity['pid'] in (os.getpid(), os.getppid(), 1):
+    def validate_executable(self, identity, *, inspecting_runtime=False):
+        if Path(identity['executable']).name != 'codex' or identity['pid'] in (os.getpid(), 1) or (identity['pid'] == os.getppid() and not inspecting_runtime):
             raise conflict('持锁者不是可核实的 Codex 进程，未结束任何进程')
 
     def open_threads(self, pid):
@@ -181,7 +186,7 @@ class WriterProcesses:
         identity = self.identity(pid)
         if identity is None:
             raise conflict('进程级交接需要连接本机原生运行时')
-        self.validate_executable(identity)
+        self.validate_executable(identity, inspecting_runtime=True)
         output = self.run(['lsof', '-nP', '-a', '-p', str(pid), '-U', '-F', 'n'])
         sockets = {Path(line[1:]).resolve() for line in output.splitlines() if line.startswith('n/')}
         if Path(socket_path).resolve() not in sockets:

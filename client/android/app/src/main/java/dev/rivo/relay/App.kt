@@ -85,7 +85,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     var handoffLoading by remember { mutableStateOf(false) }
     val handoffScope = rememberCoroutineScope()
     fun executeHandoff(id: String, operation: String, preview: JSONObject, confirmed: Boolean) {
-        if (route != "chat" || threadId != id || node.session.state.value.stale || node.submissions.state.value.busy) return
+        if (route != "chat" || threadId != id || (operation != "takeover" && node.session.state.value.stale) || node.network.value == null || node.session.state.value.id != id || node.submissions.state.value.pending != null || node.submissions.state.value.busy) return
         node.submissions.submit("/v1/threads/${encoded(id)}/ownership",
             JSONObject().put("operation", operation).put("ticket", preview.getString("ticket")).put("confirmed", confirmed).apply {
                 preview.optJSONObject("workspaceRebind")?.string("path")?.takeIf(String::isNotBlank)?.let { put("rebindWorkspace", it) }
@@ -95,17 +95,17 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     fun requestHandoff(operation: String) {
         val id = threadId ?: return
         val current = node.session.state.value
-        if (route != "chat" || current.id != id || current.stale || handoffLoading || node.submissions.state.value.busy || node.submissions.state.value.pending != null) return
+        if (route != "chat" || current.id != id || (operation != "takeover" && current.stale) || node.network.value == null || handoffLoading || node.submissions.state.value.busy || node.submissions.state.value.pending != null) return
         handoffLoading = true
         handoffScope.launch {
             try {
-                val preview = node.api.call("/v1/threads/${encoded(id)}/ownership?operation=$operation")
-                if (route == "chat" && threadId == id && !node.session.state.value.stale) {
-                    if (preview.getBoolean("requiresConfirmation") || preview.optJSONObject("workspaceRebind") != null) handoffPrompt = Triple(id, operation, preview)
+                val preview = kotlinx.coroutines.withTimeout(30000) { node.api.call("/v1/threads/${encoded(id)}/ownership?operation=$operation") }
+                if (route == "chat" && threadId == id && node.session.state.value.id == id && node.network.value != null && (operation == "takeover" || !node.session.state.value.stale)) {
+                    if (operation == "takeover" || preview.getBoolean("requiresConfirmation") || preview.optJSONObject("workspaceRebind") != null) handoffPrompt = Triple(id, operation, preview)
                     else executeHandoff(id, operation, preview, false)
                 }
             } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
+                if (e is kotlinx.coroutines.CancellationException && e !is kotlinx.coroutines.TimeoutCancellationException) throw e
                 if (route == "chat" && threadId == id) setError(if (e is ApiException) e.message else node.api.describeFailure(e))
             } finally { handoffLoading = false }
         }
@@ -285,7 +285,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         onBack = ::back, onSend = { _, _, _, _ -> }, onStop = {}, onRespond = { _, _ -> },
                         onRefresh = {}, onLoadModels = node.catalog::loadModels, onEarlier = {},
                         readFile = { path -> node.api.call("/v1/files?path=" + encoded(path)) },
-                        pendingTitle = project.name, pendingReady = pendingReady, draftStore = node.conversations, pendingCwd = project.path,
+                        pendingTitle = project.name, pendingReady = pendingReady,
+                        pendingPermissionsEditable = createdThread == null && node.conversations.pendingThreadId(localId) == null, draftStore = node.conversations, pendingCwd = project.path,
                         readDirectory = { path -> node.api.call("/v1/directories?path=" + encoded(path)) },
                         uploadFile = { _, name, file -> node.api.uploadProjectFile(project.id, name, file) },
                         defaultSettings = defaultSettings, onSaveDefaults = ::saveDefaults,
@@ -308,7 +309,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                                     catch (e: Exception) { setError(e.message ?: "无法保存工作区选择") }
                                 } else pendingReady = true
                             } },
-                        onConfiguredSend = sendPending@{ input, model, effort, mode, serviceTier, accepted ->
+                        onConfiguredSend = sendPending@{ input, model, effort, mode, serviceTier, permissions, accepted ->
                             if (node.conversations.pendingCompleted(localId)) {
                                 node.conversations.completedPendingThreadId(localId)?.let { openChat(it, "sessions") }
                                 return@sendPending
@@ -343,7 +344,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             val existing = createdThread ?: node.conversations.pendingThreadId(localId)
                             if (existing != null) sendFirst(existing)
                             else {
-                                val create = JSONObject().put("projectId", project.id)
+                                val create = JSONObject(permissions.toString()).put("projectId", project.id)
                                 pendingRef?.let { create.put("worktreeRef", it) }
                                 node.submissions.submit("/v1/threads", create, "新建会话",
                                     prepared = { pending ->
@@ -370,15 +371,22 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                 }
                 "chat" -> ChatScreen(session.takeIf { it.id == threadId }?.let { if (network == null) it.copy(stale = true, controlNotice = "网络不可用，恢复连接并同步后才能操作") else it } ?: SessionState(id = threadId, loading = true, stale = true), submission.busy, submission.pending != null || handoffLoading || network == null, catalog.models, ::back,
                     nodeName = node.connection.name, writerBusy = handoffLoading, onWriterAction = ::requestHandoff,
+                    takeoverBlockedReason = when {
+                        network == null -> "网络不可用，请恢复节点连接后接管"
+                        handoffLoading -> "正在核验接管条件，请稍候"
+                        submission.busy -> "正在提交操作，请等待结果后接管"
+                        submission.pending != null -> "上一操作结果待核对，请先完成核对再接管"
+                        else -> null
+                    },
                     defaultSettings = defaultSettings, onSaveDefaults = ::saveDefaults, onForwardLink = ::forwardLink, draftReloadKey = draftReloadKey,
                     modelCatalogNotice = catalog.modelsError ?: if (catalog.modelsStale) "模型目录暂未更新，当前使用最近可用选项" else null,
-                    onSend = { _, _, _, _ -> }, onConfiguredSend = { input, model, effort, mode, serviceTier, accepted ->
+                    onSend = { _, _, _, _ -> }, onConfiguredSend = { input, model, effort, mode, serviceTier, _, accepted ->
                         val currentState = node.session.state.value
                         val current = currentState.snapshot
                         val id = threadId
                         if (current != null && id != null && currentState.id == id && current.id == id && !currentState.stale &&
                             current.requests.isEmpty() && !(current.recoveryRequired && current.activeTurnId.isBlank()) && currentState.control().canOperate && writable) {
-                            val queued = current.readOnly || current.activeTurnId.isNotBlank() || current.requests.isNotEmpty() || current.queue.isNotEmpty()
+                            val queued = current.readOnly || current.isOngoing || current.requests.isNotEmpty() || current.queue.isNotEmpty()
                             val body = JSONObject().put("input", input)
                             if (queued) body.put("operation", "enqueue")
                             model?.let { body.put("model", it) }; effort?.let { body.put("effort", it) }; mode?.let { body.put("mode", it) }; serviceTier?.let { body.put("serviceTier", it) }
@@ -398,7 +406,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         val current = node.session.state.value
                         val id = threadId
                         if (id != null && current.id == id && current.snapshot?.id == id && !current.stale && current.control().canOperate && writable)
-                            node.submissions.submit("/v1/threads/${encoded(id)}/settings", settings, "更新模型设置") { if (threadId == id) node.session.refresh() }
+                            node.submissions.submit("/v1/threads/${encoded(id)}/settings", settings, "更新会话设置") { if (threadId == id) node.session.refresh() }
                     }, onStop = {
                         node.session.state.value.let { current -> current.snapshot?.takeIf { writable && current.control().canOperate && it.id == threadId && current.id == threadId } }?.let { snapshot ->
                             node.submissions.submit("/v1/threads/${encoded(snapshot.id)}/interrupt", JSONObject().put("turnId", snapshot.activeTurnId), "停止任务") { node.session.refresh() }
@@ -523,7 +531,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
         ModalBottomSheet(onDismissRequest = { handoffPrompt = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp).navigationBarsPadding()) {
                 val rebound = preview.optJSONObject("workspaceRebind")
-                Text(if (rebound != null) "确认接管与工作区恢复" else "将中断同进程的其他会话", style = MaterialTheme.typography.titleLarge)
+                Text(if (rebound != null) "确认接管与工作区恢复" else "确认强制接管及影响范围", style = MaterialTheme.typography.titleLarge)
                 Text("节点：${node.connection.name}", style = MaterialTheme.typography.bodyMedium)
                 if (rebound != null) Text("原工作树已不存在，将改用 ${rebound.string("path")} 目录。原路径：${rebound.string("missingPath")}",
                     modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.error)
@@ -538,7 +546,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                 Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = { handoffPrompt = null }) { Text("取消") }
                     TextButton(onClick = { handoffPrompt = null; executeHandoff(id, operation, preview, true) },
-                        modifier = Modifier.testTag("confirm_shared_handoff")) { Text(if (operation == "takeover") "结束进程并接管" else "结束进程并释放") }
+                        enabled = network != null && !submission.busy && submission.pending == null, modifier = Modifier.testTag("confirm_shared_handoff")) { Text(if (operation == "takeover") "结束进程并接管" else "结束进程并释放") }
                 }
             }
         }

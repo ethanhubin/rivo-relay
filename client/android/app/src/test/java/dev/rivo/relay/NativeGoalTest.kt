@@ -18,6 +18,17 @@ class NativeGoalTest {
         assertTrue(sessionSnapshot(json).goalSupported)
     }
 
+    @Test fun activeGoalKeepsSessionOngoingBetweenTurns() {
+        val json = JSONObject("""{"thread":{"id":"t","turns":[]},"status":"idle","goal":{"status":"active"}}""")
+        assertTrue(sessionSnapshot(json).isOngoing)
+        for (status in listOf("paused", "blocked", "complete", "budgetLimited", "usageLimited")) {
+            json.getJSONObject("goal").put("status", status)
+            assertFalse(sessionSnapshot(json).isOngoing)
+        }
+        json.put("activeTurnId", "turn")
+        assertTrue(sessionSnapshot(json).isOngoing)
+    }
+
     @Test fun oldServerDoesNotAdvertiseUnsupportedControls() {
         val snapshot = sessionSnapshot(JSONObject("""{"thread":{"id":"t","turns":[]}}"""))
         assertFalse(snapshot.goalSupported)

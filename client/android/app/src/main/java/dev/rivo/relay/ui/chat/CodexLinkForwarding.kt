@@ -70,7 +70,7 @@ internal fun CodexLinkDestinationDialog(link: CodexLinkAttachment, read: suspend
                 }
                 sessions.forEach { session -> Row(Modifier.fillMaxWidth().clickable { selected = session.string("id") }.testTag("codex_link_session_${session.string("id")}")) {
                     RadioButton(selected = selected == session.string("id"), onClick = { selected = session.string("id") })
-                    Text(visibleSessionText(session.string("name")).ifBlank { "新会话" }, Modifier.padding(top = 12.dp))
+                    Text(sessionTitle(session), Modifier.padding(top = 12.dp))
                 } }
             }
         } }, confirmButton = { TextButton(onClick = { projectId?.let { onConfirm(it, selected, link.source, link.name) } },

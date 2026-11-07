@@ -6,6 +6,8 @@ import time
 from collections import deque
 from uuid import uuid4
 
+from .client_projection import client_event
+
 
 class EventBus:
     def __init__(self, capacity: int = 512):
@@ -18,6 +20,9 @@ class EventBus:
         self.closed = False
 
     def publish(self, event: dict) -> None:
+        event = client_event(event)
+        if event is None:
+            return
         with self._condition:
             self._sequence += 1
             self._events.append((self._sequence, event))

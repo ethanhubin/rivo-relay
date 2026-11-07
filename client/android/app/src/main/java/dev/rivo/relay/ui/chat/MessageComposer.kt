@@ -106,6 +106,7 @@ fun MessageComposer(
     settingsExpanded: Boolean = false,
     onDismissSettings: () -> Unit = {},
     settingsContent: (@Composable () -> Unit)? = null,
+    goalControl: (@Composable () -> Unit)? = null,
 ) {
     var attachmentsOpen by remember { mutableStateOf(false) }
     LaunchedEffect(enabled) { if (!enabled) attachmentsOpen = false }
@@ -330,6 +331,7 @@ fun MessageComposer(
                             Spacer(Modifier.width(5.dp))
                             Text(if (discussionMode) "讨论模式" else "普通模式", style = MaterialTheme.typography.labelMedium, maxLines = 1)
                         }
+                        goalControl?.invoke()
                         Spacer(Modifier.weight(1f))
                         Box {
                             ComposerToolButton(onSettings, enabled, "运行设置", "composer_settings") {

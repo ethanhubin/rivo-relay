@@ -61,7 +61,14 @@ class NativeSemanticsTests(unittest.TestCase):
         native.request = request
         events = []
         service = CodexService(connection=native, on_event=events.append)
-        self.assertEqual(goal, service.get_session("thread")["goal"])
+        snapshot = service.get_session("thread")
+        self.assertEqual(goal, snapshot["goal"])
+        self.assertEqual("running", snapshot["status"])
+        self.assertIsNone(snapshot["activeTurnId"])
+        for status in ("paused", "blocked", "complete", "budgetLimited", "usageLimited"):
+            goal["status"] = status
+            self.assertEqual("idle", service.get_session("thread")["status"])
+        goal["status"] = "active"
         service._event({"method": "thread/goal/updated", "params": {"threadId": "thread", "turnId": "old-turn", "goal": goal}})
         self.assertFalse(service._live)
         goal = None
@@ -71,6 +78,16 @@ class NativeSemanticsTests(unittest.TestCase):
         self.assertTrue(result["goalSupported"])
         self.assertEqual(1, sum(method == "thread/resume" for method, _ in native.calls))
         self.assertEqual(2, len(events))
+
+    def test_session_list_keeps_active_goal_running_between_turns(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        with patch.object(service.projects, "get", return_value={"id": "project", "roots": []}), \
+             patch("rivo_relay.codex.sessions.pages", return_value=[native.thread]), \
+             patch.object(service, "read_goal", return_value={"goal": {"status": "active"}}):
+            session = service.list_sessions("project")[0]
+            self.assertEqual("running", session["status"])
+            self.assertEqual("running", session["nativeExecution"])
 
     def test_goal_unsupported_is_distinct_from_native_failure(self):
         native = FakeNative()

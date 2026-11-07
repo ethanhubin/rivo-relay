@@ -2,6 +2,8 @@ package dev.rivo.relay.ui.chat
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.text.KeyboardOptions
@@ -10,6 +12,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -21,6 +25,10 @@ import org.json.JSONObject
 
 @Composable
 fun NativeRequestPanel(request: NativeRequest, enabled: Boolean, onRespond: (JSONObject) -> Unit) {
+    if (request.method in setOf("item/commandExecution/requestApproval", "item/fileChange/requestApproval", "execCommandApproval", "applyPatchApproval")) {
+        ApprovalRequest(request, enabled, onRespond)
+        return
+    }
     var expanded by remember(request.key) { mutableStateOf(true) }
     val answers = remember(request.key) { mutableStateMapOf<String, String>() }
     var questionIndex by remember(request.key) { mutableIntStateOf(0) }
@@ -44,26 +52,79 @@ fun NativeRequestPanel(request: NativeRequest, enabled: Boolean, onRespond: (JSO
                             onRespond(JSONObject().put("answers", results))
                         }, enabled = enabled, modifier = Modifier.testTag("answer_with_assumptions")) { Text("按合理假设继续") }
                     }
-                    request.method in setOf("item/commandExecution/requestApproval", "item/fileChange/requestApproval", "execCommandApproval", "applyPatchApproval") -> {
-                        params.string("reason").takeIf { it.isNotBlank() }?.let { Text(it) }
-                        val detail = params.string("command").ifBlank { params.string("cwd") }.ifBlank { params.string("grantRoot") }
-                        if (detail.isNotBlank()) SelectionContainer { Text(detail, style = MaterialTheme.typography.bodySmall) }
-                        Text("这是 Desktop 原生审批请求", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        val declared = params.optJSONArray("availableDecisions")
-                        val decisions: List<Any> = if (declared != null && declared.length() > 0) (0 until declared.length()).map { declared.get(it) }
-                            else if (request.method.contains('/')) listOf("decline", "accept") else listOf(legacyRejection(), "approved")
-                        decisions.forEach { decision ->
-                            val label = approvalLabel(decision)
-                            if (label != null) OutlinedButton(onClick = { onRespond(JSONObject().put("decision", decision)) }, enabled = enabled,
-                                modifier = Modifier.fillMaxWidth().testTag(if (decision == "accept" || decision == "approved") "approve_request" else if (decision == "decline" || decision is JSONObject && decision.has("denied")) "decline_request" else "approval_choice")) { Text(label) }
-                        }
-                        if (decisions.any { approvalLabel(it) == null }) Text("部分原生审批选项需要在 Desktop 处理。", style = MaterialTheme.typography.bodySmall)
-                    }
                     request.method == "item/permissions/requestApproval" -> PermissionRequest(params, enabled, onRespond)
                     request.method == "mcpServer/elicitation/request" -> McpRequest(params, enabled, onRespond)
                     else -> {
                         Text(request.method, style = MaterialTheme.typography.titleMedium)
                         Text("此原生请求暂不支持在手机处理，请回到 Desktop 完成。完成后会自动刷新。", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ApprovalRequest(request: NativeRequest, enabled: Boolean, onRespond: (JSONObject) -> Unit) {
+    var open by remember(request.key) { mutableStateOf(true) }
+    var details by remember(request.key) { mutableStateOf(false) }
+    var selected by remember(request.key) { mutableIntStateOf(-1) }
+    val params = request.params
+    val declared = params.optJSONArray("availableDecisions")
+    val decisions: List<Any> = if (declared != null && declared.length() > 0)
+        (0 until declared.length()).map { declared.get(it) }
+    else if (request.method.contains('/')) listOf("decline", "accept") else listOf(legacyRejection(), "approved")
+    val choices = decisions.filter { approvalLabel(it) != null }
+    val index = if (selected >= 0) selected else choices.indexOfFirst { it == "accept" || it == "approved" }
+    val choice = choices.getOrNull(index)
+    val title = if (request.method.contains("fileChange") || request.method == "applyPatchApproval") "允许修改文件？" else "允许运行命令？"
+    Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.fillMaxWidth().testTag("native_request")) {
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Text("等待审批", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+            TextButton(onClick = { open = true }, modifier = Modifier.testTag("toggle_native_request")) { Text("查看请求") }
+        }
+    }
+    if (open) Dialog(onDismissRequest = { open = false }) {
+        Surface(shape = MaterialTheme.shapes.extraLarge, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+            Column(Modifier.fillMaxWidth().heightIn(max = 600.dp).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(title, style = MaterialTheme.typography.titleLarge)
+                Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    params.string("reason").takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                    val detail = params.string("command").ifBlank { params.string("cwd") }.ifBlank { params.string("grantRoot") }
+                    if (detail.isNotBlank()) {
+                        TextButton(onClick = { details = !details }, contentPadding = PaddingValues(0.dp)) { Text(if (details) "收起详情 ▴" else "查看详情 ▾") }
+                        if (details) Surface(color = MaterialTheme.colorScheme.surfaceContainerLowest, shape = MaterialTheme.shapes.small) {
+                            SelectionContainer { Text(detail, Modifier.fillMaxWidth().padding(12.dp), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
+                        }
+                    }
+                    choices.forEachIndexed { i, decision ->
+                        val label = approvalLabel(decision).orEmpty()
+                        val selectedRule = label.substringAfter('：', "")
+                        OutlinedButton(onClick = { selected = i }, enabled = enabled,
+                            shape = MaterialTheme.shapes.medium,
+                            colors = ButtonDefaults.outlinedButtonColors(containerColor = if (index == i) MaterialTheme.colorScheme.secondaryContainer else androidx.compose.ui.graphics.Color.Transparent),
+                            modifier = Modifier.fillMaxWidth().testTag("approval_choice_$i").semantics { this.selected = index == i }) {
+                            Text((if (index == i) "✓  " else "") + label.substringBefore('：'))
+                        }
+                        if (index == i && selectedRule.isNotBlank()) {
+                            Text("将记住以下规则：", style = MaterialTheme.typography.labelSmall)
+                            SelectionContainer { Text(selectedRule, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace) }
+                        }
+                    }
+                    if (choices.size != decisions.size) Text("更多选项请在电脑端处理", style = MaterialTheme.typography.bodySmall)
+                }
+                HorizontalDivider()
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { open = false }) { Text("稍后处理") }
+                    Button(onClick = { choice?.let { onRespond(JSONObject().put("decision", it)) } }, enabled = enabled && choice != null,
+                        modifier = Modifier.weight(1f).testTag("approve_request")) {
+                        Text(when (choice) {
+                            "accept", "approved" -> "允许本次"
+                            "decline" -> "确认拒绝"
+                            "cancel", "abort" -> "取消请求"
+                            else -> "确认选择"
+                        })
                     }
                 }
             }

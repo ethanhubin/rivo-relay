@@ -52,11 +52,11 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     submitTool: (String, JSONObject, () -> Unit) -> Unit = { _, _, _ -> },
     usage: CodexUsage? = null, onFillHistory: () -> Unit = {}, pinned: Boolean = false, canManage: Boolean = false,
     onPin: ((Boolean) -> Unit)? = null, onArchive: (() -> Unit)? = null,
-    pendingTitle: String? = null, pendingReady: Boolean = true,
+    pendingTitle: String? = null, pendingReady: Boolean = true, pendingPermissionsEditable: Boolean = true,
     pendingWorkspace: (@Composable () -> Unit)? = null,
-    onConfiguredSend: ((JSONArray, String?, String?, String?, String?, () -> Unit) -> Unit)? = null,
+    onConfiguredSend: ((JSONArray, String?, String?, String?, String?, JSONObject, () -> Unit) -> Unit)? = null,
     onSettingsChange: ((JSONObject) -> Unit)? = null,
-    nodeName: String = "当前节点", writerBusy: Boolean = false, onWriterAction: ((String) -> Unit)? = null,
+    takeoverBlockedReason: String? = null, nodeName: String = "当前节点", writerBusy: Boolean = false, onWriterAction: ((String) -> Unit)? = null,
     defaultSettings: JSONObject? = null, onSaveDefaults: ((JSONObject) -> Unit)? = null, modelCatalogNotice: String? = null,
     onForwardLink: ((String, String?, String, String) -> Unit)? = null, draftReloadKey: Long = 0, pendingCwd: String = "",
     mediaApi: dev.rivo.relay.data.RelayApi? = null,
@@ -89,6 +89,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     var draftLoaded by remember(state.id, draftStore) { mutableStateOf(draftStore == null) }
     var selectedModel by rememberSaveable(state.id) { mutableStateOf<String?>(null) }
     var selectedEffort by rememberSaveable(state.id) { mutableStateOf<String?>(null) }
+    var selectedSandbox by rememberSaveable(state.id) { mutableStateOf<String?>(null) }
+    var selectedApproval by rememberSaveable(state.id) { mutableStateOf<String?>(null) }
     var selectedServiceTier by rememberSaveable(state.id) { mutableStateOf<String?>(null) }
     var images by remember(state.id) { mutableStateOf(emptyList<DraftImage>()) }
     var editingImage by remember(state.id) { mutableStateOf<DraftImage?>(null) }
@@ -147,15 +149,18 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             draft = saved.text; images = saved.images.map { DraftImage(it.id, it.bytes) }; files = saved.files
             selectedModel = saved.model; selectedEffort = saved.effort; selectedMode = saved.mode
             selectedServiceTier = saved.serviceTier
+            selectedSandbox = saved.sandbox; selectedApproval = saved.approvalPolicy
         }
         if (pendingTitle != null) {
+            selectedSandbox = selectedSandbox ?: defaultSettings?.string("sandbox")?.takeIf(String::isNotBlank) ?: "inherit"
+            selectedApproval = selectedApproval ?: defaultSettings?.string("approvalPolicy")?.takeIf(String::isNotBlank) ?: "inherit"
             selectedModel = selectedModel ?: defaultSettings?.string("model")?.takeIf(String::isNotBlank)
             selectedEffort = selectedEffort ?: defaultSettings?.string("effort")?.takeIf(String::isNotBlank)
             selectedServiceTier = selectedServiceTier ?: defaultSettings?.string("serviceTier")?.takeIf(String::isNotBlank)
         }
         draftLoaded = true
     }
-    val currentDraft = ConversationDraft(draft, images.map { StoredDraftImage(it.id, it.bytes) }, files, selectedModel, selectedEffort, selectedMode, selectedServiceTier)
+    val currentDraft = ConversationDraft(draft, images.map { StoredDraftImage(it.id, it.bytes) }, files, selectedModel, selectedEffort, selectedMode, selectedServiceTier, selectedSandbox, selectedApproval)
     val latestDraft by rememberUpdatedState(currentDraft)
     // Disposal belongs to the departing chat. Updated-state delegates shared across
     // identities would observe the newly opened draft and its persistence callback.
@@ -216,7 +221,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val timeline = remember(snapshot?.messages, state.pendingMessages, snapshot?.activeTurnId, state.stale) {
         nativeTimelineRows(projectedSessionMessages(snapshot, state.pendingMessages), snapshot?.activeTurnId?.takeUnless { state.stale })
     }
-    val executionActive = !state.stale && snapshot?.activeTurnId?.isNotBlank() == true && snapshot.requests.isEmpty()
+    val executionActive = !state.stale && snapshot?.isOngoing == true && snapshot.requests.isEmpty()
     val currentActivity = (timeline.lastOrNull() as? NativeTimelineRow.Activities)
         ?.takeIf { executionActive && it.messages.lastOrNull()?.turnId == snapshot?.activeTurnId }
     val modelChangeRows = remember(timeline, snapshot?.turnSettings) {
@@ -298,7 +303,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             Column { Text("新会话", style = MaterialTheme.typography.titleLarge); Text(pendingTitle, style = MaterialTheme.typography.bodySmall) }
         } else NativeChatHeader(state, usage, onBack, ::openSettings, onRefresh, { developerOpen = true }, { stopConfirm = true },
             !busy && !blocked && !state.stale && canOperate, pinned, canManage, onPin, onArchive)
-        if (pendingTitle == null) NativeWriterStatus(state, nodeName, writerBusy || busy || blocked, onWriterAction)
+        if (pendingTitle == null) NativeWriterStatus(state, nodeName, writerBusy || busy || blocked, onWriterAction, takeoverBlockedReason)
         if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         Box(Modifier.weight(1f).fillMaxWidth()) {
         LazyColumn(state = list, modifier = Modifier.fillMaxSize().nestedScroll(scrollConnection).testTag("chat_history"), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
@@ -395,8 +400,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         recoveryTask?.let { task -> RecoveryTaskPanel(task, !busy && !blocked && canOperate, readOnly = !canOperate) { operation ->
             onQueue(JSONObject().put("operation", operation).put("itemId", task.id).put("revision", task.revision), {})
         } }
+        var goalEditing by remember(state.id) { mutableStateOf(false) }
         if (snapshot?.goalSupported == true) key(state.id) {
-            NativeGoalPanel(snapshot.goal, !busy && !blocked && !state.stale && canOperate, onGoal)
+            NativeGoalPanel(snapshot.goal, !busy && !blocked && !state.stale && canOperate, onGoal, goalEditing) { goalEditing = it }
         }
         NativePlan(snapshot?.plan)
         val waitingQueue = snapshot?.queue.orEmpty().filter { it.status !in setOf("running", "dispatching") && it.id != recoveryTask?.id }
@@ -420,6 +426,19 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             onAddWorkspaceFile = { focus.clearFocus(); keyboard?.hide(); workspaceFileDialog = true }, onSettings = ::openSettings,
             discussionMode = (selectedMode ?: snapshot?.settings?.optJSONObject("collaborationMode")?.string("mode")) == "plan",
             onToggleMode = { selectedMode = if ((selectedMode ?: snapshot?.settings?.optJSONObject("collaborationMode")?.string("mode")) == "plan") "default" else "plan" },
+            goalControl = if (snapshot?.goalSupported == true) { {
+                IconButton(onClick = { goalEditing = true },
+                    enabled = !busy && !blocked && !state.stale && canOperate,
+                    modifier = Modifier.size(44.dp).testTag("create_goal")
+                        .semantics { contentDescription = if (snapshot.goal == null) "设置持续目标" else "编辑持续目标" }) {
+                    val color = if (!busy && !blocked && !state.stale && canOperate && snapshot.goal?.string("status") == "active") MaterialTheme.colorScheme.primary else LocalContentColor.current
+                    androidx.compose.foundation.Canvas(Modifier.size(22.dp)) {
+                        drawCircle(color, style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()))
+                        drawCircle(color, radius = size.minDimension * 0.28f, style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()))
+                        drawCircle(color, radius = 2.dp.toPx())
+                    }
+                }
+            } } else null,
             focusRequest = inputFocusRequest, onPasteImages = ::addImages,
             settingsExpanded = settingsOpen, onDismissSettings = { settingsOpen = false }, settingsContent = {
                 NativeComposerSettings(snapshot?.settings, models, selectedModel, selectedEffort, selectedMode, !busy && !blocked && !state.stale && (canOperate || pendingTitle != null && pendingReady) && draftLoaded,
@@ -431,6 +450,15 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     }, onEffort = { selectedEffort = it; if (it != null) onSettingsChange?.invoke(JSONObject().put("effort", it)) }, onInheritMode = { selectedMode = null },
                     serviceTier = selectedServiceTier ?: snapshot?.settings?.string("serviceTier"), onServiceTier = {
                         selectedServiceTier = it; onSettingsChange?.invoke(JSONObject().put("serviceTier", it))
+                    }, sandboxChoice = if (pendingTitle != null) selectedSandbox else null,
+                    approvalChoice = if (pendingTitle != null) selectedApproval else null,
+                    newSession = pendingTitle != null, permissionsEditable = pendingPermissionsEditable,
+                    onSandbox = { value ->
+                        if (pendingTitle != null) selectedSandbox = value ?: "inherit"
+                        else value?.let { onSettingsChange?.invoke(JSONObject().put("sandbox", it)) }
+                    }, onApproval = { value ->
+                        if (pendingTitle != null) selectedApproval = value ?: "inherit"
+                        else value?.let { onSettingsChange?.invoke(JSONObject().put("approvalPolicy", it)) }
                     }, savesToSession = onSettingsChange != null, defaultSettings = defaultSettings, onSaveDefaults = onSaveDefaults,
                     catalogNotice = modelCatalogNotice)
             },
@@ -440,15 +468,20 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 targetId?.let { onPersistDraft(it, sentDraft) }
                 val accepted = { if (currentSessionId == targetId && latestDraft == sentDraft) {
                     followLatest = true; draft = ""; images = emptyList<DraftImage>(); files = emptyList<JSONObject>()
-                    targetId?.let { onPersistDraft(it, ConversationDraft(model = sentDraft.model, effort = sentDraft.effort, mode = sentDraft.mode, serviceTier = sentDraft.serviceTier)) }
+                    targetId?.let { onPersistDraft(it, ConversationDraft(model = sentDraft.model, effort = sentDraft.effort, mode = sentDraft.mode, serviceTier = sentDraft.serviceTier, sandbox = sentDraft.sandbox, approvalPolicy = sentDraft.approvalPolicy)) }
                 }
                     Unit }
-                if (onConfiguredSend != null) onConfiguredSend(nativeInputs(draft, images, files), selectedModel, selectedEffort, selectedMode, selectedServiceTier, accepted)
+                if (onConfiguredSend != null) onConfiguredSend(nativeInputs(draft, images, files), selectedModel, selectedEffort, selectedMode, selectedServiceTier, JSONObject().apply {
+                    if (pendingTitle != null) {
+                        selectedSandbox?.takeUnless { it == "inherit" }?.let { put("sandbox", it) }
+                        selectedApproval?.takeUnless { it == "inherit" }?.let { put("approvalPolicy", it) }
+                    }
+                }, accepted)
                 else if (onSendWithMode != null) onSendWithMode(nativeInputs(draft, images, files), selectedModel, selectedEffort, selectedMode, accepted)
                 else onSend(nativeInputs(draft, images, files), selectedModel, selectedEffort, accepted)
             },
             onStop = { stopConfirm = true },
-            queueing = snapshot != null && (snapshot.readOnly || snapshot.activeTurnId.isNotBlank() || snapshot.requests.isNotEmpty() || snapshot.queue.isNotEmpty()),
+            queueing = snapshot != null && (snapshot.readOnly || snapshot.isOngoing || snapshot.requests.isNotEmpty() || snapshot.queue.isNotEmpty()),
         )
     }
     if (developerOpen && state.id != null) DeveloperToolsDialog(state.id, readTool, submitTool, busy || blocked || !canOperate, onDismiss = { developerOpen = false },

@@ -127,7 +127,12 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
     }
 
     private fun unread(threads: List<ThreadSummary>) = threads.filter { thread ->
-        val readAt = readVersions.getOrPut(thread.id) { store?.getMetadata("read:${thread.id}")?.toLongOrNull() ?: 0L }
+        val readAt = readVersions.getOrPut(thread.id) {
+            // Existing server history starts read; persist the baseline across app restarts.
+            store?.getMetadata("read:${thread.id}")?.toLongOrNull() ?: thread.updatedAt.also {
+                store?.putMetadata("read:${thread.id}", it.toString())
+            }
+        }
         thread.updatedAt > readAt && !threadIsActive(thread)
     }.mapTo(mutableSetOf()) { it.id }
 

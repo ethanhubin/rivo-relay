@@ -28,7 +28,7 @@ fun nativeActivity(item: JSONObject): NativeActivity? {
     val summary = when (kind) {
         "image" -> item.string("path").substringAfterLast('/').ifBlank { "图片" }
         "command" -> item.string("command")
-        "reasoning" -> nativeText(item.opt("summary")).ifBlank { nativeText(item.opt("content")) }.ifBlank { item.string("text") }
+        "reasoning" -> nativeReasoningText(item)
         "file" -> paths.joinToString(" · ") { it.substringAfterLast('/').substringAfterLast('\\') }
         "commentary" -> item.string("text")
         "web" -> item.string("query").ifBlank { nativeText(item.opt("action")) }
@@ -36,7 +36,7 @@ fun nativeActivity(item: JSONObject): NativeActivity? {
         "plan" -> item.string("text").ifBlank { item.objects("plan").joinToString("\n") { it.string("step") } }
         "tool" -> listOf(item.string("server").ifBlank { item.string("namespace") }, item.string("tool").ifBlank { item.string("name") }).filter(String::isNotBlank).joinToString(" / ")
         else -> item.string("text")
-    }.ifBlank { title }
+    }.ifBlank { if (kind == "reasoning") "" else title }
     val detail = when (type) {
         "commandexecution" -> item.string("aggregatedOutput")
         "filechange" -> item.objects("changes").joinToString("\n\n") { it.string("path") + "\n" + it.string("diff") }
@@ -51,6 +51,16 @@ fun nativeActivity(item: JSONObject): NativeActivity? {
     }
     return NativeActivity(kind, title, summary, detail, status, paths,
         if (kind == "command") (item.opt("exitCode") as? Number)?.toInt() else null)
+}
+
+internal fun nativeReasoningText(item: JSONObject): String {
+    fun text(value: Any?): String = when (value) {
+        is String -> value
+        is JSONArray -> (0 until value.length()).map { text(value.opt(it)) }.filter(String::isNotBlank).joinToString("\n")
+        is JSONObject -> value.opt("text") as? String ?: ""
+        else -> ""
+    }
+    return text(item.opt("summary")).ifBlank { text(item.opt("content")) }.ifBlank { text(item.opt("text")) }
 }
 
 private fun nativeText(value: Any?): String = when (value) {
@@ -81,6 +91,8 @@ fun nativeTimelineRows(messages: List<NativeMessage>, activeTurnId: String? = nu
     val pending = mutableListOf<NativeMessage>()
     fun flush() { if (pending.isNotEmpty()) { rows += NativeTimelineRow.Activities(pending.toList()); pending.clear() } }
     messages.forEach { message ->
+        // Empty native reasoning items carry no displayable summary. Keep raw history intact.
+        if (message.activity?.kind == "reasoning" && message.activity.summary.isBlank()) return@forEach
         if (message.activity != null && message.activity.kind != "commentary") {
             if (pending.lastOrNull()?.turnId?.let { it != message.turnId } == true) flush()
             pending += message
@@ -110,15 +122,20 @@ fun nativeTimelineRows(messages: List<NativeMessage>, activeTurnId: String? = nu
 fun nativeActivityGroupLabel(messages: List<NativeMessage>): String {
     val activities = messages.mapNotNull { it.activity }
     if (activities.isEmpty()) return "Codex 活动"
-    if (activities.all { it.kind == "command" } && activities.size > 1) {
-        val last = activities.last()
-        return if (last.status == "running") "正在运行 ${compactActivity(last.summary)} · 本组 ${activities.size} 条命令" else "运行了 ${activities.size} 条命令"
+    val commands = activities.filter { it.kind == "command" }
+    val commandLabel = if (commands.isEmpty()) null else {
+        val running = commands.count { it.status == "running" }
+        val failed = commands.count { it.status != "running" && (it.status == "failed" || (it.exitCode != null && it.exitCode != 0)) }
+        val succeeded = commands.size - running - failed
+        "运行了 ${commands.size} 条命令 · 成功 $succeeded · 失败 $failed" +
+            if (running > 0) " · 进行中 $running" else ""
     }
-    return activities.joinToString(" · ") { activity ->
+    if (commands.size == activities.size) return commandLabel!!
+    val otherLabels = activities.filter { it.kind != "command" }.joinToString(" · ") { activity ->
         val text = compactActivity(activity.summary)
         val running = activity.status == "running"
         when (activity.kind) {
-            "command" -> if (running) "正在运行 $text" else "运行了 $text"
+            "command" -> if (running) "正在运行命令" else "运行了 1 条命令"
             "file" -> if (running) "正在编辑 $text" else "编辑了 $text"
             "web" -> if (running) "正在检索 $text" else "检索了 $text"
             "tool", "collaboration" -> if (running) "正在使用 $text" else "使用了 $text"
@@ -127,5 +144,6 @@ fun nativeActivityGroupLabel(messages: List<NativeMessage>): String {
             else -> text
         }
     }
+    return listOfNotNull(commandLabel, otherLabels.takeIf { it.isNotBlank() }).joinToString(" · ")
 }
 private fun compactActivity(text: String): String = text.replace(Regex("\\s+"), " ").trim().take(110)

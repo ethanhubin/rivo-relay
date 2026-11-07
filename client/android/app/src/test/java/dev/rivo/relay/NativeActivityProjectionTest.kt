@@ -12,15 +12,45 @@ class NativeActivityProjectionTest {
     private fun turn(id: String, vararg items: JSONObject) = JSONObject().put("id", id).put("items", JSONArray(items.toList()))
     private fun command(id: String, command: String) = JSONObject().put("id", id).put("type", "commandExecution").put("command", command).put("aggregatedOutput", "result").put("status", "completed")
 
+    @Test fun emptyReasoningIsHiddenWithoutRemovingNativeHistory() {
+        val empty = JSONObject().put("id", "r").put("type", "reasoning")
+            .put("summary", JSONArray()).put("content", JSONArray()).put("encrypted_content", "opaque")
+        val state = snapshot(turn("one", command("a", "first"), empty, command("b", "second")))
+        assertEquals(3, state.messages.size)
+        val rows = nativeTimelineRows(state.messages, "one")
+        assertEquals(listOf("a", "b"), (rows.single() as NativeTimelineRow.Activities).messages.map { it.id })
+        assertEquals("", state.messages[1].activity?.summary)
+    }
+
+    @Test fun reasoningTextAppearsWhenSummaryArrivesAndSupportsTextParts() {
+        val item = JSONObject().put("id", "r").put("type", "reasoning").put("summary", JSONArray().put(" "))
+        assertTrue(nativeTimelineRows(snapshot(turn("one", item)).messages).isEmpty())
+        item.put("summary", JSONArray().put(JSONObject().put("type", "summary_text").put("text", "检查结果")))
+        val messages = snapshot(turn("one", item)).messages
+        assertEquals("检查结果", messages.single().text)
+        assertEquals("检查结果", messages.single().activity?.summary)
+        assertEquals(1, nativeTimelineRows(messages).size)
+        item.put("summary", JSONArray()).put("content", JSONArray().put(JSONObject().put("type", "text").put("text", "可用内容")))
+        assertEquals("可用内容", nativeActivity(item)?.summary)
+    }
+
+    @Test fun commandCountsIncludeFailuresAndKeepRunningSeparate() {
+        val state = snapshot(turn("one", command("ok", "ok").put("exitCode", 0),
+            command("bad", "bad").put("exitCode", 2),
+            command("cancelled", "cancelled").put("status", "interrupted"),
+            command("live", "live").put("status", "inProgress")))
+        assertEquals("运行了 4 条命令 · 成功 1 · 失败 2 · 进行中 1", nativeActivityGroupLabel(state.messages))
+    }
+
     @Test fun adjacentToolsCollapseByNativeTurnWithoutLosingIdsOrOutputs() {
         val state = snapshot(turn("one", command("a", "first"), command("b", "second"), command("c", "third")), turn("two", command("d", "fourth")))
         val rows = nativeTimelineRows(state.messages)
         assertEquals(2, rows.size)
         val first = rows.first() as NativeTimelineRow.Activities
         assertEquals(listOf("a", "b", "c"), first.messages.map { it.id })
-        assertEquals("运行了 3 条命令", nativeActivityGroupLabel(first.messages))
+        assertEquals("运行了 3 条命令 · 成功 3 · 失败 0", nativeActivityGroupLabel(first.messages))
         assertEquals("result", first.messages.first().activity?.detail)
-        assertEquals("运行了 fourth", nativeActivityGroupLabel((rows.last() as NativeTimelineRow.Activities).messages))
+        assertEquals("运行了 1 条命令 · 成功 1 · 失败 0", nativeActivityGroupLabel((rows.last() as NativeTimelineRow.Activities).messages))
     }
 
     @Test fun processMessagesAndFinalResponsesKeepTheirNativePositionsBetweenGroups() {
@@ -99,10 +129,10 @@ class NativeActivityProjectionTest {
         assertFalse(shouldRenderMarkdownTableAsCards(short)); assertTrue(shouldRenderMarkdownTableAsCards(long))
     }
 
-    @Test fun compactCommandLabelCollapsesWhitespaceButPreservesRegexEscapes() {
+    @Test fun commandLabelHidesCommandButPreservesRawHistory() {
         val original = "rg '\\s+' \n\tfile.txt"
         val message = snapshot(turn("one", command("regex", original))).messages.single()
-        assertEquals("运行了 rg '\\s+' file.txt", nativeActivityGroupLabel(listOf(message)))
+        assertEquals("运行了 1 条命令 · 成功 1 · 失败 0", nativeActivityGroupLabel(listOf(message)))
         assertEquals(original, message.activity?.summary)
         assertEquals(original, message.raw.string("command"))
     }

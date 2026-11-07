@@ -23,14 +23,12 @@ internal fun goalStatusLabel(status: String): String = when (status) {
 }
 
 @Composable
-fun NativeGoalPanel(goal: JSONObject?, enabled: Boolean, onAction: (JSONObject) -> Unit) {
-    var editing by remember { mutableStateOf(false) }
+fun NativeGoalPanel(goal: JSONObject?, enabled: Boolean, onAction: (JSONObject) -> Unit,
+    editing: Boolean, onEditingChange: (Boolean) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     var clearing by remember { mutableStateOf(false) }
     val status = goal?.string("status").orEmpty()
-    if (goal == null) {
-        TextButton(onClick = { editing = true }, enabled = enabled, modifier = Modifier.testTag("create_goal")) { Text("设置持续目标") }
-    } else {
+    if (goal != null) {
         Surface(color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth().testTag("native_goal")) {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -44,7 +42,7 @@ fun NativeGoalPanel(goal: JSONObject?, enabled: Boolean, onAction: (JSONObject) 
                     Text("Token ${goal.optLong("tokensUsed")}" + (budget?.let { " / $it" } ?: " · 未设预算") +
                         " · 已用 ${goal.optLong("timeUsedSeconds") / 60} 分钟", style = MaterialTheme.typography.labelMedium)
                     Row {
-                        TextButton(onClick = { editing = true }, enabled = enabled) { Text("编辑目标") }
+                        TextButton(onClick = { onEditingChange(true) }, enabled = enabled) { Text("编辑目标") }
                         TextButton(onClick = { clearing = true }, enabled = enabled) { Text("清除目标") }
                     }
                 }
@@ -55,7 +53,7 @@ fun NativeGoalPanel(goal: JSONObject?, enabled: Boolean, onAction: (JSONObject) 
         var objective by remember { mutableStateOf(goal?.string("objective").orEmpty()) }
         var budget by remember { mutableStateOf((goal?.opt("tokenBudget") as? Number)?.toLong()?.toString().orEmpty()) }
         val validBudget = budget.isBlank() || (budget.toLongOrNull()?.let { it > 0 } == true)
-        AlertDialog(onDismissRequest = { editing = false }, title = { Text("持续目标") }, text = {
+        AlertDialog(onDismissRequest = { onEditingChange(false) }, title = { Text("持续目标") }, text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Codex 会跨轮次持续推进，直至完成、暂停或遇到限制。保存后启用目标。")
                 OutlinedTextField(objective, { objective = it }, label = { Text("希望完成什么") }, minLines = 3, maxLines = 8)
@@ -66,9 +64,9 @@ fun NativeGoalPanel(goal: JSONObject?, enabled: Boolean, onAction: (JSONObject) 
             TextButton(onClick = {
                 val body = JSONObject().put("operation", "set").put("objective", objective.trim())
                 budget.toLongOrNull()?.let { body.put("tokenBudget", it) }
-                onAction(body); editing = false
+                onAction(body); onEditingChange(false)
             }, enabled = enabled && objective.isNotBlank() && objective.length <= 200000 && validBudget) { Text("保存并启用") }
-        }, dismissButton = { TextButton(onClick = { editing = false }) { Text("取消") } })
+        }, dismissButton = { TextButton(onClick = { onEditingChange(false) }) { Text("取消") } })
     }
     if (clearing) AlertDialog(onDismissRequest = { clearing = false }, title = { Text("清除目标？") },
         text = { Text("移除此会话的持续目标。聊天记录会保留；当前轮次可通过停止按钮单独停止。") },

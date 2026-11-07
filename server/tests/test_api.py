@@ -126,6 +126,28 @@ class ApiTests(unittest.TestCase):
         self.paired = self._pair()
         self.token = self.paired["token"]
 
+    def test_mobile_session_and_history_strip_command_payloads(self):
+        command = {"id": "cmd", "type": "commandExecution", "status": "completed",
+                   "exitCode": 0, "command": "private command", "aggregatedOutput": "x" * 100000}
+        turn = {"id": "turn", "items": [command]}
+        approval = {"key": "approval", "method": "item/commandExecution/requestApproval",
+                    "params": {"command": "private command"}}
+        self.app.codex.get_session = lambda *args, **kwargs: {
+            "thread": {"id": "thread-1", "turns": [turn]}, "requests": [approval]}
+        self.app.codex.history = lambda *args, **kwargs: {"turns": [turn], "nextCursor": "next"}
+        for suffix in ("", "/history"):
+            status, result, _ = self.request("GET", "/v1/threads/thread-1" + suffix, token=self.token)
+            self.assertEqual(status, 200)
+            turns = result["turns"] if suffix else result["thread"]["turns"]
+            self.assertEqual(turns[0]["items"][0], {
+                "id": "cmd", "type": "commandExecution", "status": "completed", "exitCode": 0})
+            if not suffix:
+                self.assertEqual(result["requests"], [approval])
+            else:
+                self.assertEqual(result["nextCursor"], "next")
+        self.assertEqual(command["command"], "private command")
+        self.assertEqual(len(command["aggregatedOutput"]), 100000)
+
     def test_public_updates_are_scoped_to_published_artifacts(self):
         import hashlib
         root = self.config.workspace / 'updates'
@@ -171,6 +193,28 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(200, self.request('POST', path, {'submissionId': 'goal-' + operation, 'operation': operation}, token=self.token)[0])
         self.assertEqual(400, self.request('POST', path, {**body, 'operation': 'unknown'}, token=self.token)[0])
         self.assertEqual(400, self.request('POST', path, {**body, 'objective': ''}, token=self.token)[0])
+
+    def test_permission_creation_and_settings_are_independent_and_deduplicated(self):
+        writes = []
+        def create(project, **kwargs):
+            writes.append(('create', kwargs))
+            return {'threadId': 'thread-1'}
+        def update(thread, **kwargs):
+            writes.append(('update', kwargs))
+            return {'threadId': thread}
+        self.native.create_session = create
+        self.native.update_settings = update
+        for path in ('/v1/threads', '/v1/threads/thread-1/settings'):
+            body = {'submissionId': path, 'projectId': 'p', 'sandbox': 'read-only', 'approvalPolicy': 'on-request'}
+            for _ in range(2):
+                self.assertEqual(200, self.request('POST', path, body, token=self.token)[0])
+            for invalid in ('invalid', {}, [], True):
+                self.assertEqual(400, self.request('POST', path, {**body, 'sandbox': invalid}, token=self.token)[0])
+                self.assertEqual(400, self.request('POST', path, {**body, 'approvalPolicy': invalid}, token=self.token)[0])
+        self.assertEqual(2, len(writes))
+        for _, values in writes:
+            self.assertEqual('read-only', values['sandbox'])
+            self.assertEqual('on-request', values['approval_policy'])
 
     def test_fast_settings_are_validated_and_deduplicated(self):
         writes = []
@@ -257,7 +301,7 @@ class ApiTests(unittest.TestCase):
             return {"ticket": "fixture-ticket", "requiresConfirmation": True, "affectedThreads": []}
         def handoff(thread, action, **kwargs):
             writes.append((thread, action, kwargs))
-            return {"threadId": thread}
+            return {"threadId": thread, "released": True, "releaseScope": "relay-subscription"}
         self.native.preview_handoff = preview
         self.native.handoff = handoff
         path = "/v1/threads/thread-1/ownership"

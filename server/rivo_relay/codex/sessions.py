@@ -180,6 +180,7 @@ class CodexService:
         status = connection.status()
         bridge = status.get('bridge') or {}
         available = False
+        check_available = False
         reason = '实际运行节点尚未确认，不能执行进程级交接'
         if not status.get('connected'):
             reason = '原生运行时尚未连接，不能执行进程级交接'
@@ -187,25 +188,29 @@ class CodexService:
             reason = '共享 Desktop 不支持进程级接管；当前会话可以正常停止或释放订阅'
         else:
             descriptor = self.native_journal.cached_host(thread_id)
+            if descriptor is None and callable(getattr(connection, 'native_host_info', None)):
+                # Probe on explicit preview rather than requiring a history-cache hit.
+                check_available = True
+                reason = '接管前将重新核验实际运行主机和持锁进程'
             if descriptor:
                 key = json.dumps(descriptor, sort_keys=True)
                 with self._lock:
                     cached = self._handoff_capabilities.get(key)
-                if cached is None:
+                if cached is None or time.monotonic() - cached[2] >= 5:
                     try:
                         self.writers.verify_native_host(descriptor, status.get('runtimeId'), getattr(connection, 'socket_path', None))
-                        cached = (True, '')
+                        cached = (True, '', time.monotonic())
                     except Exception as error:
-                        cached = (False, str(error))
+                        cached = (False, str(error), time.monotonic())
                     with self._lock:
                         self._handoff_capabilities[key] = cached
                         while len(self._handoff_capabilities) > 16:
                             self._handoff_capabilities.popitem(last=False)
-                available, reason = cached
+                available, reason = cached[:2]
         return {'runtime': status.get('runtime', 'unknown'), 'connected': bool(status.get('connected')),
                 'desktopShared': status.get('desktopShared'),
                 'desktopVerification': status.get('desktopVerification'),
-                'handoffAvailable': available, 'handoffUnavailableReason': reason or None,
+                'handoffAvailable': available, 'handoffCheckAvailable': check_available, 'handoffUnavailableReason': reason or None,
                 'bridge': {**{key: bridge.get(key) for key in ('available', 'writerReady', 'connectionState')},
                            'error': bridge.get('error') or status.get('error')}}
 
@@ -267,8 +272,11 @@ class CodexService:
         if self.workspaces:
             with self.workspaces.db.read() as c:
                 managed = {row['thread_id']: dict(row) for row in c.execute('SELECT * FROM workspaces WHERE project_id=?', (project_id,))}
+        statuses = {t["id"]: ("waiting" if self.interactions.list(t["id"]) else
+                    "running" if (self.read_goal(t["id"]).get("goal") or {}).get("status") == "active"
+                    else thread_status(t)) for t in by_id.values()}
         return [{"id": t["id"], "name": t.get("name") or t.get("preview") or "新会话",
-                 "preview": t.get("preview", ""), "status": thread_status(t),
+                 "preview": t.get("preview", ""), "status": statuses[t["id"]],
                  "pinned": str((t.get("section") or {}).get("name", "")).casefold() == "pinned",
                  "updatedAt": t.get("updatedAt"), "cwd": t.get("cwd"),
                  "projectId": t.get("projectId") or project_id,
@@ -278,7 +286,7 @@ class CodexService:
                  "workspace": ({'id': managed[t['id']]['id'], 'path': managed[t['id']]['path'],
                      'commit': managed[t['id']]['commit_id'], 'status': managed[t['id']]['status']}
                      if t['id'] in managed else None),
-                 **execution_projection(thread_status(t), queues.get(t['id'], []))}
+                 **execution_projection(statuses[t["id"]], queues.get(t['id'], []))}
                 for t in sorted(by_id.values(), key=lambda t: t.get("updatedAt", 0), reverse=True)]
 
     def pin_session(self, thread_id, pinned):
@@ -405,7 +413,9 @@ class CodexService:
         if active is None:
             active = next((t["id"] for t in reversed(thread["turns"])
                            if t.get("status") == "inProgress"), None)
-        status = "waiting" if requests else ("running" if active else thread_status(thread))
+        goal_state = self.read_goal(thread_id)
+        goal_active = (goal_state.get("goal") or {}).get("status") == "active"
+        status = "waiting" if requests else ("running" if active or goal_active else thread_status(thread))
         observations = self.observations_for(thread_id)
         latest_turn = thread['turns'][-1] if thread['turns'] else {}
         plan = observations.get(('plan', active or latest_turn.get('id', '')))
@@ -427,8 +437,11 @@ class CodexService:
         control = control_projection(read_only=read_only,
             released=bool(observations.get(('ownership', ''), {}).get('released')),
             workspace_unavailable=workspace_unavailable, runtime=runtime)
+        if control.get('action') == 'resume' and observations.get(('ownership', ''), {}).get('externalWriter'):
+            control = control_projection(read_only=True, released=False,
+                workspace_unavailable=workspace_unavailable, runtime=runtime)
         return {"thread": thread, "requests": requests, "settings": settings, 'control': control, 'plan': plan,
-                **self.read_goal(thread_id),
+                **goal_state,
                 'tokenUsage': usage, 'changes': changes, 'turnSettings': turn_settings,
                 "activeTurnId": active, "status": status, "readOnly": read_only, "nextCursor": history["nextCursor"],
                 "backwardsCursor": history["backwardsCursor"],
@@ -491,7 +504,16 @@ class CodexService:
             result['nativeSync'] = native_state.public()
         return result
 
-    def create_session(self, project_id, title="", worktree_ref=None):
+    @staticmethod
+    def _permission_options(sandbox, approval_policy):
+        if sandbox is not None and sandbox not in ('read-only', 'workspace-write', 'danger-full-access'):
+            raise CodexError('文件访问权限无效', code='invalid_settings', http_status=400)
+        if approval_policy is not None and approval_policy not in ('on-request', 'untrusted', 'never', 'on-failure'):
+            raise CodexError('审批策略无效', code='invalid_settings', http_status=400)
+        return {key: value for key, value in (('sandbox', sandbox), ('approvalPolicy', approval_policy)) if value is not None}
+
+    def create_session(self, project_id, title="", worktree_ref=None, *, sandbox=None, approval_policy=None):
+        permissions = self._permission_options(sandbox, approval_policy)
         self.start()
         project = self.projects.get(project_id)
         roots = [r["path"] for r in project.get("roots", [])]
@@ -505,7 +527,7 @@ class CodexService:
                 workspace_id, cwd = self.workspaces.create(project_id, cwd, worktree_ref)
             try:
                 result = self.connection.request("thread/start", {
-                    "cwd": cwd, "projectId": project_id, "historyMode": "paginated",
+                    "cwd": cwd, "projectId": project_id, "historyMode": "paginated", **permissions,
                 })
                 thread_id = (result.get('thread') or {}).get('id')
                 if not isinstance(thread_id, str) or not thread_id:
@@ -806,7 +828,15 @@ class CodexService:
                     raise CodexError('恢复预览已失效，请重新操作', code='handoff_changed', http_status=409)
                 self._assert_workspace(thread_id)
                 # Ordinary resume never terminates another writer or starts a turn.
-                response = self.connection.request('thread/resume', {'threadId': thread_id, 'excludeTurns': True})
+                try:
+                    response = self.connection.request('thread/resume', {'threadId': thread_id, 'excludeTurns': True})
+                except CodexError as error:
+                    if error.code == 'native_rejected' and 'already has an active writer' in str(error):
+                        # Keep queues paused, but offer the actual next action
+                        # instead of an endless ordinary-resume loop.
+                        self._observe(thread_id, 'ownership', '', {'released': True, 'externalWriter': True})
+                        self.on_event({'method': 'relay/ownershipChanged', 'params': {'threadId': thread_id}})
+                    raise
                 if str(connection.generation) != preview['generation']:
                     raise CodexError('原生连接已变化，恢复结果待核对', code='handoff_changed', http_status=409, request_sent=True)
                 self._forget_observation(thread_id, 'ownership')
@@ -1055,7 +1085,8 @@ class CodexService:
             result = self.connection.request("thread/goal/clear" if operation == "clear" else "thread/goal/set", params)
         return {"threadId": thread_id, **result}
 
-    def update_settings(self, thread_id, *, model=None, effort=None, service_tier=None):
+    def update_settings(self, thread_id, *, model=None, effort=None, service_tier=None, sandbox=None, approval_policy=None):
+        permissions = self._permission_options(sandbox, approval_policy)
         self.start()
         self._assert_workspace(thread_id)
         params = {"threadId": thread_id}
@@ -1069,7 +1100,19 @@ class CodexService:
             params['serviceTier'] = service_tier
         with self._operations:
             self._resume(thread_id)
+            if 'approvalPolicy' in permissions:
+                params['approvalPolicy'] = permissions['approvalPolicy']
+            if sandbox is not None:
+                current = self._settings.get(thread_id, {})
+                if (current.get('collaborationMode') or {}).get('mode') == 'plan':
+                    raise CodexError('请先退出讨论模式再修改文件访问权限', code='invalid_settings', http_status=409)
+                types = {'read-only': 'readOnly', 'workspace-write': 'workspaceWrite', 'danger-full-access': 'dangerFullAccess'}
+                params['sandboxPolicy'] = {'type': types[sandbox]}
+                if sandbox != 'danger-full-access':
+                    params['sandboxPolicy']['networkAccess'] = (current.get('sandbox') or {}).get('networkAccess') is True
             response = self.connection.request("thread/settings/update", params)
+            if sandbox is not None:
+                self._forget_observation(thread_id, 'modeBaseline')
             with self._lock:
                 settings = self._settings.setdefault(thread_id, {})
                 settings.update(self._settings_from(params))

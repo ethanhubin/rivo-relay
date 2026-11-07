@@ -34,6 +34,27 @@ class HandoffTests(unittest.TestCase):
         writers.busy.return_value = False
         return service, native, writers
 
+    def test_missing_history_host_cache_can_request_live_handoff_preview(self):
+        service, native, writers = self.service()
+        service.native_journal.cached_host = Mock(return_value=None)
+        runtime = service._thread_runtime(TID)
+        self.assertFalse(runtime['handoffAvailable'])
+        self.assertTrue(runtime['handoffCheckAvailable'])
+        writers.verify_native_host.assert_not_called()
+        connection, descriptor = service._handoff_connection(TID)
+        self.assertIs(connection, native)
+        writers.verify_native_host.assert_called_once()
+
+    def test_failed_handoff_verification_expires_and_can_recover(self):
+        service, native, writers = self.service()
+        service.native_journal.cached_host = Mock(return_value=native.native_host_info())
+        writers.verify_native_host.side_effect = [CodexError('temporarily unavailable'), None]
+        with patch('rivo_relay.codex.sessions.time.monotonic', return_value=100):
+            self.assertFalse(service._thread_runtime(TID)['handoffAvailable'])
+        with patch('rivo_relay.codex.sessions.time.monotonic', return_value=106):
+            self.assertTrue(service._thread_runtime(TID)['handoffAvailable'])
+        self.assertEqual(2, writers.verify_native_host.call_count)
+
     def test_resume_released_shared_desktop_without_killing_or_starting_turn(self):
         service, native, writers = self.service()
         native.status = lambda: {'connected': True, 'runtime': 'desktop', 'desktopShared': True}
@@ -60,6 +81,10 @@ class HandoffTests(unittest.TestCase):
         with self.assertRaises(CodexError):
             service.handoff(TID, 'resume', owner='phone', ticket=preview['ticket'])
         self.assertTrue(service.observations_for(TID)[('ownership', '')]['released'])
+        self.assertTrue(service.observations_for(TID)[('ownership', '')]['externalWriter'])
+        snapshot = service.get_session(TID)
+        self.assertEqual('takeover', snapshot['control']['action'])
+        self.assertFalse(snapshot['control']['canOperate'])
         writers.terminate.assert_not_called()
 
     def test_resume_ticket_cannot_release_or_cross_owners(self):

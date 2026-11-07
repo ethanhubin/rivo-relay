@@ -14,6 +14,7 @@ from .codex.native_download import byte_range
 from .speech import MAX_SPEECH_BYTES, MAX_CHUNK_BYTES
 from .media import MediaError
 from .updates import latest_update, update_apk
+from .client_projection import client_history
 
 
 class ApiError(Exception):
@@ -27,6 +28,20 @@ def required(body: dict, key: str, limit: int = 200) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > limit:
         raise ApiError(400, "invalid_request", f"{key} is required")
     return value
+
+
+def permission_options(body: dict) -> dict:
+    options = {}
+    for key, arg, allowed in (
+        ('sandbox', 'sandbox', ('read-only', 'workspace-write', 'danger-full-access')),
+        ('approvalPolicy', 'approval_policy', ('on-request', 'untrusted', 'never', 'on-failure')),
+    ):
+        value = body.get(key)
+        if value is not None:
+            if value not in allowed:
+                raise ApiError(400, 'invalid_request', f'Invalid {key}')
+            options[arg] = value
+    return options
 
 
 def native_input(body: dict) -> list[dict] | None:
@@ -365,6 +380,10 @@ class Handler(BaseHTTPRequestHandler):
                 501: "当前节点版本暂不支持此功能",
                 413: "文件超过此操作的大小限制",
             }.get(status, "原生服务连接暂不可用，请检查节点服务")
+            if code in ('native_host_unverified', 'handoff_host_unverified', 'handoff_host_mismatch', 'handoff_host_changed'):
+                message = '无法核验接管所需的原生主机身份，请检查节点运行时连接'
+            if code == 'handoff_desktop_shared':
+                message = '共享 Desktop 运行时不支持结束进程接管'
             if code == 'native_history_unavailable':
                 message = '原生历史暂不可用，请稍后重试'
             if code == "file_too_large":
@@ -449,8 +468,11 @@ class Handler(BaseHTTPRequestHandler):
                 return {"threads": codex.list_sessions(project, archived=True) if archived == 'true' else codex.list_sessions(project)}
             if method == "POST":
                 project, sid = required(body, "projectId"), required(body, "submissionId")
+                options = permission_options(body)
+                if body.get('worktreeRef'):
+                    options['worktree_ref'] = body['worktreeRef']
                 return self.app.submit(connection_id, sid, "thread.create", project, body,
-                    lambda: codex.create_session(project, worktree_ref=body['worktreeRef']) if body.get('worktreeRef') else codex.create_session(project))
+                    lambda: codex.create_session(project, **options))
         if len(path) >= 3 and path[:2] == ["v1", "threads"]:
             if len(path) == 4 and path[3] == "ownership" and method == "GET":
                 return codex.preview_handoff(path[2], query.get("operation", ["takeover"])[0], connection_id)
@@ -459,11 +481,11 @@ class Handler(BaseHTTPRequestHandler):
                 options = {'native_revision': query['nativeRevision'][0]} if query.get('nativeRevision') else {}
                 result = codex.get_session(thread_id, cursor=query.get("cursor", [None])[0], limit=int(query.get("limit", ["30"])[0]), **options)
                 result["queue"] = self.app.queue.list(thread_id)
-                return result
+                return client_history(result)
             if len(path) == 4 and path[3] == "history" and method == "GET":
                 options = {'native_revision': query['nativeRevision'][0]} if query.get('nativeRevision') else {}
-                return codex.history(thread_id, cursor=query.get("cursor", [None])[0],
-                                     limit=int(query.get("limit", ["30"])[0]), **options)
+                return client_history(codex.history(thread_id, cursor=query.get("cursor", [None])[0],
+                                     limit=int(query.get("limit", ["30"])[0]), **options))
             if len(path) == 4 and method == 'GET':
                 if path[3] == 'diff':
                     from .codex.diff_projection import diff_page
@@ -537,14 +559,15 @@ class Handler(BaseHTTPRequestHandler):
                         raise ApiError(400, 'invalid_request', 'tokenBudget must be a positive integer')
                     fn = lambda: codex.update_goal(thread_id, operation, objective=objective, token_budget=budget)
                 elif action == 'settings':
-                    if not any(body.get(key) is not None for key in ('model', 'effort', 'serviceTier')):
+                    if not any(body.get(key) is not None for key in ('model', 'effort', 'serviceTier', 'sandbox', 'approvalPolicy')):
                         raise ApiError(400, 'invalid_request', 'Settings required')
                     for key in ('model', 'effort'):
                         if body.get(key) is not None:
                             required(body, key, 200)
                     if body.get('serviceTier') not in (None, 'default', 'priority'):
                         raise ApiError(400, 'invalid_request', 'Invalid serviceTier')
-                    fn = lambda: codex.update_settings(thread_id, model=body.get('model'), effort=body.get('effort'), service_tier=body.get('serviceTier'))
+                    options = permission_options(body)
+                    fn = lambda: codex.update_settings(thread_id, model=body.get('model'), effort=body.get('effort'), service_tier=body.get('serviceTier'), **options)
                 elif action == 'archive':
                     if not isinstance(body.get('archived'), bool):
                         raise ApiError(400, 'invalid_request', 'archived must be boolean')
@@ -588,7 +611,11 @@ class Handler(BaseHTTPRequestHandler):
                         raise ApiError(400, "invalid_request", "Invalid ownership operation")
                     ticket = required(body, "ticket", 128)
                     options = {'rebind_workspace': required(body, 'rebindWorkspace', 4096)} if 'rebindWorkspace' in body else {}
-                    fn = lambda: codex.handoff(thread_id, operation, owner=connection_id, ticket=ticket, confirmed=body.get("confirmed") is True, **options)
+                    def fn():
+                        result = codex.handoff(thread_id, operation, owner=connection_id, ticket=ticket, confirmed=body.get("confirmed") is True, **options)
+                        # Submission receipts contain identities only; release
+                        # metadata belongs to the preview/control projection.
+                        return {"threadId": result["threadId"]}
                 elif action == "interrupt":
                     turn_id = required(body, "turnId")
                     fn = lambda: codex.interrupt(thread_id, turn_id=turn_id)

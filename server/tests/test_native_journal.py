@@ -151,6 +151,42 @@ class JournalHostTests(unittest.TestCase):
 
 
 class JournalAdapterTests(unittest.TestCase):
+    def test_local_history_helper_requires_fresh_socket_attestation(self):
+        native = FakeNative()
+        descriptor = {'generation': native.generation,
+                      'identityMethod': 'local-socket-and-open-state-database'}
+        native.native_host_info = Mock(return_value=descriptor)
+        journal = NativeJournal(native, NativeHistoryAdapter())
+        with patch('rivo_relay.codex.host_probe.local_native_host_info', return_value=descriptor) as probe, patch(
+                'rivo_relay.codex.native_history_host.dispatch', return_value={'journal': None}) as dispatch:
+            self.assertEqual({'journal': None}, journal._call(THREAD, 'inspect'))
+            probe.assert_called_once_with(native)
+            dispatch.assert_called_once()
+            dispatch.reset_mock()
+            probe.return_value = {**descriptor, 'pid': 999}
+            with self.assertRaises(CodexError):
+                journal._call(THREAD, 'inspect')
+            dispatch.assert_not_called()
+            probe.side_effect = CodexError('socket no longer local')
+            with self.assertRaises(CodexError):
+                journal._call(THREAD, 'inspect')
+            dispatch.assert_not_called()
+        self.assertEqual([], native.calls)
+
+    def test_local_helper_rejects_generation_change_during_dispatch(self):
+        native = FakeNative()
+        descriptor = {'generation': native.generation,
+                      'identityMethod': 'local-socket-and-open-state-database'}
+        native.native_host_info = Mock(return_value=descriptor)
+        journal = NativeJournal(native, NativeHistoryAdapter())
+        def changed(request):
+            native.generation = 'replacement'
+            return {'journal': None}
+        with patch('rivo_relay.codex.host_probe.local_native_host_info', return_value=descriptor), patch(
+                'rivo_relay.codex.native_history_host.dispatch', side_effect=changed):
+            with self.assertRaises(CodexError):
+                journal._call(THREAD, 'inspect')
+
     def denied_host(self):
         native = FakeNative()
         native.native_host_info = Mock(side_effect=CodexError(

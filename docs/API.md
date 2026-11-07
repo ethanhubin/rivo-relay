@@ -68,7 +68,7 @@
 
 `mode` 可省略，或为 `plan` / `default`。Plan 通过原生 collaboration mode 运行，并将当前 turn sandbox 收紧为 `readOnly`；切回 default 仅在当前配置仍匹配 Relay 保存的 Plan 设置时恢复原先 sandbox，避免覆盖其他端修改。已有原生只读配置不会因此提升权限。`readOnly=true` 表示另一运行时占用了 thread writer，仍可读取持久历史。
 
-归档前检查运行中的 turn、待回答请求和执行队列；存在未处理工作时拒绝，最终操作仍由原生节点校验。批量置顶、归档、恢复由客户端逐项提交独立 submissionId，没有全有或全无的批量事务。未读标记是 Android 按节点和 thread 的已读 updatedAt 本地记录，没有服务端未读字段。
+归档前检查运行中的 turn、待回答请求和执行队列；存在未处理工作时拒绝，最终操作仍由原生节点校验。批量置顶、归档、恢复由客户端逐项提交独立 submissionId，没有全有或全无的批量事务。未读标记是 Android 按节点和 thread 的已读 updatedAt 本地记录，没有服务端未读字段。没有已读记录的历史会话首次出现在列表（包括本地缓存）时，以当前 updatedAt 持久保存已读基线；后续更晚的已完成更新才显示未读，已有已读记录继续保留。
 
 历史按原生 thread/turn/item ID 合并，不按文字去重。新建空会话可能还没有持久 rollout，首轮前返回创建元数据和空 turns；完成历史以原生分页为准。`nextCursor` 为空表示没有下一页，cursor 不应跨 runtime/重置继续使用。
 
@@ -321,3 +321,9 @@ for release as well as takeover. Changed/expired previews must be fetched again.
 
 
 进程级 ownership takeover 仅适用于已核实的本地主机 daemon，描述符、原生HOME、PID启动时间/二进制/socket在预览和执行时重复核对。已有本连接订阅的 release 使用 `thread/unsubscribe`，返回 `releaseScope=relay-subscription`，Desktop/远程均不杀进程，也不宣称释放了其他客户端的锁。`nativeRuntime.handoffAvailable` 仅表达强制接管能力；正常释放不依赖该值。
+
+### 会话权限选择
+
+`POST /v1/threads` 与 `POST /v1/threads/{id}/settings` 可分别传入 `sandbox`（`read-only`、`workspace-write`、`danger-full-access`）和 `approvalPolicy`（`on-request`、`untrusted`、`never`、兼容旧版的 `on-failure`）。省略表示沿用原生设置，两个选项互不隐式覆盖。新建传给原生 `thread/start`；已有会话映射为 `thread/settings/update` 的 `sandboxPolicy`，保留已有显式网络开关。讨论模式下拒绝修改已有会话的文件权限，避免覆盖退出讨论后的恢复基线；审批仍可修改。
+
+Android 输入框设置面板提供权限选择和“设为新会话默认”，默认值仅保存在当前手机的对应节点中，不修改 Desktop 全局配置。草稿保存明确的“沿用节点默认”选择，避免重开草稿时被手机默认值覆盖。会话创建已成功而首条发送尚未完成时，权限选择锁定至进入已创建会话，避免重试时显示未生效的选项。

@@ -2,12 +2,16 @@ package dev.rivo.relay.data
 
 import org.json.JSONObject
 
+fun sessionTitle(thread: JSONObject): String = visibleSessionText(thread.string("name")).ifBlank {
+    visibleSessionText(thread.string("preview")).ifBlank { "新会话" }
+}
+
 data class ThreadSummary(val id: String, val name: String, val preview: String, val status: String, val cwd: String, val projectId: String, val pinned: Boolean = false, val updatedAt: Long = 0,
     val queueDepth: Int = 0, val recoveryRequired: Boolean = false, val nativeExecution: String = "",
     val deliveryState: String = "", val displayState: String = "", val hasOutstandingWork: Boolean = false,
     val source: String = "", val executionMode: String = "", val gitInfo: JSONObject? = null, val writerOwner: String = "", val workspace: JSONObject? = null,
     val externalWorkspace: JSONObject? = null)
-fun threadSummary(json: JSONObject) = ThreadSummary(json.string("id"), visibleSessionText(json.string("name")).ifBlank { "新会话" }, visibleSessionText(json.string("preview")), json.string("status"), json.string("cwd"), json.string("projectId"), json.optBoolean("pinned", false), json.optLong("updatedAt", 0),
+fun threadSummary(json: JSONObject) = ThreadSummary(json.string("id"), sessionTitle(json), visibleSessionText(json.string("preview")), json.string("status"), json.string("cwd"), json.string("projectId"), json.optBoolean("pinned", false), json.optLong("updatedAt", 0),
     json.optInt("queueDepth").coerceAtLeast(0), json.optBoolean("recoveryRequired"), json.string("nativeExecution"),
     json.string("deliveryState"), json.string("displayState"), json.optBoolean("hasOutstandingWork"),
     json.string("source"), json.string("executionMode"), json.optJSONObject("gitInfo"), json.string("writerOwner"), json.optJSONObject("workspace"), json.optJSONObject("externalWorkspace"))
@@ -24,6 +28,7 @@ data class SessionSnapshot(val id: String, val name: String, val status: String,
     val nativeRevision: String? = null, val nativeSyncState: String = "ready", val recoveryTask: QueueTask? = null,
     val recoveryRequired: Boolean = false, val nativeExecution: String = "", val deliveryState: String = "",
     val displayState: String = "", val writerOwner: String = "", val queueDepth: Int = 0, val reviewDiagnostics: List<JSONObject> = emptyList(), val nativeRuntime: JSONObject? = null, val goal: JSONObject? = null, val goalSupported: Boolean = false, val control: JSONObject? = null, val workspaceUnavailable: Boolean = false) {
+    val isOngoing: Boolean get() = activeTurnId.isNotBlank() || status == "running" || goal?.string("status") == "active"
     val nativeReady: Boolean get() = nativeSyncState == "ready"
 }
 
@@ -55,7 +60,7 @@ fun sessionSnapshot(json: JSONObject): SessionSnapshot {
                 } }.ifBlank { visibleUserText(item.string("text")) }
                 "agentMessage", "agent_message", "plan" -> item.string("text")
                 "exitedReviewMode" -> item.string("review")
-                "reasoning" -> item.optJSONArray("summary")?.let { a -> (0 until a.length()).joinToString("\n") { a.optString(it) } }.orEmpty().ifBlank { item.string("text") }
+                "reasoning" -> nativeReasoningText(item)
                 "commandExecution", "command_execution" -> listOf(item.string("command"), item.string("aggregatedOutput")).filter { it.isNotBlank() }.joinToString("\n\n")
                 "fileChange", "file_change" -> item.objects("changes").joinToString("\n\n") { it.string("path") + "\n" + it.string("diff") }
                 else -> item.string("text").ifBlank { item.toString(2) }
@@ -64,7 +69,7 @@ fun sessionSnapshot(json: JSONObject): SessionSnapshot {
         }
     }
     val requests = json.objects("requests").map { NativeRequest(it.string("key"), it.string("method"), it.optJSONObject("params") ?: JSONObject()) }
-    return SessionSnapshot(thread.string("id"), visibleSessionText(thread.string("name")).ifBlank { "新会话" }, json.string("status"), json.string("activeTurnId"), messages, requests, json.optJSONObject("settings") ?: JSONObject(),
+    return SessionSnapshot(thread.string("id"), sessionTitle(thread), json.string("status"), json.string("activeTurnId"), messages, requests, json.optJSONObject("settings") ?: JSONObject(),
         json.string("nextCursor").takeIf { it.isNotBlank() }, json.optBoolean("readOnly", false), json.objects("queue").map(::queueTask), json.optJSONObject("plan"), json.optJSONObject("tokenUsage"), json.objects("changes"), thread.optLong("updatedAt", 0), turnSettings,
         json.string("nativeRevision").takeIf(String::isNotBlank), json.optJSONObject("nativeSync")?.string("state")?.ifBlank { "ready" } ?: "ready",
         json.optJSONObject("recoveryTask")?.let(::queueTask), json.optBoolean("recoveryRequired"), json.string("nativeExecution"),

@@ -55,7 +55,7 @@ class ChatRenderingUiTest {
             .put("command", "rg --files sample-$index").put("aggregatedOutput", "sample-$index/result.kt")
             .put("status", "completed").put("exitCode", 0)) }
         items.put(JSONObject().put("id", "answer").put("type", "agentMessage").put("phase", "final_answer")
-            .put("text", "消息已整理。**工具活动已合并**，可以展开查看每一步的输出。"))
+            .put("text", "消息已整理。**工具活动已合并**，仅显示命令数量和状态。"))
         val snapshot = sessionSnapshot(JSONObject().put("thread", JSONObject().put("id", "fixture-thread").put("name", "消息展示验证")
             .put("turns", JSONArray().put(JSONObject().put("id", "fixture-turn").put("items", items))))
             .put("requests", JSONArray()).put("settings", JSONObject()).put("status", "idle")
@@ -73,9 +73,9 @@ class ChatRenderingUiTest {
         compose.onAllNodesWithTag("native_activity_group").assertCountEquals(1)
         compose.onAllNodesWithText("sample-0/result.kt", substring = true).assertCountEquals(0)
         evidence("chat-rendering-0.1.1")
-        compose.onNodeWithTag("native_activity_toggle").performClick()
-        compose.onNodeWithTag("chat_history").performScrollToNode(hasText("sample-0/result.kt", substring = true))
-        compose.onNodeWithText("sample-0/result.kt", substring = true).assertIsDisplayed()
+        compose.onNodeWithTag("native_activity_toggle").assertDoesNotExist()
+        compose.onNodeWithText("运行了 8 条命令 · 成功 8 · 失败 0").assertIsDisplayed()
+        compose.onAllNodesWithText("rg --files", substring = true).assertCountEquals(0)
         compose.onNodeWithTag("message_input").performClick().performTextInput("继续验证")
         compose.waitUntil(10_000) {
             ViewCompat.getRootWindowInsets(compose.activity.window.decorView)

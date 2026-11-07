@@ -35,6 +35,6 @@ def control_projection(*, read_only, released, workspace_unavailable, runtime):
         return {'state': 'unknown', 'canOperate': False, 'action': None,
                 'unavailableReason': '原生运行时未连接，等待重新确认操作权限'}
     action = ('resume' if state == 'released' else 'release' if state == 'writable'
-              else 'takeover' if runtime.get('handoffAvailable') else None)
+              else 'takeover' if runtime.get('handoffAvailable') or runtime.get('handoffCheckAvailable') else None)
     return {'state': state, 'canOperate': state == 'writable', 'action': action,
             'unavailableReason': runtime.get('handoffUnavailableReason') if action is None else None}

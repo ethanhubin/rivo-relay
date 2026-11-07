@@ -205,6 +205,23 @@ class CatalogControllerTest {
         } finally { releaseRecent.countDown(); scope.cancel(); server.shutdown() }
     }
 
+    @Test fun historicalBaselineSurvivesRestartAndKeepsLaterUpdatesUnread() = runBlocking {
+        val directory = java.nio.file.Files.createTempDirectory("relay-read-baseline").toFile()
+        val server = MockWebServer()
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        try {
+            for (version in listOf(100L, 100L, 200L)) {
+                server.enqueue(MockResponse().setBody("""{"threads":[{"id":"t","status":"idle","updatedAt":$version}]}"""))
+                val controller = CatalogController(api(server), scope, { throw it }, ConversationStore(directory))
+                controller.project(ProjectSummary("p", "Project", "/project"))
+                withTimeout(5_000) { controller.state.first { it.threadsFresh && !it.loading } }
+                assertEquals(if (version == 100L) emptySet<String>() else setOf("t"), controller.state.value.unreadThreadIds)
+                assertEquals("100", ConversationStore(directory).getMetadata("read:t"))
+            }
+        } finally { scope.cancel(); server.shutdown(); directory.deleteRecursively() }
+    }
+
     @Test fun readVersionRemainsReadUntilANewerCompletedUpdate() = runBlocking {
         val server = MockWebServer()
         server.enqueue(MockResponse().setBody("""{"threads":[{"id":"t","name":"Thread","status":"idle","updatedAt":100}]}"""))
@@ -216,7 +233,7 @@ class CatalogControllerTest {
         try {
             controller.project(ProjectSummary("p", "Project", "/project"))
             withTimeout(5_000) { controller.state.first { !it.loading && it.threads.isNotEmpty() } }
-            assertEquals(setOf("t"), controller.state.value.unreadThreadIds)
+            assertTrue(controller.state.value.unreadThreadIds.isEmpty())
             controller.markRead("t", 100)
             assertTrue(controller.state.value.unreadThreadIds.isEmpty())
             controller.refreshThreads()

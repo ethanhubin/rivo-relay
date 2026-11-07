@@ -93,6 +93,25 @@ class NativeJournal:
         if generation != str(self.connection.generation) or str(runtime.get('generation')) != generation:
             raise CodexError('原生运行时已更换，请重新读取历史', code='history_changed', http_status=409)
         request = {'runtime': runtime, 'threadId': thread_id, 'operation': operation, **extra}
+        if runtime.get('identityMethod') == 'local-socket-and-open-state-database':
+            # A sandboxed command cannot inspect ps even after the transport
+            # proved this is a local socket. Re-attest locality for every call;
+            # cached descriptors alone never authorize local filesystem access.
+            from .host_probe import local_native_host_info
+            from .native_history_host import dispatch
+            from .native_reprojection import NativeHistoryReprojectionError
+            current = local_native_host_info(self.connection)
+            if current != runtime or generation != str(self.connection.generation):
+                with self._descriptor_lock:
+                    self._hosts.pop(generation, None)
+                raise CodexError('原生运行时已更换，请重新读取历史', code='history_changed', http_status=409)
+            try:
+                result = dispatch(request)
+            except (OSError, NativeHistoryReprojectionError) as error:
+                raise CodexError(str(error)[:1000], code='native_history_unavailable') from error
+            if generation != str(self.connection.generation):
+                raise CodexError('原生运行时已更换，请重新读取历史', code='history_changed', http_status=409)
+            return result
         payload = json.dumps({'sources': _sources(), 'request': request}, ensure_ascii=True, separators=(',', ':'))
         response = self.connection.request('command/exec', {'command': ['python3', '-c', _BOOTSTRAP, payload],
             'timeoutMs': 240000 if operation == 'repair' else 30000, 'outputBytesCap': 16384},

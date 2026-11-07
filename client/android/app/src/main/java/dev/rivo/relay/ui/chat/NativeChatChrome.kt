@@ -23,18 +23,20 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.codex.SessionState
 import dev.rivo.relay.codex.control
+import dev.rivo.relay.codex.takeoverControl
 import dev.rivo.relay.codex.ControlState
 import dev.rivo.relay.data.*
 import dev.rivo.relay.ui.common.CodexQuotaProgressBar
 import org.json.JSONObject
 
 @Composable
-internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boolean, onAction: ((String) -> Unit)?) {
+internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boolean, onAction: ((String) -> Unit)?, blockedReason: String? = null) {
     val snapshot = state.snapshot
     var runtimeDetails by remember(state.id) { mutableStateOf(false) }
     val runtime = snapshot?.nativeRuntime
     val trusted = !state.stale && !state.loading && snapshot != null
     val control = state.control()
+    val takeover = state.takeoverControl(blockedReason ?: if (busy) "有操作正在处理或等待核对，完成后可接管" else if (onAction == null) "当前页面暂不支持接管" else null)
     val external = control.state == ControlState.EXTERNAL
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).testTag("writer_status")) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -48,7 +50,7 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
                 .then(if (external) Modifier.testTag("external_writer_notice") else Modifier),
                 style = MaterialTheme.typography.labelSmall,
                 color = if (control.canOperate) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
-            control.action?.let { action ->
+            control.action?.takeUnless { it == "takeover" }?.let { action ->
                 if (onAction != null) TextButton(onClick = { onAction(action) }, enabled = !busy,
                     modifier = Modifier.testTag("writer_action")) {
                     Text(if (busy) "处理中…" else when (action) { "resume" -> "恢复操作"; "takeover" -> "强制接管"; else -> "释放权限" })
@@ -56,11 +58,14 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
             }
         }
         state.controlNotice?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-        if (control.state == ControlState.RELEASED) {
-            Text("恢复操作会尝试重新连接会话；若被其他 Codex 占用，需要接管后才能操作。", style = MaterialTheme.typography.bodySmall)
-            if (runtime?.optBoolean("handoffAvailable") == true && onAction != null)
-                TextButton(onClick = { onAction("takeover") }, enabled = !busy) { Text("强制接管") }
+        if (!control.canOperate) {
+            Button(onClick = { onAction?.invoke("takeover") }, enabled = takeover.enabled,
+                modifier = Modifier.fillMaxWidth().testTag("ownership_takeover")) { Text("强制接管") }
+            Text(takeover.reason, style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.testTag("takeover_reason"))
         }
+        if (control.state == ControlState.RELEASED)
+            Text("也可先尝试恢复操作；强制接管会结束经核验的持锁进程。", style = MaterialTheme.typography.bodySmall)
         if (control.state == ControlState.WORKSPACE_UNAVAILABLE)
             Text("请恢复工作目录；支持重绑时，可通过接管确认新的工作目录。", style = MaterialTheme.typography.bodySmall)
         if (control.reason.isNotBlank()) Text(control.reason, style = MaterialTheme.typography.bodySmall)
@@ -94,7 +99,7 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
         state.loading -> "同步中"
         state.stale -> if (snapshot != null) "离线缓存" else "连接中断"
         snapshot?.requests?.isNotEmpty() == true -> "等待回应"
-        snapshot?.activeTurnId?.isNotBlank() == true -> "执行中"
+        snapshot?.isOngoing == true -> "执行中"
         else -> null
     }
     Box(Modifier.fillMaxWidth().height(64.dp).testTag("conversation_header")) {
@@ -157,6 +162,8 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
 internal fun NativeComposerSettings(settings: JSONObject?, models: List<JSONObject>, selectedModel: String?, selectedEffort: String?,
     selectedMode: String?, enabled: Boolean, onModel: (String?) -> Unit, onEffort: (String?) -> Unit, onInheritMode: () -> Unit,
     serviceTier: String? = null, onServiceTier: (String) -> Unit = {}, savesToSession: Boolean = false,
+    sandboxChoice: String? = null, approvalChoice: String? = null, newSession: Boolean = false, permissionsEditable: Boolean = true,
+    onSandbox: (String?) -> Unit = {}, onApproval: (String?) -> Unit = {},
     defaultSettings: JSONObject? = null, onSaveDefaults: ((JSONObject) -> Unit)? = null, catalogNotice: String? = null) {
     Column(Modifier.verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(if (savesToSession) "会话设置" else "下一项任务", style = MaterialTheme.typography.titleSmall)
@@ -182,12 +189,35 @@ internal fun NativeComposerSettings(settings: JSONObject?, models: List<JSONObje
             Switch(checked = serviceTier == "priority", onCheckedChange = { onServiceTier(if (it) "priority" else "default") }, enabled = enabled,
                 modifier = Modifier.testTag("codex_fast_mode_switch"))
         }
+        val sandboxOptions = listOf("read-only" to "只读", "workspace-write" to "工作区读写", "danger-full-access" to "完全访问")
+        val approvalOptions = listOf("on-request" to "按需审批", "untrusted" to "不受信任操作需审批", "never" to "不要求审批", "on-failure" to "失败时审批（旧版）")
+        val currentSandbox = when (settings?.optJSONObject("sandbox")?.string("type")) {
+            "readOnly", "read-only" -> "read-only"
+            "workspaceWrite", "workspace-write" -> "workspace-write"
+            "dangerFullAccess", "danger-full-access" -> "danger-full-access"
+            else -> null
+        }
+        val effectiveSandbox = if (newSession) sandboxChoice?.takeUnless { it == "inherit" } else currentSandbox
+        val effectiveApproval = if (newSession) approvalChoice?.takeUnless { it == "inherit" } else (settings?.opt("approvalPolicy") as? String)
+        val inPlan = (selectedMode ?: settings?.optJSONObject("collaborationMode")?.string("mode")) == "plan"
+        if (newSession || savesToSession) {
+            SettingsSelector("文件访问权限", sandboxOptions.firstOrNull { it.first == effectiveSandbox }?.second ?: if (newSession) "沿用节点默认" else "当前自定义权限",
+                (if (newSession) listOf(null to "沿用节点默认") else emptyList()) + sandboxOptions,
+                enabled && permissionsEditable && (newSession || !inPlan), "composer_sandbox", onSandbox)
+            SettingsSelector("审批策略", approvalOptions.firstOrNull { it.first == effectiveApproval }?.second ?: if (newSession) "沿用节点默认" else "当前自定义审批",
+                (if (newSession) listOf(null to "沿用节点默认") else emptyList()) + approvalOptions,
+                enabled && permissionsEditable, "composer_approval", onApproval)
+            if (!permissionsEditable) Text("会话已创建，发送完成后可在会话设置中修改权限。", style = MaterialTheme.typography.labelSmall)
+            if (inPlan) Text("讨论模式使用只读权限；退出后恢复所选权限。", style = MaterialTheme.typography.labelSmall)
+        }
         if (onSaveDefaults != null) {
             val tier = if (serviceTier == "priority") "priority" else "default"
-            val isDefault = !effectiveModel.isNullOrBlank() && defaultSettings?.string("model") == effectiveModel &&
-                defaultSettings?.string("effort") == effectiveEffort.orEmpty() && defaultSettings?.string("serviceTier") == tier
-            TextButton(onClick = { onSaveDefaults(JSONObject().put("model", effectiveModel).put("effort", effectiveEffort ?: JSONObject.NULL).put("serviceTier", tier)) },
-                enabled = enabled && !effectiveModel.isNullOrBlank() && !isDefault, modifier = Modifier.testTag("codex_set_default")) { Text(if (isDefault) "已是默认" else "设为默认") }
+            val defaults = JSONObject().put("model", effectiveModel?.takeIf(String::isNotBlank)).put("effort", effectiveEffort?.takeIf(String::isNotBlank)).put("serviceTier", tier)
+                .put("sandbox", effectiveSandbox).put("approvalPolicy", effectiveApproval)
+            val isDefault = listOf("model", "effort", "serviceTier", "sandbox", "approvalPolicy").all { defaultSettings?.string(it).orEmpty() == defaults.string(it) }
+            TextButton(onClick = { onSaveDefaults(defaults) },
+                enabled = enabled && !isDefault, modifier = Modifier.testTag("codex_set_default")) { Text(if (isDefault) "已是默认" else "设为新会话默认") }
+            Text("默认设置仅用于此节点的新会话。", style = MaterialTheme.typography.labelSmall)
         }
         if (selectedMode != null) TextButton(onClick = onInheritMode, enabled = enabled, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("inherit_task_mode")) { Text("恢复继承会话模式") }
         Text(if (savesToSession) "选择会保存到当前会话；具体生效轮次由 Codex 决定。" else "选择用于下一项任务；当前执行中的任务保持原设置。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

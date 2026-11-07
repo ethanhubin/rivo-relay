@@ -11,8 +11,8 @@ import java.util.UUID
 /** Private, node-scoped recovery data. Never contains node credentials or authority to write. */
 data class StoredDraftImage(val id: String, val bytes: ByteArray)
 data class ConversationDraft(val text: String = "", val images: List<StoredDraftImage> = emptyList(),
-    val files: List<JSONObject> = emptyList(), val model: String? = null, val effort: String? = null, val mode: String? = null, val serviceTier: String? = null) {
-    val empty get() = text.isEmpty() && images.isEmpty() && files.isEmpty() && model == null && effort == null && mode == null && serviceTier == null
+    val files: List<JSONObject> = emptyList(), val model: String? = null, val effort: String? = null, val mode: String? = null, val serviceTier: String? = null, val sandbox: String? = null, val approvalPolicy: String? = null) {
+    val empty get() = text.isEmpty() && images.isEmpty() && files.isEmpty() && model == null && effort == null && mode == null && serviceTier == null && sandbox == null && approvalPolicy == null
 }
 data class PendingConversation(val id: String, val projectId: String, val draft: ConversationDraft, val createdAt: Long) {
     val draftKey get() = "pending:$id"
@@ -94,7 +94,8 @@ class ConversationStore(private val directory: File) {
             }
         }, json.string("model").takeIf(String::isNotBlank), json.string("effort").takeIf(String::isNotBlank),
             json.string("mode").takeIf { it == "plan" || it == "default" },
-            json.string("serviceTier").takeIf { it == "default" || it == "priority" })
+            json.string("serviceTier").takeIf { it == "default" || it == "priority" },
+            json.string("sandbox").takeIf(String::isNotBlank), json.string("approvalPolicy").takeIf(String::isNotBlank))
     }.getOrDefault(ConversationDraft())
 
     private fun latestDraft(threadId: String): ConversationDraft {
@@ -118,7 +119,7 @@ class ConversationStore(private val directory: File) {
         if (accepted == null) draft else decodeDraft(accepted.getJSONObject("settings"))
     }
     private fun draftJson(draft: ConversationDraft) = JSONObject().put("text", draft.text).put("model", draft.model)
-        .put("effort", draft.effort).put("mode", draft.mode).put("serviceTier", draft.serviceTier)
+        .put("effort", draft.effort).put("mode", draft.mode).put("serviceTier", draft.serviceTier).put("sandbox", draft.sandbox).put("approvalPolicy", draft.approvalPolicy)
         .put("files", JSONArray(draft.files.take(16)))
         .put("images", JSONArray(draft.images.take(10).filter { it.bytes.size <= 20 * 1024 * 1024 }.map {
             JSONObject().put("id", it.id).put("bytes", Base64.getEncoder().encodeToString(it.bytes))
@@ -144,7 +145,7 @@ class ConversationStore(private val directory: File) {
             require(frozen.toByteArray().size <= DRAFT_LIMIT) { "草稿过大，无法保存在手机" }
             write("sent-input-${digest(submissionId)}", frozen)
         } }
-        val settings = draftJson(ConversationDraft(model = draft.model, effort = draft.effort, mode = draft.mode, serviceTier = draft.serviceTier))
+        val settings = draftJson(ConversationDraft(model = draft.model, effort = draft.effort, mode = draft.mode, serviceTier = draft.serviceTier, sandbox = draft.sandbox, approvalPolicy = draft.approvalPolicy))
         putRecoveryMetadata("sent-draft:$submissionId", JSONObject().put("threadId", threadId)
             .put("fingerprint", draftFingerprint(draft)).put("baselineFingerprint", draftFingerprint(baseline))
             .put("preserveNewerDraft", preserveNewerDraft)
@@ -205,10 +206,12 @@ class ConversationStore(private val directory: File) {
         runCatching { JSONObject(it) }.getOrNull()
     }
     fun saveDefaultSettings(settings: JSONObject) {
-        val model = settings.string("model").takeIf(String::isNotBlank) ?: error("请选择默认模型")
+        val model = settings.string("model").takeIf(String::isNotBlank)
         val value = JSONObject().put("model", model)
         settings.string("effort").takeIf(String::isNotBlank)?.let { value.put("effort", it) }
         settings.string("serviceTier").takeIf { it == "default" || it == "priority" }?.let { value.put("serviceTier", it) }
+        settings.string("sandbox").takeIf { it in setOf("read-only", "workspace-write", "danger-full-access") }?.let { value.put("sandbox", it) }
+        settings.string("approvalPolicy").takeIf { it in setOf("on-request", "untrusted", "never", "on-failure") }?.let { value.put("approvalPolicy", it) }
         putRecoveryMetadata("codex-default-settings", value.toString())
     }
     fun pendingCompleted(projectId: String) = getMetadata("completed:pending:$projectId") == "true"

@@ -40,7 +40,7 @@ def verify_runtime(info):
     if sys.platform.startswith('linux'):
         executable = os.path.realpath(f'/proc/{pid}/exe')
     else:
-        executable = subprocess.check_output(['ps', '-p', str(pid), '-o', 'comm='], text=True, timeout=5).strip()
+        executable = subprocess.check_output(['ps', '-ww', '-p', str(pid), '-o', 'comm='], text=True, timeout=5).strip()
     if Path(executable).resolve() != Path(str(info.get('executable') or '')).resolve():
         raise NativeHistoryReprojectionError('原生运行时可执行文件已变化')
     if Path(executable).name.casefold() not in ('codex', 'codex.exe'):

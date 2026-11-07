@@ -31,4 +31,24 @@ class SessionControlTest {
         assertEquals(ControlState.RELEASED, SessionState(snapshot = snapshot).control().state)
         assertFalse(SessionState(snapshot = snapshot).control().canOperate)
     }
+    @Test fun staleHistoryCanPreviewTakeoverButCannotEnableInput() {
+        val stale = session("external").copy(stale = true)
+        assertFalse(stale.control().canOperate)
+        assertTrue(stale.takeoverControl().enabled)
+        assertFalse(stale.takeoverControl("网络不可用").enabled)
+        assertEquals("网络不可用", stale.takeoverControl("网络不可用").reason)
+    }
+    @Test fun missingHostCacheAllowsFreshVerificationAndExplicitLimitsExplainWhy() {
+        val base = session("external")
+        val pending = base.copy(snapshot = base.snapshot!!.copy(nativeRuntime = JSONObject()
+            .put("handoffAvailable", false).put("handoffCheckAvailable", true)))
+        assertTrue(pending.takeoverControl().enabled)
+        val unavailable = base.copy(snapshot = base.snapshot!!.copy(nativeRuntime = JSONObject()
+            .put("handoffAvailable", false).put("handoffUnavailableReason", "实际主机不可操作")))
+        assertFalse(unavailable.takeoverControl().enabled)
+        assertEquals("实际主机不可操作", unavailable.takeoverControl().reason)
+        val desktop = base.copy(snapshot = base.snapshot!!.copy(nativeRuntime = JSONObject().put("desktopShared", true)))
+        assertFalse(desktop.takeoverControl().enabled)
+        assertTrue(desktop.takeoverControl().reason.contains("Desktop"))
+    }
 }

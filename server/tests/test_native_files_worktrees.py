@@ -45,6 +45,8 @@ class NativeHost:
             if params.get('projectId'):
                 threads = [thread for thread in threads if thread.get('projectId') == params['projectId']]
             return {'data': threads, 'nextCursor': None}
+        if method == 'thread/goal/get':
+            return {'goal': None}
         if method == 'thread/read':
             return {'thread': next(thread for thread in self.threads if thread['id'] == params['threadId'])}
         raise AssertionError((method, params))
