@@ -9,7 +9,7 @@ data class SessionState(val id: String? = null, val snapshot: SessionSnapshot? =
     val historyCursor: String? = null, val loadingEarlier: Boolean = false, val earlierLoaded: Boolean = false,
     val readError: String? = null, val historyError: String? = null,
     val pendingMessages: List<PendingNativeMessage> = emptyList(), val overlayRevision: Long = 0L,
-    val controlNotice: String? = null)
+    val controlNotice: String? = null, val lastConfirmedControl: SessionControl? = null)
 
 /** One active thread owns reads and subscription; switch cancels both and rejects late snapshots. */
 class SessionController(private val api: RelayApi, private val scope: CoroutineScope,
@@ -178,6 +178,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                                     reviewDiagnostics = mergeTurnDiagnostics(current.snapshot?.reviewDiagnostics.orEmpty(), snapshot.reviewDiagnostics))
                                 else -> snapshot
                             }, loading = false, stale = false, readError = null, controlNotice = null,
+                                lastConfirmedControl = SessionState(snapshot = snapshot).control().takeUnless { it.state == ControlState.UNKNOWN } ?: current.lastConfirmedControl,
                                 historyCursor = if (!snapshot.nativeReady || keepEarlier) current.historyCursor else snapshot.historyCursor)
                         }
                         // Fresh live control/history is authoritative even while persistence catches up.

@@ -51,4 +51,22 @@ class SessionControlTest {
         assertFalse(desktop.takeoverControl().enabled)
         assertTrue(desktop.takeoverControl().reason.contains("Desktop"))
     }
+    @Test fun initialLoadingAndCachedHistoryDoNotSuggestTakeover() {
+        assertFalse(SessionState(id = "t", loading = true).showTakeover())
+        val cached = session("external").copy(stale = true, loading = true)
+        assertFalse(cached.showTakeover())
+        assertFalse(cached.copy(loading = false).showTakeover())
+        assertEquals(ControlState.UNKNOWN, cached.displayControl().state)
+    }
+    @Test fun refreshKeepsConfirmedOwnershipWithoutUnlockingMutations() {
+        val writable = session("writable", true)
+        val refreshing = writable.copy(stale = true, lastConfirmedControl = writable.control())
+        assertEquals(ControlState.WRITABLE, refreshing.displayControl().state)
+        assertFalse(refreshing.showTakeover())
+        assertFalse(refreshing.control().canOperate)
+        val external = session("external")
+        assertTrue(external.showTakeover())
+        assertTrue(external.copy(stale = true, lastConfirmedControl = external.control()).showTakeover())
+        assertFalse(writable.copy(lastConfirmedControl = external.control()).showTakeover())
+    }
 }

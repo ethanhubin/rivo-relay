@@ -51,3 +51,12 @@ fun SessionState.takeoverControl(blockedReason: String? = null): TakeoverControl
         return TakeoverControl(false, runtime.string("handoffUnavailableReason").ifBlank { "服务器暂不能确认接管条件，请刷新后重试" })
     return TakeoverControl(true, "接管前会核验并展示影响范围，确认后执行")
 }
+
+
+/** Loading/transport uncertainty must never be presented as loss of ownership. */
+fun SessionState.displayControl(): SessionControl =
+    control().takeUnless { it.state == ControlState.UNKNOWN }
+        ?: lastConfirmedControl ?: SessionControl(ControlState.UNKNOWN)
+
+fun SessionState.showTakeover(): Boolean = displayControl().state in setOf(
+    ControlState.EXTERNAL, ControlState.RELEASED, ControlState.WORKSPACE_UNAVAILABLE)

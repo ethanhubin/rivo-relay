@@ -2,6 +2,9 @@ package dev.rivo.relay
 
 import dev.rivo.relay.codex.SessionController
 import dev.rivo.relay.codex.control
+import dev.rivo.relay.codex.displayControl
+import dev.rivo.relay.codex.showTakeover
+import dev.rivo.relay.codex.ControlState
 import dev.rivo.relay.data.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
@@ -51,6 +54,8 @@ class SessionControllerTest {
             val slow = withTimeout(5000) { controller.state.first { it.controlNotice?.contains("响应较慢") == true } }
             assertFalse(slow.control().canOperate)
             assertEquals("initial", slow.snapshot?.name)
+            assertEquals(ControlState.WRITABLE, slow.displayControl().state)
+            assertFalse(slow.showTakeover())
             controller.refresh()
             val fresh = withTimeout(5000) { controller.state.first { it.snapshot?.name == "fresh" && !it.stale } }
             assertTrue(fresh.control().canOperate)

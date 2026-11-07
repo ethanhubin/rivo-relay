@@ -23,6 +23,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.codex.SessionState
 import dev.rivo.relay.codex.control
+import dev.rivo.relay.codex.displayControl
+import dev.rivo.relay.codex.showTakeover
 import dev.rivo.relay.codex.takeoverControl
 import dev.rivo.relay.codex.ControlState
 import dev.rivo.relay.data.*
@@ -35,7 +37,8 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
     var runtimeDetails by remember(state.id) { mutableStateOf(false) }
     val runtime = snapshot?.nativeRuntime
     val trusted = !state.stale && !state.loading && snapshot != null
-    val control = state.control()
+    val control = state.displayControl()
+    val confirmedNow = trusted && state.control().state != ControlState.UNKNOWN
     val takeover = state.takeoverControl(blockedReason ?: if (busy) "有操作正在处理或等待核对，完成后可接管" else if (onAction == null) "当前页面暂不支持接管" else null)
     val external = control.state == ControlState.EXTERNAL
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).testTag("writer_status")) {
@@ -46,19 +49,19 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
                 ControlState.RELEASED -> "当前 App 无操作权限 · 已主动释放"
                 ControlState.WORKSPACE_UNAVAILABLE -> "当前会话不可操作 · 工作目录不可用"
                 ControlState.UNKNOWN -> "操作权限待确认 · 正在等待同步"
-            }, Modifier.weight(1f).then(if (runtime != null) Modifier.clickable { runtimeDetails = true } else Modifier)
+            } + if (!confirmedNow && control.state != ControlState.UNKNOWN) "（待重新确认）" else "", Modifier.weight(1f).then(if (runtime != null) Modifier.clickable { runtimeDetails = true } else Modifier)
                 .then(if (external) Modifier.testTag("external_writer_notice") else Modifier),
                 style = MaterialTheme.typography.labelSmall,
-                color = if (control.canOperate) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
+                color = if (control.canOperate || control.state == ControlState.UNKNOWN) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
             control.action?.takeUnless { it == "takeover" }?.let { action ->
-                if (onAction != null) TextButton(onClick = { onAction(action) }, enabled = !busy,
+                if (onAction != null) TextButton(onClick = { onAction(action) }, enabled = !busy && confirmedNow,
                     modifier = Modifier.testTag("writer_action")) {
                     Text(if (busy) "处理中…" else when (action) { "resume" -> "恢复操作"; "takeover" -> "强制接管"; else -> "释放权限" })
                 }
             }
         }
         state.controlNotice?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-        if (!control.canOperate) {
+        if (state.showTakeover()) {
             Button(onClick = { onAction?.invoke("takeover") }, enabled = takeover.enabled,
                 modifier = Modifier.fillMaxWidth().testTag("ownership_takeover")) { Text("强制接管") }
             Text(takeover.reason, style = MaterialTheme.typography.bodySmall,
