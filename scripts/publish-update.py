@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Publish a built APK atomically to a Relay workspace; GitHub requires --github-release."""
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -13,6 +14,14 @@ import zipfile
 
 
 def publish(apk, workspace, version, code, notes):
+    root = workspace / 'updates'
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / '.publish.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return publish_locked(apk, workspace, version, code, notes)
+
+
+def publish_locked(apk, workspace, version, code, notes):
     if not re.fullmatch(r'\d+\.\d+\.\d+', version) or code <= 0:
         raise ValueError('Invalid version')
     if not 0 < apk.stat().st_size <= 256 * 1024 * 1024 or not zipfile.is_zipfile(apk):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime
+
 import argparse
 import fcntl
 import json
@@ -123,7 +125,7 @@ def serve(config: Config, native_socket: Path | None):
             try:
                 native.start()
             except Exception:
-                print("Native runtime unavailable; Relay will expose its connection status", file=sys.stderr)
+                print(json.dumps({"time": datetime.datetime.now(datetime.timezone.utc).isoformat(), "event": "native_unavailable"}), file=sys.stderr, flush=True)
             app.queue.start()
             tls = None
             if config.cert:
@@ -132,7 +134,7 @@ def serve(config: Config, native_socket: Path | None):
                 tls.load_cert_chain(config.cert, config.key)
             server = BoundedHTTPServer((config.host, config.port), Handler, app=app, tls_context=tls)
             signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown, daemon=True).start())
-            print(f"Rivo Relay listening on {config.host}:{config.port}", flush=True)
+            print(json.dumps({"time": datetime.datetime.now(datetime.timezone.utc).isoformat(), "event": "service_started", "pid": os.getpid(), "port": config.port}), flush=True)
             server.serve_forever(poll_interval=0.2)
         except KeyboardInterrupt:
             pass
@@ -140,6 +142,7 @@ def serve(config: Config, native_socket: Path | None):
             if server:
                 server.server_close()
             app.close()
+            print(json.dumps({"time": datetime.datetime.now(datetime.timezone.utc).isoformat(), "event": "service_stopped", "pid": os.getpid()}), flush=True)
 
 
 if __name__ == "__main__":

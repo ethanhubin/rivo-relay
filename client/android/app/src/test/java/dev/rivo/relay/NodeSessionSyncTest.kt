@@ -5,6 +5,7 @@ import dev.rivo.relay.data.RelayApi
 import dev.rivo.relay.data.string
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.collect
 import okhttp3.mockwebserver.*
 import org.junit.Assert.*
 import org.junit.Test
@@ -97,6 +98,69 @@ class NodeSessionSyncTest {
             releaseOld.countDown()
             assertEquals("1", oldNotification.await().string("value"))
         } finally { releaseOld.countDown(); releaseFresh.countDown(); scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun anotherThreadsEventDoesNotDuplicateAnInFlightRead() = runBlocking {
+        val server = MockWebServer()
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val count = AtomicInteger()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path!!.startsWith("/v1/events")) return MockResponse()
+                    .setHeader("Content-Type", "text/event-stream")
+                    .setBody("event: native\ndata: {\"method\":\"turn/completed\",\"params\":{\"threadId\":\"other\"}}\n\n" + ":".repeat(4096))
+                    .throttleBody(150, 1, TimeUnit.SECONDS)
+                count.incrementAndGet(); started.countDown(); release.await(5, TimeUnit.SECONDS)
+                return MockResponse().setBody("{}")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        try {
+            val sync = NodeSessionSync(api(server), scope)
+            val connected = CompletableDeferred<Unit>()
+            val notice = CompletableDeferred<Unit>()
+            lateinit var first: Deferred<org.json.JSONObject>
+            val observer = launch {
+                sync.events().collect { event ->
+                    if (event.type == "connected") {
+                        first = async(start = CoroutineStart.UNDISPATCHED) { sync.read("t") }
+                        connected.complete(Unit)
+                    }
+                    if (event.type == "native") notice.complete(Unit)
+                }
+            }
+            withTimeout(5000) { connected.await(); notice.await() }; await(started)
+            val second = async(start = CoroutineStart.UNDISPATCHED) { sync.read("t") }
+            release.countDown(); first.await(); second.await()
+            assertEquals(1, count.get())
+            observer.cancelAndJoin()
+        } finally { release.countDown(); scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun threadInvalidationSeparatesOnlyItsReadAndDoesNotCancelExistingConsumers() = runBlocking {
+        val server = MockWebServer()
+        val started = CountDownLatch(2)
+        val release = CountDownLatch(1)
+        val count = AtomicInteger()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                count.incrementAndGet(); started.countDown(); release.await(5, TimeUnit.SECONDS)
+                return MockResponse().setBody("{}")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        try {
+            val sync = NodeSessionSync(api(server), scope)
+            val a = async { sync.read("a") }; val b = async { sync.read("b") }; await(started)
+            sync.invalidate("a")
+            val newA = async(start = CoroutineStart.UNDISPATCHED) { sync.read("a") }
+            val sameB = async(start = CoroutineStart.UNDISPATCHED) { sync.read("b") }
+            release.countDown(); awaitAll(a, b, newA, sameB)
+            assertEquals(3, count.get())
+        } finally { release.countDown(); scope.cancel(); server.shutdown() }
     }
 
     @Test fun twoObserversUseOneNodeStreamAndDisposalCancelsIt() = runBlocking {

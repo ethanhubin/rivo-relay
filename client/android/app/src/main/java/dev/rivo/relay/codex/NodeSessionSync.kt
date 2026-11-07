@@ -10,16 +10,34 @@ class NodeSessionSync(private val api: RelayApi, private val scope: CoroutineSco
     private data class Observation(val event: RelayEvent? = null, val error: Throwable? = null)
     private data class Read(val result: Deferred<JSONObject>, val startedNanos: Long, var users: Int = 0)
     private val lock = Any()
-    private var epoch = 0L
-    private val reads = mutableMapOf<Pair<String, Long>, Read>()
-    fun invalidate() { synchronized(lock) { epoch++ } }
+    private val reads = mutableMapOf<String, Read>()
+    fun invalidate(threadId: String? = null) {
+        synchronized(lock) {
+            // Existing consumers retain ownership of their requests. Only stop
+            // new callers from joining a read predating this invalidation.
+            if (threadId == null) reads.clear() else reads.remove(threadId)
+        }
+    }
+    private fun invalidate(event: RelayEvent) {
+        val params = event.payload.optJSONObject("params")
+        val thread = params?.string("threadId").orEmpty().ifBlank { params?.string("conversationId").orEmpty() }
+        val threads = params?.optJSONArray("threadIds")
+        when {
+            event.type in setOf("reset", "connected", "revoked") -> invalidate()
+            thread.isNotBlank() -> invalidate(thread)
+            threads != null -> (0 until threads.length()).forEach { index ->
+                threads.optString(index).takeIf(String::isNotBlank)?.let { invalidate(it) }
+            }
+            else -> invalidate()
+        }
+    }
     private val observations = flow {
         var cursor: String? = null
         while (currentCoroutineContext().isActive) {
             try {
                 api.events("", cursor).collect { event ->
                     event.cursor?.let { cursor = it.takeIf(String::isNotBlank) }
-                    invalidate()
+                    invalidate(event)
                     emit(Observation(event = event))
                 }
                 throw java.io.IOException("实时连接已结束")
@@ -38,10 +56,10 @@ class NodeSessionSync(private val api: RelayApi, private val scope: CoroutineSco
     }
 
     suspend fun read(threadId: String, freshAfterNanos: Long? = null): JSONObject {
-        val key: Pair<String, Long>
+        val key: String
         val read: Read
         synchronized(lock) {
-            key = threadId to epoch
+            key = threadId
             // Control reads own their timeout window; an older notification request
             // must not acquire a new freshness deadline when the chat opens.
             read = reads[key]?.takeUnless { it.result.isCompleted || freshAfterNanos != null && it.startedNanos < freshAfterNanos } ?: Read(scope.async(start = CoroutineStart.LAZY) {

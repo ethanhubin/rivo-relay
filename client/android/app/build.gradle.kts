@@ -6,8 +6,8 @@ android {
         applicationId = "dev.rivo.relay"
         minSdk = 26
         targetSdk = 36
-        versionCode = 35
-        versionName = "0.2.23"
+        versionCode = 36
+        versionName = "0.2.24"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }

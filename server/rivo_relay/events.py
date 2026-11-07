@@ -49,7 +49,15 @@ class EventBus:
                 self._condition.wait(remaining)
             if self._events and sequence < self._events[0][0] - 1:
                 return self.cursor(self._sequence), [], True
-            events = [event for number, event in self._events if number > sequence]
+            # Most subscribers are caught up and need only the newest event.
+            # Walk that suffix instead of scanning the entire retained ring on
+            # every delta, while preserving chronological delivery.
+            events = []
+            for number, event in reversed(self._events):
+                if number <= sequence:
+                    break
+                events.append(event)
+            events.reverse()
             return self.cursor(self._sequence), events, False
 
     def close(self) -> None:

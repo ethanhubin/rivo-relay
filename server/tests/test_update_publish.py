@@ -24,3 +24,15 @@ class UpdatePublishTests(unittest.TestCase):
             with zipfile.ZipFile(apk, 'a') as archive: archive.writestr('changed', 'different')
             with self.assertRaises(ValueError): module.publish(apk, root, '0.2.13', 25, '')
             self.assertEqual(first, json.loads((root / 'updates/latest.json').read_text()))
+
+    def test_concurrent_publication_is_rejected_before_manifest_changes(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            updates = root / 'updates'
+            updates.mkdir()
+            with (updates / '.publish.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with self.assertRaises(BlockingIOError):
+                    module.publish(root / 'missing.apk', root, '0.2.24', 36, '')
+            self.assertFalse((updates / 'latest.json').exists())

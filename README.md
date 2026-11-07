@@ -6,7 +6,7 @@ Rivo Relay 是一个自托管的 **Codex 移动工作台**，让你在 Android �
 
 2026-11-07 开发代码已对照 QiGuang-Next 最新本地发布版 `1642fc8` 更新 Codex 会话、队列恢复、模型设置、原生交互与文件差异。具体迁移内容、协议适配和未迁入部分见 [Codex 最新对照](docs/qiguang-codex-sync.md)，测试与部署边界见 [验证记录](docs/validation.md)。
 
-当前 Android 测试版为 **0.2.23 / code 35**，默认通过主节点 Tailscale HTTP 更新。安装首次引导版后，在“设置 → 检查更新”下载并安装；需要连接 Tailscale。[更新清单](http://100.124.150.1:18767/v1/app-updates/latest)。GitHub Release 仅在明确要求时发布，普通发布不推送远端。详见 [发布流程](docs/node-updates.md)。
+当前 Android 测试版为 **0.2.24 / code 36**，默认通过主节点 Tailscale HTTP 更新。安装首次引导版后，在“设置 → 检查更新”下载并安装；需要连接 Tailscale。[更新清单](http://100.124.150.1:18767/v1/app-updates/latest)。GitHub Release 仅在明确要求时发布，普通发布不推送远端。详见 [发布流程](docs/node-updates.md)。
 
 ## 可以做什么
 

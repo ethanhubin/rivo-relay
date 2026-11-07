@@ -104,7 +104,7 @@ with patch('rivo_relay.codex.CodexService', NoNative):
         try:
             ready, _, _ = select.select([first.stdout], [], [], 5)
             self.assertTrue(ready, "First isolated serve did not become ready")
-            self.assertIn("Rivo Relay listening", first.stdout.readline())
+            self.assertEqual(__import__("json").loads(first.stdout.readline())["event"], "service_started")
             second = subprocess.run(command, env=env, capture_output=True, text=True, timeout=5)
             self.assertEqual(second.returncode, 1)
             self.assertIn("already owns this workspace", second.stderr)

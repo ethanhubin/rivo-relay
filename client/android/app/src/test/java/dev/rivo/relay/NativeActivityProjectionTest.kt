@@ -22,16 +22,22 @@ class NativeActivityProjectionTest {
         assertEquals("", state.messages[1].activity?.summary)
     }
 
-    @Test fun reasoningTextAppearsWhenSummaryArrivesAndSupportsTextParts() {
+    @Test fun reasoningRemainsHiddenWhenSummaryArrivesAndPreservesTextParts() {
         val item = JSONObject().put("id", "r").put("type", "reasoning").put("summary", JSONArray().put(" "))
         assertTrue(nativeTimelineRows(snapshot(turn("one", item)).messages).isEmpty())
         item.put("summary", JSONArray().put(JSONObject().put("type", "summary_text").put("text", "检查结果")))
         val messages = snapshot(turn("one", item)).messages
         assertEquals("检查结果", messages.single().text)
         assertEquals("检查结果", messages.single().activity?.summary)
-        assertEquals(1, nativeTimelineRows(messages).size)
+        assertTrue(nativeTimelineRows(messages).isEmpty())
         item.put("summary", JSONArray()).put("content", JSONArray().put(JSONObject().put("type", "text").put("text", "可用内容")))
         assertEquals("可用内容", nativeActivity(item)?.summary)
+        for (activeTurn in listOf(null, "one")) {
+            val state = snapshot(turn("one", command("a", "first"), item, command("b", "second")))
+            val rows = nativeTimelineRows(state.messages, activeTurn)
+            assertEquals(3, state.messages.size)
+            assertEquals(listOf("a", "b"), (rows.single() as NativeTimelineRow.Activities).messages.map { it.id })
+        }
     }
 
     @Test fun commandCountsIncludeFailuresAndKeepRunningSeparate() {

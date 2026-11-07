@@ -61,6 +61,24 @@ class EventTests(unittest.TestCase):
             bus.close()
             self.assertEqual(result.result(timeout=1)[1:], ([], False))
 
+    def test_caught_up_reader_scans_only_new_suffix(self):
+        from collections import deque
+        class CountedRing(deque):
+            visited = 0
+            def __reversed__(self):
+                for item in super().__reversed__():
+                    self.visited += 1
+                    yield item
+        bus = EventBus(capacity=512)
+        bus._events = CountedRing(maxlen=512)
+        for number in range(512):
+            bus.publish({"sequence": number})
+        cursor, events, reset = bus.read(bus.cursor(511), timeout=0)
+        self.assertFalse(reset)
+        self.assertEqual(events, [{"sequence": 511}])
+        self.assertEqual(bus._events.visited, 2)
+        self.assertEqual(cursor, bus.cursor(512))
+
     def test_zero_capacity_is_rejected_instead_of_silently_dropping_notifications(self):
         with self.assertRaises(ValueError):
             EventBus(capacity=0)

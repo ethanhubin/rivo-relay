@@ -10,7 +10,7 @@
 
 ## 发布
 
-递增 versionName/versionCode，构建并验证签名，运行相关测试与 lint。把 APK 复制到 `workspace/artifacts/release-<version>/rivo-relay-<version>-debug.apk`，准备说明后运行：
+递增 versionName/versionCode，构建并验证签名，运行相关测试；仅在构建配置、资源或兼容性问题需要时运行对应 lint。把 APK 复制到 `workspace/artifacts/release-<version>/rivo-relay-<version>-debug.apk`，准备说明后运行：
 
 ```sh
 python3 scripts/publish-update.py \
@@ -29,4 +29,21 @@ python3 scripts/publish-update.py \
 
 ## 主节点服务代码隔离
 
-0.2.23 配套服务使用提交 `80eea84` 的快照 `workspace/deployments/80eea84/server`；LaunchAgent 的 `PYTHONPATH` 指向该目录，避免共享工作区中的并行开发改动混入线上服务。后续涉及服务端的发布，需要生成目标提交的快照并更新该路径后重启 Relay。若发布会话本身由 Relay 承载，由独立进程在该会话最终回复落盘后完成切换与 HTTP 验证，避免等待自身结束造成循环等待。
+主节点服务使用发布提交的快照 `workspace/deployments/<commit>/server`（具体提交记录在发布目录的部署验收文件中）；LaunchAgent 的 `PYTHONPATH` 指向该目录，避免共享工作区中的并行开发改动混入线上服务。后续涉及服务端的发布，需要生成目标提交的快照并更新该路径后重启 Relay。若发布会话本身由 Relay 承载，由独立进程在该会话最终回复落盘后完成切换与 HTTP 验证，避免等待自身结束造成循环等待。
+
+### 服务切换与失败恢复
+
+服务端配置变更必须使用 `scripts/restart-service.py --candidate <新配置.plist>`，
+不得直接串联 `bootout` / `bootstrap`。候选配置独立保存；工具预检快照和可执行文件，
+加排他锁并保存 `.rollback.plist`，对加载失败进行有界重试，检查本地健康接口；
+启动或健康检查失败自动恢复原配置并重新加载，且以失败状态退出。
+重启操作只针对 `local.rivo-relay`，不操作 Codex 原生运行时。
+将工具标准输出及错误重定向到本次发布目录的 `deployment.log`；日志为带 UTC 时间的阶段事件。
+服务端切换完成后仍须验证 Tailscale HTTP 清单及 APK 大小、SHA-256，全部通过才标记发布成功。
+HTTP 响应日志记录 UTC 时间、方法和状态，不记录地址、查询参数、凭据或请求正文。
+
+2026-11-07 故障：0.2.23 部署在 19:51:34 卸载服务后 bootstrap 返回错误 5，
+旧脚本没有重试与回滚，导致服务保持卸载状态。同配置后续手动 bootstrap 成功；
+系统日志确认根因是异步卸载竞态：19:51:33.518 发起 bootout，33.529 即 bootstrap，
+launchd 在 33.530 拒绝并记录 `37: Operation already in progress`；旧服务到 34.352 才退出并移除。
+修复要求 bootout 后轮询确认服务已从 launchd 移除，才允许 bootstrap；回滚同样遵守此屏障。

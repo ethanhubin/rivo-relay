@@ -6,6 +6,8 @@ import secrets
 import json
 import os
 import time
+import sys
+import datetime
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, unquote, urlsplit, quote
 
@@ -101,6 +103,13 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         # URLs/headers/body may contain credentials. No default request logging.
         pass
+
+    def log_request(self, code="-", size="-"):
+        # Deliberately omit URL, query, headers, body and remote identity.
+        print(json.dumps({"time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                          "event": "http_response", "method": self.command if self.command in
+                          {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"} else "OTHER",
+                          "status": code}), file=sys.stderr, flush=True)
 
     @property
     def app(self):

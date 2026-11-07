@@ -35,6 +35,67 @@ class SessionControllerTest {
         MockResponse().setHeader("Content-Type", "application/json").setBody(JSONObject("""{"thread":{"id":"t","name":"$name","turns":[{"id":"turn-$item","items":[{"id":"$item","type":"agentMessage","text":"$name"}]}]},"requests":[],"settings":{},"status":"idle"}""")
             .put("nativeRevision", revision).put("nextCursor", cursor ?: JSONObject.NULL).put("readOnly", readOnly).toString())
 
+    @Test fun rapidThreadSwitchRestoresRecentViewImmediatelyButNeverItsPermission() = runBlocking {
+        val server = MockWebServer()
+        val block = AtomicBoolean(false)
+        val gate = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                val id = request.requestUrl!!.pathSegments.last()
+                if (block.get()) gate.await(5, TimeUnit.SECONDS)
+                return snapshot(id, id)
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = SessionController(api(server), scope) { fail(it.message) }
+        try {
+            for (id in listOf("a", "b")) {
+                controller.open(id)
+                withTimeout(5000) { controller.state.first { it.snapshot?.name == id && !it.stale } }
+            }
+            block.set(true)
+            repeat(10) {
+                val id = if (it % 2 == 0) "a" else "b"
+                controller.open(id)
+                assertEquals(id, controller.state.value.snapshot?.name)
+                assertTrue(controller.state.value.stale)
+                assertFalse(controller.state.value.control().canOperate)
+            }
+            gate.countDown()
+            withTimeout(5000) { controller.state.first { it.id == "b" && !it.stale } }
+            controller.close(); controller.open("a", online = false)
+            assertEquals("a", controller.state.value.snapshot?.name)
+            assertFalse(controller.state.value.control().canOperate)
+        } finally { gate.countDown(); controller.close(); scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun recentThreadViewsEvictOldestInsteadOfGrowingWithNavigation() = runBlocking {
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                val id = request.requestUrl!!.pathSegments.last()
+                return snapshot(id, id)
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = SessionController(api(server), scope) { fail(it.message) }
+        try {
+            for (id in listOf("a", "b", "c", "d")) {
+                controller.open(id)
+                withTimeout(5000) { controller.state.first { it.snapshot?.name == id && !it.stale } }
+            }
+            controller.open("a", online = false)
+            assertNull(controller.state.value.snapshot)
+            controller.open("c", online = false)
+            assertEquals("c", controller.state.value.snapshot?.name)
+            assertFalse(controller.state.value.control().canOperate)
+        } finally { controller.close(); scope.cancel(); server.shutdown() }
+    }
+
     @Test fun slowSnapshotDoesNotQueueAnotherPollWhileTransferIsRunning() = runBlocking {
         val server = MockWebServer()
         val reads = AtomicInteger()

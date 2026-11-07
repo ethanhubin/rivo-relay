@@ -25,6 +25,9 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
     private val failure: (Throwable) -> Unit) {
     private val mutable = MutableStateFlow(SessionState())
     val state = mutable.asStateFlow()
+    // Node-owned recent views avoid disk IO and reparsing on A/B/A switches.
+    // These are presentation snapshots only; every open still verifies control.
+    private val recentViews = linkedMapOf<String, SessionState>()
     private val pendingByThread = linkedMapOf<String, List<PendingNativeMessage>>()
     private val changedPendingClients = mutableSetOf<String>()
     private val resolvedPending = mutableMapOf<String, org.json.JSONObject>()
@@ -64,7 +67,10 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         pause()
         val targetGeneration = generation
         val previous = mutable.value
-        mutable.value = if (previous.id == id) previous.copy(loading = true, stale = true) else SessionState(id = id, loading = true, pendingMessages = pendingByThread[id].orEmpty())
+        val retained = if (previous.id == id) previous else recentViews.remove(id)
+        mutable.value = retained?.copy(loading = true, stale = true, loadingEarlier = false,
+            pendingMessages = pendingByThread[id].orEmpty(), readError = null, historyError = null)
+            ?: SessionState(id = id, loading = true, pendingMessages = pendingByThread[id].orEmpty())
         onVisible(id)
         if (!online) {
             // Cancel the old transport immediately; retain read-only content while no route exists.
@@ -326,7 +332,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
     /** Fence reads started before a disconnect or mutation; they cannot restore permission. */
     fun invalidateControl(notice: String = "操作结果已变化，正在重新确认会话权限") {
         controlEpoch++
-        sync?.invalidate()
+        sync?.invalidate(mutable.value.id)
         // Its permission epoch is already obsolete. Waiting for this body to
         // finish can otherwise delay a fresh ownership check for two minutes.
         activeRead?.cancel()
@@ -470,6 +476,16 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         }
     }
     fun pause() {
+        val current = mutable.value
+        val snapshot = current.snapshot
+        if (current.id != null && snapshot != null) {
+            recentViews.remove(current.id)
+            // Do not retain unusually deep histories as additional resident views.
+            if (snapshot.messages.size <= 2000) recentViews[current.id] = current.copy(
+                snapshot = snapshot.copy(requests = emptyList()), pendingMessages = emptyList(),
+                loading = false, loadingEarlier = false, stale = true)
+            while (recentViews.size > 3) recentViews.remove(recentViews.keys.first())
+        }
         onVisible(null)
         generation++; activeJob?.cancel(); activeJob = null; updates?.close(); updates = null
         invalidateHistory()

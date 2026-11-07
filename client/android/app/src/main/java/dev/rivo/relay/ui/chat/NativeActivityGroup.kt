@@ -30,7 +30,7 @@ internal fun NativeActivityGroup(row: NativeTimelineRow.Activities, isCurrent: B
     val label = remember(row.messages) { nativeActivityGroupLabel(row.messages) }
     val imagePath = row.messages.singleOrNull()?.activity?.takeIf { it.kind == "image" }?.filePaths?.firstOrNull()
     Column(Modifier.fillMaxWidth().padding(vertical = 3.dp).testTag("native_activity_group"), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Row(Modifier.fillMaxWidth().heightIn(min = 32.dp).then(if (canExpand) Modifier.clickable(role = Role.Button) { if (imagePath != null) onFile(imagePath) else expanded = !expanded }.testTag("native_activity_toggle") else Modifier),
+        Row(Modifier.fillMaxWidth().heightIn(min = if (canExpand) 32.dp else 24.dp).then(if (canExpand) Modifier.clickable(role = Role.Button) { if (imagePath != null) onFile(imagePath) else expanded = !expanded }.testTag("native_activity_toggle") else Modifier),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (canExpand) Text(if (expanded) "▾" else "›", color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (isCurrent) ShimmeringStageText(label,
