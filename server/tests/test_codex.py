@@ -77,6 +77,8 @@ class NativeSemanticsTests(unittest.TestCase):
         service = CodexService(connection=native)
         with patch.object(native, "request", side_effect=CodexError("Unknown method", native_code=-32601)):
             self.assertEqual({"goal": None, "goalSupported": False}, service.read_goal("thread"))
+        with patch.object(native, "request", side_effect=CodexError("Unknown variant", code="native_method_unsupported", native_code=-32600)):
+            self.assertEqual({"goal": None, "goalSupported": False}, service.read_goal("thread"))
         with patch.object(native, "request", side_effect=CodexError("Connection lost")):
             with self.assertRaises(CodexError):
                 service.read_goal("thread")

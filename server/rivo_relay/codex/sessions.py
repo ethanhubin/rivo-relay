@@ -1005,7 +1005,7 @@ class CodexService:
             result = self.connection.request("thread/goal/get", {"threadId": thread_id})
             return {"goal": result.get("goal"), "goalSupported": True}
         except CodexError as error:
-            if error.native_code == -32601:
+            if error.code == "native_method_unsupported" or error.native_code == -32601:
                 return {"goal": None, "goalSupported": False}
             raise
 
