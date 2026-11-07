@@ -148,6 +148,13 @@ def upload_attachment(connection, cwd, name, encoded):
 
 
 def upload_attachment_stream(connection, cwd, name, stream, size):
+    from contextlib import nullcontext
+    lease = getattr(connection, 'auxiliary_connection', None)
+    with lease() if lease else nullcontext(connection) as helper:
+        return _upload_attachment_stream(helper, cwd, name, stream, size)
+
+
+def _upload_attachment_stream(connection, cwd, name, stream, size):
     import uuid
     cwd = native_path(cwd)
     if (not isinstance(name, str) or not name.strip() or len(name) > 200

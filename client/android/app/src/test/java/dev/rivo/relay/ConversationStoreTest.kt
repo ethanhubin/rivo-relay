@@ -19,6 +19,7 @@ class ConversationStoreTest {
         val reference = JSONObject().put("type", "mention").put("name", "report.pdf").put("path", "/workspace/report.pdf")
         store.saveDraft("one", ConversationDraft("unfinished", listOf(StoredDraftImage("image", byteArrayOf(1, 2, 3))), listOf(reference), "model", "high", "plan"))
         store.putMetadata("selectedProjectId", "project")
+        store.flushMetadata()
         val restored = ConversationStore(path)
         val draft = restored.loadDraft("one")
         assertEquals("unfinished", draft.text)
@@ -43,12 +44,14 @@ class ConversationStoreTest {
         store.saveSnapshot("wrong", JSONObject().put("thread", JSONObject().put("id", "elsewhere")))
         assertNull(store.loadSnapshot("wrong"))
     }
-    @Test fun corruptRecoveryDataIsIgnored() = runBlocking {
+    @Test fun corruptDraftIsIgnoredButRecoveryMetadataFailsClosed() = runBlocking {
         val store = ConversationStore(directory.root)
         store.saveDraft("thread", ConversationDraft("text"))
         directory.root.listFiles()!!.first { it.name.startsWith("draft-") }.writeText("{broken")
         assertTrue(store.loadDraft("thread").empty)
         File(directory.root, "metadata.json").writeText("not json")
-        assertNull(ConversationStore(directory.root).getMetadata("read:thread"))
+        try { ConversationStore(directory.root); fail("Corrupt recovery receipts must not be treated as an empty store") }
+        catch (error: IllegalArgumentException) { assertTrue(error.message!!.contains("手机恢复记录")) }
+        assertEquals("not json", File(directory.root, "metadata.json").readText())
     }
 }

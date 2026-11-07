@@ -32,6 +32,7 @@ import dev.rivo.relay.data.*
 import org.json.JSONObject
 import org.json.JSONArray
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.ensureActive
 
 private class ChatDraftPersistence(var draft: ConversationDraft, var loaded: Boolean,
     var persist: (String, ConversationDraft) -> Unit)
@@ -66,19 +67,34 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     DisposableEffect(mediaClient) { onDispose { mediaClient?.close() } }
     val snapshot = state.snapshot
     var mediaAssets by remember(mediaClient) { mutableStateOf(emptyList<JSONObject>()) }
-    LaunchedEffect(mediaClient, snapshot?.nativeRevision, snapshot?.messages?.filter { it.type == "imageGeneration" }?.map { it.id to it.raw.string("status") }) {
-        if (mediaClient != null) {
-            val generated = snapshot?.messages.orEmpty().filter { it.type == "imageGeneration" && generatedImageSource(it, emptyList()) != null }
-            repeat(8) { attempt ->
+    val generated = remember(snapshot?.messages) { generatedMediaRequests(snapshot?.messages.orEmpty()) }
+    val mediaIndex = remember(mediaAssets) { nativeMediaIndex(mediaAssets) }
+    val mediaSources = remember(mediaAssets) { nativeMediaSourceIndex(mediaAssets) }
+    LaunchedEffect(mediaClient, generated, state.stale) {
+        if (mediaClient != null && generated.isNotEmpty() && !state.stale) {
+            var attempt = 0
+            while (true) {
                 try {
                     mediaAssets = mediaClient.api.call("/v1/media/library?threadId=${dev.rivo.relay.data.encoded(mediaClient.threadId)}").objects("items")
-                    if (generated.all { message -> mediaAssets.any { it.string("itemId") == message.id && it.string("turnId") == message.turnId && it.string("status") != "pending" } }) return@LaunchedEffect
+                    val indexed = nativeMediaIndex(mediaAssets)
+                    if (generated.all { request -> indexed[request.identity]?.string("status")?.let { it != "pending" } == true }) return@LaunchedEffect
                 } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; if (attempt >= 2) return@LaunchedEffect }
-                kotlinx.coroutines.delay(1000L * (attempt + 1).coerceAtMost(4))
+                // Imports may outlive a turn. Keep polling at a bounded rate until ready/failed or this screen leaves.
+                kotlinx.coroutines.delay(1000L * (++attempt).coerceAtMost(30))
             }
         }
     }
     val cwd = snapshot?.settings?.string("cwd")?.takeIf(String::isNotBlank) ?: pendingCwd
+    val galleryCache = remember(mediaClient, state.id) { NativeGalleryCache() }
+    val gallery = key(galleryCache) {
+        val sources by produceState(emptyList<String>(), snapshot?.messages, cwd, mediaIndex) {
+            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                val context = kotlinx.coroutines.currentCoroutineContext()
+                galleryCache.sources(snapshot?.messages.orEmpty(), cwd, mediaIndex) { context.ensureActive() }
+            }
+        }
+        sources
+    }
     var removingQueue by remember(state.id) { mutableStateOf<QueueTask?>(null) }
     var draft by rememberSaveable(state.id) { mutableStateOf("") }
     var stopConfirm by remember(state.id) { mutableStateOf(false) }
@@ -218,8 +234,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     }
     val list = key(state.id) { rememberLazyListState() }
     var followLatest by remember(state.id) { mutableStateOf(true) }
-    val timeline = remember(snapshot?.messages, state.pendingMessages, snapshot?.activeTurnId, state.stale) {
-        nativeTimelineRows(projectedSessionMessages(snapshot, state.pendingMessages), snapshot?.activeTurnId?.takeUnless { state.stale })
+    val timeline = remember(snapshot?.messages, snapshot?.turnSettings, state.pendingMessages, snapshot?.activeTurnId, state.stale) {
+        nativeTimelineRows(projectedSessionMessages(snapshot, state.pendingMessages), snapshot?.activeTurnId?.takeUnless { state.stale }, snapshot?.turnSettings.orEmpty())
     }
     val executionActive = !state.stale && snapshot?.isOngoing == true && snapshot.requests.isEmpty()
     val currentActivity = (timeline.lastOrNull() as? NativeTimelineRow.Activities)
@@ -228,7 +244,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         val changes = nativeModelChanges(snapshot?.turnSettings.orEmpty())
         val seen = mutableSetOf<String>()
         timeline.mapNotNull { row ->
-            val turnId = when (row) { is NativeTimelineRow.Message -> row.message.turnId; is NativeTimelineRow.Activities -> row.messages.first().turnId }
+            val turnId = when (row) { is NativeTimelineRow.Message -> row.message.turnId; is NativeTimelineRow.Activities -> row.messages.first().turnId; is NativeTimelineRow.Notice -> row.turn.turnId }
             if (seen.add(turnId)) changes[turnId]?.let { row.key to it } else null
         }.toMap()
     }
@@ -293,7 +309,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         }
         true
     }
-    CompositionLocalProvider(LocalMediaAttachment provides mediaAttach, LocalMediaAssets provides mediaAssets, LocalCodexGallery provides gallerySources(snapshot?.messages.orEmpty(), cwd, mediaAssets),
+    CompositionLocalProvider(LocalMediaAttachment provides mediaAttach, LocalMediaAssets provides mediaAssets, LocalMediaSourceIndex provides mediaSources, LocalCodexGallery provides gallery,
         LocalMediaEdited provides { uri -> addImages(listOf(uri)) }, LocalCodexMediaClient provides mediaClient,
         LocalImageFavorite provides mediaFavorite, LocalNativeFileCache provides mediaCache,
         LocalCodexLinkForwarder provides if (onForwardLink == null || busy || blocked) null else { link -> forwardingLink = link }) {
@@ -303,7 +319,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             Column { Text("新会话", style = MaterialTheme.typography.titleLarge); Text(pendingTitle, style = MaterialTheme.typography.bodySmall) }
         } else NativeChatHeader(state, usage, onBack, ::openSettings, onRefresh, { developerOpen = true }, { stopConfirm = true },
             !busy && !blocked && !state.stale && canOperate, pinned, canManage, onPin, onArchive)
-        if (pendingTitle == null) NativeWriterStatus(state, nodeName, writerBusy || busy || blocked, onWriterAction, takeoverBlockedReason)
+        if (pendingTitle == null) NativeWriterStatus(state, nodeName, writerBusy || busy || blocked, onWriterAction, takeoverBlockedReason, onRefresh)
         if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         Box(Modifier.weight(1f).fillMaxWidth()) {
         LazyColumn(state = list, modifier = Modifier.fillMaxSize().nestedScroll(scrollConnection).testTag("chat_history"), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
@@ -311,7 +327,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 Text("今天想从哪里开始？", Modifier.padding(vertical = 24.dp), style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (state.historyCursor != null) item { TextButton(onClick = { followLatest = false; onEarlier() }, enabled = !state.loadingEarlier && snapshot?.nativeReady == true, modifier = Modifier.fillMaxWidth().testTag("load_earlier")) { Text(if (snapshot?.nativeReady != true) "历史同步中…" else if (state.loadingEarlier) "正在加载…" else "加载更早的消息") } }
-            if (!state.loading && snapshot != null && snapshot.messages.isEmpty()) item {
+            if (!state.loading && snapshot != null && timeline.isEmpty()) item {
                 Text("继续这个项目中的工作", Modifier.padding(vertical = 24.dp), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             items(timeline, key = { it.key }) { row ->
@@ -319,6 +335,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     Modifier.fillMaxWidth().padding(bottom = 10.dp).testTag("model_change_notice"),
                     style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 if (row is NativeTimelineRow.Activities) NativeActivityGroup(row, isCurrent = row.key == currentActivity?.key) { path -> nativeFilePath(path, cwd)?.let(::openFile) }
+                else if (row is NativeTimelineRow.Notice) NativeTurnNotice(row.turn)
                 else if (row is NativeTimelineRow.Message) {
                 val message = row.message
                 val user = message.type in setOf("userMessage", "user_message")
@@ -360,7 +377,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                         }
                     }
                     else if (message.type == "imageGeneration" && (message.raw.string("savedPath").isNotBlank() || message.raw.string("result").isNotBlank())) {
-                        generatedImageSource(message, mediaAssets)?.let { NativeImage(it, readFile, downloadFile = downloadFile, identity = "${message.turnId}:${message.id}") }
+                        generatedImageSource(message, mediaIndex)?.let { NativeImage(it, readFile, downloadFile = downloadFile, identity = "${message.turnId}:${message.id}") }
                     }
                     else Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = MaterialTheme.shapes.small) {
                         Column(Modifier.fillMaxWidth().padding(12.dp)) {
@@ -517,21 +534,22 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
 }
 
 internal fun nativePermissionSummary(settings: JSONObject): String {
-    val sandbox = settings.optJSONObject("sandbox") ?: settings.optJSONObject("sandboxPolicy")
+    val sandbox = nativeSandbox(settings)
     val access = when (sandbox?.string("type")) {
         "dangerFullAccess", "danger-full-access" -> "完整文件访问"
         "workspaceWrite", "workspace-write" -> "工作区读写"
         "readOnly", "read-only" -> "只读"
         "externalSandbox", "external-sandbox" -> "外部沙盒"
-        else -> "沿用 Desktop 权限"
+        else -> if (sandbox?.string("type").isNullOrBlank()) "文件访问权限：尚未读取" else "文件访问权限：原生自定义配置"
     }
     val approval = when (val policy = settings.opt("approvalPolicy")) {
         "never" -> "原生审批：不要求"
         "on-request" -> "原生审批：按需"
         "on-failure" -> "原生审批：失败时"
         "untrusted" -> "原生审批：不受信任操作"
-        is JSONObject -> "原生审批：Desktop 的细粒度规则"
-        else -> "原生审批：沿用 Desktop"
+        is JSONObject -> if (policy.length() > 0) "原生审批：细粒度规则" else "原生审批：尚未读取"
+        is String -> if (policy.isNotBlank()) "原生审批：自定义规则" else "原生审批：尚未读取"
+        else -> "原生审批：尚未读取"
     }
     return "$access\n$approval"
 }

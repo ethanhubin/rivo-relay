@@ -56,6 +56,9 @@ class OwnedRoutingTests(unittest.TestCase):
         service.start()
         service._resume('a')
         service._created['a'] = {'id': 'a'}
+        runtime_state = service._thread_runtime('a')
+        self.assertFalse(runtime_state['releaseAvailable'])
+        self.assertIn('持久化', runtime_state['releaseUnavailableReason'])
         with patch.object(runtime, 'verify_release_history', side_effect=CodexError('thread not loaded')):
             with self.assertRaises(CodexError) as caught:
                 service.preview_handoff('a', 'release', 'phone')
@@ -67,6 +70,14 @@ class OwnedRoutingTests(unittest.TestCase):
         self.assertFalse(self.created[0].closed)
         self.assertIn('a', service._created)
         self.assertFalse(service.observations_for('a').get(('ownership', ''), {}).get('released'))
+
+    def test_materialized_writer_can_release_without_empty_session_notice(self):
+        runtime = RuntimeConnection(native=self.pool, desktop=Backend(), mode='app_server')
+        service = CodexService(connection=runtime)
+        service.start()
+        service._resume('a')
+        self.assertTrue(service._thread_runtime('a')['releaseAvailable'])
+        self.assertIsNone(service._thread_runtime('a')['releaseUnavailableReason'])
 
     def test_definite_approval_error_cannot_restore_request_after_retirement(self):
         events = []
@@ -206,6 +217,22 @@ class OwnedRoutingTests(unittest.TestCase):
     def test_unverified_host_does_not_authorize_local_writer(self):
         with patch('rivo_relay.codex.host_probe.local_native_host_info', side_effect=CodexError('forwarded host')):
             self.assertEqual('unknown', self.pool.writer_owner('thread'))
+        self.assertEqual([], self.created)
+
+    def test_unverified_ownership_is_not_reported_as_external_holder(self):
+        runtime = RuntimeConnection(native=self.pool, desktop=Backend(), mode='app_server')
+        service = CodexService(connection=runtime)
+        with patch('rivo_relay.codex.host_probe.local_native_host_info', side_effect=CodexError('unverified host')), \
+             patch.object(service, 'history', return_value={'turns': [], 'nextCursor': None,
+                 'backwardsCursor': None, 'nativeRevision': 'fixture', 'nativeSync': {'state': 'ready'}}):
+            snapshot = service.get_session('thread')
+        self.assertEqual('unknown', snapshot['writerOwner'])
+        self.assertTrue(snapshot['readOnly'])
+        self.assertEqual('ownership_unverified', snapshot['blockReason'])
+        self.assertEqual('ownership_unverified', snapshot['control']['state'])
+        self.assertFalse(snapshot['control']['canOperate'])
+        self.assertIsNone(snapshot['control']['action'])
+        self.assertIn('核验', snapshot['control']['unavailableReason'])
         self.assertEqual([], self.created)
     def test_same_request_id_from_two_writers_routes_answer_only_to_origin(self):
         events = []

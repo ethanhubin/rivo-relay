@@ -11,13 +11,25 @@ import androidx.compose.material3.*
 import androidx.compose.ui.window.Dialog
 import dev.rivo.relay.data.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
 internal val LocalCodexMediaClient = staticCompositionLocalOf<CodexMediaClient?> { null }
 internal val LocalMediaAssets = staticCompositionLocalOf<List<org.json.JSONObject>> { emptyList() }
+internal val LocalMediaSourceIndex = staticCompositionLocalOf<Map<String, org.json.JSONObject>?> { null }
 internal val LocalCodexGallery = staticCompositionLocalOf<List<String>> { emptyList() }
 internal val LocalMediaEdited = staticCompositionLocalOf<((Uri) -> Unit)?> { null }
+
+@Composable
+internal fun mediaAssetsBySource(): Map<String, org.json.JSONObject> {
+    val provided = LocalMediaSourceIndex.current
+    val assets = LocalMediaAssets.current
+    return provided ?: remember(assets) { nativeMediaSourceIndex(assets) }
+}
 
 internal fun nativeImageSource(part: org.json.JSONObject, cwd: String): String? {
     val type = part.string("type").replace("_", "").lowercase()
@@ -25,8 +37,9 @@ internal fun nativeImageSource(part: org.json.JSONObject, cwd: String): String? 
     val value = listOf("path", "url", "imageUrl", "image_url").firstNotNullOfOrNull { part.string(it).takeIf(String::isNotBlank) } ?: return null
     return if (value.startsWith("data:image/") || isHttpWebLink(value)) value else nativeFilePath(value, cwd) ?: value
 }
-internal fun generatedImageSource(message: NativeMessage, assets: List<org.json.JSONObject>): String? {
-    assets.firstOrNull { it.string("itemId") == message.id && it.string("turnId") == message.turnId && it.string("status") == "ready" }
+internal fun generatedImageSource(message: NativeMessage, assets: List<org.json.JSONObject>): String? = generatedImageSource(message, nativeMediaIndex(assets))
+internal fun generatedImageSource(message: NativeMessage, assets: Map<NativeMediaIdentity, org.json.JSONObject>): String? {
+    assets[NativeMediaIdentity(message.turnId, message.id)]?.takeIf { it.string("status") == "ready" }
         ?.string("originalUrl")?.takeIf(String::isNotBlank)?.let { return it }
     message.raw.string("savedPath").takeIf(String::isNotBlank)?.let { return it }
     return message.raw.string("result").takeIf(String::isNotBlank)?.let { result ->
@@ -34,16 +47,8 @@ internal fun generatedImageSource(message: NativeMessage, assets: List<org.json.
     }
 }
 
-internal fun gallerySources(messages: List<NativeMessage>, cwd: String, assets: List<org.json.JSONObject> = emptyList()): List<String> = buildList {
-    for (message in messages) {
-        message.content.forEach { part -> nativeImageSource(part, cwd)?.let(::add) }
-        if (message.type == "imageGeneration") generatedImageSource(message, assets)?.let(::add)
-        Regex("!\\[[^]]*]\\(([^)]+)\\)").findAll(message.text).forEach { match ->
-            val source = match.groupValues[1].trim().removeSurrounding("<", ">")
-            (if (isHttpWebLink(source)) source else nativeFilePath(source, cwd))?.let(::add)
-        }
-    }
-}.distinct()
+internal fun gallerySources(messages: List<NativeMessage>, cwd: String, assets: List<org.json.JSONObject> = emptyList()): List<String> =
+    NativeGalleryCache().sources(messages, cwd, nativeMediaIndex(assets))
 
 @Composable
 internal fun CodexImageGallery(source: String, origin: Rect = Rect.Zero, onSave: (String) -> Unit,
@@ -66,15 +71,22 @@ internal fun CodexImageGallery(source: String, origin: Rect = Rect.Zero, onSave:
     val items = sources.map { path -> val info = metadata[path]
         ImageViewerItem(path, path, mediaId = info?.string("id"), forwardSource = if (path.startsWith("/v1/media/") || path.startsWith("data:")) info?.string("source")?.takeIf { it.isNotBlank() } else path, hasGenerationInfo = info?.optBoolean("hasGenerationInfo") == true) }
     val viewer = remember(sources, source, origin) { ImageViewerSource(items, sources.indexOf(source), origin) }
-    FullScreenImage(viewer.copy(items = items), onDismiss, onSave = onSave,
+    key(client) { FullScreenImage(viewer.copy(items = items), onDismiss, onSave = onSave,
         onGenerationInfo = { id -> requireNotNull(client).generationInfo(id) },
-        onCopyPrompt = { clipboard.setText(AnnotatedString(it)) }, onShare = onShare, onEditComplete = edited)
+        onCopyPrompt = { clipboard.setText(AnnotatedString(it)) }, onShare = onShare, onEditComplete = edited) }
 }
 
 @Composable
 internal fun MediaAttachmentEditor(source: Uri, onDismiss: () -> Unit, onComplete: (Uri) -> Unit) {
-    val context = LocalContext.current
     val client = LocalCodexMediaClient.current
+    key(client, source) { MediaAttachmentEditorContent(source, client, onDismiss, onComplete) }
+}
+
+@Composable
+private fun MediaAttachmentEditorContent(source: Uri, client: CodexMediaClient?, onDismiss: () -> Unit, onComplete: (Uri) -> Unit) {
+    val context = LocalContext.current
+    val exportScope = rememberCoroutineScope()
+    var exporting by remember { mutableStateOf(false) }
     var temporarySource by remember(source) { mutableStateOf<File?>(null) }
     DisposableEffect(source) { onDispose { temporarySource?.delete() } }
     var draft by remember(source) { mutableStateOf<DraftImage?>(null) }
@@ -98,12 +110,33 @@ internal fun MediaAttachmentEditor(source: Uri, onDismiss: () -> Unit, onComplet
                 else -> Uri.fromFile(requireNotNull(client).cached(context, source.toString()))
             }
             draft = prepareImage(context, uri)
-        } catch (e: Exception) { if (e is CancellationException) throw e; error = e.message ?: "无法读取图片" }
+        } catch (e: Exception) {
+            if (e is CancellationException) { temporarySource?.delete(); throw e }
+            error = e.message ?: "无法读取图片"
+        }
     }
     draft?.let { image -> AttachmentImageEditor(image, onDismiss, { result ->
-        val file = File(File(context.cacheDir, "previews").apply { mkdirs() }, "edited-${UUID.randomUUID()}.jpg")
-        file.writeBytes(result.bytes); onComplete(Uri.fromFile(file))
+        if (!exporting) {
+            exporting = true
+            exportScope.launch {
+                val file = File(File(context.cacheDir, "previews"), "edited-${UUID.randomUUID()}.jpg")
+                var delivered = false
+                try {
+                    withContext(Dispatchers.IO) { file.parentFile?.mkdirs(); file.writeBytes(result.bytes) }
+                    onComplete(Uri.fromFile(file))
+                    delivered = true
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    error = e.message ?: "无法保存编辑后的图片"
+                } finally {
+                    if (!delivered) withContext(NonCancellable + Dispatchers.IO) { file.delete() }
+                    exporting = false
+                }
+            }
+        }
     }, alwaysExport = true) } ?: Dialog(onDismissRequest = onDismiss) { Surface {
         if (error != null) TextButton(onDismiss) { Text(error!!) } else CircularProgressIndicator()
     } }
+    if (draft != null && error != null) AlertDialog(onDismissRequest = { error = null }, title = { Text("图片保存失败") },
+        text = { Text(error.orEmpty()) }, confirmButton = { TextButton(onClick = { error = null }) { Text("返回编辑") } })
 }

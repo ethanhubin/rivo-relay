@@ -41,10 +41,10 @@ fun MessageContent(
                 val blocks = remember(part.value) { parseChatMarkdownBlocks(part.value) }
                 blocks.forEachIndexed { blockIndex, block -> key(blockIndex) { when (block) {
                     is ChatMarkdownBlock.Text -> {
-                        MessageText(block.markdown, onCopyText, onQuoteText, openRegularLink, openImage)
+                        val parsed = rememberParsedChatMarkdown(block.markdown)
+                        MessageText(block.markdown, onCopyText, onQuoteText, openRegularLink, openImage, parsed = parsed)
                         if (inlineImage != null) {
-                            val sources = remember(block.markdown) { markdownImageSources(block.markdown) }
-                            sources.forEach { source -> key(source) { inlineImage(source) } }
+                            parsed.imageSources.forEach { source -> key(source) { inlineImage(source) } }
                         }
                     }
                     is ChatMarkdownBlock.Table -> ChatMarkdownTable(block, "message_$partIndex", blockIndex, onCopyText, onQuoteText, openRegularLink, openImage)
@@ -56,11 +56,7 @@ fun MessageContent(
 }
 
 /** The Markdown parser excludes code spans/fences and recognizes balanced link destinations. */
-internal fun markdownImageSources(markdown: String): List<String> {
-    val rendered = renderChatMarkdown(markdown, androidx.compose.ui.graphics.Color.Unspecified,
-        androidx.compose.ui.graphics.Color.Unspecified, androidx.compose.ui.graphics.Color.Unspecified)
-    return rendered.getStringAnnotations(MARKDOWN_IMAGE_LINK_TAG, 0, rendered.length).map { it.item }.distinct()
-}
+internal fun markdownImageSources(markdown: String): List<String> = parsedChatMarkdown(markdown).imageSources
 
 @Composable
 private fun ReviewFindingCard(comment: ReviewComment, cwd: String, onFile: (String) -> Unit, onQuoteText: ((String) -> Unit)?, onCopyText: (String) -> Unit, onOpenLink: (String) -> Unit, onOpenImage: (String) -> Unit) {
@@ -90,10 +86,12 @@ private fun MessageText(
     onOpenImage: (String) -> Unit,
     modifier: Modifier = Modifier,
     style: TextStyle = MaterialTheme.typography.bodyLarge,
+    parsed: ParsedChatMarkdown? = null,
 ) {
     val colors = MaterialTheme.colorScheme
-    val rendered = remember(markdown, colors.primary, colors.surfaceContainerHighest, colors.onSurfaceVariant) {
-        renderChatMarkdown(markdown, colors.primary, colors.surfaceContainerHighest, colors.onSurfaceVariant)
+    val presentation = parsed ?: rememberParsedChatMarkdown(markdown)
+    val rendered = remember(presentation, colors.primary, colors.surfaceContainerHighest, colors.onSurfaceVariant) {
+        presentation.styled(colors.primary, colors.surfaceContainerHighest, colors.onSurfaceVariant)
     }
     SelectableReadOnlyText(
         rendered = rendered,
@@ -105,6 +103,7 @@ private fun MessageText(
         onOpenImageLink = onOpenImage,
         textStyle = style.copy(color = LocalContentColor.current),
     )
+    if (presentation.plainTextFallback) Text("复杂格式已按完整原文显示", style = MaterialTheme.typography.labelSmall)
 }
 
 /** Preserve source locations while nativeFilePath resolves and validates the native path. */

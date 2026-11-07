@@ -3,6 +3,10 @@ package dev.rivo.relay
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.geometry.Rect
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.test.platform.app.InstrumentationRegistry
@@ -15,6 +19,30 @@ import java.io.File
 
 class CodexVideoUiTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
+    @Test fun stoppedLifecycleDoesNotAutoplayAndStopsRequestedPlayback() {
+        val target = File(compose.activity.cacheDir, "video-lifecycle-fixture.mp4")
+        InstrumentationRegistry.getInstrumentation().context.assets.open("media-fixture.mp4").use { input -> target.outputStream().use { input.copyTo(it) } }
+        val owner = object : LifecycleOwner {
+            val registry = LifecycleRegistry(this)
+            override val lifecycle: Lifecycle get() = registry
+        }
+        compose.runOnUiThread { owner.registry.currentState = Lifecycle.State.CREATED }
+        val video = VideoViewerSource(listOf(VideoViewerItem(null, target.toURI().toString(), mimeType = "video/mp4")), 0, Rect.Zero)
+        compose.mainClock.autoAdvance = false
+        compose.setContent { RivoTheme { CompositionLocalProvider(LocalLifecycleOwner provides owner) {
+            FullScreenVideo(video, {}, {})
+        } } }
+        compose.mainClock.advanceTimeBy(250)
+        compose.onNodeWithTag("fullscreen_video_play_pause").assertContentDescriptionEquals("播放视频")
+        compose.runOnUiThread { owner.registry.currentState = Lifecycle.State.STARTED }
+        compose.onNodeWithTag("fullscreen_video_play_pause").performClick()
+        compose.mainClock.advanceTimeBy(100)
+        compose.onNodeWithTag("fullscreen_video_play_pause").assertContentDescriptionEquals("暂停视频")
+        compose.runOnUiThread { owner.registry.currentState = Lifecycle.State.CREATED }
+        compose.mainClock.advanceTimeBy(100)
+        compose.onNodeWithTag("fullscreen_video_play_pause").assertContentDescriptionEquals("播放视频")
+    }
+
     @Test fun nativeSourceSurvivesCachedPlaybackAndSpeedMenu() {
         val target = File(compose.activity.cacheDir, "video-fixture.mp4")
         InstrumentationRegistry.getInstrumentation().context.assets.open("media-fixture.mp4").use { input -> target.outputStream().use { input.copyTo(it) } }

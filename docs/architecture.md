@@ -1,149 +1,180 @@
 # Rivo Relay 当前架构
 
-更新：2026-10-29。本文描述已实现结构；验收状态和缺口见[开发计划](development-plan.md)，HTTP 字段见[API](API.md)。
+更新：2026-11-07。本文按当前工作区源码描述实现和约束，不代表本轮构建、真机验收或发布已经完成。验收记录见[开发计划](development-plan.md)，HTTP 字段见[API](API.md)。
 
 ## 产品与系统边界
 
-App 的目标是 Codex Desktop 的完整延续，范围是 Codex 与待办。共用原生登录、项目、会话、设置和权限，不设计独立项目白名单、设备权限等级或 App 额外审批。Desktop 不要求确认的操作，Relay 不再加一层确认；原生提问、审批及项目信任行为保持有效。
+Android App 延续原生 Codex 的项目、会话、设置、审批与执行，并保留 Rivo 的节点管理、待办、草稿、队列、提醒和更新入口。不另建 OpenAI 登录、项目白名单或一套聊天历史权威；原生提问、审批和项目信任仍生效。进程级强制接管需要展示影响范围并确认，它与普通操作权限审批不同。
 
-一个 Android App 连接一个当前节点；一个 Python Relay 进程使用一个 SQLite 数据库。没有中央账号、云中转、微服务或离线同步平台。0.1.4 按栖光交互补充单进程持久待发队列，不引入独立队列服务。writer 与并发由原生运行时和服务内部协调，日常界面不要求用户管理执行权。
+一个 App 当前连接一个节点；一个 Python Relay 服务使用一个 SQLite 数据库。没有中央账号、云中转、独立队列服务或跨节点执行调度。单进程 Relay 可以管理多个独立会话 writer；“单进程服务”不等于全部会话共用一个原生 writer。
 
 ```mermaid
 flowchart LR
-    A[Android App] -->|HTTP over Tailscale / HTTPS JSON / SSE| R[单进程 Relay]
+    A[Android App] -->|HTTP JSON / SSE| R[Relay API]
     R --> S[(Rivo SQLite)]
-    R --> C[Codex 适配器]
-    C -->|Unix WebSocket| N[选定的既有 Codex daemon]
-    D[Desktop 的已确认连接] -. 待 UI 双向验收 .-> N
-    N --> H[原生历史与配置]
+    R --> C[RuntimeConnection]
+    C --> Q[公共元数据连接]
+    Q -->|Unix WebSocket| N[选定 Codex daemon]
+    C --> W1[会话 A 独立 stdio writer]
+    C --> W2[会话 B 独立 stdio writer]
+    C --> H[按操作租用的辅助连接]
+    C -. 显式 Desktop 模式 .-> B[Desktop bridge]
+    B --> D[Desktop 已初始化的 AppServerConnection]
+    N --> P[原生配置与历史]
+    W1 --> P
+    W2 --> P
+    D --> P
 ```
 
-当前实现只连接指定的既有 daemon。真实双原生客户端已验证相同 runtime/thread/turn 与执行通知；这不能替代 Desktop UI 验收。当前电脑的 Desktop 本地 stdio 与默认本地 daemon 是不同进程；远端验证节点的连接证据见[原生验证记录](native-validation.md)。状态接口保留 `desktopShared=null` 与 `requires_desktop_confirmation`，没有声称已经实现所有场景的无缝迁移。
+`RuntimeConnection` 支持 `auto`、`app_server`、`desktop`。当前独立 writer 后端声明 `sessionIsolation`，因此 `auto` 保持 app-server 路径，不会在发现 Desktop 后把 App 会话悄悄迁回共享 writer。显式 `desktop` 模式仍可使用 Desktop 共享连接。已创建或恢复的会话固定到所属后端；失联不意味着可以换连接重发。
 
 ## 技术与目录
 
 | 部分 | 当前实现 |
 | --- | --- |
-| Python | 3.11+；验证环境 3.13；标准库有界 HTTP/TLS、SQLite，`websockets==15.0.1`、`qrcode[pil]==8.2` |
-| Android | 单个 `:app` module；Kotlin/Compose、StateFlow、OkHttp、ZXing；JDK 17、SDK 37、minSdk 26 |
-| 通信 | HTTP JSON 读写与 SSE 通知；原生接口为 Unix WebSocket JSON-RPC，不启用 stdio fallback |
-| 存储 | SQLite WAL/FULL、事务与 savepoint；Keystore AES/GCM 加密手机连接凭据及未确认提交标识 |
-| 并发 | 默认 16 个 HTTP worker、最多 4 条 SSE；有界 512 条内存事件；workspace 独占 `serve.lock` |
+| 服务端 | Python 3.11+；标准库 HTTP/TLS、SQLite；WebSocket、二维码和 Pillow 媒体处理 |
+| 客户端 | 单个 Android `:app` module；Kotlin/Compose、StateFlow、OkHttp、Coil、Media3、ZXing；JDK 17、SDK 37、minSdk 26 |
+| 通信 | HTTP JSON 与 SSE；原生 Unix WebSocket、Relay 自有 stdio app-server、Desktop protocol-1 bridge |
+| 存储 | SQLite schema 4、事务与迁移校验；手机 Keystore 保护连接凭据，私有存储保存草稿、显示缓存和待核对提交 |
+| 并发 | 有界 HTTP/SSE、逐会话 operation gate、最多 4 个队列线程、媒体重任务最多 2 个并发槽位 |
+
+主要源码入口：
 
 ```text
-server/
-  pyproject.toml
-  rivo_relay/
-    __main__.py          # serve / pair / connections / revoke
-    config.py            # 地址、TLS、workspace 与原生 socket 配置
-    app.py               # 依赖组装、提交和待办交付协调
-    api.py               # JSON 路由、认证、SSE
-    http_server.py       # 有界 HTTP/TLS worker 和关闭
-    database.py          # 七表 schema 4、旧版本迁移、事务与版本校验
-    pairing.py           # 一次性配对、摘要令牌、限流、撤销
-    submissions.py       # 持久 claim、身份 checkpoint、去重和核对
-    todos.py             # CRUD、完成状态与原生 thread 关联
-    queue.py             # 每会话待发任务、排序/编辑/撤回/引导与顺序派发
-    events.py            # 有界 SSE 缓冲及 epoch/cursor
-    codex/
-      connection.py      # 既有 daemon 连接、RPC、通知、generation
-      projects.py        # 原生项目与根路径
-      sessions.py        # 创建/resume/发送/引导/停止/设置与临时增量
-      history.py         # 原生分页、严格身份和 item 校验
-      interactions.py    # 原生请求归属、过期与一次回答
-      files.py           # 经原生 RPC 读取节点文件
-  tests/                 # 隔离测试与脱敏原生 fixture
-client/android/
-  app/src/main/java/dev/rivo/relay/
-    MainActivity.kt, App.kt, AppState.kt
-    connection/          # PairingParser、PairingRepository、CredentialStore
-    data/                # RelayApi、Models
-    codex/               # CatalogState、SessionController、SubmissionCoordinator
-    ui/{theme,login,projects,sessions,chat,todos}/
-  app/src/{test,androidTest,debug}/
-scripts/
-  run-server.sh, verify-service.py, verify-emulator.sh
-  qr-emulator-camera.py, emulator-camera-pose.py
-docs/
-workspace/               # 忽略的运行数据、私密配对文件、验证附件
+server/rivo_relay/
+  app.py, api.py, http_server.py  # 依赖组装、认证路由、HTTP/SSE
+  database.py, submissions.py    # 持久化、提交去重和未知结果核对
+  operation_gates.py, queue.py   # 会话操作互斥、待发队列
+  media.py, speech.py, todos.py  # 媒体、语音、待办
+  codex/
+    runtime.py, connection.py    # 后端路由、RPC、通知与连接代际
+    owned_writer.py, writers.py  # 独立 writer 生命周期、进程身份与交接
+    desktop.py, desktop_host.cjs # Desktop bridge 客户端和宿主模块
+    sessions.py, interactions.py# 会话、设置、请求和审批
+    history.py                  # 官方分页与严格协议校验
+    native_journal.py           # 日志水位核验、读取作用域和收敛
+    native_history_host.py      # 实际原生主机上的增量日志检查
+    native_reprojection.py      # 隔离重建与发布前复核
+    projects.py, files.py        # 项目、节点文件与传输
+client/android/app/src/main/java/dev/rivo/relay/
+  App.kt, AppState.kt            # 节点与页面生命周期
+  connection/                   # 配对、节点凭据与网络状态
+  data/                         # API、模型、缓存、媒体与更新
+  codex/
+    NodeSessionSync.kt          # 一个节点事件流、并发快照读取合并
+    SessionController.kt        # 会话校准、增量、分页和控制状态
+    CatalogState.kt             # 项目与会话目录
+  ui/{theme,login,projects,sessions,chat,todos}/
 ```
 
-旧 `android/` 草稿已整理到 `client/android/`，不维护重复工程。服务除 `codex/` 外按能力用文件组织；客户端由 `AppViewModel` 管登录/节点生命周期，各 catalog、session、submission、todo controller 管自己的状态，不引入多 module 分层。迁移来源与删改见[迁移清单](migration-plan.md)。
+旧 `android/` 草稿已整理到 `client/android/`。各 controller 管理自己的状态，尚未引入多 module 或微服务分层。迁移来源见[迁移清单](migration-plan.md)。
 
-## 登录和连接
+## 登录、节点与传输
 
-无已登录节点 → 节点登录授权；已有登录节点 → 项目列表 → 项目会话列表 → 会话。授权首页按本产品要求新增，已登录项目列表和后续浏览沿用 QiGuang 布局。
+无已登录节点时展示登录授权；已有节点恢复项目页。电脑 CLI 生成有期限的一次性配对码，二维码 fragment 不携带原生登录凭据或长期 token。服务在同一事务中消费码并创建连接，只保存配对码和 token 的摘要，实行来源及全局有界限流。
 
-电脑本地 CLI 生成默认 5 分钟有效的一次性配对码。QR 的 URL fragment 包含版本和码，不含原生登录凭据或长期 token；扫码与手动输入共用解析器与兑换接口。服务在同一 SQLite 事务中消费码并创建连接，存储的只有码和随机 token 的摘要。来源地址及全局尝试有界限流；内存限流窗口在服务重启后重置，码的到期/消费状态仍持久化。
+普通离线保留登录；认证失败清除失效连接并回到授权。撤销连接由服务端执行，HTTP 与已有 SSE 都重新验证授权。本机删除保存的凭据不等于撤销服务端连接。
 
-App 用 Keystore 保护连接凭据，重启后直接恢复项目页。普通离线保留登录；认证失败清除本地连接并回到授权页。撤销通过电脑 CLI，HTTP 每次认证，已有 SSE 在读取事件前后重新认证并退出。本地“断开”仅删除手机保存的凭据，不等于撤销服务端连接。
+服务默认监听 loopback，非 loopback 监听要求 TLS。本机主节点使用 `http://100.124.150.1:18767`，经 tailnet TCP 转发到 loopback 18765；Android 对该明确 IP 开放 HTTP，其他节点仍要求受信任 HTTPS。旧节点地址迁移保留凭据和 `storageBase`，避免丢失草稿、缓存和提醒。请求日志不记录 Bearer、配对链接或正文。
 
-服务默认监听 loopback；非 loopback 必须配置 TLS。本机部署使用 `http://100.124.150.1:18767`，经 tailnet-only TCP 转发到 loopback 18765，避免 DNS 和 TLS 证书依赖。Android debug/release 均仅额外允许此明确 IP 的 HTTP；debug 另允许本机/模拟器地址。其他节点使用受信任 HTTPS，不关闭证书或 hostname 校验。0.2.5 仅迁移已确认的旧本机 HTTPS 地址，保留 token/nodeId/deviceId，并通过 storageBase 保留原草稿、历史、待发任务及提醒的存储键。请求体、Bearer 与配对链接不进入服务请求日志。
+默认网络改变时，`RelayApi.resetTransport` 在 IO dispatcher 取消旧 GET/SSE、重建连接池并关闭空闲连接；已发出的写请求不因此取消或重发。会话转为 stale，恢复后重新订阅和校准。服务 HTTP worker 按连接占用，不能只移除关闭响应头就宣称具备合适的长连接调度。
 
-## 原生 Codex 接入
+## 独立 writer、辅助租约与 Desktop
 
-`NativeConnection` 初始化已有 daemon 并读取 diagnostics，使用独立 JSON-RPC reader 和通知 dispatcher；关闭 Relay 仅关闭自己的连接。没有启动 runtime、杀 writer、修写 rollout 或接管用户进程的代码。QiGuang Desktop bridge 缺少宿主，未作为产品入口迁入。
+### 公共连接和会话连接
 
-项目读取使用 `project/list`、`project/read`，新项目使用 `project/create`；会话依据原生 `projectId` 和精确根路径归属，无会话项目仍展示。resume 不覆盖模型、工作目录、审批或 sandbox；新建传项目根路径或用户选择 ref 后创建的独立工作树路径。发送在用户选择时传 model/effort；0.2.0 的讨论模式显式选择原生 Plan 并降低为只读 sandbox，退出该模式时恢复先前记录的权限。审批策略仍沿用原生设置。
+`SessionWriters` 包装选定的既有 daemon 连接。公共连接只承担允许列表中的元数据、目录、模型、账户、配置和文件查询；`thread/read` 只有 `includeTurns=false` 才可直接走公共连接。它不执行 `thread/start/resume/fork`，也不隐式执行 turn、review、设置或 goal 写操作。
 
-thread/turn/item 身份与已完成历史来自 Codex 分页。未落盘的新建空会话暂保留 `thread/start` 元数据，首轮必须由创建连接发送；结果不确定后不会继续伪装为空会话。首轮已有原生接受回执、但 rollout 尚为空时，最多 30 秒用创建元数据与真实 turn 回执/通知展示执行状态，随后以原生分页为准。临时消息通知只在内存；计划、用量、变更摘要和已观察的模型设置单独保存为有界派生数据，不成为第二份原生历史。
+创建、fork 或首次 resume 使用新的 `OwnedWriter`，启动已核实的 Codex 可执行文件 `app-server --stdio`，使用相同 `CODEX_HOME`，并建立独立进程组。启动依据实际本机 socket/进程身份；转发 socket 或探测到远端 home 不足以授权在 Relay 本机创建 writer。thread ID 与返回身份不符、连接已换代或创建结果不确定时，关闭未能登记的子进程，禁止留下无人管理的 writer。
 
-提问与审批 key 绑定连接 generation 和原生 request ID；断连、turn 结束或 `serverRequest/resolved` 使其失效。回答前先移除本地 pending，避免丢失回执后重发。手机提供提问、命令/文件审批、原生权限请求和常见嵌套 MCP 表单/URL 交互；未知 schema 与 userVerification 签名挑战仍需 Desktop。语音输入按用户要求排除。
+一个由 App 执行的会话固定使用自己的 writer。发送、排队派发、审批响应、重连后的核对和恢复不能借用另一个会话的 writer。审批 key 包含实际 writer generation 和原生 request ID；释放、断连、turn 结束或原生请求已解决后，旧审批不能再次回答。公共连接重连不会把仍存活的会话 writer 一并判死。原生权限、提问和支持的 MCP 表单由手机展示；需要 Desktop 注册签名凭据的 userVerification 仍留在 Desktop 完成。
 
-`GET /v1/files` 经该 daemon 的 FS RPC 读取节点文件，不用 Relay 本机打开远端路径。它属于原生节点级文件访问，没有 thread sandbox 参数，也没有 Rivo 额外项目白名单。预览解码后上限 4 MiB；当前协议没有范围读取，这只是响应大小限制。服务接收原生 text/image/localImage/mention/skill 输入，HTTP JSON 上限 16 MiB；`content://` 不是节点路径。
+公共允许列表之外的辅助操作需要独立的临时连接。`auxiliary_connection()` 将其租给一次完整操作并在 `finally` 关闭；上传等多步流程可以持有同一租约，不借用活动会话 writer。显式 Desktop 后端没有独立 stdio 租约时使用其桥接连接，并核验后端 generation。
 
-## 提交、增量与待办
+### 逐会话释放与进程级接管
 
-App 写入前生成稳定 `submissionId`，持久保存 ID 和固定目标；OkHttp 不自动重试写请求或跟随重定向。服务先 commit claim 和正文摘要，再调用 Codex，只保存原生身份回执。相同连接、ID、目标和正文返回原记录，不执行第二次；变更请求复用 ID 返回冲突。`accepted` 仅表示原生接受，不代表任务完成；调用中断或缺少回执为 `unknown`，服务重启把旧 `pending` 转为 `unknown`，均不自动重发。跨数据库与原生调用之间不声称 exactly-once。核对接口只查询持久状态，不自动推断 native 结果；App 可打开已知原会话，用户明确确认“结束核对”后仅解除本机等待并清除旧回调，不取消/重发原任务、不删除服务记录。
+自有 writer 的释放先核验首条历史已持久化，设置持久释放栅栏，阻止队列和自动恢复；再尝试停止该会话任务，关闭对应 writer 及其进程组，最后检查真实 OS 写锁。停止 RPC 被拒绝或超时不能省略关闭和锁核验。只有核验通过才报告释放完成；失败保持 `release_pending`/不可操作状态，不能把 `released` 标志当成 OS 已解锁的证据。
 
-SSE 是有界内存通知，事件 cursor 带服务 epoch；首连、无效 cursor、缓冲缺口或重启返回 `reset`，客户端重新读取原生快照。当前 Android 启动订阅并用通知触发合并后的快照读取，也定时刷新；并非每条 delta 直接绘制到 UI。切换会话取消旧任务，分页结果按当前 generation 检查，消息按原生 ID 合并。SSE 目前为已认证节点的事件流，服务不按 `threadId` query 过滤；客户端通过选定会话快照保持目标一致。
+未持久化的空会话不能贸然释放创建连接。首轮已被原生接受而 rollout 尚未出现时，有限期使用真实创建/turn 回执展示状态；超过等待边界后进入核对，而非再次伪装为空会话发送。
 
-待办支持 CRUD、子任务、截止日期、重复、节点文件引用与 Android 本机提醒，离线修改进入手机持久 outbox；派发前先同步成功。新会话交付顺序为 `claim → create → checkpoint(threadId) → link → send`。已完成事项或已有关联/未确认/已接受交付时，拒绝新派发；失败前没有创建 thread 才允许显式新提交。发送已有会话前核对其属于选定项目。关联回执不丢弃，turn 完成不自动完成待办。
+外部 writer 的显式接管与关闭自有 writer 是不同流程：预览 PID、启动身份、关联会话和进程影响范围，生成绑定授权连接的短期票据；执行前重新核验，必要时终止经过核实的持锁进程，确认锁释放后恢复目标会话。多会话范围需要整体取得 operation gates，受影响队列保持暂停。普通排队不会自动抢占外部 writer，也不会重发原任务。
 
-## 数据和验收边界
+Desktop bridge 共享 Desktop 已初始化的 `AppServerConnection`，不是启动另一个 Desktop 原生进程。宿主必须加载 `desktop_host.cjs`，桥接 socket、token、owner 权限及协议握手必须有效；代码存在不等于当前宿主已经可用。Desktop 的“释放订阅”仅解除 Relay 对共享连接的订阅，不代表关闭 Desktop 或释放其 OS 写锁；共享 Desktop 不走结束进程式强制接管。
 
-SQLite schema 4 保存配对码、连接、提交、待办、待执行队列、原生观察与 Relay 工作树登记。待发队列保存输入，提交去重表仅保留摘要与轻量身份；没有复制原生已完成聊天数据库、OpenAI 密钥或持久事件流。Android 私有文件另存草稿、有界显示缓存与待办 outbox；缓存历史不保留过期审批或可重用分页身份，未联网确认的缓存页禁用原生写操作。运行目录和验证附件被忽略，QiGuang 的库、sidecar 与部署配置没有迁入。
+### 操作并发边界
 
-服务/协议测试、模拟器真实相机与原生执行、Desktop UI 人工验收分别记录，不能互相替代。Desktop UI 自动化受工具明确限制，剩余双向交接需用户协助；正式发布、签名、后台驻留和升级另行处理。
+`ThreadGates` 使用可重入的逐身份锁，包含等待者引用计数，最后一个使用者离开后移除条目。会话发送、释放、恢复、设置等协调操作与执行队列共用同一 `operation_gate`，同一会话的派发与队列变更保持顺序。审批回复另在所属 writer 的线程锁下核验请求和连接代际，不依赖公共连接。跨会话交接对完整作用域去重排序后加锁，避免锁顺序相反。创建使用 project 作用域，其他会话可以继续处理。
 
-## 会话置顶与执行队列（0.1.4）
+共享映射仍使用短时锁保护，数据库仍受 SQLite 事务约束；并发范围的改变不等于所有 RPC 可以同时修改一个会话。
 
-长按会话可置顶/取消置顶；列表置顶项优先。置顶读取原生 `thread.section`，写入 `thread/section/move` 的 Pinned 分组，与栖光使用同一原生元数据，不另建置顶表。
+## 原生历史、收敛与双 revision
 
-任务进行中、存在待发项或会话暂由其他运行时持有时，发送入口显示“排队”。队列在输入框上方默认展示三项，可展开、长按拖动排序、编辑正文、撤回，当前可执行的活动 turn 可接受“引导”。编辑保留附件和模型设置。队列显示执行中和结果待核对状态，失败或不确定结果阻止后续自动执行。
+已完成正文、thread/turn/item 身份及分页仍来自官方历史 RPC。Relay 的日志检查只提供生命周期水位、文件身份和收敛依据，不把 rollout 正文转换成第二份 App 聊天数据库。
 
-`queued_tasks` 保存 Relay 自己接受的待发输入，原生 turn 仍是执行和历史权威。单 worker 轮询原生快照，空闲时提交一项，收到原生完成状态后继续下一项；调用前先持久化 dispatching，重启将其变成 unknown，不自动重发。稳定提交 ID 防止重复入队；编辑用 revision，排序用完整预期顺序做竞争校验。被撤销连接的任务不会自动派发。数据库 v1→v2 原位增加一张表，保留配对、登录和旧提交记录。
+`NativeJournal.read_scope` 为一次读取固定实际后端与 generation；`NativeHistoryAdapter.read_scope` 在该请求内共享已经校验的 head/page，使收敛检查和响应可以使用同一次官方分页读取。作用域结束即丢弃，不是跨请求的历史响应缓存。
 
-普通队列在另一运行时占有 writer 时仅等待，不自动抢占。0.2.7 增加显式进程级交接：预览持锁 PID/启动身份/关联会话与子进程，绑定当前授权连接的短期票据；多会话共用时须确认，执行前重新核实。终止持锁进程并确认 OS 写锁释放后，才 resume 原会话并核验新持锁 PID。若当前 daemon 被终止，以原二进制和参数恢复，其他受影响会话的 Relay 队列与自动订阅保持暂停。不自动重发原任务。队列数据不与 QiGuang 旧 sidecar 队列共享，不把其历史待发项显示为已迁移。没有迁入通用调度、离线同步或第二套执行历史。
+日志检查缓存按实际连接 generation 和 thread ID 隔离，最多保存 128 项。文件 fingerprint 包含 device、inode、size、mtime、ctime；身份完全未变时复用生命周期解析结果，但重新核验 writer lock。未压缩文件追加时，从完整记录边界增量 JSON 解码，同时重新计算整个旧前缀的摘要，检测同 inode 中段被改写后再追加的情况。因此优化的是重复 JSON 解码，旧前缀字节校验仍为 O(n)，不能描述为只读新增字节。截断、替换、模式变化、压缩文件变化或前缀不符回到完整检查；未完成的尾记录属于写入中状态，不能据此启动修复。
 
+日志与官方投影不一致时，收敛层判断是否可重建。修复使用已核实的原生主机和 Codex 二进制，在独立临时 home 中运行官方投影重建；持有真实 writer lock，核验原文摘要和历史段身份，在发布前再次检查锁文件身份及源数据未变。活动 Desktop/CLI writer 不会为普通历史读取而被释放；无法核验时保留 unavailable/converging 状态，而不是声称历史已经修好。
 
-## 2026-10-29 请求链路优化
+返回两个用途不同的 revision：
 
-- 会话 SSE 的 `item/agentMessage/delta` 和 `item/commandExecution/outputDelta` 增加 `params.relayOffset`（追加前的 Unicode code point 数）。客户端有可信快照且 item/turn ID 匹配时，直接更新对应消息及活动投影，不再为每个文本片段请求最近 30 轮历史。重复、部分重叠事件按位置核对，不重复追加；emoji 按 code point 转换为 Kotlin 字符串位置。
-- 缺少位置字段的旧服务器、未知 item、内容不一致、快照读取期间的事件仍触发合并后的权威读取。首次进入、重连、reset、完成事件和原有 5 秒校准保留；其他 threadId 的事件不触发当前聊天读取。实时展示不写入原生历史。
-- 内容未变化的会话快照不重复写入手机缓存。断线正常结束同样标记 stale，恢复后重新校准。
-- 项目列表以项目 ID / 根目录建立索引，避免每个项目重新扫描所有线程；服务器串行合并并发读取，成功结果缓存 2 秒。原生线程/项目通知、轮次开始/结束、连接代际变化和项目创建使缓存失效；读取中的失效不会被旧结果覆盖。单客户端的原有首页 5 秒轮询仍会读取原生列表。
-- HTTP 连接关闭策略保持现状：当前有界 worker 按连接占用，直接启用长连接需要一起调整空闲连接调度，不能只移除响应头。
+- `nativeRevision` 是分页有效性标识：包含连接/修复 generation、日志结构 epoch 和最近两轮结构。执行中的正文追加不使旧分页 cursor 失效；新增/删除 item、轮次终态、回滚、历史重写、修复或连接变化仍会改变它。终态内容的纠正也参与校验。
+- `nativeHeadRevision` 包含最近 head 的实际内容，用于区分实时内容变化。它不能替代分页校验用的 revision。
 
+更早页面携带预期 `nativeRevision`；不匹配或正在收敛时拒绝混合。Android 先发布新的可信 head 和控制状态，再独立恢复之前已展开的历史深度。历史补页只合并历史，不能覆盖后来更新的审批、writer 控制或实时状态；所有结果还要通过页面 generation、history/control epoch 和快照身份检查。
 
-### 对照栖光后补充的优化
+## 提交、事件与客户端状态
 
-对照仓库 `/Users/ethan/Documents/QiGuang-Next`，HEAD `f31333c248b862827a0179260ce5d9c571f441be`，读取工作区源码，未修改栖光。
+写请求先生成稳定 `submissionId`，持久记录固定目标。服务先 commit claim 和正文摘要再调用 Codex；相同授权连接、ID、目标和正文复用结果，变更正文或目标返回冲突。`accepted` 只表示原生接受；失去回执或中断进入 `unknown`，不自动重发。跨 SQLite 与原生 RPC 不宣称 exactly-once。“结束核对”只解除手机等待，不取消原任务或删除服务端记录。
 
-| 栖光实现 | Relay 采用方式 |
-| --- | --- |
-| `qiguang/server/qiguang_codex_notifications.py::NotificationQueue` 合并积压文本通知 | `codex/notifications.py` 只合并相邻、同连接代际/线程/轮次/item/方法的文本片段；24,000 字符为单个合并块上限，达到上限另开队列项，不截断正文。结构事件是顺序边界。 |
-| `qiguang_codex.py` 的 `LIVE_ACTIVITY_EMIT_INTERVAL_SECONDS = 0.15` | Android 每 150ms 批量应用增量，仅发布一次展示状态；结构/结束事件立即冲刷，积压最多 128 条后提前冲刷。 |
-| `CodexHistoryController.kt::refreshCodexHistoryAfterSignal` 合并刷新与代际检查 | 保留 Relay 的 CONFLATED 请求通道、页面代际、历史 epoch 校验。读取期间的增量回退为下一次权威读取，不在不可信快照上追加。 |
-| `CodexResponseCache.kt` 将本地缓存仅作为启动展示 | 保留 Relay 的 stale 写保护，增量不持久化；权威快照内容不变时跳过重复保存。 |
+服务 SSE 使用有界缓冲和 epoch/cursor。首连、无效 cursor、缓冲缺口或服务重启触发 reset，客户端重新读取权威状态。节点事件流不按客户端 threadId query 做服务端过滤，消费者按会话归属处理。
 
-来源 SHA-256：notifications `affe095a17745212ac86494877138550c3de54cce7526d2bdd29a0631d89e1cf`；codex `b2a933ce83d20d41cc6e4c05d513d25204a6492ff39a7ac12bed28259eb3058b`；HistoryController `8d633c1d2d8d9c5a901138822703bfcff03d4856164a79ea601496d3198e8ce2`。
+`NodeSessionSync` 在当前节点内共用一条活跃 SSE 订阅，供聊天与任务提醒消费者使用；无消费者时停止。对同一 thread、同一同步 epoch 的并发 GET 共用正在执行的 Deferred，所有使用者离开后取消未完成请求。前台控制校准还检查请求开始时间，不借用校准之前已经等待的旧 GET，保留原有超时保护。完成结果不作为后续请求的缓存；事件、断流或显式失效推进 epoch，避免把事件前读到的结果交给事件后的读取。
 
-栖光使用裁剪后的展示文本和 sidecar 投影；Relay 的 `relayOffset` 必须对应完整文本，因此没有迁入其头尾截断策略。没有复制栖光的 writer 接管、任务数据库或部署拓扑。连接池也没有直接改大：实际诊断表明会话列表约 0.53 秒主要花在原生 `thread/list(cwd=...)`，`project/read` 和 `thread/list(projectId=...)` 约 1ms 内，并行化二者不能消除前者开销。cwd 查询用于保留未归属项目的旧会话，不能为测速省略。
+JSON GET 区分 30 秒无数据进展与 120 秒总时限，会话及后台提醒读取使用同一总时限；持续传输大历史不再因固定 10 秒期限失败。前台响应超过 3 秒仍将控制状态标记为 stale，只有完整快照通过代数和身份校验后才恢复操作。写请求继续使用独立传输设置，不因读取超时而重发。
 
+原生相邻文本通知可在服务端按连接代际、thread、turn、item 和方法合并；结构通知是顺序边界，单合并块有大小限制。`relayOffset` 表示追加前 Unicode code point 数，客户端核验重复、重叠和内容一致性，不能对截断后的文本计算该偏移。
 
-### 网络切换后的快速恢复
+Android 每 150ms 或积压到 128 条时批量应用增量，结构/结束事件及时冲刷。快照解析、活动/时间线投影和增量批处理放在 Default dispatcher，使用消息索引和不可变的新消息，未变化消息保留引用；草稿、显示缓存和提交恢复数据通过 IO 路径读写。只把通过当前会话/epoch/快照检查的结果发布到 StateFlow。未知 item、位置不符、读取交叠、重连、reset 和终态仍回到官方校准，显示增量不写入原生历史。未知工具状态按未知显示，不能推断为成功。
 
-实际 e2mac 模拟器验证发现：失去网络后，已有 HTTP/2 socket 可能迟迟不报错，恢复读取会等到 90 秒 read timeout。新增 `ACCESS_NETWORK_STATE` 正常权限与默认网络回调；网络丢失时聊天取消旧读取，缓存保留并标记 stale，默认路由恢复或切换时重新订阅并校准快照。`onLost` 按回调中的网络身份清空状态，不在回调内用可能尚未更新的 `activeNetwork` 推断连接仍可用。
+## 队列、待办和恢复
 
-`RelayApi.resetTransport` 在 IO dispatcher 重建连接池、取消旧 JSON GET/SSE 并清理空闲连接；TLS close 也可能产生网络写入，因此不得在 Main dispatcher 执行。内部取消以 `CancellationException` 结束旧读取，不显示错误横幅。已经发出的 POST/写请求不被该操作取消或重发，继续使用现有 submission 核对机制。
+`queued_tasks` 仅保存 Relay 接受的待发输入，原生 turn 仍是执行权威。入队读取元数据，不因此获取 writer；稳定提交 ID 防重复入队，编辑使用 revision，排序核对完整预期顺序，已撤销连接不能自动派发。
+
+调度器通过最多 4 个 worker 检查不同会话，每个 worker 先取得同一套会话 gate。一个会话严格按队头派发：调用前持久化 `dispatching`，成功后记录 turn ID，原生完成后继续；失败或未知结果阻断后续任务。服务重启把未确认的 dispatching 转为 unknown，不重发。关闭先停止新派发，等待已接纳的调用和回执处理完成，再关闭底层资源；一个慢会话不会独占所有会话的调度锁，但一轮仍等待已提交的检查完成。
+
+待办支持 CRUD、子任务、截止日期、重复、节点文件、原生会话关联和本机提醒。离线 outbox 成功同步后才派发。新会话交付顺序为 `claim → create → checkpoint(threadId) → link → send`；已有/未确认交付不得自动再创建会话。turn 完成不会自动完成待办。
+
+## 消息渲染与图库派生
+
+Markdown 语法结果与主题颜色分离，正文、图片引用提取和图库发现共用解析规则与缓存。缓存同时限制输入总字符数和条目数，解析不持有缓存锁。长文本解析转到 Default；结果属于当前内容 revision，旧任务取消后不能覆盖新消息，并定期检查取消。
+
+链接目标、code span、文件引用及强调等试探扫描采用随输入长度增长的预算；裸 URL 尾部括号修剪使用线性计数。预算耗尽时显示完整原文并提示格式回退，不静默丢正文，也不把代码块中的图片例子变成媒体请求。完整 Markdown 不是必须全部保留格式才能显示的前提；复制、引用与链接边界仍分别校验。
+
+外层聊天用稳定 key 的 LazyColumn。大表格初次显示 24 行，活动组初次展开 16 项，继续按钮逐批增加，不引入无界嵌套纵向 LazyColumn。表格保留完整源文本用于复制和引用；长工具输出可以继续展开及复制完整内容。展开身份与已显示批次跟随相应消息/活动组，追加内容不重置已经展开的部分。用户主动展开全部之后，布局成本仍与已经显示的内容量有关。
+
+图库缓存限定在节点/会话生命周期内，按 turn/item 身份和不可变消息内容复用图片引用，移除不再保留的历史条目。素材同时按原生身份和 source/originalUrl 建索引；派生图库在后台计算，输入框等无关重组不重新解析整段历史。请求媒体库的 key 来自生成图片身份、状态和来源，不再使用任意 `nativeRevision`：无生成图片不请求，待导入素材继续限频查询，切换节点/会话取消旧工作。
+
+## 文件、媒体与语音
+
+节点文件经过选定原生主机的 FS/传输能力读取，不把远端路径当 Relay 本机路径打开；`content://` 仍是手机 URI。文件预览、下载/上传与媒体代理各有大小和格式边界，不能把文本预览 4 MiB 上限误认为所有传输都只能到 4 MiB。大文件使用流式传输，媒体 HTTP 支持条件请求及范围读取。
+
+`MediaService` 按来源/缩略图身份合并同资源操作；下载、原生读取和解码不持有全局 cache lock。两个媒体处理槽位限制重任务，繁忙返回可识别的 429。短锁仅保护发布、索引和淘汰；临时文件、正在处理和准备交付的文件有 pin，原子替换后再发布 manifest，淘汰跳过使用中的资源。
+
+媒体响应先打开不可变文件描述符，使用该描述符的 fstat、ETag 和范围信息发送，不在发送时重新打开可能被替换或删除的路径。媒体库文件校验缓存同时包含文件身份、尺寸、时间和声明摘要；文件改变时重新核验。原生媒体缓存 key 包含连接 generation，远端公开媒体遵守地址/大小校验；持久媒体库与可淘汰代理缓存分开。
+
+Android Coil 使用鉴权隔离的缓存 key、有界内存缓存和解码尺寸；图库/预览保留节点身份，编辑导出、远端 base64 解码等重工作在 IO/Default。取消或失败的编辑导出清理未交付临时文件。Media3 播放器随页面释放，后台暂停。语音录制、转写及相关交互已进入当前实现，不再沿用早期“排除语音输入”的描述。
+
+## 数据、部署与验证边界
+
+SQLite schema 4 保存配对、连接、提交、待办、队列、观察和工作树登记；新增查询索引不改变其历史权威边界。媒体库、派生缓存和手机草稿不等于复制一份原生已完成聊天数据库。手机缓存不能复用旧审批或过期分页身份，未联网确认的缓存页面禁止原生写操作。
+
+主节点更新源、APK 更新检查和签名发布有独立流程；部署 Relay 不应顺带重启用户的 Codex 原生运行时。协议单元测试、模拟器交互、真实节点执行、Desktop UI 双向交接分别验证，不能互相替代。本文不将代码存在、单元测试或局部基准写成当前设备已完成验收的证据。
+
+## 历史背景
+
+- 早期版本仅连接既有 daemon，曾明确不启动 stdio、不终止 writer、不修复 rollout，Desktop bridge 也未迁入。这些是当时的范围限制，不再代表现有实现。当前允许的创建/释放/接管/重建分别受上文身份、作用域、锁和确认条件约束。
+- 0.1.4 引入持久待发队列；当时为单 worker。0.2.7 引入显式进程交接；后续按用户要求补齐逐会话独立 writer、审批归属和释放核验。当前并发调度没有迁移 QiGuang 旧 sidecar 队列数据，也没有新增跨节点任务调度。
+- 2026-10-29 的请求链路优化引入 relayOffset、通知合并、客户端批量展示和网络切换恢复。对照来源包括本机 QiGuang-Next 的历史 HEAD `f31333c248b862827a0179260ce5d9c571f441be`；该值记录当时参考版本，不表示当前本机参考项目仍处于这个版本。
+- 本轮继续补齐逐会话并发、原生日志增量解码、双 revision、节点同步共享、渲染/图库缓存和媒体并发。这里记录设计及正确性边界，具体测试、性能数据和发布结果由各次验证记录提供。

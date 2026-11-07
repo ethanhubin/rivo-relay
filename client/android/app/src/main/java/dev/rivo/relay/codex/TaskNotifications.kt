@@ -92,7 +92,7 @@ data class TaskNotificationTarget(val base: String, val threadId: String) {
 /** Live process subscription, not a push service: Android may suspend/kill it in the background. */
 class TaskNotifications(private val context: Context, private val api: RelayApi, private val scope: CoroutineScope,
     private val nodeBase: String, private val nodeName: String, private val requestPermission: () -> Unit,
-    private val failure: (Throwable) -> Unit) {
+    private val failure: (Throwable) -> Unit, private val sync: NodeSessionSync? = null) {
     private data class Watch(val tracker: TaskChangeTracker, val job: Job, val signal: Channel<Unit>, var busy: Boolean = false, var lastReadNanos: Long = 0)
     private val watches = linkedMapOf<String, Watch>()
     private var visibleThread: String? = null
@@ -105,7 +105,9 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
             })
     }
     fun setVisibleThread(id: String?) {
+        val previous = visibleThread
         visibleThread = id
+        if (previous != null && previous != id) watches[previous]?.signal?.trySend(Unit)
         if (id != null) {
             manager.cancel(tag(id), 1)
             watch(id)
@@ -135,9 +137,12 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
             }
             signals.trySend(Unit)
             for (ignored in signals) {
-                try { observe(id, api.call("/v1/threads/${encoded(id)}")) }
+                // The visible controller supplies authoritative snapshots through observe().
+                // Resume independent observation immediately when that controller pauses.
+                if (visibleThread == id) continue
+                try { observe(id, withTimeout(JSON_READ_TIMEOUT_MILLIS) { sync?.read(id) ?: api.call("/v1/threads/${encoded(id)}") }) }
                 catch (e: Exception) {
-                    if (e is CancellationException) throw e
+                    if (e is CancellationException) currentCoroutineContext().ensureActive()
                     if (e is ApiException && e.status == 401) failure(e)
                 }
                 delay(350)
@@ -159,7 +164,7 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
             while (isActive) {
                 try {
                     // Relay currently broadcasts the node event bus; one socket serves every watched thread.
-                    api.events("", eventCursor).collect { event ->
+                    (sync?.events() ?: api.events("", eventCursor)).collect { event ->
                         event.cursor?.let { eventCursor = it.takeIf(String::isNotBlank) }
                         if (event.type == "revoked") {
                             failure(ApiException(401, "revoked", "节点授权已失效"))
@@ -174,7 +179,7 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
                         else watches[id]?.signal?.trySend(Unit)
                     }
                 } catch (e: Exception) {
-                    if (e is CancellationException) throw e
+                    if (e is CancellationException) currentCoroutineContext().ensureActive()
                     if (e is ApiException && e.status == 401) failure(e)
                 }
                 delay(3_000)

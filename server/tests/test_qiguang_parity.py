@@ -177,6 +177,7 @@ class NativeParityTests(unittest.TestCase):
         native.request = request
         service = CodexService(connection=native)
         writers = Mock()
+        writers.preview_scope.return_value = ['thread']
         service.writers = writers
         writers.preview.return_value = {'ticket': 'preview', 'affectedThreadIds': ['thread'], 'requiresConfirmation': False}
         writers.consume.return_value = {'threadId': 'thread', 'holders': []}

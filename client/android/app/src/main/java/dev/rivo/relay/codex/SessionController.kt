@@ -4,6 +4,8 @@ import dev.rivo.relay.data.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 data class SessionState(val id: String? = null, val snapshot: SessionSnapshot? = null, val loading: Boolean = false, val stale: Boolean = false,
     val historyCursor: String? = null, val loadingEarlier: Boolean = false, val earlierLoaded: Boolean = false,
@@ -17,19 +19,22 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
     private val onSnapshot: (String, org.json.JSONObject) -> Unit = { _, _ -> },
     private val onVisible: (String?) -> Unit = {},
     private val slowReadMillis: Long = 3000,
-    private val readTimeoutMillis: Long = 10000,
+    private val readTimeoutMillis: Long = JSON_READ_TIMEOUT_MILLIS,
+    private val sync: NodeSessionSync? = null,
     private val failure: (Throwable) -> Unit) {
     private val mutable = MutableStateFlow(SessionState())
     val state = mutable.asStateFlow()
     private val pendingByThread = linkedMapOf<String, List<PendingNativeMessage>>()
     private val changedPendingClients = mutableSetOf<String>()
     private val resolvedPending = mutableMapOf<String, org.json.JSONObject>()
+    private var pendingLoaded = false
     private var activeJob: Job? = null
     private var updates: Channel<Unit>? = null
     private var generation = 0L
     private var controlEpoch = 0L
     private var historyEpoch = 0L
     private var historyJob: Job? = null
+    private var historyDepthTarget: SessionSnapshot? = null
     private val requestedHistoryCursors = mutableSetOf<String>()
     init {
         scope.launch {
@@ -45,11 +50,12 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                 }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { failure(e) }
+            finally { pendingLoaded = true; changedPendingClients.clear(); resolvedPending.clear() }
         }
     }
     private fun isCurrent(id: String, targetGeneration: Long) = mutable.value.id == id && generation == targetGeneration
     private fun message(error: Exception) = if (error is ApiException) error.message else api.describeFailure(error)
-    private fun invalidateHistory() { historyEpoch++; historyJob?.cancel(); historyJob = null; requestedHistoryCursors.clear() }
+    private fun invalidateHistory() { historyEpoch++; historyJob?.cancel(); historyJob = null; historyDepthTarget = null; requestedHistoryCursors.clear() }
     fun dismissReadError() { mutable.update { it.copy(readError = null, historyError = null) } }
     fun open(id: String, online: Boolean = true) {
         pause()
@@ -61,7 +67,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
             // Cancel the old transport immediately; retain read-only content while no route exists.
             activeJob = scope.launch {
                 var cached: SessionSnapshot? = null
-                try { if (mutable.value.snapshot == null) cached = store?.loadSnapshot(id)?.let(::sessionSnapshot) }
+                try { if (mutable.value.snapshot == null) cached = store?.loadSnapshot(id)?.let { withContext(Dispatchers.Default) { sessionSnapshot(it) } } }
                 catch (e: Exception) { if (e is CancellationException) throw e }
                 if (isCurrent(id, targetGeneration)) mutable.update {
                     it.copy(snapshot = it.snapshot ?: cached, loading = false, stale = true, controlNotice = "网络不可用，恢复连接并同步后才能操作")
@@ -73,41 +79,63 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         activeJob = scope.launch {
             var reading = false
             var eventCursor: String? = null
-            var lastSaved: String? = null
             val pendingDeltas = mutableListOf<org.json.JSONObject>()
-            fun flushDeltas() {
-                if (pendingDeltas.isEmpty()) return
+            val deltaLock = Mutex()
+            var indexedMessages: List<NativeMessage>? = null
+            var messageIndex: NativeMessageIndex? = null
+            suspend fun flushDeltas() = deltaLock.withLock {
+                if (pendingDeltas.isEmpty()) return@withLock
                 val batch = pendingDeltas.toList(); pendingDeltas.clear()
                 val current = mutable.value
-                var snapshot = current.snapshot
-                if (reading || current.stale || snapshot == null) { signals.trySend(Unit); return }
-                for (event in batch) {
-                    snapshot = snapshot?.applyLiveDelta(event)
-                    if (snapshot == null) { signals.trySend(Unit); return }
+                val snapshot = current.snapshot
+                if (reading || current.stale || snapshot == null) { signals.trySend(Unit); return@withLock }
+                val capturedControl = controlEpoch
+                val capturedHistory = historyEpoch
+                val updated = withContext(Dispatchers.Default) {
+                    if (indexedMessages !== snapshot.messages) {
+                        messageIndex = NativeMessageIndex(snapshot.messages)
+                        indexedMessages = snapshot.messages
+                    }
+                    snapshot.applyLiveDeltas(batch, messageIndex!!)
                 }
-                mutable.update { it.copy(snapshot = snapshot) }
+                if (updated == null || !isCurrent(id, targetGeneration) || controlEpoch != capturedControl ||
+                    historyEpoch != capturedHistory || mutable.value.stale || mutable.value.snapshot !== snapshot) {
+                    signals.trySend(Unit); return@withLock
+                }
+                indexedMessages = updated.messages
+                mutable.update { it.copy(snapshot = updated) }
             }
             // Match QiGuang's 150 ms live presentation cadence; terminal events flush immediately.
             launch { while (isActive) { delay(150); flushDeltas() } }
             // Subscribe before first snapshot. Buffered notifications coalesce into another authoritative read.
             launch {
                 while (isActive) {
-                    try { api.events(id, eventCursor).collect { event ->
+                    try { (sync?.events() ?: api.events(id, eventCursor)).collect { event ->
                         if (isCurrent(id, targetGeneration)) {
                             event.cursor?.let { eventCursor = it.takeIf(String::isNotBlank) }
                             val params = event.payload.optJSONObject("params")
-                            val eventThread = params?.string("threadId").orEmpty()
-                            // The bus also carries other threads. They must not trigger history reads.
+                            val method = event.payload.string("method")
+                            val eventThread = params?.string("threadId")?.ifBlank { params.string("conversationId") }.orEmpty()
+                            val eventThreads = params?.optJSONArray("threadIds")
+                            // Empty threadIds means a metadata-only disconnect. It must not
+                            // disable an unrelated live writer or trigger its history reads.
                             if (eventThread.isNotEmpty() && eventThread != id) return@collect
+                            if (eventThreads != null && (0 until eventThreads.length()).none { eventThreads.optString(it) == id }) return@collect
+                            val writerDisconnected = event.type == "native" && method in setOf("relay/writerDisconnected", "relay/nativeDisconnected")
+                            if (writerDisconnected) {
+                                pendingDeltas.clear()
+                                invalidateControl("会话 writer 已断开，正在重新核验恢复条件")
+                                mutable.update { it.copy(snapshot = it.snapshot?.copy(requests = emptyList())) }
+                            }
                             if (event.type == "native" && params?.has("relayOffset") == true &&
-                                event.payload.string("method") in setOf("item/agentMessage/delta", "item/commandExecution/outputDelta")) {
+                                supportsLiveDelta(method)) {
                                 pendingDeltas += event.payload
                                 if (pendingDeltas.size >= 128) flushDeltas()
                                 return@collect
                             }
                             if (event.type == "native" && event.payload.string("method") == "relay/ownershipChanged")
                                 invalidateControl("会话权限已变化，正在重新确认")
-                            val historyInvalidated = event.type == "reset" || (event.type == "native" &&
+                            val historyInvalidated = writerDisconnected || event.type == "reset" || (event.type == "native" &&
                                 event.payload.string("method") == "relay/historyInvalidated")
                             if (historyInvalidated) pendingDeltas.clear() else flushDeltas()
                             if (historyInvalidated) {
@@ -133,7 +161,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
             launch { while (isActive) { delay(5000); signals.trySend(Unit) } }
             if (mutable.value.snapshot == null) {
                 try {
-                    val cached = store?.loadSnapshot(id)?.let(::sessionSnapshot)
+                    val cached = store?.loadSnapshot(id)?.let { withContext(Dispatchers.Default) { sessionSnapshot(it) } }
                     if (cached != null && isCurrent(id, targetGeneration)) mutable.update { it.copy(snapshot = cached, stale = true) }
                 } catch (e: Exception) { if (e is CancellationException) throw e }
             }
@@ -150,46 +178,53 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                 }
                 try {
                     reading = true
-                    val json = withTimeout(readTimeoutMillis) { api.call("/v1/threads/" + encoded(id)) }
-                    val head = sessionSnapshot(json)
+                    val json = withTimeout(readTimeoutMillis) { sync?.read(id, freshAfterNanos = readStarted) ?: api.call("/v1/threads/" + encoded(id)) }
+                    val head = withContext(Dispatchers.Default) { sessionSnapshot(json) }
                     require(head.id == id) { "节点返回了其他会话，请重新同步" }
-                    val previous = mutable.value
-                    val snapshot = if (head.nativeReady && previous.earlierLoaded &&
-                        head.nativeRevision != null && previous.snapshot?.nativeRevision != head.nativeRevision)
-                        withTimeout((readTimeoutMillis - (System.nanoTime() - readStarted) / 1_000_000).coerceAtLeast(1)) {
-                            loadHistoryDepth(id, head, previous.snapshot)
-                        } else head
                     if ((System.nanoTime() - readStarted) / 1_000_000 >= readTimeoutMillis)
                         throw ApiException(408, "control_timeout", "会话同步超时，等待重新确认操作权限")
                     if (requestControlEpoch != controlEpoch) { signals.trySend(Unit); continue }
                     if (isCurrent(id, targetGeneration) && requestHistoryEpoch == historyEpoch) {
+                        val previous = mutable.value
+                        val revisionChanged = head.nativeReady && head.nativeRevision != null &&
+                            previous.snapshot?.nativeRevision != head.nativeRevision
+                        val restoreTarget = if (revisionChanged) historyDepthTarget ?: previous.snapshot?.takeIf { previous.earlierLoaded } else null
+                        val snapshot = head
+                        val keepEarlier = previous.earlierLoaded && (snapshot.nativeRevision == null || snapshot.nativeRevision == previous.snapshot?.nativeRevision)
+                        val projected = withContext(Dispatchers.Default) {
+                            when {
+                                !snapshot.nativeReady && previous.snapshot != null -> snapshot.copy(
+                                    messages = mergeConvergingMessages(previous.snapshot.messages, snapshot.messages),
+                                    turnSettings = mergeConvergingTurnSettings(previous.snapshot.turnSettings, snapshot.turnSettings),
+                                    reviewDiagnostics = mergeTurnDiagnostics(previous.snapshot.reviewDiagnostics, snapshot.reviewDiagnostics),
+                                    nativeRevision = previous.snapshot.nativeRevision, historyCursor = previous.historyCursor)
+                                keepEarlier -> snapshot.copy(messages = previous.snapshot?.let { mergeHistoryMessages(it, snapshot) } ?: snapshot.messages,
+                                    turnSettings = mergeLatestTurnSettings(previous.snapshot?.turnSettings.orEmpty(), snapshot.turnSettings),
+                                    reviewDiagnostics = mergeTurnDiagnostics(previous.snapshot?.reviewDiagnostics.orEmpty(), snapshot.reviewDiagnostics))
+                                else -> snapshot
+                            }
+                        }
+                        if (!isCurrent(id, targetGeneration) || requestControlEpoch != controlEpoch || requestHistoryEpoch != historyEpoch ||
+                            mutable.value.snapshot !== previous.snapshot) { signals.trySend(Unit); continue }
+                        slowRead.cancel()
+                        reading = false
+                        if (revisionChanged) invalidateHistory()
                         reconcilePending(id, snapshot)
                         mutable.update { current ->
-                            val keepEarlier = current.earlierLoaded && (snapshot.nativeRevision == null ||
-                                snapshot.nativeRevision == current.snapshot?.nativeRevision)
-                            current.copy(snapshot = when {
-                                !snapshot.nativeReady && current.snapshot != null -> snapshot.copy(
-                                    messages = mergeConvergingMessages(current.snapshot.messages, snapshot.messages),
-                                    turnSettings = mergeConvergingTurnSettings(current.snapshot.turnSettings, snapshot.turnSettings),
-                                    reviewDiagnostics = mergeTurnDiagnostics(current.snapshot.reviewDiagnostics, snapshot.reviewDiagnostics),
-                                    nativeRevision = current.snapshot.nativeRevision, historyCursor = current.historyCursor)
-                                keepEarlier -> snapshot.copy(messages = mergeLatestMessages(current.snapshot?.messages.orEmpty(), snapshot.messages),
-                                    turnSettings = mergeLatestTurnSettings(current.snapshot?.turnSettings.orEmpty(), snapshot.turnSettings),
-                                    reviewDiagnostics = mergeTurnDiagnostics(current.snapshot?.reviewDiagnostics.orEmpty(), snapshot.reviewDiagnostics))
-                                else -> snapshot
-                            }, loading = false, stale = false, readError = null, controlNotice = null,
+                            current.copy(snapshot = projected, loading = false, stale = false, readError = null, controlNotice = null,
+                                earlierLoaded = if (revisionChanged) false else current.earlierLoaded,
+                                loadingEarlier = if (revisionChanged) false else current.loadingEarlier,
+                                historyError = if (revisionChanged) null else current.historyError,
                                 lastConfirmedControl = SessionState(snapshot = snapshot).control().takeUnless { it.state == ControlState.UNKNOWN } ?: current.lastConfirmedControl,
                                 historyCursor = if (!snapshot.nativeReady || keepEarlier) current.historyCursor else snapshot.historyCursor)
                         }
+                        // Publish current permissions before restoring old visible depth.
+                        // Slow pagination must never consume the control-read timeout.
+                        if (restoreTarget != null && snapshot.historyCursor != null)
+                            restoreHistoryDepth(id, targetGeneration, snapshot, restoreTarget)
                         // Fresh live control/history is authoritative even while persistence catches up.
                         onSnapshot(id, json)
-                        if (snapshot.nativeReady) {
-                            val serialized = json.toString()
-                            if (serialized != lastSaved) {
-                                try { store?.saveSnapshot(id, json); lastSaved = serialized }
-                                catch (e: Exception) { if (e is CancellationException) throw e }
-                            }
-                        }
+                        if (snapshot.nativeReady) store?.enqueueSnapshot(id, json)
                     }
                 } catch (e: Exception) {
                     // Transport reset cancels a Call, not this session. Only a
@@ -209,8 +244,8 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
     }
     fun beginSubmission(threadId: String, submissionId: String, input: org.json.JSONArray,
         kind: String = "turn", clientId: String = submissionId) {
-        val parts = (0 until input.length()).mapNotNull { input.optJSONObject(it)?.let { part -> org.json.JSONObject(part.toString()) } }
-        changedPendingClients += clientId
+        val parts = (0 until input.length()).mapNotNull { input.optJSONObject(it)?.let(::copyJsonObject) }
+        if (!pendingLoaded) changedPendingClients += clientId
         pendingByThread.keys.toList().filter { it != threadId }.forEach { old ->
             pendingByThread[old] = pendingByThread[old].orEmpty().filterNot { it.clientId == clientId }
             publishPending(old)
@@ -234,8 +269,8 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         else -> message.copy(delivery = "unknown")
     }
     fun resolveSubmission(submissionId: String, response: org.json.JSONObject) {
-        resolvedPending[submissionId] = org.json.JSONObject(response.toString())
-        store?.resolvePendingMessage(submissionId, response)
+        if (!pendingLoaded) resolvedPending[submissionId] = copyJsonObject(response)
+        store?.enqueueResolvePendingMessage(submissionId, response)
         pendingByThread.keys.toList().forEach { id ->
             pendingByThread[id] = pendingByThread[id].orEmpty().mapNotNull { message ->
                 if (message.submissionId != submissionId) message
@@ -245,16 +280,20 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         }
     }
     private fun reconcilePending(id: String, snapshot: SessionSnapshot) {
+        if (pendingLoaded && pendingByThread[id].isNullOrEmpty()) return
         val clientIds = snapshot.messages.filter { it.type in setOf("userMessage", "user_message") }
             .map { it.raw.string("clientId") }.filter(String::isNotBlank).toSet()
         // A trusted live user item hides the overlay, but only persisted native
         // history can retire its crash-recovery receipt and input bytes.
-        val persistedClients = if (snapshot.nativeReady) clientIds else emptySet()
+        val candidates = if (pendingLoaded) pendingByThread[id].orEmpty().mapTo(hashSetOf()) { it.clientId } else clientIds
+        val persistedClients = if (snapshot.nativeReady) clientIds.intersect(candidates) else emptySet()
         val queueIds = snapshot.queue.map { it.id }.toSet()
-        changedPendingClients += persistedClients
-        persistedClients.forEach { store?.removePendingMessage(it) }
+        val newlyPersisted = persistedClients - changedPendingClients
+        if (!pendingLoaded) changedPendingClients += persistedClients
+        store?.enqueueRemovePendingMessages(newlyPersisted)
         pendingByThread[id].orEmpty().filter { it.kind == "queue" && it.clientId in queueIds }.forEach {
-            changedPendingClients += it.clientId; store?.removePendingMessage(it.clientId)
+            if (!pendingLoaded) changedPendingClients += it.clientId
+            store?.enqueueRemovePendingMessages(setOf(it.clientId))
         }
         pendingByThread[id] = pendingByThread[id].orEmpty().filterNot {
             it.clientId in persistedClients || it.kind == "queue" && it.clientId in queueIds
@@ -262,12 +301,16 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         publishPending(id)
     }
     private fun publishPending(id: String) {
-        mutable.update { it.copy(pendingMessages = pendingByThread[it.id].orEmpty(), overlayRevision = it.overlayRevision + 1) }
+        mutable.update {
+            val next = pendingByThread[it.id].orEmpty()
+            if (it.pendingMessages == next) it else it.copy(pendingMessages = next, overlayRevision = it.overlayRevision + 1)
+        }
         if (pendingByThread[id]?.isEmpty() == true) pendingByThread.remove(id)
     }
     /** Fence reads started before a disconnect or mutation; they cannot restore permission. */
     fun invalidateControl(notice: String = "操作结果已变化，正在重新确认会话权限") {
         controlEpoch++
+        sync?.invalidate()
         mutable.update { it.copy(stale = true, controlNotice = notice) }
         refresh()
     }
@@ -288,7 +331,8 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         mutable.update { it.copy(loadingEarlier = true, historyError = null) }
         historyJob = scope.launch {
             try {
-                val page = sessionSnapshot(api.call(historyPagePath(id, cursor, current.snapshot?.nativeRevision)))
+                val json = withTimeout(readTimeoutMillis) { api.call(historyPagePath(id, cursor, current.snapshot?.nativeRevision)) }
+                val page = withContext(Dispatchers.Default) { sessionSnapshot(json) }
                 require(page.id == id) { "节点返回了其他会话，请重新同步" }
                 if (!page.nativeReady || current.snapshot?.nativeRevision != null && page.nativeRevision != current.snapshot.nativeRevision)
                     throw ApiException(409, "history_changed", "会话历史已更新")
@@ -296,15 +340,16 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                     val latest = mutable.value
                     if (current.snapshot?.nativeRevision != latest.snapshot?.nativeRevision)
                         throw ApiException(409, "history_changed", "会话历史已更新")
-                    reconcilePending(id, page)
-                    mutable.update { it.copy(
-                        snapshot = it.snapshot?.copy(messages = prependNativePage(page.messages, it.snapshot.messages),
-                            turnSettings = prependTurnSettings(page.turnSettings, it.snapshot.turnSettings),
-                            reviewDiagnostics = mergeTurnDiagnostics(page.reviewDiagnostics, it.snapshot.reviewDiagnostics)),
-                        historyCursor = page.historyCursor?.takeUnless { it in requestedHistoryCursors }, earlierLoaded = true, loadingEarlier = false, historyError = null) }
+                    val cursorAfter = page.historyCursor?.takeUnless { it in requestedHistoryCursors }
+                    if (publishHistory(id, requestGeneration, requestHistoryEpoch, page.nativeRevision, cursorAfter, false) { base ->
+                        base.copy(messages = prependNativePage(page.messages, base.messages),
+                            turnSettings = prependTurnSettings(page.turnSettings, base.turnSettings),
+                            reviewDiagnostics = mergeTurnDiagnostics(page.reviewDiagnostics, base.reviewDiagnostics))
+                    }) reconcilePending(id, page)
                 }
             } catch (e: Exception) {
-                if (e !is CancellationException && isCurrent(id, requestGeneration) && historyEpoch == requestHistoryEpoch) {
+                if (e is CancellationException) currentCoroutineContext().ensureActive()
+                if (isCurrent(id, requestGeneration) && historyEpoch == requestHistoryEpoch) {
                     mutable.update { it.copy(loadingEarlier = false) }
                     if (e is ApiException && e.status == 401) failure(e)
                     else if (e is ApiException && e.status == 409) {
@@ -324,27 +369,86 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         "/v1/threads/${encoded(id)}?cursor=${encoded(cursor)}&limit=30" +
             revision?.let { "&nativeRevision=${encoded(it)}" }.orEmpty()
 
-    /** Rebuild already visible depth after a native revision changes; never splice revision domains. */
-    private suspend fun loadHistoryDepth(id: String, head: SessionSnapshot, previous: SessionSnapshot?): SessionSnapshot {
-        val previousTurns = previous?.turnSettings.orEmpty().map { it.turnId }
-        val oldest = previousTurns.firstOrNull()
-        var snapshot = head
-        val visited = mutableSetOf<String>()
-        while (snapshot.historyCursor != null && (snapshot.turnSettings.size < previousTurns.size ||
-                oldest != null && snapshot.turnSettings.none { it.turnId == oldest })) {
-            val cursor = snapshot.historyCursor ?: break
-            if (!visited.add(cursor)) return snapshot.copy(historyCursor = null)
-            val page = sessionSnapshot(api.call(historyPagePath(id, cursor, head.nativeRevision)))
-            require(page.id == id) { "节点返回了其他会话，请重新同步" }
-            if (!page.nativeReady || page.nativeRevision != head.nativeRevision)
-                throw ApiException(409, "history_changed", "会话历史正在更新，稍后自动同步")
-            snapshot = snapshot.copy(messages = prependNativePage(page.messages, snapshot.messages),
-                turnSettings = prependTurnSettings(page.turnSettings, snapshot.turnSettings),
-                reviewDiagnostics = mergeTurnDiagnostics(page.reviewDiagnostics, snapshot.reviewDiagnostics),
-                historyCursor = page.historyCursor?.takeUnless { it in visited })
+    private suspend fun publishHistory(id: String, generation: Long, epoch: Long, revision: String?, cursor: String?,
+        loading: Boolean? = null, project: (SessionSnapshot) -> SessionSnapshot): Boolean {
+        while (isCurrent(id, generation) && historyEpoch == epoch) {
+            val base = mutable.value.snapshot ?: return false
+            if (base.nativeRevision != revision) return false
+            val updated = withContext(Dispatchers.Default) { project(base) }
+            if (!isCurrent(id, generation) || historyEpoch != epoch) return false
+            if (mutable.value.snapshot !== base) continue
+            mutable.update { it.copy(snapshot = updated, historyCursor = cursor, earlierLoaded = true,
+                loadingEarlier = loading ?: it.loadingEarlier, historyError = null) }
+            return true
         }
-        requestedHistoryCursors.clear()
-        return snapshot
+        return false
+    }
+
+    private fun mergeHistoryMessages(restored: SessionSnapshot, latest: SessionSnapshot): List<NativeMessage> {
+        // Empty native turns still delimit the authoritative current suffix.
+        // Message-only boundaries would discard restored history when that suffix has no items.
+        val firstTurn = latest.turnSettings.firstOrNull()?.turnId
+        val boundary = restored.turnSettings.indexOfFirst { it.turnId == firstTurn }
+        if (boundary < 0) return mergeLatestMessages(restored.messages, latest.messages)
+        val olderTurns = restored.turnSettings.take(boundary).mapTo(hashSetOf()) { it.turnId }
+        return restored.messages.filter { it.turnId in olderTurns } + latest.messages
+    }
+
+    /** Restore old visible depth independently; merge only history, never stale control. */
+    private fun restoreHistoryDepth(id: String, targetGeneration: Long, head: SessionSnapshot, previous: SessionSnapshot) {
+        val targetEpoch = historyEpoch
+        historyDepthTarget = previous
+        mutable.update { it.copy(loadingEarlier = true, historyError = null) }
+        historyJob = scope.launch {
+            val previousTurns = previous.turnSettings.map { it.turnId }
+            val oldest = previousTurns.firstOrNull()
+            var snapshot = head
+            val visited = mutableSetOf<String>()
+            try {
+                while (snapshot.historyCursor != null && (snapshot.turnSettings.size < previousTurns.size ||
+                        oldest != null && snapshot.turnSettings.none { it.turnId == oldest })) {
+                    val cursor = snapshot.historyCursor ?: break
+                    if (!visited.add(cursor)) break
+                    val json = withTimeout(readTimeoutMillis) { api.call(historyPagePath(id, cursor, head.nativeRevision)) }
+                    val page = withContext(Dispatchers.Default) { sessionSnapshot(json) }
+                    require(page.id == id) { "节点返回了其他会话，请重新同步" }
+                    if (!page.nativeReady || page.nativeRevision != head.nativeRevision)
+                        throw ApiException(409, "history_changed", "会话历史正在更新，稍后自动同步")
+                    if (!isCurrent(id, targetGeneration) || historyEpoch != targetEpoch) return@launch
+                    if (mutable.value.snapshot?.nativeRevision != head.nativeRevision) return@launch
+                    snapshot = withContext(Dispatchers.Default) {
+                        snapshot.copy(messages = prependNativePage(page.messages, snapshot.messages),
+                            turnSettings = prependTurnSettings(page.turnSettings, snapshot.turnSettings),
+                            reviewDiagnostics = mergeTurnDiagnostics(page.reviewDiagnostics, snapshot.reviewDiagnostics),
+                            historyCursor = page.historyCursor?.takeUnless { it in visited })
+                    }
+                    if (!publishHistory(id, targetGeneration, targetEpoch, head.nativeRevision, snapshot.historyCursor) { latest ->
+                        latest.copy(messages = mergeHistoryMessages(snapshot, latest),
+                            turnSettings = mergeLatestTurnSettings(snapshot.turnSettings, latest.turnSettings),
+                            reviewDiagnostics = mergeTurnDiagnostics(snapshot.reviewDiagnostics, latest.reviewDiagnostics))
+                    }) return@launch
+                    reconcilePending(id, page)
+                }
+                if (isCurrent(id, targetGeneration) && historyEpoch == targetEpoch) {
+                    historyDepthTarget = null
+                    requestedHistoryCursors.clear()
+                    requestedHistoryCursors.addAll(visited)
+                    mutable.update { it.copy(loadingEarlier = false) }
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) currentCoroutineContext().ensureActive()
+                if (isCurrent(id, targetGeneration) && historyEpoch == targetEpoch) {
+                    historyDepthTarget = null
+                    mutable.update { it.copy(loadingEarlier = false) }
+                    if (e is ApiException && e.status == 401) failure(e)
+                    else if (e is ApiException && e.status == 409) {
+                        invalidateHistory()
+                        mutable.update { it.copy(earlierLoaded = false, historyCursor = null, historyError = null) }
+                        refresh()
+                    } else mutable.update { it.copy(historyError = message(e)) }
+                }
+            }
+        }
     }
     fun pause() {
         onVisible(null)

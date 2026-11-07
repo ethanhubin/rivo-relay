@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import io
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -117,6 +118,29 @@ def _rollout_reader(path):
         yield io.BufferedReader(reader)
 
 
+def _fingerprint(stat):
+    # ctime detects same-size rewrites even when a caller restores mtime.
+    return [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
+
+
+def _prefix_digest(stream, length):
+    """Validate every old byte before trusting cached lifecycle state.
+
+    JSON decoding is incremental; byte verification intentionally remains O(n).
+    Inode/size and a tail sample alone cannot detect an in-place middle rewrite
+    followed by an append. Bound memory while retaining that correctness guard.
+    """
+    digest = hashlib.sha256()
+    stream.seek(0)
+    while length:
+        chunk = stream.read(min(length, 1024 * 1024))
+        if not chunk:
+            raise NativeHistoryReprojectionError('Codex 历史在检查时已截断，请重试')
+        digest.update(chunk)
+        length -= len(chunk)
+    return digest
+
+
 def inspect_journal(home, thread_id, known=None):
     storage = thread_storage(home, thread_id)
     if storage is None:
@@ -125,23 +149,47 @@ def inspect_journal(home, thread_id, known=None):
     before = path.stat()
     if before.st_size > MAX_ROLLOUT_BYTES:
         raise NativeHistoryReprojectionError('Codex 历史超过本次安全检查大小限制')
-    fingerprint = [before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns]
-    # Relay caches lifecycle metadata only. The host still checks metadata path,
-    # process identity, the real writer lock and the entire file identity.
-    if isinstance(known, dict) and known.get('fingerprint') == fingerprint and not known.get('changing'):
+    fingerprint = _fingerprint(before)
+    known = known if isinstance(known, dict) and not known.get('changing') else {}
+    scan = known.get('scan') or {}
+    same_source = (scan.get('path') == str(path) and scan.get('historyMode') == history_mode
+                   and scan.get('threadId') == thread_id)
+    if same_source and known.get('fingerprint') == fingerprint:
         return {'available': True, 'journal': known.get('journal'), 'writerBusy': writer_busy(home, thread_id),
                 'changing': False, 'historyMode': history_mode, 'compressed': path.suffix == '.zst',
-                'workspaceRoot': cwd, 'fingerprint': fingerprint}
+                'workspaceRoot': cwd, 'fingerprint': fingerprint, 'scan': scan,
+                'historyEpoch': known.get('historyEpoch')}
     latest = None
     partial = False
-    total = 0
-    record_count = 0
+    total = record_count = 0
+    digest = hashlib.sha256()
+    epoch = ''
+    previous = known.get('fingerprint') or []
+    offset = scan.get('offset')
+    incremental = (same_source and path.suffix != '.zst' and len(previous) == 5
+                   and previous[:2] == fingerprint[:2] and type(offset) is int
+                   and offset == previous[2] and 0 < offset < before.st_size
+                   and isinstance(scan.get('digest'), str)
+                   and type(scan.get('records')) is int and 0 < scan['records'] <= MAX_RECORDS)
     with _rollout_reader(path) as stream:
+        if path.suffix != '.zst' and _fingerprint(os.fstat(stream.fileno())) != fingerprint:
+            raise NativeHistoryReprojectionError('Codex 历史在打开时已变化，请重试')
+        if incremental:
+            digest = _prefix_digest(stream, offset)
+            incremental = digest.hexdigest() == scan['digest']
+            if not incremental:
+                digest = hashlib.sha256()
+                stream.seek(0)
+        if incremental:
+            total, record_count = offset, scan['records']
+            latest = dict(known['journal']) if known.get('journal') else None
+            epoch = known.get('historyEpoch') or epoch
         while True:
             line = stream.readline(MAX_RECORD_BYTES + 1)
             if not line:
                 break
             total += len(line); record_count += 1
+            digest.update(line)
             if len(line) > MAX_RECORD_BYTES or total > MAX_ROLLOUT_BYTES or record_count > MAX_RECORDS:
                 raise NativeHistoryReprojectionError('Codex 历史记录超过安全检查大小限制')
             if not line.endswith(b'\n'):
@@ -164,6 +212,8 @@ def inspect_journal(home, thread_id, known=None):
             if record.get('type') != 'event_msg':
                 continue
             kind, turn_id = payload.get('type'), payload.get('turn_id')
+            if kind in ('thread_rolled_back', 'turn_rolled_back', 'history_rewritten'):
+                epoch = hashlib.sha256((epoch + digest.hexdigest()).encode()).hexdigest()
             if kind in ('task_started', 'task_complete', 'turn_aborted') and (not isinstance(turn_id, str) or not THREAD_ID.fullmatch(turn_id)):
                 raise NativeHistoryReprojectionError('Codex 原生历史缺少可核对的 turn ID')
             if kind == 'task_started' and isinstance(turn_id, str) and THREAD_ID.fullmatch(turn_id):
@@ -174,10 +224,19 @@ def inspect_journal(home, thread_id, known=None):
     after = path.stat()
     if not record_count:
         raise NativeHistoryReprojectionError('Codex 原生历史缺少 session_meta')
-    changed = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+    changed = fingerprint != _fingerprint(after)
+    if not incremental:
+        # Concurrent cold readers of the same immutable bytes get one epoch;
+        # replacement, truncation or same-inode mutation still changes it.
+        epoch = hashlib.sha256(json.dumps([str(path), history_mode, thread_id,
+            fingerprint, digest.hexdigest()]).encode()).hexdigest()
+    # No raw content crosses the helper boundary. Partial/racing reads are not
+    # cacheable. Compressed files use a full decode whenever their identity changes.
+    scan = {'path': str(path), 'threadId': thread_id, 'historyMode': history_mode,
+            'offset': total, 'records': record_count, 'digest': digest.hexdigest()}
     return {'available': True, 'journal': latest, 'writerBusy': writer_busy(home, thread_id),
             'changing': changed or partial, 'historyMode': history_mode, 'compressed': path.suffix == '.zst',
-            'workspaceRoot': cwd, 'fingerprint': [after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns]}
+            'workspaceRoot': cwd, 'fingerprint': _fingerprint(after), 'scan': scan, 'historyEpoch': epoch}
 
 
 def writer_busy(home, thread_id):
@@ -202,11 +261,13 @@ def writer_busy(home, thread_id):
 def dispatch(request):
     home = verify_runtime(request['runtime'])
     if request['operation'] == 'activity':
-        states = {}
+        states, inspections = {}, {}
+        known = request.get('known') or {}
         for thread_id in request['threadIds']:
             if not writer_busy(home, thread_id):
                 continue
-            inspected = inspect_journal(home, thread_id)
+            inspected = inspect_journal(home, thread_id, known.get(thread_id))
+            inspections[thread_id] = inspected
             journal = inspected.get('journal') or {}
             # A lock alone only proves ownership; idle Desktop sessions hold it too.
             if inspected.get('changing') or not inspected.get('writerBusy'):
@@ -216,7 +277,7 @@ def dispatch(request):
             elif journal.get('status') in ('completed', 'interrupted', 'failed'):
                 states[thread_id] = 'idle'
         verify_runtime(request['runtime'])
-        return {'states': states}
+        return {'states': states, 'inspections': inspections}
     thread_id = request['threadId']
     before = inspect_journal(home, thread_id, request.get('known') if request['operation'] == 'inspect' else None)
     if request['operation'] == 'inspect':

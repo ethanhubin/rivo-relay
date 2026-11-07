@@ -7,7 +7,8 @@ never passed to that daemon as though they were native paths.
 from __future__ import annotations
 
 import base64
-from contextlib import nullcontext
+from collections import OrderedDict
+from contextlib import nullcontext, contextmanager, ExitStack
 import hashlib
 import http.client
 import ipaddress
@@ -26,6 +27,7 @@ from pathlib import Path
 from PIL import Image, ImageOps
 
 from .codex.connection import CodexError
+from .operation_gates import ThreadGates
 
 IMAGE_LIMIT = 64 * 1024 * 1024
 PROXY_IMAGE_LIMIT = 40 * 1024 * 1024
@@ -189,6 +191,15 @@ class MediaService:
         for path in (self.cache, self.library): path.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._lock = threading.RLock()
         self._cache_lock = threading.RLock()
+        self._resources = ThreadGates()
+        self._pins = {}
+        self._last_prune = float('-inf')
+        self._verified_media = OrderedDict()
+        self._record_cache = {}
+        self._library_stamp = None
+        self._library_scan_at = 0
+        self._library_values = []
+        self._library_threads = {}
         self._ingest_lock = threading.Lock()
         self._slots = threading.BoundedSemaphore(2)
         self._wake, self._stop = threading.Event(), threading.Event()
@@ -207,34 +218,67 @@ class MediaService:
             os.replace(temporary, target)
         finally: temporary.unlink(missing_ok=True)
 
-    def _prune(self, protected=()):
-        files = sorted((p for p in self.cache.iterdir() if p.is_file()), key=lambda p: p.stat().st_mtime)
-        total = sum(p.stat().st_size for p in files)
-        for file in files:
-            if file in protected: continue
-            if time.time() - file.stat().st_mtime > 86400 or total > 2 * MEDIA_LIMIT:
-                size = file.stat().st_size
-                file.unlink(missing_ok=True); total -= size
+    @contextmanager
+    def _pin(self, *paths):
+        with self._cache_lock:
+            for path in paths: self._pins[path] = self._pins.get(path, 0) + 1
+        try:
+            yield
+        finally:
+            with self._cache_lock:
+                for path in paths:
+                    self._pins[path] -= 1
+                    if not self._pins[path]: self._pins.pop(path)
+
+    def _prune(self, protected=(), *, force=False):
+        from stat import S_ISREG
+        with self._cache_lock:
+            now = time.time()
+            if not force and now - self._last_prune < 5: return
+            self._last_prune = now
+            files = []
+            for path in self.cache.iterdir():
+                try:
+                    stat = path.stat()
+                except FileNotFoundError:
+                    # A concurrent download/thumbnail can finish or remove its
+                    # temporary file between directory enumeration and stat.
+                    continue
+                if S_ISREG(stat.st_mode):
+                    files.append((path, stat))
+            files.sort(key=lambda entry: entry[1].st_mtime)
+            total = sum(stat.st_size for _, stat in files)
+            for path, stat in files:
+                if path in protected or path in self._pins: continue
+                if now - stat.st_mtime > 86400 or total > 2 * MEDIA_LIMIT:
+                    path.unlink(missing_ok=True); total -= stat.st_size
 
     def resolve(self, source, *, thumbnail=False, _open=False):
         if not isinstance(source, str) or not source or len(source) > 8192 or '\0' in source:
             raise MediaError('媒体来源无效', code='invalid_media_source', http_status=400)
-        if not self._slots.acquire(False):
-            raise MediaError('媒体处理繁忙', code='media_busy', http_status=429)
-        try:
-            # Serial publication/pruning prevents deleting a representation while it is prepared.
+        native = not source.startswith(('http://', 'https://'))
+        generation = str(getattr(getattr(self.codex, 'connection', None), 'generation', ''))
+        key = hashlib.sha256(('native:' + generation + source if native else source).encode()).hexdigest()
+        # Coalesce one resource, not all resources. A slow origin cannot hold
+        # the publication lock or delay an unrelated cached representation.
+        with self._resources.hold(key), ExitStack() as leases:
+            manifest = self.cache / (key + '.json')
+            leases.enter_context(self._pin(manifest))
+            cached = read_record(manifest)
+            download = self.codex.prepare_download(source) if native else None
+            valid = cached and (cached.get('etag') == download['etag'] if native else time.time() - cached.get('time', 0) < 3600)
+            original = self.cache / str(cached.get('file', 'missing')) if valid else None
             with self._cache_lock:
-                native = not source.startswith(('http://', 'https://'))
-                generation = str(getattr(getattr(self.codex, 'connection', None), 'generation', ''))
-                key = hashlib.sha256(('native:' + generation + source if native else source).encode()).hexdigest()
-                cached = read_record(self.cache / (key + '.json'))
-                download = self.codex.prepare_download(source) if native else None
-                valid = cached and (cached.get('etag') == download['etag'] if native else time.time() - cached.get('time', 0) < 3600)
-                original = self.cache / str(cached.get('file', 'missing')) if valid else None
-                if original is None or not original.is_file():
-                    self._prune()
-                    temporary = self.cache / (uuid.uuid4().hex + '.tmp')
-                    try:
+                if original is not None and original.is_file():
+                    leases.enter_context(self._pin(original))
+                else: original = None
+            if original is None:
+                if not self._slots.acquire(False):
+                    raise MediaError('媒体处理繁忙', code='media_busy', http_status=429)
+                temporary = self.cache / (uuid.uuid4().hex + '.tmp')
+                try:
+                    with self._pin(temporary):
+                        self._prune(force=True)
                         declared = ''
                         if native:
                             if download['size'] > MEDIA_LIMIT: raise MediaError('媒体过大', code='media_too_large', http_status=413)
@@ -246,18 +290,21 @@ class MediaService:
                         mime, suffix = media_type(temporary, declared)
                         if not native and mime.startswith('image/') and temporary.stat().st_size > PROXY_IMAGE_LIMIT:
                             raise MediaError('公开图片超过 40 MiB', code='media_too_large', http_status=413)
-                        with temporary.open('rb') as stream:
-                            digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+                        with temporary.open('rb') as stream: digest = hashlib.file_digest(stream, 'sha256').hexdigest()
                         original = self.cache / (digest + suffix)
-                        if not original.exists(): os.replace(temporary, original)
                         cached = {'file': original.name, 'mime': mime, 'etag': download['etag'] if native else '"sha256-' + digest + '"', 'time': time.time(), 'sha256': digest}
-                        atomic_json(self.cache / (key + '.json'), cached)
-                    finally: temporary.unlink(missing_ok=True)
-                original.touch()
-                result = self._thumbnail(original, cached['sha256']) if thumbnail else (original, cached['mime'], '"sha256-' + cached['sha256'] + '"')
-                self._prune(protected=(original, result[0], self.cache / (key + '.json')))
+                        with self._cache_lock:
+                            if not original.exists(): os.replace(temporary, original)
+                            leases.enter_context(self._pin(original))
+                            atomic_json(manifest, cached)
+                finally:
+                    temporary.unlink(missing_ok=True)
+                    self._slots.release()
+            original.touch()
+            result = self._thumbnail(original, cached['sha256'], leases=leases) if thumbnail else (original, cached['mime'], '"sha256-' + cached['sha256'] + '"')
+            self._prune(protected=(original, result[0], manifest))
+            with self._cache_lock:
                 return (result[0].open('rb'), result[1], result[2]) if _open else result
-        finally: self._slots.release()
 
     def open_source(self, source, *, thumbnail=False):
         # Acquire the immutable representation before pruning can unlink it.
@@ -267,35 +314,63 @@ class MediaService:
 
     def open_stored(self, identity, *, thumbnail=False):
         with self._lock:
-            with self._cache_lock:
-                path, mime, etag = self.stored(identity, thumbnail=thumbnail)
-                return path.open('rb'), mime, etag
+            record = self._record(identity)
+            if record.get('status') != 'ready': raise MediaError('媒体正在登记', code='media_pending', http_status=409)
+            path = self.library / record['file']
+            if not path.is_file() or path.is_symlink(): raise MediaError('媒体已移除', code='media_not_found', http_status=404)
+            stream = path.open('rb')
+        try:
+            stat = os.fstat(stream.fileno())
+            fingerprint = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, record['sha256'])
+            with self._lock: verified = self._verified_media.get(identity) == fingerprint
+            if not verified:
+                digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+                after = os.fstat(stream.fileno())
+                if digest != record['sha256'] or (after.st_size, after.st_mtime_ns, after.st_ctime_ns) != (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns):
+                    raise MediaError('媒体已变化', code='media_changed', http_status=409)
+                with self._lock:
+                    self._verified_media[identity] = fingerprint
+                    self._verified_media.move_to_end(identity)
+                    while len(self._verified_media) > 512: self._verified_media.popitem(last=False)
+            stream.seek(0)
+            if not thumbnail:
+                return stream, record['mime'], '"sha256-' + record['sha256'] + '"'
+            with ExitStack() as leases:
+                target, mime, etag = self._thumbnail(stream, record['sha256'], leases=leases)
+                with self._cache_lock: result = target.open('rb'), mime, etag
+            stream.close()
+            return result
+        except BaseException:
+            stream.close()
+            raise
 
-    def _thumbnail(self, original, digest):
-        with self._cache_lock:
-            return self._thumbnail_locked(original, digest)
-
-    def _thumbnail_locked(self, original, digest):
+    def _thumbnail(self, original, digest, *, leases=None):
         target = self.cache / (digest + '-' + THUMBNAIL_PROFILE + '.webp')
-        if not target.is_file():
-            temporary = self.cache / (uuid.uuid4().hex + '.tmp')
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter('error', Image.DecompressionBombWarning)
-                    with Image.open(original) as opened:
-                        if opened.width * opened.height > 80_000_000: raise ValueError('pixel limit')
-                        image = ImageOps.exif_transpose(opened)
-                        image.thumbnail((1536, 1536), Image.Resampling.LANCZOS)
-                        if image.mode not in ('RGB', 'RGBA'): image = image.convert('RGBA' if 'transparency' in image.info else 'RGB')
-                        image.save(temporary, format='WEBP', quality=82, method=4)
-                with temporary.open('rb') as stream: os.fsync(stream.fileno())
-                os.replace(temporary, target)
-            except (OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
-                raise MediaError('此媒体无法生成图片预览', code='invalid_thumbnail', http_status=415) from error
-            finally: temporary.unlink(missing_ok=True)
-        with target.open('rb') as stream: etag = '"sha256-' + hashlib.file_digest(stream, 'sha256').hexdigest() + '"'
-        target.touch()
-        return target, 'image/webp', etag
+        with self._resources.hold('thumbnail:' + digest), self._pin(target):
+            if not target.is_file():
+                if not self._slots.acquire(False):
+                    raise MediaError('媒体处理繁忙', code='media_busy', http_status=429)
+                temporary = self.cache / (uuid.uuid4().hex + '.tmp')
+                try:
+                    with self._pin(temporary), warnings.catch_warnings():
+                        warnings.simplefilter('error', Image.DecompressionBombWarning)
+                        with Image.open(original) as opened:
+                            if opened.width * opened.height > 80_000_000: raise ValueError('pixel limit')
+                            image = ImageOps.exif_transpose(opened)
+                            image.thumbnail((1536, 1536), Image.Resampling.LANCZOS)
+                            if image.mode not in ('RGB', 'RGBA'): image = image.convert('RGBA' if 'transparency' in image.info else 'RGB')
+                            image.save(temporary, format='WEBP', quality=82, method=4)
+                        with temporary.open('rb') as stream: os.fsync(stream.fileno())
+                        with self._cache_lock: os.replace(temporary, target)
+                except (OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
+                    raise MediaError('此媒体无法生成图片预览', code='invalid_thumbnail', http_status=415) from error
+                finally:
+                    temporary.unlink(missing_ok=True)
+                    self._slots.release()
+            with target.open('rb') as stream: etag = '"sha256-' + hashlib.file_digest(stream, 'sha256').hexdigest() + '"'
+            target.touch()
+            if leases is not None: leases.enter_context(self._pin(target))
+            return target, 'image/webp', etag
 
     @staticmethod
     def _identity(thread_id, turn_id, item_id):
@@ -353,7 +428,11 @@ class MediaService:
 
     def _drain(self, limit):
         processed = 0
-        for manifest in self.library.glob('*.json'):
+        with self._lock:
+            self._library_index()
+            pending = [r['id'] for r in reversed(self._library_values) if r.get('status') == 'pending']
+        for identity in pending:
+            manifest = self.library / (identity + '.json')
             record = read_record(manifest)
             if not record or record.get('status') != 'pending': continue
             try:
@@ -434,29 +513,50 @@ class MediaService:
             'originalUrl': f'/v1/media/library/{identity}/content', 'thumbnailUrl': f'/v1/media/library/{identity}/thumbnail',
             'name': 'Codex 生成图片' if record.get('nativeType') else record.get('name', '已保存媒体'),
             'contentPath': f'/v1/media/library/{identity}/content', 'thumbnailPath': f'/v1/media/library/{identity}/thumbnail',
-            'provenance': {'facts': facts, 'promptKind': 'original' if facts.get('prompt') else 'revised' if facts.get('revisedPrompt') or facts.get('revised_prompt') else 'unknown',
+            'provenance': {'facts': dict(facts), 'promptKind': 'original' if facts.get('prompt') else 'revised' if facts.get('revisedPrompt') or facts.get('revised_prompt') else 'unknown',
                 'requestInformation': 'only recorded native facts; unrecorded engine request remains unknown'}}
+
+    def _library_index(self):
+        stat = self.library.stat()
+        stamp = (stat.st_mtime_ns, stat.st_ctime_ns)
+        now = time.monotonic()
+        # All Relay writes replace manifests atomically (directory stamp changes).
+        # A periodic stat pass also discovers external in-place metadata edits.
+        if stamp == self._library_stamp and now - self._library_scan_at < 1:
+            return
+        cache = {}
+        for path in self.library.glob('*.json'):
+            try: stat = path.stat()
+            except FileNotFoundError: continue
+            fingerprint = (stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+            previous = self._record_cache.get(path)
+            record = previous[1] if previous and previous[0] == fingerprint else read_record(path)
+            # Never retain pending base64 image bytes in the listing index.
+            if record is not None: record = {key: value for key, value in record.items() if key != 'result'}
+            cache[path] = (fingerprint, record)
+        self._record_cache = cache
+        self._library_values = sorted((record for _, record in cache.values() if record and record.get('status') != 'deleted'),
+                                      key=lambda record: record.get('createdAt', 0), reverse=True)
+        self._library_threads = {}
+        for record in self._library_values:
+            self._library_threads.setdefault(record.get('threadId'), []).append(record)
+        self._library_stamp, self._library_scan_at = stamp, now
 
     def list(self, thread_id=None, favorite=False, generated=False, source=None):
         with self._lock:
-            records = [read_record(path) for path in self.library.glob('*.json')]
-            values = [r for r in records if r and r.get('status') != 'deleted' and (not thread_id or r.get('threadId') == thread_id)
-                      and (source is None or r.get('source') == source)
-                      and (not favorite or r.get('favorite')) and (not generated or r.get('nativeType') == 'imageGeneration')]
-            return [self._public(r) for r in sorted(values, key=lambda r: r.get('createdAt', 0), reverse=True)[:500]]
+            self._library_index()
+            records = self._library_threads.get(thread_id, []) if thread_id else self._library_values
+            values = (r for r in records if (source is None or r.get('source') == source)
+                      and (not favorite or r.get('favorite')) and (not generated or r.get('nativeType') == 'imageGeneration'))
+            from itertools import islice
+            return [self._public(r) for r in islice(values, 500)]
 
     def info(self, identity):
         with self._lock: return self._public(self._record(identity))
 
     def stored(self, identity, thumbnail=False):
-        with self._lock:
-            record = self._record(identity)
-            if record.get('status') != 'ready': raise MediaError('媒体正在登记', code='media_pending', http_status=409)
-            path = self.library / record['file']
-            if not path.is_file() or path.is_symlink(): raise MediaError('媒体已移除', code='media_not_found', http_status=404)
-            with path.open('rb') as stream: digest = hashlib.file_digest(stream, 'sha256').hexdigest()
-            if digest != record['sha256']: raise MediaError('媒体已变化', code='media_changed', http_status=409)
-            return self._thumbnail(path, digest) if thumbnail else (path, record['mime'], '"sha256-' + digest + '"')
+        stream, mime, etag = self.open_stored(identity, thumbnail=thumbnail)
+        with stream: return Path(stream.name), mime, etag
 
     def favorite(self, identity, value):
         if not isinstance(value, bool): raise MediaError('收藏状态无效', code='invalid_request', http_status=400)

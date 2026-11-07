@@ -5,7 +5,7 @@ shared by the catalog and detail views; no second execution history is stored.
 """
 
 
-def execution_projection(status, queue=(), *, read_only=False, requests=()):
+def execution_projection(status, queue=(), *, read_only=False, requests=(), ownership_unverified=False):
     running = status in ('running', 'waiting')
     recovery = next((item for item in queue if item.get('recoveryRequired')), None)
     waiting = [item for item in queue if item.get('status') == 'waiting']
@@ -22,18 +22,22 @@ def execution_projection(status, queue=(), *, read_only=False, requests=()):
         'deliveryState': delivery, 'displayState': display,
         'queueDepth': len(waiting), 'recoveryRequired': recovery is not None,
         'hasOutstandingWork': running or bool(queue), 'recoveryTask': recovery,
-        'blockReason': ('external_turn_active' if read_only and running else
+        'blockReason': ('ownership_unverified' if ownership_unverified else
+                        'external_turn_active' if read_only and running else
                         'recovery_required' if recovery else
                         'external_writer_idle' if read_only and waiting else None),
     }
 
 
-def control_projection(*, read_only, released, workspace_unavailable, runtime):
+def control_projection(*, read_only, released, workspace_unavailable, runtime, ownership_unverified=False):
     state = ('workspace_unavailable' if workspace_unavailable else 'released' if released
              else 'external' if read_only else 'writable')
     if runtime.get('connected') is False:
         return {'state': 'unknown', 'canOperate': False, 'action': None,
                 'unavailableReason': '原生运行时未连接，等待重新确认操作权限'}
+    if ownership_unverified and not workspace_unavailable and not released:
+        return {'state': 'ownership_unverified', 'canOperate': False, 'action': None,
+                'unavailableReason': '暂时无法核验会话写权限；历史仍可查看，请重新核验后再操作'}
     action = ('resume' if state == 'released' else 'release' if state == 'writable'
               else 'takeover' if runtime.get('handoffAvailable') or runtime.get('handoffCheckAvailable') else None)
     return {'state': state, 'canOperate': state == 'writable', 'action': action,

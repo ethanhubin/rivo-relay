@@ -4,6 +4,7 @@ from __future__ import annotations
 from functools import lru_cache
 from dataclasses import replace
 from collections import OrderedDict
+from contextlib import contextmanager
 import json
 from pathlib import Path
 import threading
@@ -69,6 +70,48 @@ class NativeJournal:
     def generation(self, thread_id):
         return self._converger.generation(thread_id)
 
+    @contextmanager
+    def read_scope(self, thread_id, *, head_limit=1):
+        """Pin the host and share only this read's official projection pages."""
+        previous = getattr(self._local, 'connection', None)
+        binder = getattr(self._connection, 'history_host_connection', None)
+        self._local.connection = previous or (binder(thread_id) if binder else self._connection)
+        pinned = self._local.connection
+        generation = pinned.generation
+        if previous is None:
+            self._local.read_epoch = None
+        try:
+            with self.history_adapter.read_scope(head_limit=head_limit):
+                yield
+                if generation != pinned.generation:
+                    raise CodexError('原生运行时已更换，请重新读取历史', code='history_changed', http_status=409)
+                if previous is None and self._local.read_epoch is not None and self._local.read_epoch != self.generation(thread_id):
+                    raise CodexError('原生历史已重建，请重新读取历史', code='history_changed', http_status=409)
+        finally:
+            if previous is None:
+                self._local.__dict__.pop('connection', None)
+                self._local.__dict__.pop('read_epoch', None)
+            else:
+                self._local.connection = previous
+
+    def history_epoch(self, thread_id):
+        key = (str(self.connection.generation), thread_id)
+        if getattr(self._local, 'inspection_key', None) == key:
+            return (getattr(self._local, 'inspection', None) or {}).get('historyEpoch')
+        with self._inspection_lock:
+            return (self._inspections.get(key) or {}).get('historyEpoch')
+
+    def _remember(self, key, result):
+        with self._inspection_lock:
+            if result.get('available') and not result.get('changing'):
+                self._inspections[key] = {field: result.get(field) for field in
+                    ('fingerprint', 'journal', 'changing', 'scan', 'historyEpoch')}
+                self._inspections.move_to_end(key)
+                while len(self._inspections) > 128:
+                    self._inspections.popitem(last=False)
+            else:
+                self._inspections.pop(key, None)
+
     def cached_host(self, thread_id):
         binder = getattr(self._connection, 'history_host_connection', None)
         connection = binder(thread_id) if binder else self._connection
@@ -87,10 +130,20 @@ class NativeJournal:
             connection = binder(thread_id) if binder else self._connection
             groups.setdefault(connection, []).append(thread_id)
         states = {}
-        for connection, ids in groups.items():
+        batches = ((connection, ids[index:index + 32]) for connection, ids in groups.items()
+                   for index in range(0, len(ids), 32))
+        for connection, ids in batches:
             try:
                 self._local.connection = connection
-                states.update(self._call(ids[0], 'activity', threadIds=ids).get('states', {}))
+                generation = str(connection.generation)
+                with self._inspection_lock:
+                    known = {tid: self._inspections[(generation, tid)] for tid in ids
+                             if (generation, tid) in self._inspections}
+                result = self._call(ids[0], 'activity', threadIds=ids, known=known)
+                states.update(result.get('states', {}))
+                for tid, inspection in result.get('inspections', {}).items():
+                    if tid in ids:
+                        self._remember((generation, tid), inspection)
             except CodexError:
                 # Unverified hosts cannot turn unknown execution into idle.
                 pass
@@ -120,7 +173,9 @@ class NativeJournal:
             from .host_probe import local_native_host_info
             from .native_history_host import dispatch
             from .native_reprojection import NativeHistoryReprojectionError
-            current = self.connection.native_host_info() if runtime.get('identityMethod') == 'relay-owned-child' else local_native_host_info(self.connection)
+            current = (self.connection.native_host_info() if runtime.get('identityMethod') == 'relay-owned-child'
+                       else local_native_host_info(self.connection, refresh=True) if operation == 'repair'
+                       else local_native_host_info(self.connection))
             if current != runtime or generation != str(self.connection.generation):
                 with self._descriptor_lock:
                     self._hosts.pop(generation, None)
@@ -134,7 +189,8 @@ class NativeJournal:
             return result
         payload = json.dumps({'sources': _sources(), 'request': request}, ensure_ascii=True, separators=(',', ':'))
         response = self.connection.request('command/exec', {'command': ['python3', '-c', _BOOTSTRAP, payload],
-            'timeoutMs': 240000 if operation == 'repair' else 30000, 'outputBytesCap': 16384},
+            'timeoutMs': 240000 if operation == 'repair' else 30000,
+            'outputBytesCap': 131072 if operation == 'activity' else 16384},
             timeout=250 if operation == 'repair' else 35)
         if generation != str(self.connection.generation):
             raise CodexError('原生运行时已更换，请重新读取历史', code='history_changed', http_status=409)
@@ -154,15 +210,9 @@ class NativeJournal:
         with self._inspection_lock:
             known = self._inspections.get(key)
         result = self._call(thread_id, 'inspect', known=known)
-        with self._inspection_lock:
-            if result.get('available') and not result.get('changing'):
-                self._inspections[key] = {field: result.get(field) for field in ('fingerprint', 'journal', 'changing')}
-                self._inspections.move_to_end(key)
-                while len(self._inspections) > 128:
-                    self._inspections.popitem(last=False)
-            else:
-                self._inspections.pop(key, None)
+        self._remember(key, result)
         self._local.inspection = result
+        self._local.inspection_key = key
         return result
 
     def _journal(self, thread_id):
@@ -186,13 +236,16 @@ class NativeJournal:
         return NativeJournalWatermark(watermark['turnId'], watermark['status']) if watermark else None
 
     def _projection(self, thread_id):
-        page = self.history_adapter.read_page(self.connection, thread_id, limit=1)
+        page = self.history_adapter.read_head(self.connection, thread_id)
+        self._local.projection_ids = {turn['id'] for turn in page.turns}
         if not page.turns:
             return None
         turn = page.turns[-1]
         return NativeProjectionWatermark(turn['id'], turn['status'])
 
     def _contains(self, thread_id, turn_id):
+        if turn_id in getattr(self._local, 'projection_ids', ()):
+            return True
         cursor = None
         seen = set()
         for _ in range(100):
@@ -206,14 +259,24 @@ class NativeJournal:
         return False
 
     def _busy(self, thread_id):
-        return bool(self._inspect(thread_id).get('writerBusy'))
+        # This observation only selects convergence vs repair. Repair always
+        # rechecks the real lock and full journal in the host immediately before
+        # attempting publication; a cached idle lock can never authorize repair.
+        inspection = getattr(self._local, 'inspection', None)
+        return bool((inspection if inspection is not None else self._inspect(thread_id)).get('writerBusy'))
 
     def _repair(self, thread_id):
         current = self._inspect(thread_id)
         if current.get('writerBusy') or current.get('changing'):
             return False
-        result = self._call(thread_id, 'repair', fingerprint=current.get('fingerprint'),
-                            workspaceRoot=current.get('workspaceRoot') or getattr(self._local, 'workspace_root', ''))
+        self.history_adapter.invalidate(thread_id)
+        try:
+            result = self._call(thread_id, 'repair', fingerprint=current.get('fingerprint'),
+                                workspaceRoot=current.get('workspaceRoot') or getattr(self._local, 'workspace_root', ''))
+        finally:
+            self.history_adapter.invalidate(thread_id)
+            with self._inspection_lock:
+                self._inspections.pop((str(self.connection.generation), thread_id), None)
         if result.get('reprojected'):
             self.on_repaired(thread_id, result)
         return bool(result.get('reprojected'))
@@ -224,18 +287,18 @@ class NativeJournal:
                                            journal_check='unsupported')
         self._local.workspace_root = workspace_root
         self._local.inspection = None
+        self._local.inspection_key = None
+        self._local.projection_ids = set()
         self._local.journal_check = 'verified'
-        binder = getattr(self._connection, 'history_host_connection', None)
         try:
             # Probe, filesystem helper and persisted RPC must use the exact
             # pinned writer even if auto preference changes during this read.
-            self._local.connection = binder(thread_id) if binder else self._connection
-            result = self._converger.ensure_consistent(thread_id, expected_turn_id=expected_turn_id)
+            with self.read_scope(thread_id):
+                result = self._converger.ensure_consistent(thread_id, expected_turn_id=expected_turn_id)
+                self._local.read_epoch = result.generation
         except CodexError as error:
             result = NativeConvergenceResult('unavailable', self.generation(thread_id),
                                              int(time.time()), error=str(error))
-        finally:
-            self._local.__dict__.pop('connection', None)
         inspection = getattr(self._local, 'inspection', None) or {}
         # An incomplete final append is not corruption and must never be repaired.
         if inspection.get('changing') and inspection.get('writerBusy'):

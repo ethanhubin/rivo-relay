@@ -8,6 +8,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
@@ -29,12 +30,20 @@ internal fun ChatMarkdownTable(
   onOpenLink: (String) -> Unit,
   onOpenImage: (String) -> Unit,
 ) {
-  if (shouldRenderMarkdownTableAsCards(table)) {
+  var visibleRows by rememberSaveable(messageId, blockIndex) { mutableIntStateOf(MARKDOWN_TABLE_BATCH_SIZE) }
+  val visibleTable = remember(table, visibleRows) { table.copy(rows = table.rows.take(visibleRows)) }
+  val cards = remember(table) { shouldRenderMarkdownTableAsCards(table) }
+  Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+  if (table.rows.size > MARKDOWN_TABLE_BATCH_SIZE) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    TextButton(onClick = { onCopyText(markdownTableSource(table)) }, modifier = Modifier.testTag("markdown_table_copy_all")) { Text("复制完整表格") }
+    if (onQuoteText != null) TextButton(onClick = { onQuoteText(markdownTableSource(table)) }, modifier = Modifier.testTag("markdown_table_quote_all")) { Text("引用完整表格") }
+  }
+  if (cards) {
     Column(
       modifier = Modifier.fillMaxWidth().testTag("markdown_table_${messageId}_$blockIndex"),
       verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-      table.rows.forEachIndexed { rowIndex, row ->
+      visibleTable.rows.forEachIndexed { rowIndex, row -> key(rowIndex) {
         MarkdownTableCard(
           table = table,
           row = row,
@@ -44,11 +53,11 @@ internal fun ChatMarkdownTable(
           onOpenLink = onOpenLink,
           onOpenImage = onOpenImage,
         )
-      }
+      } }
     }
   } else {
     MarkdownTableGrid(
-      table = table,
+      table = visibleTable,
       testTag = "markdown_table_${messageId}_$blockIndex",
       onCopyText = onCopyText,
       onQuoteText = onQuoteText,
@@ -56,6 +65,17 @@ internal fun ChatMarkdownTable(
       onOpenImage = onOpenImage,
     )
   }
+  if (visibleRows < table.rows.size) TextButton(
+    onClick = { visibleRows = (visibleRows + MARKDOWN_TABLE_BATCH_SIZE).coerceAtMost(table.rows.size) },
+    modifier = Modifier.testTag("markdown_table_show_more")) { Text("继续显示 ${minOf(MARKDOWN_TABLE_BATCH_SIZE, table.rows.size - visibleRows)} 行（共 ${table.rows.size} 行）") }
+  }
+}
+
+internal const val MARKDOWN_TABLE_BATCH_SIZE = 24
+internal fun markdownTableSource(table: ChatMarkdownBlock.Table): String = table.source.ifEmpty {
+  (listOf(table.headers.joinToString(" | "), table.alignments.joinToString(" | ") {
+    when (it) { MarkdownTableAlignment.CENTER -> ":---:"; MarkdownTableAlignment.END -> "---:"; else -> "---" }
+  }) + table.rows.map { it.joinToString(" | ") }).joinToString("\n")
 }
 
 @Composable
@@ -243,13 +263,14 @@ private fun MarkdownTableCell(
 @Composable
 private fun renderMarkdownTableCell(markdown: String): AnnotatedString {
   val colors = MaterialTheme.colorScheme
-  return remember(markdown, colors.primary, colors.surfaceContainerHighest, colors.onSurfaceVariant) {
-    renderChatMarkdown(markdown, colors.primary, colors.surfaceContainerHighest, colors.onSurfaceVariant)
+  val parsed = rememberParsedChatMarkdown(markdown)
+  return remember(parsed, colors.primary, colors.surfaceContainerHighest, colors.onSurfaceVariant) {
+    parsed.styled(colors.primary, colors.surfaceContainerHighest, colors.onSurfaceVariant)
   }
 }
 
 private fun markdownTableCellIsCompact(markdown: String): Boolean =
-  markdown.replace(Regex("[\\\\`*_~]"), "").length <= 8
+  markdown.count { it !in "\\`*_~" } <= 8
 
 private fun markdownTableTextAlign(alignment: MarkdownTableAlignment): TextAlign =
   when (alignment) {

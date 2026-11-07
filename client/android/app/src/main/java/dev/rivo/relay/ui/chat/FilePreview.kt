@@ -84,7 +84,11 @@ private suspend fun imageBytes(source: String, readFile: suspend (String) -> JSO
     }
     val file = readFileSource(source, readFile)
     require(file.string("encoding") == "base64") { "节点返回的内容不是图片" }
-    return Base64.decode(file.string("dataBase64"), Base64.DEFAULT)
+    return withContext(Dispatchers.Default) {
+        val encoded = file.string("dataBase64")
+        require(encoded.length <= 28 * 1024 * 1024) { "单张图片最大支持 20 MiB" }
+        Base64.decode(encoded, Base64.DEFAULT).also { require(it.size <= MAX_PREVIEW_BYTES) { "单张图片最大支持 20 MiB" } }
+    }
 }
 
 @Composable
@@ -105,7 +109,8 @@ internal fun NativeImage(source: String, readFile: suspend (String) -> JSONObjec
     val context = LocalContext.current
     val nativeCache = LocalNativeFileCache.current
     val mediaClient = LocalCodexMediaClient.current
-    val forwardSource = if (source.startsWith("/v1/media/") || source.startsWith("data:")) LocalMediaAssets.current.firstOrNull { it.string("originalUrl") == source }?.string("source")?.takeIf(String::isNotBlank) else source
+    val mediaSources = mediaAssetsBySource()
+    val forwardSource = if (source.startsWith("/v1/media/") || source.startsWith("data:")) mediaSources[source]?.string("source")?.takeIf(String::isNotBlank) else source
     val previewEdge = (maxOf(windowSize.width, windowSize.height) / 2).coerceIn(1, 1536)
     LaunchedEffect(source, previewEdge, mediaClient, attempt) {
         error = null
@@ -178,7 +183,7 @@ internal fun FilePreviewDialog(path: String, readFile: suspend (String) -> JSONO
     var currentPath by remember(path) { mutableStateOf(initialPath) }
     var currentLine by remember(path) { mutableStateOf(requestedLine) }
     val mediaAssets = LocalMediaAssets.current
-    val mediaAsset = mediaAssets.firstOrNull { it.string("originalUrl") == currentPath || it.string("source") == currentPath }
+    val mediaAsset = mediaAssetsBySource()[currentPath]
     val name = if (currentPath.startsWith("/v1/media/")) "image." + (mediaAsset?.string("mimeType")?.substringAfter('/') ?: "png") else fileDisplayName(currentPath)
     var file by remember(currentPath) { mutableStateOf<JSONObject?>(null) }
     val mime = fileMimeType(name, mediaAsset?.string("mimeType") ?: file?.string("mimeType").orEmpty())

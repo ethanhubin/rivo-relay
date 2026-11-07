@@ -2,7 +2,7 @@ package dev.rivo.relay.codex
 
 import dev.rivo.relay.data.string
 
-enum class ControlState { WRITABLE, EXTERNAL, RELEASED, RELEASE_PENDING, WORKSPACE_UNAVAILABLE, UNKNOWN }
+enum class ControlState { WRITABLE, EXTERNAL, RELEASED, RELEASE_PENDING, WORKSPACE_UNAVAILABLE, UNVERIFIED, UNKNOWN }
 data class SessionControl(val state: ControlState, val action: String? = null, val reason: String = "") {
     val canOperate get() = state == ControlState.WRITABLE
 }
@@ -18,9 +18,11 @@ fun SessionState.control(): SessionControl {
         "released" -> ControlState.RELEASED
         "release_pending" -> ControlState.RELEASE_PENDING
         "workspace_unavailable" -> ControlState.WORKSPACE_UNAVAILABLE
+        "ownership_unverified" -> ControlState.UNVERIFIED
         else -> ControlState.UNKNOWN
     } else when {
         snapshot.workspaceUnavailable -> ControlState.WORKSPACE_UNAVAILABLE
+        snapshot.writerOwner == "unknown" -> ControlState.UNVERIFIED
         snapshot.readOnly && snapshot.writerOwner == "none" -> ControlState.RELEASED
         snapshot.readOnly -> ControlState.EXTERNAL
         else -> ControlState.WRITABLE
@@ -31,7 +33,7 @@ fun SessionState.control(): SessionControl {
             ControlState.EXTERNAL, ControlState.WORKSPACE_UNAVAILABLE -> "takeover".takeIf { snapshot.nativeRuntime?.optBoolean("handoffAvailable", true) != false }
             else -> null // Older nodes do not implement ordinary resume.
         }
-    return SessionControl(state, action.takeUnless { state == ControlState.UNKNOWN }, wire?.string("unavailableReason").orEmpty())
+    return SessionControl(state, action.takeUnless { state in setOf(ControlState.UNKNOWN, ControlState.UNVERIFIED) }, wire?.string("unavailableReason").orEmpty())
 }
 
 

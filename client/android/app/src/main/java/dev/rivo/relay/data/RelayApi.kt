@@ -1,6 +1,7 @@
 package dev.rivo.relay.data
 
 import java.io.IOException
+import java.io.InterruptedIOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -20,6 +21,11 @@ import org.json.JSONObject
 class ApiException(val status: Int, val code: String, override val message: String): IOException(message)
 data class RelayEvent(val type: String, val payload: JSONObject, val cursor: String? = null)
 
+// A large history response may keep making progress well beyond ten seconds.
+// Bound stalled reads separately from the total transfer, including shared reads.
+const val JSON_READ_TIMEOUT_MILLIS = 120_000L
+const val JSON_READ_IDLE_TIMEOUT_MILLIS = 30_000L
+
 /** Adapted from QiGuang HttpTransport: cancellable JSON and SSE, with Rivo envelopes and no write retry. */
 class RelayApi(private val base: String, private val token: String = "", private val dns: Dns = TailnetDns()) {
     fun describeFailure(error: Throwable) = connectionFailure(error, base)
@@ -28,14 +34,17 @@ class RelayApi(private val base: String, private val token: String = "", private
     private val transportLock = Any()
     private val reads = mutableSetOf<Call>()
     @Volatile private var client = newClient()
-    private var reader = client.newBuilder().retryOnConnectionFailure(true).build()
+    private fun readClient() = client.newBuilder().retryOnConnectionFailure(true)
+        .readTimeout(JSON_READ_IDLE_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
+        .callTimeout(JSON_READ_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS).build()
+    private var reader = readClient()
     private fun forgetRead(call: Call) { synchronized(transportLock) { reads.remove(call) } }
     /** A lost route can leave HTTP/2 sockets alive but unusable. Never replay or cancel writes here. */
     suspend fun resetTransport() = withContext(Dispatchers.IO) {
         val (old, obsolete) = synchronized(transportLock) {
             val old = client
             client = newClient()
-            reader = client.newBuilder().retryOnConnectionFailure(true).build()
+            reader = readClient()
             (old to reads.toList()).also { reads.clear() }
         }
         obsolete.forEach { it.cancel() }
@@ -47,13 +56,13 @@ class RelayApi(private val base: String, private val token: String = "", private
         if (method != "GET") builder.method(method, (body ?: JSONObject()).toString().toRequestBody("application/json".toMediaType()))
         return builder.build()
     }
-    suspend fun call(path: String, method: String = "GET", body: JSONObject? = null): JSONObject = suspendCancellableCoroutine { continuation ->
+    suspend fun call(path: String, method: String = "GET", body: JSONObject? = null): JSONObject = withContext(Dispatchers.Default) { suspendCancellableCoroutine { continuation ->
         val call = synchronized(transportLock) {
             (if (method == "GET") reader else client).newCall(request(path, method, body)).also { if (method == "GET") reads.add(it) }
         }
         continuation.invokeOnCancellation { call.cancel(); forgetRead(call) }
         call.enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) { forgetRead(call); if (continuation.isActive) continuation.resumeWithException(if (call.isCanceled()) CancellationException("Network route changed") else e) }
+            override fun onFailure(call: Call, e: IOException) { forgetRead(call); if (continuation.isActive) continuation.resumeWithException(if (call.isCanceled() && e !is InterruptedIOException) CancellationException("Network route changed") else e) }
             override fun onResponse(call: Call, response: Response) {
                 try {
                     response.use {
@@ -65,11 +74,11 @@ class RelayApi(private val base: String, private val token: String = "", private
                         }
                         if (continuation.isActive) continuation.resume(json)
                     }
-                } catch (e: Exception) { if (continuation.isActive) continuation.resumeWithException(if (call.isCanceled()) CancellationException("Network route changed") else e) }
+                } catch (e: Exception) { if (continuation.isActive) continuation.resumeWithException(if (call.isCanceled() && e !is InterruptedIOException) CancellationException("Network route changed") else e) }
                 finally { forgetRead(call) }
             }
         })
-    }
+    } }
     /** Stream through OkHttp; node credentials stay on this authenticated endpoint. */
     suspend fun uploadFile(threadId: String, name: String, file: java.io.File): JSONObject =
         uploadAttachment("/v1/threads/${encoded(threadId)}/attachments", name, file)

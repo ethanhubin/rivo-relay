@@ -11,6 +11,8 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Optional, Protocol
 
@@ -36,7 +38,10 @@ class NativeTurnPage:
 class NativeHistoryAdapter:
     """Versioned boundary around the experimental persisted-history RPCs."""
 
-    protocol_version = 1
+    protocol_version = 2
+    # Known renderable types, not a rejection allowlist: native can add display
+    # items without changing turn execution semantics. Preserve unknown items
+    # losslessly so the client can show an explicit unsupported-item fallback.
     supported_item_types = frozenset(
         {
             "agentMessage",
@@ -67,6 +72,33 @@ class NativeHistoryAdapter:
 
     def __init__(self, instance_id: Optional[str] = None) -> None:
         self.instance_id = instance_id or uuid.uuid4().hex
+        self._reads = threading.local()
+
+    @contextmanager
+    def read_scope(self, *, head_limit=1):
+        """Share validated pages within one HTTP read, never across requests.
+
+        The convergence watermark only needs the newest turn. Fetch the page
+        the caller will actually consume so that it also supplies that watermark.
+        """
+        previous = getattr(self._reads, 'scope', None)
+        if previous is not None:
+            yield
+            return
+        self._reads.scope = {'head_limit': head_limit, 'pages': {}}
+        try:
+            yield
+        finally:
+            del self._reads.scope
+
+    def invalidate(self, thread_id):
+        scope = getattr(self._reads, 'scope', None)
+        if scope:
+            scope['pages'] = {key: value for key, value in scope['pages'].items() if key[2] != thread_id}
+
+    def read_head(self, connection, thread_id):
+        scope = getattr(self._reads, 'scope', None)
+        return self.read_page(connection, thread_id, limit=scope['head_limit'] if scope else 1)
 
     def read_page(
         self,
@@ -76,6 +108,11 @@ class NativeHistoryAdapter:
         limit: int,
         cursor: Optional[str] = None,
     ) -> NativeTurnPage:
+        scope = getattr(self._reads, 'scope', None)
+        generation = getattr(connection, 'generation', None)
+        key = (id(connection), str(generation), thread_id, cursor, limit)
+        if scope and key in scope['pages']:
+            return scope['pages'][key]
         result = connection.request(
             "thread/turns/list",
             {
@@ -87,6 +124,8 @@ class NativeHistoryAdapter:
             },
             timeout=60,
         )
+        if generation != getattr(connection, 'generation', None):
+            raise NativeHistoryProtocolError('native connection changed during history read')
         if not isinstance(result, dict) or not isinstance(result.get("data"), list):
             raise NativeHistoryProtocolError(
                 "thread/turns/list returned an invalid page envelope"
@@ -106,11 +145,18 @@ class NativeHistoryAdapter:
             )
 
         newest_first.reverse()
-        return NativeTurnPage(
+        page = NativeTurnPage(
             turns=tuple(newest_first),
             next_cursor=next_cursor,
             backwards_cursor=backwards_cursor,
         )
+        if scope and cursor is None:
+            scope['pages'][key] = page
+            # contains() may walk many old pages. Only heads are reused, so
+            # never retain that entire walk (or multiple runtime generations).
+            while len(scope['pages']) > 2:
+                scope['pages'].pop(next(iter(scope['pages'])))
+        return page
 
     def native_revision(
         self,
@@ -167,7 +213,7 @@ class NativeHistoryAdapter:
                 f"turn {turn_id} has unsupported status {status}"
             )
         raw_items = raw_turn.get("items")
-        if not isinstance(raw_items, list):
+        if not isinstance(raw_items, list) or raw_turn.get("itemsView", "full") != "full":
             raise NativeHistoryProtocolError(f"turn {turn_id} does not contain full items")
 
         items: list[dict] = []
@@ -180,11 +226,7 @@ class NativeHistoryAdapter:
             item_id = cls._required_string(
                 raw_item, "id", f"turn {turn_id} item {item_index}"
             )
-            item_type = cls._required_string(raw_item, "type", f"item {item_id}")
-            if item_type not in cls.supported_item_types:
-                raise NativeHistoryProtocolError(
-                    f"item {item_id} has unsupported type {item_type}"
-                )
+            cls._required_string(raw_item, "type", f"item {item_id}")
             if item_id in item_ids:
                 raise NativeHistoryProtocolError(
                     f"turn {turn_id} contains duplicate item id {item_id}"
@@ -218,6 +260,6 @@ class NativeHistoryAdapter:
     @staticmethod
     def _required_string(value: dict, field: str, owner: str) -> str:
         raw = value.get(field)
-        if not isinstance(raw, str) or not raw.strip():
+        if not isinstance(raw, str) or not raw.strip() or raw != raw.strip():
             raise NativeHistoryProtocolError(f"{owner} has invalid {field}")
-        return raw.strip()
+        return raw

@@ -22,26 +22,25 @@ internal fun renderChatMarkdown(
   linkColor: Color,
   codeBackground: Color,
   quoteColor: Color,
-): AnnotatedString = buildAnnotatedString {
+): AnnotatedString = parsedChatMarkdown(markdown).styled(linkColor, codeBackground, quoteColor)
+
+internal fun renderMarkdownSyntax(markdown: String, budget: MarkdownScanBudget): AnnotatedString = buildAnnotatedString {
+  val linkColor = MARKDOWN_LINK_COLOR
+  val codeBackground = MARKDOWN_CODE_COLOR
+  val quoteColor = MARKDOWN_QUOTE_COLOR
   val lines = markdown.replace("\r\n", "\n").replace('\r', '\n').split('\n')
-  var fencedCode = false
+  var fence: MarkdownFence? = null
   lines.forEachIndexed { index, rawLine ->
-    val trimmed = rawLine.trimStart()
-    if (trimmed.startsWith("```")) {
-      fencedCode = !fencedCode
-    } else if (fencedCode) {
-      withStyle(
-        SpanStyle(
-          fontFamily = FontFamily.Monospace,
-          background = codeBackground,
-        )
-      ) {
-        append(rawLine)
-      }
+    var marker = false
+    if (fence != null) {
+      if (fence!!.closes(rawLine)) { fence = null; marker = true }
+      else withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = codeBackground)) { append(rawLine) }
     } else {
-      appendMarkdownLine(rawLine, linkColor, codeBackground, quoteColor)
+      val opening = markdownFenceAt(rawLine)
+      if (opening != null) { fence = opening; marker = true }
+      else appendMarkdownLine(rawLine, linkColor, codeBackground, quoteColor, budget)
     }
-    if (index != lines.lastIndex && !trimmed.startsWith("```")) append('\n')
+    if (index != lines.lastIndex && !marker) append('\n')
   }
 }
 
@@ -52,6 +51,7 @@ internal sealed interface ChatMarkdownBlock {
     val headers: List<String>,
     val alignments: List<MarkdownTableAlignment>,
     val rows: List<List<String>>,
+    val source: String = "",
   ) : ChatMarkdownBlock
 }
 
@@ -64,7 +64,7 @@ internal fun parseChatMarkdownBlocks(markdown: String): List<ChatMarkdownBlock> 
   val blocks = mutableListOf<ChatMarkdownBlock>()
   var textStart = 0
   var index = 0
-  var fencedCode = false
+  var fence: MarkdownFence? = null
 
   fun appendText(endExclusive: Int) {
     val text = lines.subList(textStart, endExclusive).joinToString("\n").trim('\n')
@@ -72,13 +72,14 @@ internal fun parseChatMarkdownBlocks(markdown: String): List<ChatMarkdownBlock> 
   }
 
   while (index < lines.size) {
-    val trimmed = lines[index].trimStart()
-    if (trimmed.startsWith("```")) {
-      fencedCode = !fencedCode
+    if (fence != null) {
+      if (fence!!.closes(lines[index])) fence = null
       index += 1
       continue
     }
-    if (!fencedCode && index + 1 < lines.size) {
+    markdownFenceAt(lines[index])?.let { fence = it }
+    if (fence != null) { index += 1; continue }
+    if (index + 1 < lines.size) {
       val headers = parseMarkdownTableRow(lines[index])
       val alignments = headers?.let { parseMarkdownTableSeparator(lines[index + 1], it.size) }
       if (headers != null && alignments != null) {
@@ -86,11 +87,13 @@ internal fun parseChatMarkdownBlocks(markdown: String): List<ChatMarkdownBlock> 
         val rows = mutableListOf<List<String>>()
         var rowIndex = index + 2
         while (rowIndex < lines.size && lines[rowIndex].isNotBlank()) {
-          val row = parseMarkdownTableRow(lines[rowIndex])?.takeIf { it.size == headers.size } ?: break
-          rows += row
+          if (markdownFenceAt(lines[rowIndex]) != null) break
+          val row = parseMarkdownTableRow(lines[rowIndex]) ?: break
+          if (row.size > headers.size) break // Preserve extra cells as visible text instead of dropping data.
+          rows += row + List(headers.size - row.size) { "" }
           rowIndex += 1
         }
-        blocks += ChatMarkdownBlock.Table(headers, alignments, rows)
+        blocks += ChatMarkdownBlock.Table(headers, alignments, rows, lines.subList(index, rowIndex).joinToString("\n"))
         index = rowIndex
         textStart = rowIndex
         continue
@@ -122,14 +125,21 @@ private fun parseMarkdownTableSeparator(
 }
 
 private fun parseMarkdownTableRow(line: String): List<String>? {
+  return try { parseMarkdownTableRow(line, MarkdownScanBudget(line.length)) } catch (_: MarkdownScanLimit) { null }
+}
+
+private fun parseMarkdownTableRow(line: String, budget: MarkdownScanBudget): List<String>? {
   val source = line.trim()
   if (source.isEmpty()) return null
   val cells = mutableListOf<String>()
   val cell = StringBuilder()
   var escaped = false
-  var inCode = false
+  var codeTicks = 0
   var delimiterCount = 0
-  source.forEach { character ->
+  var index = 0
+  while (index < source.length) {
+    budget.consume()
+    val character = source[index]
     when {
       escaped -> {
         if (character != '|') cell.append('\\')
@@ -138,27 +148,32 @@ private fun parseMarkdownTableRow(line: String): List<String>? {
       }
       character == '\\' -> escaped = true
       character == '`' -> {
-        inCode = !inCode
-        cell.append(character)
+        val count = markdownRunLength(source, index, '`')
+        if (codeTicks == count) codeTicks = 0
+        else if (codeTicks == 0 && findCodeSpanEnd(source, index + count, count, budget) >= 0) codeTicks = count
+        cell.append("`".repeat(count))
+        index += count
+        continue
       }
-      character == '|' && !inCode -> {
+      character == '|' && codeTicks == 0 -> {
         cells += cell.toString().trim()
         cell.clear()
         delimiterCount += 1
       }
       else -> cell.append(character)
     }
+    index++
   }
   if (escaped) cell.append('\\')
   cells += cell.toString().trim()
   if (delimiterCount == 0) return null
   if (source.startsWith('|') && cells.firstOrNull().isNullOrEmpty()) cells.removeAt(0)
   if (source.endsWith('|') && cells.lastOrNull().isNullOrEmpty()) cells.removeAt(cells.lastIndex)
-  return cells.takeIf { it.size >= 2 }
+  return cells.takeIf { it.isNotEmpty() }
 }
 
 private fun markdownVisibleLength(markdown: String): Int =
-  markdown.replace(Regex("[\\\\`*_~]"), "").length
+  markdown.count { it !in "\\`*_~" }
 
 internal data class BoundedMarkdownPreview(val text: String, val truncated: Boolean)
 
@@ -182,6 +197,7 @@ private fun AnnotatedString.Builder.appendMarkdownLine(
   linkColor: Color,
   codeBackground: Color,
   quoteColor: Color,
+  budget: MarkdownScanBudget,
 ) {
   val heading = Regex("^(#{1,6})\\s+(.*)$").matchEntire(rawLine)
   if (heading != null) {
@@ -193,7 +209,7 @@ private fun AnnotatedString.Builder.appendMarkdownLine(
       else -> 1.08.em
     }
     withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontSize = size)) {
-      appendInlineMarkdown(heading.groupValues[2], linkColor, codeBackground)
+      appendInlineMarkdown(heading.groupValues[2], linkColor, codeBackground, budget)
     }
     return
   }
@@ -202,7 +218,7 @@ private fun AnnotatedString.Builder.appendMarkdownLine(
   if (quote != null) {
     withStyle(SpanStyle(color = quoteColor, fontWeight = FontWeight.Bold)) { append("▎ ") }
     withStyle(SpanStyle(color = quoteColor, fontStyle = FontStyle.Italic)) {
-      appendInlineMarkdown(quote.groupValues[1], linkColor, codeBackground)
+      appendInlineMarkdown(quote.groupValues[1], linkColor, codeBackground, budget)
     }
     return
   }
@@ -211,7 +227,7 @@ private fun AnnotatedString.Builder.appendMarkdownLine(
   if (task != null) {
     append(task.groupValues[1])
     append(if (task.groupValues[2].isBlank()) "☐ " else "☑ ")
-    appendInlineMarkdown(task.groupValues[3], linkColor, codeBackground)
+    appendInlineMarkdown(task.groupValues[3], linkColor, codeBackground, budget)
     return
   }
 
@@ -219,26 +235,42 @@ private fun AnnotatedString.Builder.appendMarkdownLine(
   if (bullet != null) {
     append(bullet.groupValues[1])
     append("• ")
-    appendInlineMarkdown(bullet.groupValues[2], linkColor, codeBackground)
+    appendInlineMarkdown(bullet.groupValues[2], linkColor, codeBackground, budget)
     return
   }
 
-  if (Regex("^\\s{0,3}([-*_])(?:\\s*\\1){2,}\\s*$").matches(rawLine)) {
+  if (markdownHorizontalRule(rawLine)) {
     withStyle(SpanStyle(color = quoteColor)) { append("────────────") }
     return
   }
 
-  appendInlineMarkdown(rawLine, linkColor, codeBackground)
+  appendInlineMarkdown(rawLine, linkColor, codeBackground, budget)
+}
+
+private fun markdownHorizontalRule(line: String): Boolean {
+  val indent = line.indexOfFirst { !it.isWhitespace() }.takeIf { it >= 0 } ?: return false
+  if (indent > 3) return false
+  val marker = line[indent].takeIf { it in "-*_" } ?: return false
+  var count = 0
+  for (index in indent until line.length) {
+    if (line[index] == marker) count++ else if (!line[index].isWhitespace()) return false
+  }
+  return count >= 3
 }
 
 private fun AnnotatedString.Builder.appendInlineMarkdown(
   source: String,
   linkColor: Color,
   codeBackground: Color,
+  budget: MarkdownScanBudget,
+  depth: Int = 0,
+  allowLinks: Boolean = true,
 ) {
+  if (depth >= 16) { append(source); return }
   var index = 0
   while (index < source.length) {
-    val fileCitation = codexFileCitationAt(source, index)
+    budget.consume()
+    val fileCitation = if (allowLinks) codexFileCitationAt(source, index, budget) else null
     if (fileCitation != null) {
       pushStringAnnotation(MARKDOWN_LINK_TAG, fileCitation.path)
       withStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)) {
@@ -248,7 +280,7 @@ private fun AnnotatedString.Builder.appendInlineMarkdown(
       index = fileCitation.endExclusive
       continue
     }
-    val webLink = plainWebLinkAt(source, index)
+    val webLink = if (allowLinks) plainWebLinkAt(source, index, budget) else null
     if (webLink != null) {
       pushStringAnnotation(MARKDOWN_LINK_TAG, webLink)
       withStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)) {
@@ -264,64 +296,40 @@ private fun AnnotatedString.Builder.appendInlineMarkdown(
       continue
     }
 
-    if (source.startsWith("![", index)) {
-      val labelEnd = source.indexOf("](", index + 2)
-      val targetEnd = if (labelEnd >= 0) source.indexOf(')', labelEnd + 2) else -1
-      if (labelEnd >= 0 && targetEnd > labelEnd) {
-        val label = source.substring(index + 2, labelEnd).ifBlank { "图片" }
-        val target = normalizedMarkdownTarget(source.substring(labelEnd + 2, targetEnd))
-        pushStringAnnotation(MARKDOWN_IMAGE_LINK_TAG, target)
-        try {
-          withStyle(SpanStyle(fontStyle = FontStyle.Italic, color = linkColor)) {
-            append("🖼 ")
-            append(label)
-          }
-        } finally {
-          pop()
-        }
-        index = targetEnd + 1
+    if (source[index] == '`') {
+      val count = markdownRunLength(source, index, '`')
+      val end = findCodeSpanEnd(source, index + count, count, budget)
+      if (end >= 0) {
+        var literal = source.substring(index + count, end).replace('\n', ' ')
+        if (literal.startsWith(' ') && literal.endsWith(' ') && literal.any { it != ' ' }) literal = literal.drop(1).dropLast(1)
+        withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = codeBackground)) { append(literal) }
+        index = end + count
         continue
       }
-      append(source.substring(index))
-      break
+      append("`".repeat(count)); index += count; continue
     }
-
-    if (source[index] == '[') {
-      val labelEnd = source.indexOf("](", index + 1)
-      val targetEnd = if (labelEnd >= 0) source.indexOf(')', labelEnd + 2) else -1
-      if (labelEnd >= 0 && targetEnd > labelEnd) {
-        val target = normalizedMarkdownTarget(source.substring(labelEnd + 2, targetEnd))
-        pushStringAnnotation(
-          if (isLikelyImageLink(source.substring(index + 1, labelEnd), target)) {
-            MARKDOWN_IMAGE_LINK_TAG
-          } else {
-            MARKDOWN_LINK_TAG
-          },
-          target,
-        )
-        try {
-          withStyle(
-            SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)
-          ) {
-            append(source.substring(index + 1, labelEnd))
-          }
-        } finally {
-          pop()
-        }
-        index = targetEnd + 1
-        continue
+    val link = if (allowLinks) markdownInlineLinkAt(source, index, budget) else null
+    if (link != null) {
+      val image = link.image || isLikelyImageLink(link.label, link.target)
+      val label = link.label.ifBlank { if (image) "图片" else link.target }
+      if (link.target.isNotEmpty()) pushStringAnnotation(if (image) MARKDOWN_IMAGE_LINK_TAG else MARKDOWN_LINK_TAG, link.target)
+      withStyle(SpanStyle(color = linkColor, textDecoration = if (image) null else TextDecoration.Underline,
+          fontStyle = if (image) FontStyle.Italic else null)) {
+        if (link.image) append("🖼 ")
+        appendInlineMarkdown(label, linkColor, codeBackground, budget, depth + 1, allowLinks = false)
       }
-      append(source.substring(index))
-      break
+      if (link.target.isNotEmpty()) pop()
+      index = link.endExclusive
+      continue
     }
 
     val token = INLINE_TOKENS.firstOrNull { source.startsWith(it.delimiter, index) }
     if (token != null) {
       val contentStart = index + token.delimiter.length
-      val end = source.indexOf(token.delimiter, contentStart)
+      val end = markdownIndexOf(source, token.delimiter, contentStart, budget)
       if (end > contentStart) {
         withStyle(token.style(codeBackground)) {
-          append(source.substring(contentStart, end))
+          appendInlineMarkdown(source.substring(contentStart, end), linkColor, codeBackground, budget, depth + 1, allowLinks)
         }
         index = end + token.delimiter.length
         continue
@@ -330,10 +338,10 @@ private fun AnnotatedString.Builder.appendInlineMarkdown(
 
     if ((source[index] == '*' || source[index] == '_') && canStartItalic(source, index)) {
       val delimiter = source[index]
-      val end = source.indexOf(delimiter, index + 1)
+      val end = markdownIndexOf(source, delimiter.toString(), index + 1, budget)
       if (end > index + 1 && canEndItalic(source, end)) {
         withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
-          append(source.substring(index + 1, end))
+          appendInlineMarkdown(source.substring(index + 1, end), linkColor, codeBackground, budget, depth + 1, allowLinks)
         }
         index = end + 1
         continue
@@ -364,9 +372,6 @@ private fun isLikelyImageLink(label: String, target: String): Boolean {
     IMAGE_LINK_LABEL.containsMatchIn(label)
 }
 
-private fun normalizedMarkdownTarget(target: String): String =
-  target.trim().removeSurrounding("<", ">")
-
 private fun canStartItalic(source: String, index: Int): Boolean {
   if (index + 1 >= source.length || source[index + 1].isWhitespace()) return false
   return source[index] == '*' || index == 0 || !source[index - 1].isLetterOrDigit()
@@ -386,9 +391,6 @@ private val INLINE_TOKENS =
     InlineToken("**") { SpanStyle(fontWeight = FontWeight.Bold) },
     InlineToken("__") { SpanStyle(fontWeight = FontWeight.Bold) },
     InlineToken("~~") { SpanStyle(textDecoration = TextDecoration.LineThrough) },
-    InlineToken("`") { background ->
-      SpanStyle(fontFamily = FontFamily.Monospace, background = background)
-    },
   )
 
 private const val MARKDOWN_ESCAPES = "\\`*_{}[]<>()#+-.!|>"

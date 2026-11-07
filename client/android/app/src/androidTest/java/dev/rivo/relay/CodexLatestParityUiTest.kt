@@ -70,7 +70,11 @@ class CodexLatestParityUiTest {
         val models = listOf(JSONObject("""{"id":"second","supportedReasoningEfforts":[{"reasoningEffort":"medium"},{"reasoningEffort":"high"}],"defaultReasoningEffort":"medium"}"""))
         val edits = mutableListOf<JSONObject>()
         var defaults: JSONObject? = null
-        compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize().systemBarsPadding()) { ChatScreen(SessionState(id = "latest", snapshot = snapshot()), false, false, models, {},
+        // Saving presets requires known native permissions; missing values must
+        // remain disabled rather than being silently converted into defaults.
+        val known = snapshot().let { it.copy(settings = JSONObject(it.settings.toString())
+            .put("sandbox", JSONObject().put("type", "workspaceWrite")).put("approvalPolicy", "on-request")) }
+        compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize().systemBarsPadding()) { ChatScreen(SessionState(id = "latest", snapshot = known), false, false, models, {},
             onSend = { _, _, _, _ -> }, onStop = {}, onRespond = { _, _ -> }, onRefresh = {}, onLoadModels = {}, onEarlier = {}, readFile = { JSONObject() },
             onSettingsChange = { edits += it }, onSaveDefaults = { defaults = it }, modelCatalogNotice = "当前使用最近可用选项") } } }
         compose.onNodeWithTag("composer_settings").performClick()
@@ -79,7 +83,7 @@ class CodexLatestParityUiTest {
         compose.runOnIdle { assertEquals("high", edits.last().getString("effort")) }
         compose.onNodeWithTag("codex_fast_mode_switch").performScrollTo().performClick()
         compose.runOnIdle { assertEquals("priority", edits.last().getString("serviceTier")) }
-        compose.onNodeWithTag("codex_set_default").performScrollTo().performClick()
+        compose.onNodeWithTag("codex_set_default").performScrollTo().assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals("second", defaults!!.getString("model")); assertEquals("priority", defaults!!.getString("serviceTier")) }
         evidence("codex-latest-settings")
     }

@@ -24,6 +24,7 @@ class HandoffTests(unittest.TestCase):
         service = CodexService(connection=native)
         service.start()
         writers = Mock()
+        writers.preview_scope.return_value = [TID, OTHER]
         service.writers = writers
         service.native_journal.ensure = Mock(return_value=NativeConvergenceResult('ready', 0, 1))
         service._handoff_hosts['ticket'] = copy.deepcopy(descriptor)

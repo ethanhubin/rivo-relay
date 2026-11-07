@@ -30,6 +30,19 @@ def pages(connection, method, params=None):
         seen.add(cursor)
 
 
+def thread_pages(connection, params):
+    """Keep rollout-only threads and DB threads omitted by rollout scanning.
+
+    Desktop agent-created chats can have has_user_event=0 despite having
+    visible conversation history. The native scan path omits these chats;
+    its state-only query includes them. Preserve native filters in both.
+    """
+    by_id = {thread['id']: thread for thread in pages(connection, 'thread/list', params)}
+    for thread in pages(connection, 'thread/list', {**params, 'useStateDbOnly': True}):
+        by_id.setdefault(thread['id'], thread)
+    return list(by_id.values())
+
+
 class ProjectCatalog:
     def __init__(self, connection):
         self.connection = connection
@@ -65,7 +78,7 @@ class ProjectCatalog:
 
     def _list(self):
         projects = list(pages(self.connection, "project/list"))
-        threads = list(pages(self.connection, "thread/list", {"archived": False,
+        threads = list(thread_pages(self.connection, {"archived": False,
                             "modelProviders": [], "sortKey": "updated_at", "sortDirection": "desc"}))
         by_project, by_root = defaultdict(list), defaultdict(list)
         # Native project IDs already establish catalog membership; only legacy

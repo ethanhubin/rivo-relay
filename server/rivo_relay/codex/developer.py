@@ -160,8 +160,12 @@ class Workspaces:
     def __init__(self, db, service):
         self.db, self.service = db, service
 
+    def _gate(self, identity):
+        gate = getattr(self.service, 'operation_gate', None)
+        return gate(identity) if callable(gate) else self.service._operations
+
     def create(self, project_id, source, ref):
-        with self.service._operations:
+        with self._gate('project:' + project_id):
             return self._create(project_id, source, ref)
 
     def _create(self, project_id, source, ref):
@@ -192,7 +196,7 @@ class Workspaces:
         return identity, path
 
     def link(self, identity, thread_id):
-        with self.service._operations, self.db.transaction() as c:
+        with self._gate('workspace:' + identity), self.db.transaction() as c:
             row = c.execute('SELECT thread_id,status FROM workspaces WHERE id=?', (identity,)).fetchone()
             if not row or row['status'] != 'ready' or row['thread_id'] not in (None, thread_id):
                 raise CodexError('工作树状态已变化，不能关联新会话', code='workspace_changed', http_status=409)
@@ -205,7 +209,7 @@ class Workspaces:
         uncertain. Linked, modified, or uncertain directories are retained.
         Cleanup failure never replaces the original thread creation failure.
         """
-        with self.service._operations:
+        with self._gate('workspace:' + identity):
             with self.db.read() as c:
                 stored = c.execute('SELECT * FROM workspaces WHERE id=?', (identity,)).fetchone()
                 row = dict(stored) if stored else None
@@ -247,7 +251,7 @@ class Workspaces:
         if row['status'] == 'removing':
             # Read-only reconciliation for a lost remove reply. A directory
             # that still exists stays blocked; never retry a destructive call.
-            with self.service._operations:
+            with self._gate(thread_id):
                 row = self.row(thread_id)
                 if row['status'] == 'removing':
                     registered, exists = worktree_presence(self.service.connection, row['source_path'], row['path'])
@@ -267,7 +271,7 @@ class Workspaces:
     def cleanup(self, thread_id, revision, discard):
         # Keep compensation inside the same lock lifetime. Otherwise a failed
         # call can reset a later call's 'cleaning' state after it begins.
-        with getattr(self.service, "queue_lock", self.service._operations), self.service._operations:
+        with self._gate(thread_id):
             try:
                 return self._cleanup(thread_id, revision, discard)
             finally:

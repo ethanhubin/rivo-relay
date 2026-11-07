@@ -2,8 +2,37 @@
 from __future__ import annotations
 
 import json
+import threading
+from contextlib import contextmanager
+from functools import wraps
 
 from .connection import CodexError
+
+
+_read_proofs = threading.local()
+
+
+@contextmanager
+def read_identity_scope():
+    """Reuse locality proof only during one read; writer locks stay uncached."""
+    if getattr(_read_proofs, 'values', None) is not None:
+        yield
+        return
+    _read_proofs.values = {}
+    try:
+        yield
+        if any(str(connection.generation) != key[1] for key, (connection, _) in _read_proofs.values.items()):
+            raise CodexError('原生运行时已更换，请重新读取历史', code='history_changed', http_status=409)
+    finally:
+        del _read_proofs.values
+
+
+def read_identity(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with read_identity_scope():
+            return function(*args, **kwargs)
+    return wrapped
 
 
 # Kept self-contained because command/exec executes this on a potentially remote
@@ -84,12 +113,26 @@ def native_host_info(connection):
     return descriptor
 
 
-def local_native_host_info(connection):
+def local_native_host_info(connection, *, refresh=False):
     """Attest a local daemon through socket ownership and its open state DB.
 
     Never infer locality from the diagnostics PID or inherited environment.
     A forwarded socket must fail ownership verification before inspecting home.
     """
+    cache = getattr(_read_proofs, 'values', None)
+    generation = connection.generation
+    key = (id(connection), str(generation))
+    if cache is not None and not refresh and key in cache:
+        return dict(cache[key][1])
+    descriptor = _local_native_host_info(connection)
+    if generation != connection.generation:
+        raise CodexError('原生运行时已更换，请重新核验', code='native_host_unverified', http_status=409)
+    if cache is not None:
+        cache[key] = (connection, descriptor)
+    return dict(descriptor)
+
+
+def _local_native_host_info(connection):
     import socket
     import sys
     from pathlib import Path

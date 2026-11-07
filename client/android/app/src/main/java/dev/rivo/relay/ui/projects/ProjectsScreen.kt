@@ -32,6 +32,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -57,7 +59,7 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
     onProject: (ProjectSummary) -> Unit, onConnection: () -> Unit, onRefresh: () -> Unit, onAdd: (() -> Unit)? = null,
     usage: CodexUsage? = null, usageLoading: Boolean = false, usageError: String? = null, onRefreshUsage: (() -> Unit)? = null, canAdd: Boolean = true,
     savedNodes: List<dev.rivo.relay.connection.SavedNode> = emptyList(), currentBase: String = "",
-    onSelectNode: (String) -> Unit = {}, onAddNode: () -> Unit = {}, canSwitchNode: Boolean = true) {
+    onSelectNode: (String) -> Unit = {}, onAddNode: () -> Unit = {}, canSwitchNode: Boolean = true, nodeConnected: Boolean? = null) {
     var nodeMenuOpen by remember { mutableStateOf(false) }
     val context = LocalContext.current
     LazyColumn(Modifier.fillMaxSize().testTag("projects_page"), contentPadding = PaddingValues(horizontal = RivoSpacing.Page),
@@ -68,6 +70,21 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                     Text("Codex 项目", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Box {
                         TextButton(onClick = { nodeMenuOpen = true }, enabled = canSwitchNode, modifier = Modifier.widthIn(max = 180.dp).testTag("node_settings")) {
+                            val statusColor = when (nodeConnected) {
+                                true -> Color(0xFF2E9B59)
+                                false -> MaterialTheme.colorScheme.error
+                                null -> Color(0xFFD49A24)
+                            }
+                            val statusLabel = when (nodeConnected) {
+                                true -> "节点服务已连接"
+                                false -> "节点服务连接失败"
+                                null -> "正在连接节点服务"
+                            }
+                            Canvas(Modifier.size(7.dp).testTag("node_connection_status")
+                                .semantics { contentDescription = statusLabel }) {
+                                drawCircle(statusColor)
+                            }
+                            Spacer(Modifier.width(6.dp))
                             Text(nodeName, Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge)
                             Text(" ▾", style = MaterialTheme.typography.labelLarge)
                         }

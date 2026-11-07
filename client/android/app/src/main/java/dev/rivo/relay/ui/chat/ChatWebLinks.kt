@@ -30,19 +30,25 @@ internal fun isHttpWebLink(target: String): Boolean =
 private val plainWebLinkPattern = Regex("https?://[^\\s<>\"'`，。；！？、（）【】《》“”‘’]+", RegexOption.IGNORE_CASE)
 
 /** Keep sentence punctuation outside links, but preserve balanced URL parentheses. */
-internal fun plainWebLinkAt(source: String, index: Int): String? {
+internal fun plainWebLinkAt(source: String, index: Int, budget: MarkdownScanBudget? = null): String? {
   if (!source.regionMatches(index, "http", 0, 4, ignoreCase = true)) return null
   if (index > 0 && (source[index - 1].isLetterOrDigit() && source[index - 1].code < 128 ||
       source[index - 1] == '_')) return null
-  var target = plainWebLinkPattern.matchAt(source, index)?.value ?: return null
-  while (target.isNotEmpty()) {
-    val last = target.last()
+  val candidate = plainWebLinkPattern.matchAt(source, index)?.value ?: return null
+  budget?.consume(candidate.length)
+  val counts = IntArray(6)
+  candidate.forEach { c -> "()[]{}".indexOf(c).takeIf { it >= 0 }?.let { counts[it]++ } }
+  var end = candidate.length
+  while (end > 0) {
+    val last = candidate[end - 1]
     val opening = when (last) { ')' -> '('; ']' -> '['; '}' -> '{'; else -> null }
     if (last in ".,;:!?" ||
-      (opening != null && target.count { it == last } > target.count { it == opening })) {
-      target = target.dropLast(1)
+      (opening != null && counts["()[]{}".indexOf(last)] > counts["()[]{}".indexOf(opening)])) {
+      "()[]{}".indexOf(last).takeIf { it >= 0 }?.let { counts[it]-- }
+      end--
     } else break
   }
+  val target = candidate.substring(0, end)
   return target.takeIf(::isHttpWebLink)
 }
 

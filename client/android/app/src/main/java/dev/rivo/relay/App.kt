@@ -47,7 +47,7 @@ fun RelayApp(vm: AppViewModel = viewModel()) {
                 if (loginSettings) Column {
                     TextButton(onClick = { loginSettings = false }) { Text("返回登录") }
                     SettingsScreen()
-                } else LoginScreen(app.pairing, app.error, vm::pair, vm::setError, app.savedNodes, vm::selectNode,
+                } else LoginScreen(app.pairing || app.reconnecting, app.error, vm::pair, vm::setError, app.savedNodes, vm::selectNode,
                     onSettings = { loginSettings = true })
             }
             else key(node) { ConnectedApp(node, app.error, vm::setError, vm::disconnect, vm::retryConnection, app.savedNodes, vm::selectNode) }
@@ -73,17 +73,19 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     var pendingReady by remember(pendingId) { mutableStateOf(pendingRef == null || createdThread != null) }
     var listedPending by remember { mutableStateOf(emptyList<PendingConversation>()) }
     val pendingRevision by node.pendingRevision.collectAsStateWithLifecycle()
+    val handoffScope = rememberCoroutineScope()
     var draftReloadKey by remember(node) { mutableLongStateOf(0L) }
     var defaultSettings by remember(node) { mutableStateOf(node.conversations.defaultSettings()) }
     fun saveDefaults(settings: JSONObject) {
-        try { node.conversations.saveDefaultSettings(settings); defaultSettings = node.conversations.defaultSettings() }
-        catch (e: Exception) { setError(e.message ?: "无法保存默认模型设置") }
+        handoffScope.launch {
+            try { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { node.conversations.saveDefaultSettings(settings) }; defaultSettings = node.conversations.defaultSettings() }
+            catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; setError(e.message ?: "无法保存默认模型设置") }
+        }
     }
     var todoAttachment by remember { mutableStateOf<String?>(null) }
     var endingPending by remember { mutableStateOf<PendingSubmission?>(null) }
     var handoffPrompt by remember { mutableStateOf<Triple<String, String, JSONObject>?>(null) }
     var handoffLoading by remember { mutableStateOf(false) }
-    val handoffScope = rememberCoroutineScope()
     fun executeHandoff(id: String, operation: String, preview: JSONObject, confirmed: Boolean) {
         if (route != "chat" || threadId != id || (operation != "takeover" && node.session.state.value.stale) || node.network.value == null || node.session.state.value.id != id || node.submissions.state.value.pending != null || node.submissions.state.value.busy) return
         node.submissions.submit("/v1/threads/${encoded(id)}/ownership",
@@ -111,17 +113,24 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
         }
     }
     fun openPending(project: ProjectSummary, resumeId: String? = null) {
-        val id = try { resumeId ?: node.conversations.createPending(project.id) }
-        catch (e: Exception) { setError(e.message ?: "无法保存待发送会话"); return }
-        pendingGeneration++
-        pendingDraft = ConversationDraft()
-        pendingProject = project
-        pendingId = id
-        pendingRef = node.conversations.pendingWorktreeRef(id)
-        pendingReady = pendingRef == null
-        createdThread = node.conversations.pendingThreadId(id)
-        route = "new"
-        setError(null)
+        val generation = ++pendingGeneration
+        val expectedRoute = route
+        val expectedProject = node.catalog.state.value.selectedProject?.id
+        val expectedThread = threadId
+        handoffScope.launch {
+            val id = try { resumeId ?: kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { node.conversations.createPending(project.id) } }
+            catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; setError(e.message ?: "无法保存待发送会话"); return@launch }
+            if (pendingGeneration != generation || route != expectedRoute || threadId != expectedThread ||
+                node.catalog.state.value.selectedProject?.id != expectedProject) return@launch
+            pendingDraft = ConversationDraft()
+            pendingProject = project
+            pendingId = id
+            pendingRef = node.conversations.pendingWorktreeRef(id)
+            pendingReady = pendingRef == null
+            createdThread = node.conversations.pendingThreadId(id)
+            route = "new"
+            setError(null)
+        }
     }
     val catalog by node.catalog.state.collectAsStateWithLifecycle()
     val session by node.session.state.collectAsStateWithLifecycle()
@@ -160,7 +169,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
         val sourceThread = threadId
         handoffScope.launch {
             try {
-                val newPendingId = if (targetThreadId == null) node.conversations.createPending(projectId) else null
+                val newPendingId = if (targetThreadId == null) kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { node.conversations.createPending(projectId) } else null
                 val key = targetThreadId ?: "pending:$newPendingId"
                 val old = node.conversations.loadDraft(key)
                 val attachment = "链接附件：$name\n$source"
@@ -178,10 +187,13 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     fun back() {
         setError(null)
         if (route == "new" && !submission.busy && submission.pending == null) pendingId?.let { id ->
-            val draft = node.conversations.captureDraft("pending:$id")
-            if (draft.text.isBlank() && draft.images.isEmpty() && draft.files.isEmpty() && node.conversations.pendingThreadId(id) == null) {
-                try { node.conversations.finishPending(id) }
-                catch (e: Exception) { setError(e.message ?: "无法清理空草稿") }
+            val captured = node.conversations.captureDraftAsync("pending:$id")
+            handoffScope.launch {
+                try {
+                    val draft = captured.await()
+                    if (draft.text.isBlank() && draft.images.isEmpty() && draft.files.isEmpty() && node.conversations.pendingThreadId(id) == null)
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { node.conversations.finishPending(id) }
+                } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; setError(e.message ?: "无法清理空草稿") }
             }
         }
         route = if (route == "new") "sessions" else if (route == "chat") chatParent else "projects"
@@ -244,6 +256,12 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     usage = catalog.usage, usageLoading = catalog.usageLoading, usageError = catalog.usageError,
                     onRefreshUsage = { node.catalog.refreshUsage(true) }, canAdd = projectsWritable,
                     savedNodes = savedNodes, currentBase = node.connection.base,
+                    nodeConnected = when {
+                        network == null -> false
+                        catalog.projectsFresh -> true
+                        catalog.projectsLoading -> null
+                        else -> false
+                    },
                     onSelectNode = { if (!submission.busy && !handoffLoading) selectNode(it) },
                     onAddNode = { if (!submission.busy && !handoffLoading) disconnect() }, canSwitchNode = !submission.busy && !handoffLoading)
                 "sessions" -> SessionsScreen(catalog.selectedProject?.name ?: "会话", catalog.threads.filterNot { thread -> visiblePending.any { node.conversations.pendingThreadId(it.id) == thread.id } }, catalog.loading, threadsWritable,
@@ -267,14 +285,14 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     pendingConversations = visiblePending, canDiscardPending = writable,
                     onResumePending = { id -> node.catalog.state.value.selectedProject?.takeIf { selected -> visiblePending.any { it.id == id && it.projectId == selected.id } }?.let { openPending(it, id) } },
                     onDiscardPending = { id ->
-                        try {
-                            node.conversations.finishPending(id)
+                        handoffScope.launch { try {
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { node.conversations.finishPending(id) }
                             node.session.pendingMessagesFor("pending:$id").forEach { message ->
                                 node.session.resolveSubmission(message.submissionId, JSONObject().put("status", "failed"))
                             }
                             listedPending = listedPending.filterNot { it.id == id }
                         }
-                        catch (e: Exception) { setError(e.message ?: "无法删除待发送草稿") }
+                        catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; setError(e.message ?: "无法删除待发送草稿") } }
                     })
                 "new" -> pendingProject?.let { project ->
                     val localId = pendingId ?: return@let
@@ -331,7 +349,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                                         node.session.beginSubmission(id, pending.id, input)
                                     },
                                     beforeSend = { pending ->
-                                        node.conversations.checkpointPendingSubmission(localId, pending.id, "send")
+                                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { node.conversations.checkpointPendingSubmission(localId, pending.id, "send") }
                                         node.conversations.checkpointSentDraft(pending.id, id, draftForSubmission)
                                         node.session.persistSubmission(pending.id)
                                     }) { receipt ->
@@ -352,15 +370,15 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                                         node.session.beginSubmission(draftKey, pending.id, input, "create", sendId)
                                     },
                                     beforeSend = { pending ->
-                                        node.conversations.saveDraftOrdered(draftKey, node.conversations.captureDraft(draftKey))
-                                        node.conversations.checkpointPendingSubmission(localId, pending.id, "create")
+                                        node.conversations.saveDraftOrdered(draftKey, node.conversations.captureDraftAsync(draftKey).await())
+                                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { node.conversations.checkpointPendingSubmission(localId, pending.id, "create") }
                                         node.session.persistSubmission(pending.id)
                                     }) { receipt ->
                                     val id = receipt.string("threadId")
                                     if (id.isNotBlank()) {
                                         // The submitted input stays frozen, but late attachment or
                                         // draft updates belong to the new chat's next composer.
-                                        node.persistDraft(id, node.conversations.captureDraft(draftKey))
+                                        node.persistDraft(id, node.conversations.currentDraft(draftKey) ?: draftForSubmission)
                                         if (pendingGeneration == generation) createdThread = id
                                         sendFirst(id)
                                     }
@@ -391,11 +409,11 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             if (queued) body.put("operation", "enqueue")
                             model?.let { body.put("model", it) }; effort?.let { body.put("effort", it) }; mode?.let { body.put("mode", it) }; serviceTier?.let { body.put("serviceTier", it) }
                             setError(null)
-                            val sentDraft = node.conversations.captureDraft(id)
+                            val sentDraft = node.conversations.captureDraftAsync(id)
                             node.submissions.submit("/v1/threads/${encoded(id)}/" + if (queued) "queue" else "turns", body, if (queued) "加入队列" else "发送任务",
                                 prepared = { pending -> node.session.beginSubmission(id, pending.id, input, if (queued) "queue" else "turn") },
                                 beforeSend = { pending ->
-                                    node.conversations.checkpointSentDraft(pending.id, id, sentDraft)
+                                    node.conversations.checkpointSentDraft(pending.id, id, sentDraft.await())
                                     node.session.persistSubmission(pending.id)
                                 }) { receipt ->
                                 node.notifications.watch(id, requestPermission = true, turnId = receipt.string("turnId"))

@@ -21,13 +21,13 @@ class PerformanceTests(unittest.TestCase):
             self.assertEqual(1, first[0]['outstandingWorkCount'])
             first[0]['threadCount'] = 99
             self.assertEqual(1, catalog.list()[0]['threadCount'])
-            self.assertEqual(2, len(native.calls))
+            self.assertEqual(3, len(native.calls))
             catalog.invalidate()
             catalog.list()
-            self.assertEqual(4, len(native.calls))
+            self.assertEqual(6, len(native.calls))
         with patch('rivo_relay.codex.projects.time.monotonic', return_value=13):
             catalog.list()
-            self.assertEqual(6, len(native.calls))
+            self.assertEqual(9, len(native.calls))
 
     def test_live_offsets_are_monotonic_and_native_event_is_unchanged(self):
         events = []
@@ -57,7 +57,7 @@ class PerformanceTests(unittest.TestCase):
             release.set()
             self.assertEqual([], first.result(3))
             self.assertEqual([], second.result(3))
-        self.assertEqual(2, len(native.calls))
+        self.assertEqual(3, len(native.calls))
         catalog.invalidate()
         entered.clear()
         release.clear()
@@ -68,7 +68,7 @@ class PerformanceTests(unittest.TestCase):
             release.set()
             pending.result(3)
         catalog.list()
-        self.assertEqual(6, len(native.calls))
+        self.assertEqual(9, len(native.calls))
 
     def test_notification_bursts_are_lossless_and_lifecycle_is_a_barrier(self):
         from rivo_relay.codex.notifications import NotificationQueue

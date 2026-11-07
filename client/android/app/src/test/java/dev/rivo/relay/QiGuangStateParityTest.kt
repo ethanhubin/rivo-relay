@@ -52,7 +52,12 @@ class QiGuangStateParityTest {
             assertEquals(listOf("head", "partial"), converging.snapshot!!.messages.map { it.text })
             assertEquals("one", converging.snapshot.nativeRevision)
             assertEquals("q", converging.snapshot.queue.single().id)
-            assertEquals("head", sessionSnapshot(store.loadSnapshot("t")!!).messages.single().text)
+            val persisted = withTimeout(5000) {
+                var cached = store.loadSnapshot("t")
+                while (cached == null) { delay(20); cached = store.loadSnapshot("t") }
+                cached
+            }
+            assertEquals("head", sessionSnapshot(persisted).messages.single().text)
             assertNull(store.loadSnapshot("t")!!.optString("nextCursor", null))
             current.set(snapshot("two", turn = "new-head"))
             controller.refresh()

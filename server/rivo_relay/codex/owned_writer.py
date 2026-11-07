@@ -5,7 +5,7 @@ resume/start threads. Never infer a local home from a forwarded socket.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import os
 from pathlib import Path
 import signal
@@ -177,17 +177,37 @@ class SessionWriters:
         self._children = set()
         self._retired = weakref.WeakKeyDictionary()
         self._closed = False
+        self._metadata_start_lock = threading.Lock()
+        self._reconnect_thread = None
         self.metadata.on_event = lambda event: self._event(self.metadata, event)
 
     def start(self):
         if self._closed:
             raise CodexError('会话连接池已关闭')
-        try:
-            self.metadata.start()
-        except CodexError:
-            if not self._writers:
-                raise
+        if not self.metadata.status().get('connected'):
+            with self._lock:
+                live = any(writer.status().get('connected') for writer in self._writers.values())
+                if live and (self._reconnect_thread is None or not self._reconnect_thread.is_alive()):
+                    self._reconnect_thread = threading.Thread(target=self._reconnect_metadata, daemon=True,
+                                                              name='rivo-metadata-reconnect')
+                    self._reconnect_thread.start()
+            if not live:
+                self._ensure_metadata()
         return self.status()
+
+    def _ensure_metadata(self):
+        with self._metadata_start_lock:
+            if self._closed:
+                raise CodexError('会话连接池已关闭')
+            if not self.metadata.status().get('connected'):
+                self.metadata.start()
+
+    def _reconnect_metadata(self):
+        try:
+            self._ensure_metadata()
+        except Exception:
+            # An existing session keeps its own transport. Never move/replay it.
+            pass
 
     def status(self):
         result = self.metadata.status()
@@ -237,6 +257,7 @@ class SessionWriters:
     def _new_writer(self):
         if self._closed:
             raise CodexError('会话连接池已关闭')
+        self._ensure_metadata()
         # The local socket proof is mandatory even if a remote probe succeeded.
         from .host_probe import local_native_host_info
         descriptor = local_native_host_info(self.metadata)
@@ -265,7 +286,7 @@ class SessionWriters:
             raise CodexError('会话连接池已关闭')
         params = params or {}
         tid = params.get('threadId') or params.get('conversationId')
-        with self._thread_lock(tid or '__create__'):
+        with self._thread_lock(tid) if tid else nullcontext():
             with self._lock:
                 if self._closed:
                     raise CodexError('会话连接池已关闭')
@@ -287,6 +308,8 @@ class SessionWriters:
                 raise CodexError('会话没有独立 writer，请先恢复操作', code='writer_unavailable', http_status=409)
             if auxiliary:
                 backend = self._new_writer()
+            elif backend is self.metadata:
+                self._ensure_metadata()
             try:
                 result = backend.request(method, params, timeout=timeout)
             except Exception:
@@ -312,6 +335,15 @@ class SessionWriters:
                     raise CodexError('会话 writer 身份或连接已变化，请核对结果', code='handoff_changed',
                                      http_status=409, request_sent=True)
             return result
+
+    @contextmanager
+    def auxiliary_connection(self):
+        """One operation, one isolated helper; never borrow a session writer."""
+        writer = self._new_writer()
+        try:
+            yield writer
+        finally:
+            self._close_writer(writer)
 
     def release(self, thread_id, expected):
         with self._thread_lock(thread_id):
@@ -409,7 +441,8 @@ class SessionWriters:
             except Exception as error:
                 errors.append(error)
         try:
-            self.metadata.close()
+            with self._metadata_start_lock:
+                self.metadata.close()
         except Exception as error:
             errors.append(error)
         if errors:

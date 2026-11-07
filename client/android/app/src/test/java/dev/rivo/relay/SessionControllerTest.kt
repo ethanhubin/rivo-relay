@@ -31,6 +31,235 @@ class SessionControllerTest {
         .setBody("""{"error":{"code":"native_rejected","message":"读取暂时失败"}}""")
     private suspend fun await(latch: CountDownLatch) = withContext(Dispatchers.IO) { assertTrue(latch.await(5, TimeUnit.SECONDS)) }
 
+    private fun revisionSnapshot(name: String, revision: String, cursor: String?, item: String, readOnly: Boolean = false): MockResponse =
+        MockResponse().setHeader("Content-Type", "application/json").setBody(JSONObject("""{"thread":{"id":"t","name":"$name","turns":[{"id":"turn-$item","items":[{"id":"$item","type":"agentMessage","text":"$name"}]}]},"requests":[],"settings":{},"status":"idle"}""")
+            .put("nativeRevision", revision).put("nextCursor", cursor ?: JSONObject.NULL).put("readOnly", readOnly).toString())
+
+    @Test fun historyRestoreKeepsOlderPagesWhenLatestTurnHasNoItems() = runBlocking {
+        val server = MockWebServer()
+        val revision = AtomicInteger(1)
+        val refreshed = AtomicBoolean(false)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                val version = revision.get()
+                return when (request.requestUrl!!.queryParameter("cursor")) {
+                    "older" -> revisionSnapshot("older $version", "r$version", "oldest", "older")
+                    "oldest" -> revisionSnapshot("oldest $version", "r$version", null, "oldest")
+                    else -> MockResponse().setHeader("Content-Type", "application/json").setBody(JSONObject("""{"thread":{"id":"t","name":"head $version${if (refreshed.get()) " refreshed" else ""}","turns":[{"id":"empty-failure","status":"failed","error":{"message":"failure $version"},"items":[]}]},"requests":[],"settings":{},"status":"idle"}""")
+                        .put("nativeRevision", "r$version").put("nextCursor", "older").toString())
+                }
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = SessionController(api(server), scope) { fail(it.message) }
+        try {
+            controller.open("t")
+            withTimeout(5000) { controller.state.first { it.snapshot?.name == "head 1" && !it.stale } }
+            controller.loadEarlier()
+            withTimeout(5000) { controller.state.first { it.snapshot?.messages?.size == 1 && !it.loadingEarlier } }
+            controller.loadEarlier()
+            withTimeout(5000) { controller.state.first { it.snapshot?.messages?.size == 2 && !it.loadingEarlier } }
+            revision.set(2); controller.refresh()
+            val restored = withTimeout(5000) { controller.state.first { it.snapshot?.name == "head 2" && !it.loadingEarlier } }
+            val snapshot = restored.snapshot!!
+            assertEquals(listOf("oldest", "older"), snapshot.messages.map { it.id })
+            assertEquals(listOf("oldest 2", "older 2"), snapshot.messages.map { it.text })
+            assertEquals(listOf("turn-oldest", "turn-older", "empty-failure"), snapshot.turnSettings.map { it.turnId })
+            assertEquals("failed", snapshot.turnSettings.last().status)
+            assertEquals("failure 2", snapshot.turnSettings.last().error?.string("message"))
+            assertEquals("notice:empty-failure", nativeTimelineRows(snapshot.messages, turnSettings = snapshot.turnSettings).last().key)
+            assertEquals("r2", snapshot.nativeRevision)
+            assertTrue(restored.earlierLoaded)
+            assertNull(restored.historyCursor)
+            assertFalse(restored.stale)
+            // A subsequent unchanged-revision head must retain the restored pages too.
+            refreshed.set(true); controller.refresh()
+            val repeated = withTimeout(5000) { controller.state.first { it.snapshot?.name == "head 2 refreshed" && !it.loadingEarlier } }
+            assertEquals(listOf("oldest", "older"), repeated.snapshot!!.messages.map { it.id })
+            assertEquals(listOf("turn-oldest", "turn-older", "empty-failure"), repeated.snapshot.turnSettings.map { it.turnId })
+            assertEquals("failure 2", repeated.snapshot.turnSettings.last().error?.string("message"))
+            assertTrue(repeated.earlierLoaded)
+            assertNull(repeated.historyCursor)
+            assertFalse(repeated.stale)
+        } finally { controller.close(); scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun longHistoryRestorePublishesHeadFirstAndDoesNotOverwriteNewControl() = runBlocking {
+        val server = MockWebServer()
+        val revision = AtomicInteger(1)
+        val readOnly = AtomicBoolean(false)
+        val pageStarted = CountDownLatch(1)
+        val releasePage = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                val version = revision.get()
+                if (request.path!!.contains("cursor=")) {
+                    if (version == 2) { pageStarted.countDown(); releasePage.await(5, TimeUnit.SECONDS) }
+                    return revisionSnapshot("old page", "r$version", null, "older")
+                }
+                return revisionSnapshot(if (readOnly.get()) "external head" else "head $version", "r$version", "page-$version", "current", readOnly.get())
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = SessionController(api(server), scope, slowReadMillis = 100, readTimeoutMillis = 3000) { fail(it.message) }
+        try {
+            controller.open("t")
+            withTimeout(5000) { controller.state.first { it.snapshot?.name == "head 1" && !it.stale } }
+            controller.loadEarlier()
+            withTimeout(5000) { controller.state.first { it.earlierLoaded && !it.loadingEarlier } }
+            revision.set(2); controller.refresh(); await(pageStarted)
+            val fresh = controller.state.value
+            assertEquals("head 2", fresh.snapshot?.name)
+            assertFalse(fresh.stale)
+            assertTrue(fresh.control().canOperate)
+            assertTrue(fresh.loadingEarlier)
+            // Pagination remains stalled while a later head changes ownership.
+            readOnly.set(true); controller.refresh()
+            withTimeout(5000) { controller.state.first { it.snapshot?.name == "external head" && !it.stale } }
+            releasePage.countDown()
+            val restored = withTimeout(5000) { controller.state.first { !it.loadingEarlier && it.snapshot?.messages?.size == 2 } }
+            assertEquals("external head", restored.snapshot?.name)
+            assertFalse(restored.control().canOperate)
+            assertFalse(restored.stale)
+            assertEquals(listOf("older", "current"), restored.snapshot!!.messages.map { it.id })
+            assertEquals("external head", restored.snapshot.messages.last().text)
+        } finally { releasePage.countDown(); controller.close(); scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun lateBackgroundPageCannotCrossNativeRevision() = runBlocking {
+        val server = MockWebServer()
+        val revision = AtomicInteger(1)
+        val obsoleteStarted = CountDownLatch(1)
+        val releaseObsolete = CountDownLatch(1)
+        val obsoleteReturned = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                val version = revision.get()
+                if (request.path!!.contains("cursor=")) {
+                    if (version == 2) {
+                        obsoleteStarted.countDown(); releaseObsolete.await(5, TimeUnit.SECONDS); obsoleteReturned.countDown()
+                        return revisionSnapshot("obsolete", "r2", "obsolete-cursor", "obsolete")
+                    }
+                    return revisionSnapshot("older $version", "r$version", null, "older")
+                }
+                return revisionSnapshot("head $version", "r$version", "page-$version", "current")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = SessionController(api(server), scope) { fail(it.message) }
+        try {
+            controller.open("t")
+            withTimeout(5000) { controller.state.first { it.snapshot?.name == "head 1" && !it.stale } }
+            controller.loadEarlier()
+            withTimeout(5000) { controller.state.first { it.earlierLoaded && !it.loadingEarlier } }
+            revision.set(2); controller.refresh(); await(obsoleteStarted)
+            revision.set(3); controller.refresh()
+            withTimeout(5000) { controller.state.first { it.snapshot?.name == "head 3" && !it.loadingEarlier && it.snapshot.messages.size == 2 } }
+            releaseObsolete.countDown(); await(obsoleteReturned)
+            delay(100)
+            assertEquals("r3", controller.state.value.snapshot?.nativeRevision)
+            assertEquals(listOf("older", "current"), controller.state.value.snapshot!!.messages.map { it.id })
+            assertNull(controller.state.value.historyCursor)
+            assertFalse(controller.state.value.stale)
+        } finally { releaseObsolete.countDown(); controller.close(); scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun historyRestoreTimeoutKeepsFreshControlAndAllowsPageRetry() = runBlocking {
+        val server = MockWebServer()
+        val revision = AtomicInteger(1)
+        val recovered = AtomicBoolean(false)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                val version = revision.get()
+                if (request.path!!.contains("cursor=")) {
+                    if (version == 2 && !recovered.get()) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                    return revisionSnapshot("older", "r$version", null, "older")
+                }
+                return revisionSnapshot("head $version", "r$version", "page-$version", "current")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = SessionController(api(server), scope, slowReadMillis = 100, readTimeoutMillis = 400) { fail(it.message) }
+        try {
+            controller.open("t")
+            withTimeout(5000) { controller.state.first { it.snapshot?.name == "head 1" && !it.stale } }
+            controller.loadEarlier()
+            withTimeout(5000) { controller.state.first { it.earlierLoaded && !it.loadingEarlier } }
+            revision.set(2); controller.refresh()
+            val failedPage = withTimeout(5000) { controller.state.first { it.historyError != null && !it.loadingEarlier } }
+            assertEquals("head 2", failedPage.snapshot?.name)
+            assertFalse(failedPage.stale)
+            assertTrue(failedPage.control().canOperate)
+            recovered.set(true); controller.loadEarlier()
+            withTimeout(5000) { controller.state.first { it.snapshot?.messages?.size == 2 && !it.loadingEarlier } }
+            assertNull(controller.state.value.historyError)
+        } finally { controller.close(); scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun writerDisconnectInvalidatesControlAndApprovalsBeforeRefresh() = runBlocking {
+        val server = MockWebServer()
+        val releaseFresh = CountDownLatch(1)
+        val reads = AtomicInteger()
+        val event = "event: native\ndata: {\"method\":\"relay/writerDisconnected\",\"params\":{\"threadIds\":[\"t\"],\"requestIds\":[\"old\"]}}\n\n"
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path!!.startsWith("/v1/events")) return MockResponse().setHeader("Content-Type", "text/event-stream")
+                    .setBodyDelay(600, TimeUnit.MILLISECONDS).setBody(event + ":".repeat(4096))
+                    .throttleBody(event.toByteArray().size.toLong(), 3, TimeUnit.SECONDS)
+                if (reads.incrementAndGet() > 1) releaseFresh.await(5, TimeUnit.SECONDS)
+                return MockResponse().setBody("""{"thread":{"id":"t","name":"head","turns":[]},"requests":[{"key":"old","method":"approval"}],"settings":{},"status":"idle"}""")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = SessionController(api(server), scope) { fail(it.message) }
+        try {
+            controller.open("t")
+            withTimeout(5000) { controller.state.first { it.snapshot?.requests?.isNotEmpty() == true && !it.stale } }
+            val disconnected = withTimeout(5000) { controller.state.first { it.controlNotice?.contains("writer 已断开") == true } }
+            assertFalse(disconnected.control().canOperate)
+            assertTrue(disconnected.snapshot!!.requests.isEmpty())
+        } finally { releaseFresh.countDown(); controller.close(); scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun otherWriterAndMetadataDisconnectDoNotInvalidateOrRefreshCurrentThread() = runBlocking {
+        for (targets in listOf("[\"other\"]", "[]")) {
+            val server = MockWebServer()
+            val reads = AtomicInteger()
+            val event = "event: native\ndata: {\"method\":\"relay/writerDisconnected\",\"params\":{\"threadIds\":$targets}}\n\n"
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    if (request.path!!.startsWith("/v1/events")) return MockResponse().setHeader("Content-Type", "text/event-stream")
+                        .setBodyDelay(600, TimeUnit.MILLISECONDS).setBody(event + ":".repeat(4096))
+                        .throttleBody(event.toByteArray().size.toLong(), 3, TimeUnit.SECONDS)
+                    reads.incrementAndGet()
+                    return snapshot("t", "head")
+                }
+            }
+            server.start()
+            val scope = CoroutineScope(coroutineContext + SupervisorJob())
+            val controller = SessionController(api(server), scope) { fail(it.message) }
+            try {
+                controller.open("t")
+                withTimeout(5000) { controller.state.first { it.snapshot != null && !it.stale } }
+                delay(350)
+                val before = reads.get()
+                delay(650)
+                assertEquals(before, reads.get())
+                assertTrue(controller.state.value.control().canOperate)
+                assertNull(controller.state.value.controlNotice)
+            } finally { controller.close(); scope.cancel(); server.shutdown() }
+        }
+    }
+
     @Test fun slowReadLocksInputAndTimeoutOnlyRecoversFromFreshRead() = runBlocking {
         val server = MockWebServer()
         val reads = AtomicInteger()

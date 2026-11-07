@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import threading
 import time
+from weakref import WeakValueDictionary
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -82,7 +83,9 @@ class NativeHistoryConverger:
         self._reproject_projection = reproject_projection
         self._clock = clock
         self._state_lock = threading.RLock()
-        self._thread_locks: dict[str, threading.Lock] = {}
+        # Waiters retain a strong reference. Idle thread locks do not accumulate
+        # forever when a node lists thousands of different conversations.
+        self._thread_locks = WeakValueDictionary()
         self._generations: dict[str, int] = {}
 
     def ensure_consistent(

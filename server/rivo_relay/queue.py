@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, wait
+from .operation_gates import ThreadGates
 from .codex.connection import CodexError
 from .submissions import SubmissionConflict
 
@@ -15,8 +17,12 @@ class QueueConflict(SubmissionConflict):
 class ExecutionQueue:
     def __init__(self, db, codex, events):
         self.db, self.codex, self.events = db, codex, events
-        self.lock = threading.RLock()
-        self.codex.queue_lock = self.lock
+        self._gates = ThreadGates()
+        self._gate = getattr(codex, "operation_gate", self._gates.hold)
+        self._tick_lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
+        self._wake = threading.Event()
+        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="relay-queue")
         self.codex.execution_queue = self
         self.stopping = threading.Event()
         self.worker = None
@@ -37,11 +43,15 @@ class ExecutionQueue:
         self.worker.start()
 
     def close(self):
-        self.stopping.set()
+        with self._lifecycle_lock:
+            self.stopping.set()
+        self._wake.set()
         if self.worker:
-            self.worker.join(timeout=3)
+            self.worker.join()
+        self._executor.shutdown(wait=True, cancel_futures=True)
 
     def _notify(self, thread_id):
+        self._wake.set()
         projects = getattr(self.codex, 'projects', None)
         if projects is not None:
             projects.invalidate()
@@ -70,7 +80,7 @@ class ExecutionQueue:
 
     def enqueue(self, thread_id, item_id, connection_id, payload):
         # Read metadata only: queuing never acquires a writer or starts a turn.
-        with self.lock, getattr(self.codex, "_operations", self.lock):
+        with self._gate(thread_id):
             self.codex.validate_queue_target(thread_id)
             with self.db.transaction() as c:
                 if c.execute("SELECT count(*) FROM queued_tasks WHERE status NOT IN ('done','cancelled')").fetchone()[0] >= 100:
@@ -84,9 +94,10 @@ class ExecutionQueue:
 
     def _answer_async_question(self, thread_id, item_id):
         """A newly submitted ordinary answer may steer one live async question."""
-        with self.lock:
+        with self._gate(thread_id):
             try:
                 snapshot = self.codex.get_session(thread_id)
+                if self.stopping.is_set(): return
                 turn_id = snapshot.get('activeTurnId')
                 if snapshot.get('readOnly') or not turn_id or snapshot.get('requests'):
                     return
@@ -128,7 +139,7 @@ class ExecutionQueue:
                 pass
 
     def change(self, thread_id, item_id, revision, operation, text=None):
-        with self.lock, self.db.transaction() as c:
+        with self._gate(thread_id), self.db.transaction() as c:
             row = c.execute('SELECT * FROM queued_tasks WHERE id=? AND thread_id=?', (item_id, thread_id)).fetchone()
             if row is None or row['revision'] != revision or row['status'] not in ('waiting', 'failed', 'unknown'):
                 raise QueueConflict('Queue item changed; refresh before editing')
@@ -149,7 +160,7 @@ class ExecutionQueue:
 
     def recover(self, thread_id, item_id, revision, new_id, connection_id):
         """Continue from native history, never replay an uncertain instruction."""
-        with self.lock, getattr(self.codex, '_operations', self.lock):
+        with self._gate(thread_id):
             snapshot = self.codex.get_session(thread_id)
             if snapshot.get('readOnly') or snapshot.get('activeTurnId') or snapshot.get('requests') or snapshot.get('status') != 'idle':
                 raise QueueConflict('请等待当前任务结束后继续')
@@ -170,7 +181,7 @@ class ExecutionQueue:
         return {'threadId': thread_id, 'itemId': new_id, 'recoveredItemId': item_id}
 
     def reorder(self, thread_id, ids, expected_ids):
-        with self.lock, self.db.transaction() as c:
+        with self._gate(thread_id), self.db.transaction() as c:
             rows = list(c.execute("SELECT id FROM queued_tasks WHERE thread_id=? AND status='waiting' ORDER BY position,created_at,id", (thread_id,)))
             expected = [r['id'] for r in rows]
             if expected_ids != expected or not isinstance(ids, list) or len(ids) != len(set(ids)) or set(ids) != set(expected):
@@ -183,7 +194,7 @@ class ExecutionQueue:
         return {'threadId': thread_id}
 
     def steer(self, thread_id, item_id, revision, expected_turn):
-        with self.lock:
+        with self._gate(thread_id):
             snapshot = self.codex.get_session(thread_id)
             if snapshot.get('readOnly') or not expected_turn or snapshot['activeTurnId'] != expected_turn:
                 raise QueueConflict('Active turn changed')
@@ -262,54 +273,67 @@ class ExecutionQueue:
         if changed:
             self._notify(thread_id)
 
+    def signal(self):
+        self._wake.set()
+
     def tick(self):
-        with self.db.read() as c:
-            threads = [r[0] for r in c.execute("SELECT DISTINCT thread_id FROM queued_tasks WHERE status IN ('waiting','running','unknown')")]
-        self._reconcile_at = {key: value for key, value in self._reconcile_at.items() if key in threads}
-        for thread_id in threads:
+        with self._tick_lock:
             if self.stopping.is_set(): return
-            try:
+            with self.db.read() as c:
+                threads = [r[0] for r in c.execute("SELECT DISTINCT thread_id FROM queued_tasks WHERE status IN ('waiting','running','unknown')")]
+            self._reconcile_at = {key: value for key, value in self._reconcile_at.items() if key in threads}
+            wait([self._executor.submit(self._tick_thread, thread_id) for thread_id in threads])
+
+    def _tick_thread(self, thread_id):
+        try:
+            with self._gate(thread_id):
+                if self.stopping.is_set(): return
                 snapshot = self.codex.get_session(thread_id)
-                with self.lock:
-                    self._reconcile_unknown(thread_id, snapshot)
-                    items = self.list(thread_id)
-                    if not items: continue
-                    first = items[0]
-                    if first['status'] == 'running':
-                        turn = next((t for t in snapshot['thread']['turns'] if t['id'] == first['turnId']), None)
-                        if turn and turn.get('status') == 'completed':
-                            self._set(first['id'], 'done'); self._notify(thread_id)
-                        elif turn and turn.get('status') in ('failed','interrupted','canceled'):
-                            self._set(first['id'], 'failed', error='上一项未正常完成，请继续检查现状或忽略'); self._notify(thread_id)
-                        elif turn is None and snapshot.get('activeTurnId') != first['turnId']:
-                            self._set(first['id'], 'unknown', error='未找到此任务的执行结果，请核对会话后移除记录'); self._notify(thread_id)
-                        continue
-                    if snapshot.get('readOnly'): continue
-                    if first['status'] != 'waiting' or snapshot.get('activeTurnId') or snapshot['status'] != 'idle': continue
-                    with self.db.read() as c:
-                        owner = c.execute('SELECT revoked_at FROM connections WHERE id=(SELECT connection_id FROM queued_tasks WHERE id=?)', (first['id'],)).fetchone()
-                    if owner is None or owner['revoked_at'] is not None:
-                        self._set(first['id'], 'failed', error='提交此任务的连接已撤销'); self._notify(thread_id); continue
-                    # Commit before dispatch. Restart and uncertain results never replay this item.
+                if self.stopping.is_set(): return
+                self._reconcile_unknown(thread_id, snapshot)
+                items = self.list(thread_id)
+                if not items: return
+                first = items[0]
+                if first['status'] == 'running':
+                    turn = next((t for t in snapshot['thread']['turns'] if t['id'] == first['turnId']), None)
+                    if turn and turn.get('status') == 'completed':
+                        self._set(first['id'], 'done'); self._notify(thread_id)
+                    elif turn and turn.get('status') in ('failed','interrupted','canceled'):
+                        self._set(first['id'], 'failed', error='上一项未正常完成，请继续检查现状或忽略'); self._notify(thread_id)
+                    elif turn is None and snapshot.get('activeTurnId') != first['turnId']:
+                        self._set(first['id'], 'unknown', error='未找到此任务的执行结果，请核对会话后移除记录'); self._notify(thread_id)
+                    return
+                if snapshot.get('readOnly'): return
+                if first['status'] != 'waiting' or snapshot.get('activeTurnId') or snapshot['status'] != 'idle': return
+                with self.db.read() as c:
+                    owner = c.execute('SELECT revoked_at FROM connections WHERE id=(SELECT connection_id FROM queued_tasks WHERE id=?)', (first['id'],)).fetchone()
+                if owner is None or owner['revoked_at'] is not None:
+                    self._set(first['id'], 'failed', error='提交此任务的连接已撤销'); self._notify(thread_id); return
+                # Commit before dispatch. Restart and uncertain results never replay this item.
+                with self._lifecycle_lock:
+                    if self.stopping.is_set(): return
+                    # Admission is atomic with shutdown. close() waits for an
+                    # admitted call and its receipt before closing storage.
                     self._set(first['id'], 'dispatching')
-                    try:
-                        if first.get('review'):
-                            receipt = self.codex.review(thread_id, first['review'])
-                        else:
-                            kwargs = {'model': first['model'], 'effort': first['effort'], 'client_message_id': first['id'], 'input_items': first['input']}
-                            if first.get('mode') is not None: kwargs['mode'] = first['mode']
-                            if first.get('serviceTier') is not None: kwargs['service_tier'] = first['serviceTier']
-                            receipt = self.codex.send_queued(thread_id, **kwargs)
-                        self._set(first['id'], 'running', turn_id=receipt['turnId']) if receipt else self._set(first['id'], 'waiting')
-                    except Exception as e:
-                        definite = isinstance(e, CodexError) and e.definite
-                        self._set(first['id'], 'failed' if definite else 'unknown', error='执行未确认，请查看原会话；不会自动重发')
-                    self._notify(thread_id)
-            except Exception:
-                # Read failures leave waiting work intact. No dispatch took place.
-                continue
+                try:
+                    if first.get('review'):
+                        receipt = self.codex.review(thread_id, first['review'])
+                    else:
+                        kwargs = {'model': first['model'], 'effort': first['effort'], 'client_message_id': first['id'], 'input_items': first['input']}
+                        if first.get('mode') is not None: kwargs['mode'] = first['mode']
+                        if first.get('serviceTier') is not None: kwargs['service_tier'] = first['serviceTier']
+                        receipt = self.codex.send_queued(thread_id, **kwargs)
+                    self._set(first['id'], 'running', turn_id=receipt['turnId']) if receipt else self._set(first['id'], 'waiting')
+                except Exception as e:
+                    definite = isinstance(e, CodexError) and e.definite
+                    self._set(first['id'], 'failed' if definite else 'unknown', error='执行未确认，请查看原会话；不会自动重发')
+                self._notify(thread_id)
+        except Exception:
+            # Read failures leave waiting work intact. No dispatch took place.
+            return
 
     def _run(self):
         while not self.stopping.is_set():
             self.tick()
-            self.stopping.wait(2)
+            self._wake.wait(2)
+            self._wake.clear()

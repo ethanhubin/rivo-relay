@@ -56,6 +56,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.key
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -1036,10 +1037,11 @@ private fun FullScreenGalleryPage(
         .crossfade(180)
         .build()
     }
-  var originalLoaded by remember(item.original) {
+  var retryVersion by remember(item.original, mediaClient) { mutableIntStateOf(0) }
+  var originalLoaded by remember(item.original, mediaClient) {
     mutableStateOf(item.original == item.preview && mediaClient == null)
   }
-  var originalFailed by remember(item.original) { mutableStateOf(false) }
+  var originalFailed by remember(item.original, mediaClient) { mutableStateOf(false) }
   val reportImageSize: (AsyncImagePainter.State.Success) -> Unit = { state ->
     val drawable = state.result.drawable
     if (drawable.intrinsicWidth > 0 && drawable.intrinsicHeight > 0) {
@@ -1071,7 +1073,7 @@ private fun FullScreenGalleryPage(
       )
     }
     if (loadOriginal && (item.original != item.preview || mediaClient != null)) {
-      AsyncImage(
+      key(retryVersion, item.original, mediaClient) { AsyncImage(
         imageLoader = mediaClient?.imageLoader ?: context.imageLoader,
         model = originalImageRequest,
         contentDescription = if (originalLoaded) contentDescription else null,
@@ -1091,7 +1093,7 @@ private fun FullScreenGalleryPage(
               if (originalLoaded) "fullscreen_original_loaded" else "fullscreen_original_loading"
             ),
         contentScale = contentScale,
-      )
+      ) }
     }
     if (loadOriginal && !originalLoaded && !originalFailed) {
       CircularProgressIndicator(
@@ -1101,15 +1103,11 @@ private fun FullScreenGalleryPage(
       )
     }
     if (loadOriginal && originalFailed) {
-      Text(
-        text = "原图加载失败",
-        modifier =
-          Modifier.align(Alignment.BottomCenter)
-            .padding(bottom = 28.dp)
-            .testTag("fullscreen_original_error"),
-        color = Color.White,
-        style = MaterialTheme.typography.labelMedium,
-      )
+      TextButton(
+        onClick = { originalFailed = false; retryVersion++ },
+        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 28.dp)
+          .testTag("fullscreen_original_error"),
+      ) { Text("原图加载失败 · 重试", color = Color.White, style = MaterialTheme.typography.labelMedium) }
     }
   }
 }

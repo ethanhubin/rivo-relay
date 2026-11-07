@@ -18,29 +18,32 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
 class NodeRuntime(val connection: NodeConnection, private val scope: CoroutineScope, vault: CredentialStore, context: Context,
+    val conversations: ConversationStore,
     requestNotificationPermission: () -> Unit, private val failure: (Throwable) -> Unit) {
     val api = connection.api()
     private var transportNetwork = defaultNetwork(context)
     val network = observeDefaultNetwork(context).onEach {
         if (it != transportNetwork) { transportNetwork = it; api.resetTransport() }
     }.stateIn(scope, SharingStarted.Eagerly, transportNetwork)
-    val conversations = ConversationStore(ConversationStore.nodeDirectory(File(context.filesDir, "conversations"),
-        "${connection.nodeId}:${connection.deviceId}:${connection.storageBase}"))
-    val notifications = TaskNotifications(context.applicationContext, api, scope, connection.base, connection.name, requestNotificationPermission, failure)
+    private val sync = NodeSessionSync(api, scope)
+    val notifications = TaskNotifications(context.applicationContext, api, scope, connection.base, connection.name, requestNotificationPermission, failure, sync)
     val catalog = CatalogController(api, scope, failure, store = conversations)
-    val session = SessionController(api, scope, conversations, notifications::observe, notifications::setVisibleThread, failure = failure)
+    val session = SessionController(api, scope, conversations, notifications::observe, notifications::setVisibleThread, sync = sync, failure = failure)
     private val pendingRevisionMutable = MutableStateFlow(0L)
     val pendingRevision = pendingRevisionMutable.asStateFlow()
     val submissions = SubmissionCoordinator(api, scope, vault, "pending:${connection.nodeId}:${connection.deviceId}:${connection.storageBase}",
         onResolved = { pending, response ->
             session.invalidateControl()
             session.resolveSubmission(pending.id, response)
-            if (conversations.markSentDraftResolved(pending.id, response)) scope.launch {
+            val (acceptedDraft, pendingChanged) = withContext(Dispatchers.IO) {
+                conversations.markSentDraftResolved(pending.id, response) to (conversations.resolvePendingSubmission(pending.id, response) != null)
+            }
+            if (acceptedDraft) scope.launch {
                 try { conversations.clearAcceptedSentDraft(pending.id) }
                 catch (e: CancellationException) { throw e }
                 catch (e: Exception) { failure(e) }
             }
-            if (conversations.resolvePendingSubmission(pending.id, response) != null) pendingRevisionMutable.value++
+            if (pendingChanged) pendingRevisionMutable.value++
         }, failure = failure)
     init {
         // These are known submission receipts, never requests to repeat a write.
@@ -49,8 +52,11 @@ class NodeRuntime(val connection: NodeConnection, private val scope: CoroutineSc
                 val accepted = if (checkpoint.string("status") == "accepted") true else {
                     val response = api.call("/v1/submissions/${encoded(id)}")
                     session.resolveSubmission(id, response)
-                    if (conversations.resolvePendingSubmission(id, response) != null) pendingRevisionMutable.value++
-                    conversations.markSentDraftResolved(id, response)
+                    val (pendingChanged, acceptedDraft) = withContext(Dispatchers.IO) {
+                        (conversations.resolvePendingSubmission(id, response) != null) to conversations.markSentDraftResolved(id, response)
+                    }
+                    if (pendingChanged) pendingRevisionMutable.value++
+                    acceptedDraft
                 }
                 if (accepted) conversations.clearAcceptedSentDraft(id)
             } catch (e: CancellationException) { throw e }
@@ -85,15 +91,35 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
     private val mutable = MutableStateFlow(AppState())
     val state = mutable.asStateFlow()
     private var nodeJob: Job? = null
-    init { mutable.value = AppState(savedNodes = pairing.saved()); pairing.restore()?.let(::activate) }
-    private fun activate(connection: NodeConnection) {
+    private var lastStore: ConversationStore? = null
+    init { mutable.value = AppState(savedNodes = pairing.saved()); pairing.restore()?.let { activate(it) } }
+    private fun activate(connection: NodeConnection, openThread: String? = null, openTodos: Boolean = false) {
+        val previousStore = lastStore
         nodeJob?.cancel()
         val job = SupervisorJob(viewModelScope.coroutineContext[Job]); nodeJob = job
-        val node = NodeRuntime(connection, CoroutineScope(viewModelScope.coroutineContext + job), vault, getApplication(), ::requestTaskNotifications) { error ->
-            if (nodeJob === job && job.isActive) fail(error)
+        val scope = CoroutineScope(viewModelScope.coroutineContext + job)
+        mutable.value = AppState(savedNodes = pairing.saved(), reconnecting = true)
+        scope.launch {
+            try {
+                val store = withContext(Dispatchers.IO) {
+                    runCatching { previousStore?.flushMetadata() }
+                    ConversationStore(ConversationStore.nodeDirectory(File(getApplication<Application>().filesDir, "conversations"),
+                        "${connection.nodeId}:${connection.deviceId}:${connection.storageBase}"))
+                }
+                if (nodeJob !== job) return@launch
+                lastStore = store
+                val node = NodeRuntime(connection, scope, vault, getApplication(), store, ::requestTaskNotifications) { error ->
+                    if (nodeJob === job && job.isActive) fail(error)
+                }
+                mutable.value = AppState(node = node, savedNodes = pairing.saved())
+                openThread?.let(node::openNotificationThread)
+                if (openTodos) node.openNotificationTodos()
+                node.catalog.refreshProjects()
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                if (nodeJob === job) { mutable.update { it.copy(reconnecting = false) }; fail(e) }
+            }
         }
-        mutable.value = AppState(node = node, savedNodes = pairing.saved())
-        node.catalog.refreshProjects()
     }
     fun pair(input: String, code: String) {
         if (mutable.value.pairing) return
@@ -106,12 +132,13 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
             finally { mutable.update { it.copy(pairing = false) } }
         }
     }
-    fun selectNode(base: String) { pairing.select(base)?.let(::activate) }
+    fun selectNode(base: String) { pairing.select(base)?.let { activate(it) } }
     fun openNotification(target: TaskNotificationTarget) {
         if (mutable.value.node?.connection?.base != target.base) {
             val connection = pairing.select(target.base)
             if (connection == null) { setError("此通知的节点尚未登录，请先连接节点。"); return }
-            activate(connection)
+            activate(connection, openThread = target.threadId)
+            return
         }
         mutable.value.node?.openNotificationThread(target.threadId)
     }
@@ -120,7 +147,8 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
         if (mutable.value.node?.connection?.base != base) {
             val connection = pairing.select(base)
             if (connection == null) { setError("此提醒的节点尚未登录，请先连接节点。"); return }
-            activate(connection)
+            activate(connection, openTodos = true)
+            return
         }
         mutable.value.node?.openNotificationTodos()
     }

@@ -22,6 +22,11 @@ internal val LocalMediaAttachment = staticCompositionLocalOf<(suspend (File, Str
 @Composable
 internal fun CodexMediaLibrary(imageSlots: Int, fileSlots: Int, onSelected: () -> Unit) {
     val client = LocalCodexMediaClient.current ?: return
+    key(client) { CodexMediaLibraryContent(client, imageSlots, fileSlots, onSelected) }
+}
+
+@Composable
+private fun CodexMediaLibraryContent(client: CodexMediaClient, imageSlots: Int, fileSlots: Int, onSelected: () -> Unit) {
     val attach = LocalMediaAttachment.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()

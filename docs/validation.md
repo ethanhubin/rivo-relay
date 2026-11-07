@@ -1,5 +1,47 @@
 # Rivo Relay 开发验证记录
 
+## 2026-11-07：0.2.20 架构、性能与边界收尾
+
+服务端完整 **431 项**回归通过，无失败、错误或跳过。覆盖同会话串行与跨会话并发、关闭期间队列准入、元数据重连、辅助上传租约、工作树清理、历史追加/替换/截断/修复代数，以及媒体请求合并、缓存固定和并发清理。日志：`workspace/artifacts/release-0.2.20/server-final-tests.log`。
+
+Android 完整 **259 项 JVM** 测试通过；最终 `assembleDebug`、`assembleDebugAndroidTest`、`lintDebug` 通过，lint 为 0 错误、43 警告、3 提示。覆盖共享事件流、请求取消与时效窗口、批量 Unicode 增量、Markdown 扫描预算、图库失效，以及导航批写、图片冻结、旧指纹兼容、损坏恢复记录保护和磁盘故障传播。日志：`workspace/artifacts/release-0.2.20/android-timeout-final.log`。
+
+Android 36 专用只读 `medium_phone` 模拟器最终 **88 项不同的交互测试通过**。首批成功 75 项；两项旧测试分别误禁正常 capabilities 请求、使用了被父节点合并的 semantics，修正后与正确包名下的 11 项图片手势/尺寸测试共同复测，13 项全过。没有以关闭能力查询、隐藏提示或放宽功能保护来通过测试。一次 lint Kotlin 分析器内部错误经单 worker 重跑通过。最终日志为 `ui-final-tests.log`、`ui-corrections-tests.log`、`ui-summary.json` 和 `android-lint-final.log`；21 张受控界面截图位于同目录 `screenshots/`，已查看消息及恢复布局。模拟器没有配对生产节点，未连接实体手机。
+
+提交前检测到并行会话“感觉服务器连接不稳定，很慢，很卡是为什么？”已停止，并留下超时修复及 0.2.20 / code 32 版本递增；本次保留并合入，0.2.19 未发布。最终 0.2.20 重新通过完整 JVM/构建/lint；持续传输 12 秒历史的新增回归成功，传输中仍禁止操作。最终 APK 又通过节点设置、待发送草稿、提交恢复及聊天保护 **17 项定向交互复测**，日志 `ui-timeout-final.log`。此前 88 项验证的消息/媒体实现保持不变，测试使用较早的 0.2.19 候选包；不将它们写成最终包完整重跑。
+
+APK 0.2.20 / code 32 为 **18,889,236 字节**，SHA-256 为 `a657bb4aef14b56d2377e8466ba3146fff7452f14055c719fff22c8cfd61c0f1`。签名证书 SHA-256 `3f31e18aa34d6144102e35b4640ff94e5fdfa3c92b074df474d02583934e1800` 与 0.2.18 相同。记录：`workspace/artifacts/release-0.2.20/package.json`。
+
+真实 Codex 二进制另在临时 `CODEX_HOME` 下验证：A/B 会话拥有不同 PID；释放 A 后 B 和公共 daemon 均存活；A 恢复后获得新 writer，历史为 `ready`。模型仅指向本机拒绝连接的 fixture，没有调用真实模型或操作用户会话。结果：`workspace/artifacts/release-0.2.20/native-writer-verification.json`。
+
+以下为本机隔离微基准，不是手机帧时间、生产负载或模型首字速度：
+
+| 样本 | 优化前/完整读取 | 优化后/增量读取 |
+| --- | --- | --- |
+| 11.93 MiB 合成 rollout | 完整检查中位数 56.38 ms，解析 40,002 条 JSON | 单条追加中位数 5.08 ms，仅解析新增 1 条；仍完整哈希核验旧前缀。无变化读取 0.17 ms |
+| 缓存图片遇到另一个 500 ms 慢源站 | 缓存读取等待 508.369 ms | 缓存读取 0.070 ms，早于慢下载结束 |
+| 10 万条合成队列记录，目标会话查询 | 全表扫描及临时排序，中位数 1.892 ms | 使用新增索引，中位数 0.002 ms |
+
+证据位于 `workspace/artifacts/perf-review-20261107/` 的 `history-benchmark.json`、`root-microbench.json`、`media-after.json`。历史基准仍有 O(n) 前缀字节校验，不宣称追加读取完全 O(1)。
+
+## 2026-11-07：消息格式解析与展示（未发布）
+
+本轮服务端完整 **403 项**回归通过；Android 完整 **231 项 JVM** 测试通过，无失败、错误或跳过；`assembleDebug`、`assembleDebugAndroidTest`、`lintDebug` 成功。新增覆盖历史未知类型保留与严格轮次校验、工具混合/结构化输出、未知执行状态、流式顺序与终态保护、多段 reasoning、空失败轮次、消息锚点和 Markdown 边界。
+
+本轮专用只读 `medium_phone` / Android 36 模拟器（emulator-5580）最终 **23 项 UI 测试全部通过**，耗时 49.944 秒。范围为 MessageFormatBoundaryUiTest、NativeTurnNoticeUiTest、MessageInteractionUiTest、ActivityFailureUiTest、NativePanelsParityUiTest、CodexLatestParityUiTest，覆盖链接目标、代码内图片不加载、表格内容保留、原生错误按文本展示、空失败会话、引用/复制/浏览器恢复、工具状态及既有设置/转发交互。使用受控 fixture，未配对生产节点、未发送真实任务、未连接真机。
+
+首轮 UI 暴露一个合并 semantics 选择器和一个缺失权限信息的旧设置 fixture，已修正测试定位与样本后复测；没有放宽默认设置保护。最终组合检查另修复 Notice 重排本地 overlay 的问题，保留 startsThread 和 item 锚点，并以 JVM 回归锁定；整屏测试确认空失败轮次不再出现空会话文案。之后重新构建、运行完整 JVM/lint 和上述整组 UI，均通过。
+
+日志位于 `workspace/artifacts/message-formats/`：`server-tests.log`、`android-checks-final.log`、`ui-tests-final.log`。实现细节见 [消息格式对照](qiguang-codex-sync.md)。保留此前状态/历史/媒体优化与原有会话目录修改；本轮未提交、推送、部署或发布，版本仍为 0.2.18。
+
+## 2026-11-07：App Codex 状态、历史与媒体优化（未发布）
+
+本轮服务端 388 项回归、Android 210 项 JVM 测试、应用与测试 APK 构建、lint 均通过。新增覆盖 writer 断线立即撤销操作权限、threadIds 精确过滤、旧快照失效、长历史后台恢复及跨 revision 丢弃、未知所有权投影、空会话释放能力、设置未知/继承/自定义区分与默认值防误写。
+
+在本轮启动的只读 `medium_phone` 临时模拟器（emulator-5580）运行 19 项定向 UI 测试，全部通过：NativeSettingsAvailabilityUiTest、TakeoverUiTest、NativePanelsParityUiTest、PermissionSettingsUiTest、CodexMediaInteractionUiTest、CodexMediaIntegrationTest、CodexVideoUiTest。验证空会话释放按钮禁用/恢复、只读重新核验、默认设置不猜值、原图失败重试、切换媒体 client 取消旧附件回调、后台视频不自动播放及停止后暂停。网络使用 MockWebServer 与本地媒体 fixture，未配对或写入生产会话；未连接真机。
+
+日志与截图位于 `workspace/artifacts/codex-optimization/`：`server-tests.log`、`android-checks-final.log`、`ui-tests-final.log`。保留工作区原有会话目录修复，未部署主节点、提交、推送或发布本轮修改，版本号仍为 0.2.18。
+
 验证日期：2026-10-29。服务和 Android 已连接真实 Codex 原生运行时，登录、项目、会话、待办、文件和图片的模拟器流程已通过。阶段 2、4 验收通过；阶段 1、3、5 的 Desktop UI 双向接续和已知能力差异仍未全部完成。
 
 ## 最新部署：本机 Relay
@@ -465,3 +507,13 @@ Android `assembleDebug` / `assembleDebugAndroidTest` / `testDebugUnitTest` / `li
 底部增加设置页，登录页提供未配对入口；设置页展示版本、GitHub Release 手动检查、更新说明、浏览器 APK 下载和节点信息。公共更新请求独立于节点授权，包含预发布版本，以数字版本比较且不降级；错误和空发布列表不伪装为已是最新版本。当前没有后台自动检查或静默安装。
 
 `testDebugUnitTest` 176 项通过；`assembleDebug` 和 `lintDebug` 成功，lint 0 错误、42 警告、3 提示。模拟器 3 项设置 UI 测试通过，覆盖检查中禁用重复点击、更新说明和下载跳转、失败重试、已是最新版本以及真实 App 底部 Codex/待办/设置导航。测试使用模拟节点，不访问真实会话。设置页截图已检查，无文字遮挡。APK versionCode=23，debug 签名与 0.2.10 一致；构建和截图位于 `workspace/artifacts/settings-0.2.11/`。本次未向 GitHub 发布 0.2.11，也未安装到实体手机。
+
+
+## 2026-11-07：e2 Mac mini / MacBook Pro 服务端同步
+
+- 按用户要求同步当前工作区 server/ 至两台 ~/Applications/Rivo-Relay；rsync checksum 复核无差异。未发布 Android APK、GitHub Release 或推送 Git。
+- 服务端 403 项回归测试全部通过；两台依赖 pip check 通过。MacBook 虚拟环境补齐 pip。
+- 各节点 workspace/backups/relay-sync-20261107-171930 保存更新前 SQLite 一致性备份、server 源码和 LaunchAgent 配置。原 workspace、HTTPS 入口和自启动配置保留；只 kickstart Relay。
+- 两台各 5 个有效授权与备份逐项一致；临时验证授权已撤销。MacBook 原生连接正常，读取 5 个项目；e2 原有 Relay 连接断开，更新后重新连接既有 Codex PID 30257（11 月 5 日启动），读取 8 个项目。没有重启 Codex。
+- 本机经 Tailscale HTTPS 访问两台 /health 均成功；认证 node/projects 在节点 loopback 验证通过。节点自身 HTTPS 回环探测遇到 TLS 错误，未关闭证书校验；不将其记为认证 HTTPS 验证通过。未进行手机 UI 或真实会话写入测试。
+- 脱敏复核产物：workspace/deploy-multinode-20261107/。

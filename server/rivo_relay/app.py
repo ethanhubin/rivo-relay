@@ -46,6 +46,8 @@ class RelayApp:
         if hasattr(codex, 'on_event'):
             native_event = codex.on_event
             def media_event(event):
+                if event.get('method') in {'turn/completed', 'relay/writerDisconnected', 'relay/ownershipChanged', 'serverRequest/resolved'}:
+                    self.queue.signal()
                 try:
                     self.media.observe_event(event)
                 except Exception:

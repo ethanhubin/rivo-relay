@@ -83,7 +83,7 @@ class NativeSemanticsTests(unittest.TestCase):
         native = FakeNative()
         service = CodexService(connection=native)
         with patch.object(service.projects, "get", return_value={"id": "project", "roots": []}), \
-             patch("rivo_relay.codex.sessions.pages", return_value=[native.thread]), \
+             patch("rivo_relay.codex.sessions.thread_pages", return_value=[native.thread]), \
              patch.object(service, "read_goal", return_value={"goal": {"status": "active"}}):
             session = service.list_sessions("project")[0]
             self.assertEqual("running", session["status"])
@@ -94,7 +94,7 @@ class NativeSemanticsTests(unittest.TestCase):
         native.thread['status'] = {'type': 'notLoaded'}
         service = CodexService(connection=native)
         with patch.object(service.projects, 'get', return_value={'id': 'project', 'roots': []}), \
-             patch('rivo_relay.codex.sessions.pages', return_value=[native.thread]), \
+             patch('rivo_relay.codex.sessions.thread_pages', return_value=[native.thread]), \
              patch.object(service.native_journal, 'execution_states') as states:
             for state in ('running', 'idle', 'unknown'):
                 states.return_value = {'thread': state} if state != 'unknown' else {}
@@ -200,7 +200,7 @@ class NativeSemanticsTests(unittest.TestCase):
         self.assertEqual(4, projects[0]["runningTurnCount"])
         self.assertEqual(2, projects[0]["activeGoalCount"])
         self.assertEqual(0, projects[1]["outstandingWorkCount"])
-        self.assertEqual(["project/list", "thread/list"] + ["thread/goal/get"] * len(threads), calls)
+        self.assertEqual(["project/list", "thread/list", "thread/list"] + ["thread/goal/get"] * len(threads), calls)
         for goal_status in ('paused', 'complete', 'blocked', 'budgetLimited', 'usageLimited'):
             service._event({'method': 'thread/goal/updated', 'params': {'threadId': 'notLoaded'}})
             projects = service.list_projects()

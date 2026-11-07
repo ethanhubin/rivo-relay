@@ -133,6 +133,16 @@ class Database:
                     connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 elif current != SCHEMA_VERSION or tables != _TABLES:
                     raise RuntimeError("Not a compatible Rivo Relay database; existing data was not migrated")
+                # Additive indexes are compatible with the existing schema and
+                # old services; keep durable claims and completed queue records.
+                for statement in (
+                    "CREATE INDEX IF NOT EXISTS queue_active_thread_order ON queued_tasks(thread_id,position,created_at,id) WHERE status NOT IN ('done','cancelled')",
+                    "CREATE INDEX IF NOT EXISTS queue_poll_threads ON queued_tasks(thread_id) WHERE status IN ('waiting','running','unknown')",
+                    "CREATE INDEX IF NOT EXISTS queue_thread_position ON queued_tasks(thread_id,position)",
+                    "CREATE INDEX IF NOT EXISTS submissions_target ON submissions(operation,target_json,created_at DESC,id)",
+                    "CREATE INDEX IF NOT EXISTS observations_recent ON native_observations(updated_at DESC) WHERE kind NOT IN ('ownership','externalWorkspace')",
+                ):
+                    connection.execute(statement)
         except BaseException:
             self._connection.close()
             raise

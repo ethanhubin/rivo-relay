@@ -7,6 +7,7 @@ import java.io.File
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /** Private, node-scoped recovery data. Never contains node credentials or authority to write. */
 data class StoredDraftImage(val id: String, val bytes: ByteArray)
@@ -18,9 +19,14 @@ data class PendingConversation(val id: String, val projectId: String, val draft:
     val draftKey get() = "pending:$id"
 }
 
-class ConversationStore(private val directory: File) {
-    private val lock = Any()
-    private val metadata = synchronized(lock) { read("metadata", 256 * 1024) ?: JSONObject() }
+class ConversationStore(private val directory: File, private val onWrite: (String) -> Unit = {}) {
+    private val lock = directoryLocks.getOrPut(directory.absolutePath) { Any() }
+    private val metadataLock = Any()
+    private var metadata = synchronized(lock) { readMetadataStrict() }
+    private val pendingMetadata = linkedMapOf<String, String?>()
+    private var metadataWriterActive = false
+    private val savedSnapshots = mutableMapOf<String, String>()
+    private val latestDrafts = linkedMapOf<String, ConversationDraft>()
 
     companion object {
         fun nodeDirectory(root: File, identity: String) = File(root, digest(identity))
@@ -30,10 +36,15 @@ class ConversationStore(private val directory: File) {
         private data class DraftWrite(val store: ConversationStore, val id: String, val draft: ConversationDraft,
             val failed: (Throwable) -> Unit, val completed: List<CompletableDeferred<Unit>> = emptyList())
         private val writerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        private val directoryLocks = ConcurrentHashMap<String, Any>()
         private val writerLock = Any()
         private val waiting = linkedMapOf<Pair<String, String>, DraftWrite>()
         private var currentWrite: Pair<Pair<String, String>, DraftWrite>? = null
         private var writerActive = false
+        private val draftVersions = mutableMapOf<Pair<String, String>, Long>()
+        private data class SnapshotWrite(val store: ConversationStore, val threadId: String, val snapshot: JSONObject)
+        private val snapshots = linkedMapOf<Pair<String, String>, SnapshotWrite>()
+        private var snapshotWriterActive = false
     }
 
     /** Route/node disposal does not cancel queued saves. One writer preserves order across store instances. */
@@ -50,6 +61,8 @@ class ConversationStore(private val directory: File) {
         completion: CompletableDeferred<Unit>? = null) {
         synchronized(writerLock) {
             val key = directory.absolutePath to threadId
+            draftVersions[key] = (draftVersions[key] ?: 0) + 1
+            rememberDraft(threadId, draft)
             val observers = waiting[key]?.completed.orEmpty() + listOfNotNull(completion)
             waiting[key] = DraftWrite(this, threadId, draft, onFailure, observers)
             if (writerActive) return
@@ -75,12 +88,55 @@ class ConversationStore(private val directory: File) {
             }
         }
     }
-    fun getMetadata(key: String): String? = synchronized(lock) { metadata.string(key).takeIf { metadata.has(key) } }
-    fun putMetadata(key: String, value: String?) = synchronized(lock) {
-        if (value == null) metadata.remove(key) else metadata.put(key, value)
-        // Small navigation/read markers are committed before returning so a stopped process cannot lose them.
-        runCatching { write("metadata", metadata.toString()) }
-        Unit
+    fun getMetadata(key: String): String? = synchronized(metadataLock) { metadata.string(key).takeIf { metadata.has(key) } }
+    /** Navigation/read markers may coalesce. Recovery checkpoints use the synchronous IO commit below. */
+    fun putMetadata(key: String, value: String?) {
+        synchronized(metadataLock) {
+            if (getMetadata(key) == value && pendingMetadata.isEmpty()) return
+            if (value == null) metadata.remove(key) else metadata.put(key, value)
+            pendingMetadata[key] = value
+            if (metadataWriterActive) return
+            metadataWriterActive = true
+        }
+        writerScope.launch {
+            while (true) {
+                delay(120)
+                val success = runCatching { flushMetadata() }.isSuccess
+                val done = synchronized(metadataLock) {
+                    if (!success || pendingMetadata.isEmpty()) { metadataWriterActive = false; true } else false
+                }
+                if (done) break
+            }
+        }
+    }
+    suspend fun flushMetadata() = withContext(Dispatchers.IO) { commitMetadata(emptyMap()) }
+    private fun readMetadataStrict(): JSONObject {
+        val source = file("metadata")
+        if (java.nio.file.Files.notExists(source.toPath())) return JSONObject()
+        return try {
+            check(source.isFile && source.length() <= DRAFT_LIMIT)
+            JSONObject(source.readText())
+        } catch (error: Exception) {
+            throw IllegalArgumentException("无法读取手机恢复记录，原记录已保留，请检查存储后重试", error)
+        }
+    }
+    private fun commitMetadata(changes: Map<String, String?>) = synchronized(lock) {
+        val queued = synchronized(metadataLock) { pendingMetadata.toMap() }
+        if (queued.isEmpty() && changes.isEmpty()) return@synchronized
+        // Read under the directory lock: a delayed old-node navigation save cannot erase a newer receipt.
+        val next = readMetadataStrict() // Existing unreadable/corrupt receipts must never become an empty store.
+        (queued + changes).forEach { (key, value) ->
+            val previous = next.string(key).toLongOrNull()
+            val incoming = value?.toLongOrNull()
+            if (key.startsWith("read:") && previous != null && incoming != null) next.put(key, maxOf(previous, incoming).toString())
+            else if (value == null) next.remove(key) else next.put(key, value)
+        }
+        write("metadata", next.toString())
+        synchronized(metadataLock) {
+            queued.forEach { (key, value) -> if (pendingMetadata.containsKey(key) && pendingMetadata[key] == value) pendingMetadata.remove(key) }
+            metadata = next
+            pendingMetadata.forEach { (key, value) -> if (value == null) metadata.remove(key) else metadata.put(key, value) }
+        }
     }
     private fun decodeDraft(json: JSONObject): ConversationDraft = runCatching {
         ConversationDraft(json.string("text"), json.objects("images").take(10).mapNotNull {
@@ -105,18 +161,29 @@ class ConversationStore(private val directory: File) {
         }
         return queued ?: synchronized(lock) { read("draft-${digest(threadId)}", DRAFT_LIMIT)?.let(::decodeDraft) ?: ConversationDraft() }
     }
+    private fun rememberDraft(threadId: String, draft: ConversationDraft) = synchronized(writerLock) {
+        latestDrafts.remove(threadId); latestDrafts[threadId] = draft
+        var bytes = latestDrafts.values.sumOf { value -> value.images.sumOf { it.bytes.size.toLong() } }
+        while (latestDrafts.size > 12 || bytes > 64L * 1024 * 1024 && latestDrafts.size > 1) {
+            latestDrafts.remove(latestDrafts.keys.first())?.let { removed -> bytes -= removed.images.sumOf { it.bytes.size.toLong() } }
+        }
+    }
+    fun currentDraft(threadId: String): ConversationDraft? = synchronized(writerLock) {
+        val key = directory.absolutePath to threadId
+        waiting[key]?.draft ?: currentWrite?.takeIf { it.first == key }?.second?.draft ?: latestDrafts[threadId]
+    }
     suspend fun loadDraft(threadId: String): ConversationDraft = withContext(Dispatchers.IO) {
         if (threadId.startsWith("pending:") && getMetadata("completed:$threadId") == "true") return@withContext ConversationDraft()
         val current = latestDraft(threadId)
         val recoverable = sentDraftCheckpoints().entries.firstOrNull { it.value.string("threadId") == threadId && it.value.string("status") == "pending" }
         val draft = if (recoverable != null && !recoverable.value.optBoolean("preserveNewerDraft") &&
-            (current.empty || draftFingerprint(current) == recoverable.value.string("baselineFingerprint"))) synchronized(lock) {
+            (current.empty || matchesFingerprint(current, recoverable.value.string("baselineFingerprint")))) synchronized(lock) {
             read("sent-input-${digest(recoverable.key)}", DRAFT_LIMIT)?.let(::decodeDraft) ?: current
         } else current
         val accepted = sentDraftCheckpoints().values.firstOrNull { it.string("threadId") == threadId &&
-            it.string("status") == "accepted" && it.string("fingerprint") == draftFingerprint(draft) }
+            it.string("status") == "accepted" && matchesFingerprint(draft, it.string("fingerprint")) }
         // A durable accepted receipt hides only the unchanged old draft while cleanup is pending.
-        if (accepted == null) draft else decodeDraft(accepted.getJSONObject("settings"))
+        (if (accepted == null) draft else decodeDraft(accepted.getJSONObject("settings"))).also { rememberDraft(threadId, it) }
     }
     private fun draftJson(draft: ConversationDraft) = JSONObject().put("text", draft.text).put("model", draft.model)
         .put("effort", draft.effort).put("mode", draft.mode).put("serviceTier", draft.serviceTier).put("sandbox", draft.sandbox).put("approvalPolicy", draft.approvalPolicy)
@@ -131,29 +198,47 @@ class ConversationStore(private val directory: File) {
         is String -> JSONObject.quote(value)
         else -> value.toString()
     }
-    private fun draftFingerprint(draft: ConversationDraft) = digest(canonicalJson(draftJson(draft)))
+    private fun draftFingerprint(draft: ConversationDraft): String {
+        val hash = MessageDigest.getInstance("SHA-256")
+        fun add(bytes: ByteArray) { hash.update(java.nio.ByteBuffer.allocate(4).putInt(bytes.size).array()); hash.update(bytes) }
+        add(canonicalJson(draftJson(draft.copy(images = emptyList()))).toByteArray())
+        draft.images.take(10).filter { it.bytes.size <= 20 * 1024 * 1024 }.forEach { add(it.id.toByteArray()); add(it.bytes) }
+        return "v2:" + hash.digest().joinToString("") { "%02x".format(it) }
+    }
+    private fun matchesFingerprint(draft: ConversationDraft, expected: String) =
+        if (expected.startsWith("v2:")) draftFingerprint(draft) == expected else digest(canonicalJson(draftJson(draft))) == expected
 
-    fun captureDraft(threadId: String): ConversationDraft = decodeDraft(draftJson(latestDraft(threadId)))
-    suspend fun checkpointSentDraft(submissionId: String, threadId: String, draft: ConversationDraft = captureDraft(threadId)) {
+    private fun freezeDraft(draft: ConversationDraft) = draft.copy(
+        images = draft.images.take(10).filter { it.bytes.size <= 20 * 1024 * 1024 }.map { it.copy(bytes = it.bytes.copyOf()) },
+        files = draft.files.take(16).map { JSONObject(it.toString()) })
+    /** Capture the queued object before yielding; image/file cloning and fallback disk reads run on IO. */
+    fun captureDraftAsync(threadId: String): Deferred<ConversationDraft> {
+        val queued = currentDraft(threadId)
+        return writerScope.async { freezeDraft(queued ?: latestDraft(threadId)) }
+    }
+    fun captureDraft(threadId: String): ConversationDraft = freezeDraft(latestDraft(threadId))
+    suspend fun checkpointSentDraft(submissionId: String, threadId: String, draft: ConversationDraft? = null) = withContext(Dispatchers.IO) {
+        val frozenDraft = draft ?: captureDraft(threadId)
         val baseline = synchronized(lock) { read("draft-${digest(threadId)}", DRAFT_LIMIT)?.let(::decodeDraft) ?: ConversationDraft() }
         val latest = captureDraft(threadId)
-        val preserveNewerDraft = !latest.empty && draftFingerprint(latest) != draftFingerprint(draft)
+        val fingerprint = draftFingerprint(frozenDraft)
+        val preserveNewerDraft = !latest.empty && draftFingerprint(latest) != fingerprint
         // Persist the frozen input independently before awaiting the normal draft writer.
         // A newer edit may coalesce that writer, but cannot erase the submitted bytes.
         withContext(Dispatchers.IO) { synchronized(lock) {
-            val frozen = draftJson(draft).toString()
+            val frozen = draftJson(frozenDraft).toString()
             require(frozen.toByteArray().size <= DRAFT_LIMIT) { "草稿过大，无法保存在手机" }
             write("sent-input-${digest(submissionId)}", frozen)
         } }
-        val settings = draftJson(ConversationDraft(model = draft.model, effort = draft.effort, mode = draft.mode, serviceTier = draft.serviceTier, sandbox = draft.sandbox, approvalPolicy = draft.approvalPolicy))
+        val settings = draftJson(frozenDraft.copy(text = "", images = emptyList(), files = emptyList()))
         putRecoveryMetadata("sent-draft:$submissionId", JSONObject().put("threadId", threadId)
-            .put("fingerprint", draftFingerprint(draft)).put("baselineFingerprint", draftFingerprint(baseline))
+            .put("fingerprint", fingerprint).put("baselineFingerprint", draftFingerprint(baseline))
             .put("preserveNewerDraft", preserveNewerDraft)
             .put("settings", settings).put("status", "pending").toString())
         // Keep any newer local edit; the immutable submitted bytes above remain recoverable.
         saveDraftOrdered(threadId, captureDraft(threadId))
     }
-    fun sentDraftCheckpoints(): Map<String, JSONObject> = synchronized(lock) {
+    fun sentDraftCheckpoints(): Map<String, JSONObject> = synchronized(metadataLock) {
         metadata.keys().asSequence().filter { it.startsWith("sent-draft:") }.mapNotNull { key ->
             runCatching { key.removePrefix("sent-draft:") to JSONObject(metadata.getString(key)) }.getOrNull()
         }.toMap()
@@ -170,13 +255,16 @@ class ConversationStore(private val directory: File) {
         }
         return response.string("status") == "accepted"
     }
-    suspend fun clearAcceptedSentDraft(submissionId: String) {
-        val saved = getMetadata("sent-draft:$submissionId")?.let(::JSONObject) ?: return
-        if (saved.string("status") != "accepted") return
+    suspend fun clearAcceptedSentDraft(submissionId: String) = withContext(Dispatchers.IO) {
+        val saved = getMetadata("sent-draft:$submissionId")?.let(::JSONObject) ?: return@withContext
+        if (saved.string("status") != "accepted") return@withContext
         val completion = CompletableDeferred<Unit>()
+        val threadId = saved.getString("threadId")
+        val key = directory.absolutePath to threadId
+        val version = synchronized(writerLock) { draftVersions[key] ?: 0 }
+        val unchanged = matchesFingerprint(latestDraft(threadId), saved.string("fingerprint"))
         synchronized(writerLock) {
-            val threadId = saved.getString("threadId")
-            if (draftFingerprint(latestDraft(threadId)) == saved.string("fingerprint")) {
+            if (unchanged && (draftVersions[key] ?: 0) == version) {
                 enqueueDraftWrite(threadId, decodeDraft(saved.getJSONObject("settings")), {}, completion)
             } else completion.complete(Unit) // A newer draft belongs to the user and must survive.
         }
@@ -185,6 +273,13 @@ class ConversationStore(private val directory: File) {
         withContext(Dispatchers.IO) { synchronized(lock) { file("sent-input-${digest(submissionId)}").delete() } }
     }
     suspend fun saveDraft(threadId: String, draft: ConversationDraft) = withContext(Dispatchers.IO) {
+        synchronized(writerLock) {
+            val key = directory.absolutePath to threadId
+            if (currentWrite?.first != key || currentWrite?.second?.draft !== draft) {
+                draftVersions[key] = (draftVersions[key] ?: 0) + 1
+                rememberDraft(threadId, draft)
+            }
+        }
         synchronized(lock) {
             val name = "draft-${digest(threadId)}"
             if (draft.empty) { file(name).delete(); return@synchronized }
@@ -195,13 +290,7 @@ class ConversationStore(private val directory: File) {
             write(name, text)
         }
     }
-    private fun putRecoveryMetadata(key: String, value: String?) = synchronized(lock) {
-        val next = JSONObject(metadata.toString())
-        if (value == null) next.remove(key) else next.put(key, value)
-        write("metadata", next.toString())
-        if (value == null) metadata.remove(key) else metadata.put(key, value)
-        Unit
-    }
+    private fun putRecoveryMetadata(key: String, value: String?) = commitMetadata(mapOf(key to value))
     fun defaultSettings(): JSONObject? = getMetadata("codex-default-settings")?.let {
         runCatching { JSONObject(it) }.getOrNull()
     }
@@ -218,12 +307,11 @@ class ConversationStore(private val directory: File) {
     fun completedPendingThreadId(projectId: String): String? = getMetadata("pending-completed-thread:$projectId")
     fun pendingThreadId(projectId: String): String? = getMetadata("pending-thread:$projectId")
     fun pendingWorktreeRef(projectId: String): String? = getMetadata("pending-ref:$projectId")
-    fun setPendingWorktreeRef(projectId: String, ref: String?) = putRecoveryMetadata("pending-ref:$projectId", ref)
+    fun setPendingWorktreeRef(projectId: String, ref: String?) = putMetadata("pending-ref:$projectId", ref)
     fun beginPending(projectId: String) {
         val key = "pending:$projectId"
         if (getMetadata("completed:$key") == "true") enqueueDraft(key, ConversationDraft())
-        putRecoveryMetadata("completed:$key", null)
-        putRecoveryMetadata("pending-completed-thread:$projectId", null)
+        commitMetadata(mapOf("completed:$key" to null, "pending-completed-thread:$projectId" to null))
     }
     private fun pendingEntry(id: String): JSONObject? = getMetadata("pending-entry:$id")?.let { runCatching { JSONObject(it) }.getOrNull() }
     private fun migratePending(projectId: String) {
@@ -244,7 +332,7 @@ class ConversationStore(private val directory: File) {
     }
     suspend fun listPending(projectId: String): List<PendingConversation> = withContext(Dispatchers.IO) {
         migratePending(projectId)
-        val ids = synchronized(lock) { metadata.keys().asSequence().filter { it.startsWith("pending-entry:") }
+        val ids = synchronized(metadataLock) { metadata.keys().asSequence().filter { it.startsWith("pending-entry:") }
             .map { it.removePrefix("pending-entry:") }.toList() }
         ids.mapNotNull { id ->
             val entry = pendingEntry(id) ?: return@mapNotNull null
@@ -278,10 +366,8 @@ class ConversationStore(private val directory: File) {
     }
     fun finishPending(projectId: String) {
         // Tombstone first: an old asynchronous draft write cannot resurrect accepted input.
-        putRecoveryMetadata("completed:pending:$projectId", "true")
-        putRecoveryMetadata("pending-thread:$projectId", null)
-        putRecoveryMetadata("pending-ref:$projectId", null)
-        putRecoveryMetadata("pending-entry:$projectId", null)
+        commitMetadata(mapOf("completed:pending:$projectId" to "true", "pending-thread:$projectId" to null,
+            "pending-ref:$projectId" to null, "pending-entry:$projectId" to null))
         enqueueDraft("pending:$projectId", ConversationDraft())
     }
 
@@ -326,6 +412,13 @@ class ConversationStore(private val directory: File) {
                 }
             }
     }
+    fun enqueueResolvePendingMessage(submissionId: String, response: JSONObject) {
+        writerScope.launch { runCatching { resolvePendingMessage(submissionId, response) } }
+    }
+    fun enqueueRemovePendingMessages(clientIds: Set<String>) {
+        if (clientIds.isEmpty()) return
+        writerScope.launch { clientIds.forEach { runCatching { removePendingMessage(it) } } }
+    }
     fun removePendingMessage(clientId: String) = synchronized(lock) {
         val key = digest(clientId)
         file("overlay-state-$key").delete()
@@ -336,24 +429,64 @@ class ConversationStore(private val directory: File) {
     suspend fun loadSnapshot(threadId: String): JSONObject? = withContext(Dispatchers.IO) {
         synchronized(lock) { read("snapshot-${digest(threadId)}", SNAPSHOT_LIMIT)?.takeIf { it.optJSONObject("thread")?.string("id") == threadId } }
     }
-    suspend fun saveSnapshot(threadId: String, snapshot: JSONObject) = withContext(Dispatchers.IO) {
-        synchronized(lock) {
-            if (snapshot.optJSONObject("thread")?.string("id") != threadId ||
-                snapshot.optJSONObject("nativeSync")?.string("state")?.let { it.isNotBlank() && it != "ready" } == true) return@synchronized
-            val json = JSONObject(snapshot.toString()).put("requests", JSONArray()).put("queue", JSONArray())
-                .put("recoveryTask", JSONObject.NULL).put("recoveryRequired", false).put("nextCursor", JSONObject.NULL)
-                .put("nativeRevision", JSONObject.NULL)
-            // Approval keys/challenges belong to the live connection and never survive as offline prompts.
-            val thread = json.getJSONObject("thread")
-            var turns = thread.objects("turns").takeLast(30)
-            thread.put("turns", JSONArray(turns))
-            // Cached content is a visual seed; pagination, approvals and queue controls require a live response.
-            var value = json.toString()
-            while (value.toByteArray().size > SNAPSHOT_LIMIT && turns.size > 1) {
-                turns = turns.drop(1); thread.put("turns", JSONArray(turns)); value = json.toString()
+    fun enqueueSnapshot(threadId: String, snapshot: JSONObject) {
+        synchronized(writerLock) {
+            snapshots[directory.absolutePath to threadId] = SnapshotWrite(this, threadId, snapshot)
+            if (snapshotWriterActive) return
+            snapshotWriterActive = true
+        }
+        writerScope.launch {
+            while (true) {
+                delay(350)
+                val next = synchronized(writerLock) {
+                    val key = snapshots.keys.firstOrNull()
+                    if (key == null) { snapshotWriterActive = false; null } else snapshots.remove(key)
+                } ?: break
+                runCatching { next.store.saveSnapshot(next.threadId, next.snapshot) }
             }
-            if (value.toByteArray().size <= SNAPSHOT_LIMIT) write("snapshot-${digest(threadId)}", value)
-            else file("snapshot-${digest(threadId)}").delete()
+        }
+    }
+
+    private fun jsonValue(value: Any?): String = when (value) {
+        null, JSONObject.NULL -> "null"
+        is String -> JSONObject.quote(value)
+        else -> value.toString()
+    }
+    private fun encodedFields(json: JSONObject, excluded: Set<String>) = json.keys().asSequence()
+        .filterNot { it in excluded }.associateWithTo(linkedMapOf()) { jsonValue(json.opt(it)) }
+    private fun encodedObject(fields: Map<String, String>) = fields.entries.joinToString(",", "{", "}") { JSONObject.quote(it.key) + ":" + it.value }
+
+    /** Serialize every turn once, size its UTF-8 bytes, and join the bounded suffix without JSON round trips. */
+    internal fun snapshotCachePayload(threadId: String, snapshot: JSONObject): String? {
+        val thread = snapshot.optJSONObject("thread") ?: return null
+        if (thread.string("id") != threadId || snapshot.optJSONObject("nativeSync")?.string("state")?.let { it.isNotBlank() && it != "ready" } == true) return null
+        val root = encodedFields(snapshot, setOf("thread", "requests", "queue", "recoveryTask", "recoveryRequired", "nextCursor", "nativeRevision"))
+        root.putAll(mapOf("requests" to "[]", "queue" to "[]", "recoveryTask" to "null", "recoveryRequired" to "false", "nextCursor" to "null", "nativeRevision" to "null"))
+        val fields = encodedFields(thread, setOf("turns"))
+        val turns = thread.objects("turns").takeLast(30).map { it.toString() }
+        val sizes = turns.map { it.toByteArray().size }
+        fields["turns"] = "[]"; root["thread"] = encodedObject(fields)
+        val fixed = encodedObject(root).toByteArray().size
+        var start = 0
+        var bytes = fixed + sizes.sum() + (turns.size - 1).coerceAtLeast(0)
+        while (bytes > SNAPSHOT_LIMIT && start < turns.size - 1) {
+            bytes -= sizes[start++] + 1
+        }
+        if (bytes > SNAPSHOT_LIMIT) return null
+        fields["turns"] = turns.drop(start).joinToString(",", "[", "]")
+        root["thread"] = encodedObject(fields)
+        return encodedObject(root)
+    }
+    suspend fun saveSnapshot(threadId: String, snapshot: JSONObject) = withContext(Dispatchers.IO) {
+        if (snapshot.optJSONObject("thread")?.string("id") != threadId ||
+            snapshot.optJSONObject("nativeSync")?.string("state")?.let { it.isNotBlank() && it != "ready" } == true) return@withContext
+        val value = snapshotCachePayload(threadId, snapshot)
+        synchronized(lock) {
+            if (value == null) { savedSnapshots.remove(threadId); file("snapshot-${digest(threadId)}").delete(); return@synchronized }
+            if (savedSnapshots[threadId] == value && file("snapshot-${digest(threadId)}").isFile) return@synchronized
+            write("snapshot-${digest(threadId)}", value)
+            savedSnapshots[threadId] = value
+            while (savedSnapshots.size > 12) savedSnapshots.remove(savedSnapshots.keys.first())
             prune("snapshot-", 12)
         }
     }
@@ -386,6 +519,7 @@ class ConversationStore(private val directory: File) {
         val temporary = File(directory, "$name.tmp")
         temporary.outputStream().use { stream -> stream.write(content.toByteArray()); stream.fd.sync() }
         check(temporary.renameTo(file(name))) { "无法保存本机草稿" }
+        onWrite(name)
     }
     private fun prune(prefix: String, keep: Int) {
         directory.listFiles()?.filter { it.name.startsWith(prefix) && it.extension == "json" }

@@ -49,6 +49,10 @@
 
 `requests` 项含 `{key,id,method,params,connectionId}`。使用原样 key 和原生 method 对应的 response；不自行生成审批默认回答。请求失效或另一端已回答时不能再次响应。`settings` 仅包含该原生版本返回的模型、effort、cwd、审批、sandbox 等设置；GET 会 resume/join 原生会话以取得实时状态，不能当作纯数据库读取。
 
+原生历史适配协议 v2 保留未知 item 类型的完整字段，客户端以未知活动展示，不因新增展示类型拒绝整页。turn 的 ID、status、完整 items、重复身份及分页游标仍严格校验；显式 `itemsView` 必须为 `full`，未知 turn status 不推断执行权限。`thread.turns[].status/error` 是轮次结果来源；失败或中断的空轮次同样展示诊断，不生成助手消息或自动重试。
+
+流式投影支持助手正文、命令输出、文件输出、计划和按索引分段的 reasoning 增量。item 完成时保留原位置；迟到 start/delta 不重新打开已完成项或轮次，较短实时缓存不覆盖较长原生输出。助手正文和命令输出事件的 `params.relayOffset` 按 Unicode code point 计数，客户端仅在已有基线匹配时直接追加，否则重新读取快照。其他观察事件不会凭空创建进行中的轮次。
+
 纯文本限制 200,000 字符。传 `input` 时它必须包含 1–64 个原生项，文本也作为数组项传入；外层 `text` 不会再拼进 input。当前 HTTP 校验支持：
 
 ```json
@@ -262,6 +266,8 @@ unknown 状态会定期只读核对原生历史：仅在唯一 `clientId` 或已
 
 会话增加 `nativeExecution/deliveryState/displayState/writerOwner/queueDepth/recoveryRequired/recoveryTask`。这些状态不由历史缓存或本地乐观气泡推断。历史增加 `nativeRevision` 与 `nativeSync.state`；更早页请求携带首页 revision，不一致返回 409；`converging` 时保留上一份成功内容并暂缓拼页。
 
+0.2.20 增加 `nativeHeadRevision`，表示最新页的实时内容水位。`nativeRevision` 继续作为分页拼接依据：活动 item 的纯正文增量不使旧页失效；轮次/item 结构、终态、已完成正文、原生连接代数及历史修复变化仍使其失效。客户端不得用 `nativeHeadRevision` 替代写入权限或审批代数。reasoning、plan、fileChange 文本增量同样可提供追加前 Unicode code point 位置 `relayOffset`；仅在身份、字段和偏移都可核对时本地合并，否则重读权威快照。
+
 ownership 预览可能含 `workspaceRebind:{path,missingPath}`。仅当旧目录确认不存在且原项目目录可唯一确认时提供。手机展示准确目录后，提交同票据、`confirmed:true` 与 `rebindWorkspace:path`；服务端再次验证，原会话恢复到明确确认的目录，不重放原任务。
 
 
@@ -293,6 +299,12 @@ for release as well as takeover. Changed/expired previews must be fetched again.
 ### 未持久化空会话的释放保护
 
 独立 writer 的释放预览和执行可能返回 `409 thread_unmaterialized`：原生首条消息尚未持久化，关闭进程会使该原生 ID 无法恢复。此错误保留 writer、会话和队列状态；在真实首条消息持久化后可再次释放。不能把此结果显示为“已释放”。
+
+会话快照 `nativeRuntime.releaseAvailable=false` 与 `releaseUnavailableReason` 提前告知该限制，客户端显示原因、禁用释放并保留草稿。字段缺失时兼容旧节点，服务端执行前核验仍为最终依据。
+
+所有权核验失败不等于确认有外部持锁者：此时 `writerOwner=unknown`、`readOnly=true`、`control.state=ownership_unverified`、`control.canOperate=false`、`control.action=null`，并提供 `unavailableReason`；`blockReason` 同样为 `ownership_unverified`。客户端提供只读重新核验，不自动接管或恢复。网络未连接仍使用原有 `control.state=unknown`。
+
+`relay/writerDisconnected.params.threadIds` 是确切影响范围（空数组表示没有会话 writer 受影响）；客户端应立即使目标会话权限和审批失效，丢弃断线前在途快照与分页，不能等待下一次轮询才禁用操作。
 
 ### App 独立 writer
 

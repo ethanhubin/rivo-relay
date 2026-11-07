@@ -27,7 +27,7 @@ class TakeoverUiTest {
                 { action = it }, reason.value)
         } } }
         compose.onNodeWithTag("ownership_takeover").assertIsDisplayed().assertIsNotEnabled()
-        compose.onNodeWithTag("takeover_reason").assertTextContains("网络不可用", substring = true)
+        compose.onNodeWithTag("takeover_reason", useUnmergedTree = true).assertTextContains("网络不可用", substring = true)
         compose.runOnIdle { reason.value = null }
         compose.onNodeWithTag("ownership_takeover").assertIsDisplayed().assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals("takeover", action) }
@@ -60,6 +60,6 @@ class TakeoverUiTest {
             NativeWriterStatus(SessionState(id = "t", snapshot = snapshot), "节点", false, { error("disabled") })
         } } }
         compose.onNodeWithTag("ownership_takeover").assertIsDisplayed().assertIsNotEnabled()
-        compose.onNodeWithTag("takeover_reason").assertTextContains("Desktop", substring = true)
+        compose.onNodeWithTag("takeover_reason", useUnmergedTree = true).assertTextContains("Desktop", substring = true)
     }
 }

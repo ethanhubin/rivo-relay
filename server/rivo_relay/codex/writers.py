@@ -151,6 +151,17 @@ class WriterProcesses:
                 return False
         return True
 
+    def preview_scope(self, thread_id, owner, action, ticket):
+        """Select operation gates only; this does not authorize or consume a ticket."""
+        with self._lock:
+            item = self._tickets.get(ticket)
+            if (item and self.clock() < item['expires'] and item['owner'] == owner
+                    and item['action'] == action and item['snapshot']['threadId'] == thread_id):
+                return sorted({thread_id, *(t for h in item['snapshot']['holders'] for t in h['threads'])})
+        # Subscription/owned-writer tickets have exactly one thread. Invalid
+        # process tickets are still rejected by consume before any operation.
+        return [thread_id]
+
     def consume(self, thread_id, owner, action, ticket, confirmed):
         with self._lock:
             item = self._tickets.pop(ticket, None)

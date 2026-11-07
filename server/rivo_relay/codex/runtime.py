@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+from contextlib import contextmanager
 import time
 import uuid
 
@@ -23,6 +24,8 @@ class RuntimeConnection:
         self.codex_home, self.socket_path = self.native.codex_home, self.native.socket_path
         self.generation = uuid.uuid4().hex
         self._lock = threading.RLock()
+        self._probe_lock = threading.Lock()
+        self._start_close_locks = {name: threading.RLock() for name in ('app_server', 'desktop')}
         self._pins, self._requests = {}, {}
         self._backend_generations = {'app_server': self.native.generation, 'desktop': self.desktop.generation}
         self._preferred = 'desktop' if mode == 'desktop' else 'app_server'
@@ -35,6 +38,20 @@ class RuntimeConnection:
 
     def _backend(self, name):
         return self.desktop if name == 'desktop' else self.native
+
+    def _start_backend(self, name):
+        # Socket construction may publish its transport after close was called.
+        # Serialize only this backend's lifetime, never the routing lock or the
+        # other backend's live requests. close marks the fence before waiting.
+        with self._start_close_locks[name]:
+            if self._closed:
+                raise CodexError('Codex 连接已关闭')
+            backend = self._backend(name)
+            try:
+                return backend.start()
+            finally:
+                if self._closed:
+                    backend.close()
 
     def _observe_backend_generation(self, name):
         """Retire one writer even if its old disconnect notification arrived late."""
@@ -52,31 +69,45 @@ class RuntimeConnection:
         with self._lock:
             if self._closed:
                 raise CodexError('Codex 连接已关闭')
-            if self.mode == 'desktop':
-                self.desktop.start()
-                self._observe_backend_generation('desktop')
-            else:
-                try:
-                    self.native.start()
-                except CodexError:
-                    if self.mode == 'app_server':
-                        raise
-                self._observe_backend_generation('app_server')
-                self._refresh()
-            if not self._backend(self._preferred).status().get('connected'):
+        # Connection establishment never holds the routing lock. Live owned
+        # writers can keep responding while the metadata connection reconnects.
+        if self.mode == 'desktop':
+            self._start_backend('desktop')
+            self._observe_backend_generation('desktop')
+        else:
+            try:
+                self._start_backend('app_server')
+            except CodexError:
+                if self.mode == 'app_server': raise
+            self._observe_backend_generation('app_server')
+            self._refresh()
+        with self._lock:
+            if self._closed or not self._backend(self._preferred).status().get('connected'):
                 raise CodexError('所选 Codex 运行时尚未连接')
-            return self.status()
+        return self.status()
 
     def _refresh(self):
+        if not self._probe_lock.acquire(blocking=False): return
+        try:
+            if not self._closed: self._refresh_locked()
+        finally:
+            self._probe_lock.release()
+
+    def _refresh_locked(self):
         self._observe_backend_generation('app_server')
         self._observe_backend_generation('desktop')
         if self.mode != 'auto' or self._clock() - self._last_probe < 1:
             return
         self._last_probe = self._clock()
+        if self.native.status().get('sessionIsolation'):
+            self._preferred = 'app_server'
+            return
         try:
-            self.desktop.start()
+            self._start_backend('desktop')
         except CodexError:
             pass
+        if self._closed:
+            return
         self._observe_backend_generation('desktop')
         # With per-session ownership, auto discovery must not silently route an
         # App-created/resumed thread back into Desktop's shared writer. Explicit
@@ -126,7 +157,10 @@ class RuntimeConnection:
         params = params or {}
         thread_id = params.get('threadId') or params.get('conversationId')
         with self._lock:
-            self._refresh()
+            pinned = thread_id in self._pins
+        if not pinned: self._refresh()
+        with self._lock:
+            if self._closed: raise CodexError('Codex 连接已关闭')
             name = self._pins.get(thread_id, self._preferred)
             backend = self._backend(name)
             if not backend.status().get('connected'):
@@ -175,11 +209,27 @@ class RuntimeConnection:
         fences helpers when only one of the two transports reconnects.
         """
         with self._lock:
-            self._refresh()
+            pinned = thread_id in self._pins
+        if not pinned: self._refresh()
+        with self._lock:
             selected = self._pins.setdefault(thread_id, self._preferred)
             backend = self._backend(selected)
             bind = getattr(backend, 'history_host_connection', None)
             return bind(thread_id) if bind else backend
+
+    @contextmanager
+    def auxiliary_connection(self):
+        self.start()
+        with self._lock:
+            backend = self._backend(self._preferred)
+            generation = backend.generation
+        lease = getattr(backend, 'auxiliary_connection', None)
+        if lease:
+            with lease() as helper: yield helper
+        else:
+            yield backend
+        if backend.generation != generation:
+            raise CodexError('原生连接已变化，请核对上传结果', request_sent=True)
 
     def owns_writer(self, thread_id):
         return self._pins.get(thread_id, self._preferred) == 'app_server' and getattr(self.native, 'owns', lambda _: False)(thread_id)
@@ -241,8 +291,11 @@ class RuntimeConnection:
         self.on_event(forwarded)
 
     def close(self):
-        self._closed = True
+        with self._lock:
+            self._closed = True
         try:
-            self.desktop.close()
+            with self._start_close_locks['desktop']:
+                self.desktop.close()
         finally:
-            self.native.close()
+            with self._start_close_locks['app_server']:
+                self.native.close()

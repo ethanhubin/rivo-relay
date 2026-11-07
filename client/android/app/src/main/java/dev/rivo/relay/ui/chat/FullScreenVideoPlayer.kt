@@ -121,22 +121,23 @@ internal fun FullScreenVideo(
   val activity = remember(context) { context.findActivity() }
   val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
   val scope = rememberCoroutineScope()
+  val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
   val player =
     remember(video) {
       ExoPlayer.Builder(context).build().apply {
         setAudioAttributes(androidx.media3.common.AudioAttributes.DEFAULT, true)
         setHandleAudioBecomingNoisy(true)
         setMediaItem(currentVideo.toMediaItem())
-        playWhenReady = true
+        playWhenReady = lifecycleOwner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)
         prepare()
       }
     }
-  val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
   DisposableEffect(lifecycleOwner, player) {
     val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
       if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) player.pause()
     }
     lifecycleOwner.lifecycle.addObserver(observer)
+    if (!lifecycleOwner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) player.pause()
     onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
   }
   val diagnostics = remember(video) { VideoPlaybackDiagnostics() }
@@ -149,7 +150,7 @@ internal fun FullScreenVideo(
   var playbackDurationMs by remember(video) { mutableLongStateOf(0L) }
   var draggingProgress by remember(video) { mutableStateOf(false) }
   var draggedPositionMs by remember(video) { mutableLongStateOf(0L) }
-  var playbackRequested by remember(video) { mutableStateOf(true) }
+  var playbackRequested by remember(video) { mutableStateOf(player.playWhenReady) }
   var controlsVisible by remember(video) { mutableStateOf(true) }
   var controlsInteraction by remember(video) { mutableIntStateOf(0) }
   var speedMenuVisible by remember(video) { mutableStateOf(false) }
@@ -235,7 +236,7 @@ internal fun FullScreenVideo(
     diagnostics.start(currentVideo)
     player.setMediaItem(currentVideo.toMediaItem(), true)
     player.prepare()
-    player.playWhenReady = true
+    player.playWhenReady = lifecycleOwner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)
   }
 
   DisposableEffect(activity, player) {

@@ -75,4 +75,16 @@ class SessionControlTest {
         assertFalse(pending.control().canOperate)
         assertTrue(pending.showTakeover())
     }
+
+    @Test fun unverifiedOwnershipDoesNotReuseOldWritableOrSuggestTakeover() {
+        val current = session("ownership_unverified").copy(lastConfirmedControl = session("writable", true).control())
+        assertEquals(ControlState.UNVERIFIED, current.control().state)
+        assertEquals(ControlState.UNVERIFIED, current.displayControl().state)
+        assertFalse(current.control().canOperate)
+        assertNull(current.control().action)
+        assertFalse(current.showTakeover())
+        val legacy = sessionSnapshot(JSONObject().put("thread", JSONObject().put("id", "thread"))
+            .put("readOnly", true).put("writerOwner", "unknown"))
+        assertEquals(ControlState.UNVERIFIED, SessionState(snapshot = legacy).control().state)
+    }
 }

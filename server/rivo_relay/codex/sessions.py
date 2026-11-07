@@ -16,11 +16,14 @@ from pathlib import Path
 from .writers import WriterProcesses
 from collections import OrderedDict
 
+from ..operation_gates import ThreadGates
 from .connection import CodexError, NativeConnection
 from .history import NativeHistoryAdapter, NativeHistoryProtocolError
+from .host_probe import read_identity
+from .live_items import ITEM_EVENTS, TERMINAL, project_item, merge_item
 from .native_journal import NativeJournal
 from .interactions import Interactions
-from .projects import ProjectCatalog, pages
+from .projects import ProjectCatalog, pages, thread_pages
 from .files import read_file, read_directory, upload_attachment, download_file, upload_attachment_stream, stream_download
 from .developer import (project_directory, project_git, review_context, workspace_diff,
                         diff_summary, validate_review, Workspaces)
@@ -61,10 +64,11 @@ class CodexService:
                  runtime_mode='app_server', desktop_bridge_dir=None):
         self.on_event = on_event or (lambda event: None)
         self._lock = threading.RLock()
-        self._operations = threading.RLock()
-        self._subscriptions = threading.RLock()
+        self._gates = ThreadGates()
+        self.operation_gate = self._gates.hold
         self._live = OrderedDict()
         self._pending_terminal = set()
+        self._completed_items = {}
         self._active = {}
         self._settings = {}
         self._created = {}
@@ -214,7 +218,14 @@ class CodexService:
                         while len(self._handoff_capabilities) > 16:
                             self._handoff_capabilities.popitem(last=False)
                 available, reason = cached[:2]
+        with self._lock:
+            unmaterialized = (thread_id in self._unmaterialized or thread_id in self._created
+                              or thread_id in self._materializing)
+        release_blocked = bool(status.get('ownedWriter') and unmaterialized)
         return {'runtime': status.get('runtime', 'unknown'), 'connected': bool(status.get('connected')),
+                'releaseAvailable': not release_blocked,
+                'releaseUnavailableReason': ('首条消息尚未确认持久化，暂不能释放；会话和草稿会保留，历史持久化后可释放'
+                                             if release_blocked else None),
                 'desktopShared': status.get('desktopShared'),
                 'desktopVerification': status.get('desktopVerification'),
                 'handoffAvailable': available, 'handoffCheckAvailable': check_available, 'handoffUnavailableReason': reason or None,
@@ -264,7 +275,7 @@ class CodexService:
         roots = [r["path"] for r in project.get("roots", [])]
         # Legacy Desktop worktree threads can lack projectId and use a cwd
         # outside every project root. Verify Git membership on the native host.
-        threads = list(pages(self.connection, "thread/list", {
+        threads = list(thread_pages(self.connection, {
             "archived": archived, "modelProviders": [],
             "sortKey": "updated_at", "sortDirection": "desc",
         })) if roots else []
@@ -272,7 +283,7 @@ class CodexService:
         by_id = {t["id"]: t for t in threads
                  if t.get("projectId") == project_id or (not t.get('projectId') and
                      (t.get('cwd') in roots or t['id'] in associations))}
-        for thread in pages(self.connection, "thread/list", {
+        for thread in thread_pages(self.connection, {
             "projectId": project_id, "archived": archived, "modelProviders": [],
             "sortKey": "updated_at", "sortDirection": "desc",
         }):
@@ -314,7 +325,7 @@ class CodexService:
 
     def archive_session(self, thread_id, archived):
         self.start()
-        with getattr(self, 'queue_lock', self._operations), self._operations:
+        with self.operation_gate(thread_id):
             if archived:
                 if self.workspaces:
                     with self.workspaces.db.read() as c:
@@ -356,7 +367,7 @@ class CodexService:
             return None
 
     def _resume(self, thread_id):
-        with self._subscriptions:
+        with self.operation_gate(thread_id):
             if self.observations_for(thread_id).get(('ownership', ''), {}).get('released'):
                 raise CodexError("会话已主动释放", code="writer_released", http_status=409)
             with self._lock:
@@ -388,6 +399,7 @@ class CodexService:
                 self._joined.add(thread_id)
             return response["thread"]
 
+    @read_identity
     def get_session(self, thread_id, cursor=None, limit=30, native_revision=None):
         self.start()
         # Reconcile the idle persisted history before resume takes a writer lock.
@@ -460,7 +472,8 @@ class CodexService:
         runtime = self._thread_runtime(thread_id)
         control = control_projection(read_only=read_only,
             released=bool(observations.get(('ownership', ''), {}).get('released')),
-            workspace_unavailable=workspace_unavailable, runtime=runtime)
+            workspace_unavailable=workspace_unavailable, runtime=runtime,
+            ownership_unverified=writer_owner == 'unknown')
         if writer_owner == 'none' and not read_only:
             control['action'] = None
         ownership = observations.get(('ownership', ''), {})
@@ -477,65 +490,84 @@ class CodexService:
                 'tokenUsage': usage, 'changes': changes, 'turnSettings': turn_settings,
                 "activeTurnId": active, "status": status, "readOnly": read_only, "nextCursor": history["nextCursor"],
                 "backwardsCursor": history["backwardsCursor"],
-                "nativeRevision": history['nativeRevision'], "nativeSync": history['nativeSync'],
+                "nativeRevision": history['nativeRevision'], "nativeHeadRevision": history.get('nativeHeadRevision'), "nativeSync": history['nativeSync'],
                 'nativeRuntime': runtime,
                 "writerOwner": 'none' if observations.get(('ownership', ''), {}).get('released') or (workspace and workspace['status'] != 'ready') else writer_owner or ('external' if read_only else 'relay'),
                 'workspaceUnavailable': workspace_unavailable, 'workspaceRebind': rebind,
                 'reviewDiagnostics': review_diagnostics,
-                **execution_projection(status, queue, read_only=read_only, requests=requests)}
+                **execution_projection(status, queue, read_only=read_only, requests=requests,
+                                       ownership_unverified=writer_owner == 'unknown')}
 
-    def _history_revision(self, thread_id, turns):
-        # Include mutable native item content, not only IDs: an in-progress
-        # turn can change without changing its identity or status.
-        encoded = json.dumps([self.connection.generation, self.native_journal.generation(thread_id), thread_id, turns[-2:]],
-                             sort_keys=True, ensure_ascii=True, separators=(',', ':')).encode()
+    def _history_revision(self, thread_id, turns, *, content=False):
+        # Active text changes do not relocate older native cursors. Structural
+        # edits, terminal corrections, repair/rollback and runtime changes do.
+        head = [turn if content or turn.get('status') not in ('inProgress', 'notStarted') else
+                {'id': turn['id'], 'status': turn['status'],
+                 'items': [{'id': item['id'], 'type': item['type']} for item in turn['items']]}
+                for turn in turns[-2:]]
+        encoded = json.dumps([self.connection.generation, self.native_journal.connection.generation,
+            self.native_journal.generation(thread_id),
+            self.native_journal.history_epoch(thread_id), thread_id, head],
+            sort_keys=True, ensure_ascii=True, separators=(',', ':')).encode()
         return hashlib.sha256(encoded).hexdigest()
 
+    @read_identity
     def history(self, thread_id, cursor=None, limit=30, native_revision=None):
         self.start()
-        with self._lock:
-            if thread_id in self._created:
-                return {"turns": [], "nextCursor": None, "backwardsCursor": None,
-                        'nativeRevision': self._history_revision(thread_id, []), 'nativeSync': {'state': 'ready'}}
-        native_state = self._native_history_state(thread_id)
-        if cursor is not None and (not native_state.ready or native_state.reprojected):
-            raise CodexError('原生历史已变化，请重新读取最近消息', code='history_changed', http_status=409)
-        try:
-            if cursor is not None:
-                head = self.history_adapter.read_page(self.connection, thread_id, limit=2)
-                revision = self._history_revision(thread_id, list(head.turns))
-                if native_revision is not None and native_revision != revision:
-                    raise CodexError('原生历史已变化，请重新读取最近消息', code='history_changed', http_status=409)
-                if self._merge_live(thread_id, copy.deepcopy(list(head.turns))) != list(head.turns):
-                    raise CodexError('原生历史正在同步，请稍后读取更早消息', code='history_converging', http_status=409)
-            page = self.history_adapter.read_page(self.connection, thread_id,
-                    limit=max(1, min(100, int(limit))), cursor=cursor)
-            turns = copy.deepcopy(list(page.turns))
-            result = {"turns": turns, "nextCursor": page.next_cursor, "backwardsCursor": page.backwards_cursor}
-            result['nativeRevision'] = revision if cursor is not None else self._history_revision(thread_id, turns)
-            if turns:
-                with self._lock:
-                    self._materializing.pop(thread_id, None)
-                    self._unmaterialized.discard(thread_id)
-        except CodexError as error:
-            if self._materializing_thread(thread_id) is not None and awaiting_rollout(error):
-                result = {"turns": [], "nextCursor": None, "backwardsCursor": None,
-                          'nativeRevision': self._history_revision(thread_id, [])}
+        head_limit = 2 if cursor is not None else max(2, min(100, int(limit)))
+        with self.native_journal.read_scope(thread_id, head_limit=head_limit):
+            with self._lock:
+                if thread_id in self._created:
+                    return {"turns": [], "nextCursor": None, "backwardsCursor": None,
+                            'nativeRevision': self._history_revision(thread_id, []),
+                            'nativeHeadRevision': self._history_revision(thread_id, [], content=True),
+                            'nativeSync': {'state': 'ready'}}
+            native_state = self._native_history_state(thread_id)
+            if cursor is not None and (not native_state.ready or native_state.reprojected):
+                raise CodexError('原生历史已变化，请重新读取最近消息', code='history_changed', http_status=409)
+            try:
+                if cursor is not None:
+                    head = self.history_adapter.read_page(self.native_journal.connection, thread_id, limit=2)
+                    revision = self._history_revision(thread_id, list(head.turns))
+                    if native_revision is not None and native_revision != revision:
+                        raise CodexError('原生历史已变化，请重新读取最近消息', code='history_changed', http_status=409)
+                    if self._merge_live(thread_id, copy.deepcopy(list(head.turns))) != list(head.turns):
+                        raise CodexError('原生历史正在同步，请稍后读取更早消息', code='history_converging', http_status=409)
+                page = self.history_adapter.read_page(self.native_journal.connection, thread_id,
+                        limit=max(1, min(100, int(limit))), cursor=cursor)
+                canonical = list(page.turns)
+                turns = copy.deepcopy(canonical)
+                result = {"turns": turns, "nextCursor": page.next_cursor, "backwardsCursor": page.backwards_cursor}
+                revision_turns = (list(head.turns) if cursor is not None else
+                                  list(self.history_adapter.read_head(self.native_journal.connection, thread_id).turns)
+                                  if int(limit) < 2 else turns)
+                result['nativeRevision'] = revision if cursor is not None else self._history_revision(thread_id, revision_turns)
+                if turns:
+                    with self._lock:
+                        self._materializing.pop(thread_id, None)
+                        self._unmaterialized.discard(thread_id)
+            except CodexError as error:
+                if self._materializing_thread(thread_id) is not None and awaiting_rollout(error):
+                    canonical = []
+                    revision_turns = []
+                    result = {"turns": [], "nextCursor": None, "backwardsCursor": None,
+                              'nativeRevision': self._history_revision(thread_id, [])}
+                else:
+                    raise
+            except NativeHistoryProtocolError as error:
+                raise CodexError(str(error), code="native_protocol") from error
+            if cursor is None:
+                result["turns"] = self._merge_live(thread_id, result["turns"])
+                converging = not native_state.ready or canonical != result['turns']
+                if converging:
+                    result['nextCursor'] = None
+                    result['backwardsCursor'] = None
+                result['nativeSync'] = {**native_state.public(), 'state': 'converging' if converging else 'ready'}
             else:
-                raise
-        except NativeHistoryProtocolError as error:
-            raise CodexError(str(error), code="native_protocol") from error
-        if cursor is None:
-            canonical = copy.deepcopy(result['turns'])
-            result["turns"] = self._merge_live(thread_id, result["turns"])
-            converging = not native_state.ready or canonical != result['turns']
-            if converging:
-                result['nextCursor'] = None
-                result['backwardsCursor'] = None
-            result['nativeSync'] = {**native_state.public(), 'state': 'converging' if converging else 'ready'}
-        else:
-            result['nativeSync'] = native_state.public()
-        return result
+                result['nativeSync'] = native_state.public()
+            result['nativeHeadRevision'] = self._history_revision(thread_id,
+                result['turns'] if cursor is None else revision_turns, content=True)
+            return result
 
     @staticmethod
     def _permission_options(sandbox, approval_policy):
@@ -552,7 +584,7 @@ class CodexService:
         roots = [r["path"] for r in project.get("roots", [])]
         if not roots:
             raise CodexError("此项目没有原生工作目录", http_status=409)
-        with self._operations:
+        with self.operation_gate("project:" + project_id):
             workspace_id, cwd = None, roots[0]
             if worktree_ref is not None:
                 if self.workspaces is None:
@@ -599,7 +631,7 @@ class CodexService:
 
     def send(self, thread_id, text, model=None, effort=None, client_message_id=None, *, input_items=None, mode=None, service_tier=None):
         self.start()
-        with self._operations:
+        with self.operation_gate(thread_id):
             self._assert_workspace(thread_id)
             self._assert_submission_ready(thread_id)
             self._resume(thread_id)
@@ -713,7 +745,7 @@ class CodexService:
         self.connection.request("thread/read", {"threadId": thread_id, "includeTurns": False})
 
     def send_queued(self, thread_id, **kwargs):
-        with self._operations:
+        with self.operation_gate(thread_id):
             snapshot = self.get_session(thread_id)
             if snapshot.get("readOnly") or snapshot.get("activeTurnId") or snapshot["status"] != "idle":
                 return None
@@ -721,7 +753,7 @@ class CodexService:
 
     def steer(self, thread_id, text, expected_turn_id, client_message_id=None, *, input_items=None):
         self.start()
-        with self._operations:
+        with self.operation_gate(thread_id):
             self._assert_workspace(thread_id)
             self._resume(thread_id)
             params = {"threadId": thread_id,
@@ -947,8 +979,9 @@ class CodexService:
                 'affectedThreadIds': sorted(affected)}
 
     def handoff(self, thread_id, action, *, owner, ticket, confirmed=False, rebind_workspace=None):
-        # Queue dispatch and read-side resume remain blocked until handoff finishes.
-        with getattr(self, 'queue_lock', self._operations), self._operations, self._subscriptions:
+        # Only the previewed scope is blocked; consume() revalidates its identity.
+        scope = self.writers.preview_scope(thread_id, owner, action, ticket)
+        with self.operation_gate(*scope):
             self.start()
             if action == 'resume':
                 with self._lock:
@@ -1131,7 +1164,7 @@ class CodexService:
     def review(self, thread_id, target):
         target = validate_review(target)
         self.start()
-        with self._operations:
+        with self.operation_gate(thread_id):
             self._assert_workspace(thread_id)
             self._assert_submission_ready(thread_id)
             snapshot = self.get_session(thread_id)
@@ -1220,7 +1253,7 @@ class CodexService:
                 params["tokenBudget"] = token_budget
         elif operation != "clear":
             params["status"] = "paused" if operation == "pause" else "active"
-        with self._operations:
+        with self.operation_gate(thread_id):
             self._resume(thread_id)
             result = self.connection.request("thread/goal/clear" if operation == "clear" else "thread/goal/set", params)
         return {"threadId": thread_id, **result}
@@ -1238,7 +1271,7 @@ class CodexService:
             if service_tier not in ('default', 'priority'):
                 raise CodexError('处理模式无效', code='invalid_settings', http_status=400)
             params['serviceTier'] = service_tier
-        with self._operations:
+        with self.operation_gate(thread_id):
             self._resume(thread_id)
             if 'approvalPolicy' in permissions:
                 params['approvalPolicy'] = permissions['approvalPolicy']
@@ -1264,11 +1297,15 @@ class CodexService:
         return {'threadId': thread_id}
 
     def _event(self, event):
+        if not isinstance(event, dict) or not isinstance(event.get('method'), str) or not isinstance(event.get('params', {}), dict):
+            return
         if event.get("connectionId", self.connection.generation) != self.connection.generation:
             return
         self.interactions.receive(event)
         method, params = event.get("method"), event.get("params", {})
-        thread_id, turn_id = params.get("threadId"), params.get("turnId")
+        thread_id, turn_id = params.get("threadId", params.get('conversationId')), params.get("turnId")
+        if (thread_id is not None and not isinstance(thread_id, str)) or (turn_id is not None and not isinstance(turn_id, str)):
+            return
         if method.startswith(("thread/", "project/")) or method in {
                 "turn/started", "turn/completed", "relay/nativeDisconnected", "relay/writerDisconnected"}:
             self.projects.invalidate()
@@ -1320,12 +1357,16 @@ class CodexService:
                 self._materializing.pop(thread_id, None)
             elif method in {"turn/started", "turn/completed"} and thread_id:
                 turn = copy.deepcopy(params.get("turn", {}))
+                if not isinstance(turn, dict):
+                    return
                 turn_id = turn.get("id")
-                if turn_id:
+                if isinstance(turn_id, str) and turn_id:
                     previous = self._live.get((thread_id, turn_id))
+                    if method == 'turn/started' and previous and previous.get('status') in TERMINAL:
+                        return
                     if previous and not turn.get('items'):
                         turn['items'] = copy.deepcopy(previous.get('items', []))
-                    if method == 'turn/completed' and self._active.get(thread_id) == turn_id:
+                    if method == 'turn/completed' and (previous is not None or self._active.get(thread_id) == turn_id):
                         self._pending_terminal.add((thread_id, turn_id))
                     self._live[(thread_id, turn_id)] = turn
                     if method == "turn/started":
@@ -1335,31 +1376,20 @@ class CodexService:
             elif method in {"thread/goal/updated", "thread/goal/cleared"}:
                 # A goal update can reference a completed turn; it is not a new live turn.
                 pass
-            elif thread_id and turn_id:
+            elif thread_id and turn_id and method in ITEM_EVENTS:
                 key = (thread_id, turn_id)
-                turn = self._live.setdefault(key, {"id": turn_id, "status": "inProgress", "items": []})
-                items = turn.setdefault("items", [])
-                if method in {"item/started", "item/completed"}:
-                    item = copy.deepcopy(params.get("item", {}))
-                    if item.get("id"):
-                        items[:] = [i for i in items if i.get("id") != item["id"]]
-                        items.append(item)
-                elif method in {"item/agentMessage/delta", "item/commandExecution/outputDelta"}:
-                    item_id = params.get("itemId")
-                    item = next((i for i in items if i.get("id") == item_id), None)
-                    if item is None and item_id:
-                        item = {"id": item_id, "type": "agentMessage" if "agentMessage" in method else "commandExecution"}
-                        items.append(item)
-                    if item is not None:
-                        field = "text" if "agentMessage" in method else "aggregatedOutput"
-                        previous = str(item.get(field) or "")
-                        item[field] = previous + str(params.get("delta") or "")
-                        # Unicode code-point offset makes snapshot/SSE overlap idempotent
-                        # without copying accumulated output into every buffered event.
-                        event = {**event, "params": {**params, "relayOffset": len(previous)}}
+                turn = self._live.get(key) or {"id": turn_id, "status": "inProgress", "items": []}
+                if turn.get('status') not in TERMINAL:
+                    completed = self._completed_items.setdefault(key, set())
+                    offset = project_item(turn.setdefault('items', []), method, params, completed)
+                    if turn['items']:
+                        self._live[key] = turn
+                    if offset is not None:
+                        event = {**event, 'params': {**params, 'relayOffset': offset}}
             while len(self._live) > 128:
                 key, _ = self._live.popitem(last=False)
                 self._pending_terminal.discard(key)
+            self._completed_items = {key: value for key, value in self._completed_items.items() if key in self._live}
         # Account / remote-control notifications can carry personal account
         # metadata and do not belong in a chat event stream.
         if ("id" in event or method.startswith(("thread/", "turn/", "item/", "serverRequest/", "relay/"))
@@ -1370,6 +1400,7 @@ class CodexService:
         with self._lock:
             live = [copy.deepcopy(t) for (tid, _), t in self._live.items() if tid == thread_id]
             pending_terminal = set(self._pending_terminal)
+            completed_items = {key: set(value) for key, value in self._completed_items.items()}
         by_id = {t["id"]: t for t in turns}
         for current in live:
             if current["id"] not in by_id:
@@ -1393,9 +1424,14 @@ class CodexService:
                 old = existing.get(item["id"])
                 if old is None:
                     target["items"].append(item)
-                elif len(item.get("text", "")) >= len(old.get("text", "")) and (
-                        not old.get("text") or item.get("text", "").startswith(old.get("text", ""))):
-                    old.update(item)
+                else:
+                    merged = merge_item(old, item, completed=item['id'] in completed_items.get((thread_id, current['id']), set()))
+                    old.clear()
+                    old.update(merged)
             if current.get("status") == "inProgress" or (thread_id, current['id']) in pending_terminal:
                 target["status"] = current['status']
+                if current.get('status') in TERMINAL:
+                    for field in ('error', 'completedAt', 'durationMs'):
+                        if field in current:
+                            target[field] = copy.deepcopy(current[field])
         return turns

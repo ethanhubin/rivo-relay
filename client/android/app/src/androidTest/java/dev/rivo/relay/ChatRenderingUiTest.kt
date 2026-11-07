@@ -135,7 +135,7 @@ class ChatRenderingUiTest {
                 onRespond = { _, _ -> error("Must not respond") }, onRefresh = {}, onLoadModels = {}, onEarlier = {},
                 readFile = { JSONObject() })
         } } }
-        compose.onNodeWithTag("external_writer_notice").assertIsDisplayed()
+        compose.onNodeWithTag("external_writer_notice", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithText("已有历史仍可阅读").assertIsDisplayed()
         compose.onNodeWithTag("message_input").assertIsNotEnabled()
         compose.onNodeWithTag("add_attachment").assertIsNotEnabled()

@@ -213,10 +213,12 @@ class CatalogControllerTest {
         try {
             for (version in listOf(100L, 100L, 200L)) {
                 server.enqueue(MockResponse().setBody("""{"threads":[{"id":"t","status":"idle","updatedAt":$version}]}"""))
-                val controller = CatalogController(api(server), scope, { throw it }, ConversationStore(directory))
+                val store = ConversationStore(directory)
+                val controller = CatalogController(api(server), scope, { throw it }, store)
                 controller.project(ProjectSummary("p", "Project", "/project"))
                 withTimeout(5_000) { controller.state.first { it.threadsFresh && !it.loading } }
                 assertEquals(if (version == 100L) emptySet<String>() else setOf("t"), controller.state.value.unreadThreadIds)
+                store.flushMetadata()
                 assertEquals("100", ConversationStore(directory).getMetadata("read:t"))
             }
         } finally { scope.cancel(); server.shutdown(); directory.deleteRecursively() }
