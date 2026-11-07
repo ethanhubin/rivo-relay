@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import plistlib
 import subprocess
+import sys
+import uuid
 import tempfile
 import time
 import urllib.request
@@ -116,5 +118,22 @@ if __name__ == '__main__':
     parser.add_argument('--candidate', required=True, type=Path)
     parser.add_argument('--plist', type=Path, default=Path.home() / 'Library/LaunchAgents/local.rivo-relay.plist')
     parser.add_argument('--health', default='http://127.0.0.1:18765/health')
+    parser.add_argument('--submit', action='store_true', help='Run under launchd so caller interruption cannot stop deployment')
+    parser.add_argument('--log-dir', type=Path, help='Required with --submit; inspect deployment.log for complete/rollback events')
     args = parser.parse_args()
-    replace(args.plist, args.candidate, args.health)
+    if args.submit:
+        if args.log_dir is None:
+            parser.error('--submit requires --log-dir')
+        args.log_dir.mkdir(parents=True, exist_ok=True)
+        log = (args.log_dir / 'deployment.log').resolve()
+        job = 'local.rivo-relay.deploy.' + uuid.uuid4().hex
+        # launchd owns the worker; no service is stopped in the caller process.
+        result = command('submit', '-l', job, '-o', str(log), '-e', str(log), '--',
+                         sys.executable, str(Path(__file__).resolve()),
+                         '--candidate', str(args.candidate.resolve()),
+                         '--plist', str(args.plist.resolve()), '--health', args.health)
+        if result:
+            raise SystemExit(result)
+        record('submitted', job=job, log=str(log))
+    else:
+        replace(args.plist, args.candidate, args.health)

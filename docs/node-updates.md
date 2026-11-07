@@ -33,7 +33,7 @@ python3 scripts/publish-update.py \
 
 ### 服务切换与失败恢复
 
-服务端配置变更必须使用 `scripts/restart-service.py --candidate <新配置.plist>`，
+服务端配置变更必须使用 `scripts/restart-service.py --candidate <新配置.plist> --submit --log-dir <发布目录>`，
 不得直接串联 `bootout` / `bootstrap`。候选配置独立保存；工具预检快照和可执行文件，
 加排他锁并保存 `.rollback.plist`，对加载失败进行有界重试，检查本地健康接口；
 启动或健康检查失败自动恢复原配置并重新加载，且以失败状态退出。
@@ -47,3 +47,5 @@ HTTP 响应日志记录 UTC 时间、方法和状态，不记录地址、查询�
 系统日志确认根因是异步卸载竞态：19:51:33.518 发起 bootout，33.529 即 bootstrap，
 launchd 在 33.530 拒绝并记录 `37: Operation already in progress`；旧服务到 34.352 才退出并移除。
 修复要求 bootout 后轮询确认服务已从 launchd 移除，才允许 bootstrap；回滚同样遵守此屏障。
+
+服务切换必须通过 `--submit` 交给 launchd 独立执行，避免聊天或命令取消在卸载后杀死部署进程。提交成功不代表部署成功，必须读取 deployment.log 的 complete/rollback 结果并验证 HTTP。
