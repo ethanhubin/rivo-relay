@@ -129,7 +129,6 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val keyboard = LocalSoftwareKeyboardController.current
     val scope = rememberCoroutineScope()
     val currentSessionId by rememberUpdatedState(state.id)
-    val recoveryTask = snapshot?.recoveryTask?.takeIf { snapshot.activeTurnId.isBlank() }
     val canOperate = state.control().canOperate
     val inputLocked = blocked || busy || writerBusy || (pendingTitle == null && !state.canCompose()) || snapshot?.requests?.isNotEmpty() == true
     val latestInputLocked by rememberUpdatedState(inputLocked)
@@ -437,15 +436,12 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 NativeRequestPanel(request, !busy && !blocked && !state.stale && canOperate) { onRespond(request, it) }
             } }
         }
-        recoveryTask?.let { task -> RecoveryTaskPanel(task, !busy && !blocked && canOperate, readOnly = !canOperate) { operation ->
-            onQueue(JSONObject().put("operation", operation).put("itemId", task.id).put("revision", task.revision), {})
-        } }
         var goalEditing by remember(state.id) { mutableStateOf(false) }
         if (snapshot?.goalSupported == true) key(state.id) {
             NativeGoalPanel(snapshot.goal, !busy && !blocked && !state.stale && canOperate, onGoal, goalEditing) { goalEditing = it }
         }
         NativePlan(snapshot?.plan)
-        val waitingQueue = snapshot?.queue.orEmpty().filter { it.status !in setOf("running", "dispatching") && it.id != recoveryTask?.id }
+        val waitingQueue = snapshot?.queue.orEmpty().filter { it.status !in setOf("running", "dispatching") && !it.recoveryRequired && it.id != snapshot?.recoveryTask?.id }
         if (snapshot != null && waitingQueue.isNotEmpty()) ExecutionQueuePanel(snapshot.id, waitingQueue, !busy && !blocked && canOperate,
             canSteer = canOperate && snapshot.activeTurnId.isNotBlank() && snapshot.requests.isEmpty(),
             onEdit = ::editQueuedTask, onWithdraw = { removingQueue = it },

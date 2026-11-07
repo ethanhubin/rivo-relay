@@ -42,17 +42,6 @@ class QueueAndPinUiTest {
             File(folder, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }; bitmap.recycle()
         }
     }
-    @Test fun readonlyRecoveryCanBeDismissedWithoutContinuing() {
-        var action: String? = null
-        compose.setContent { RivoTheme {
-            RecoveryTaskPanel(task("failed").copy(status = "failed", recoveryRequired = true),
-                enabled = true, readOnly = true) { action = it }
-        } }
-        compose.onNodeWithTag("codex_recovery_continue").assertIsNotEnabled()
-        compose.onNodeWithTag("codex_recovery_dismiss").assertIsEnabled().performClick()
-        compose.runOnIdle { assertEquals("dismiss", action) }
-    }
-
     @Test fun longPressPinsAndUnpinsWithPinnedFirst() {
         val normal = ThreadSummary("normal", "普通会话", "", "idle", "", "project")
         val pinned = normal.copy(id = "pin", name = "置顶会话", pinned = true)

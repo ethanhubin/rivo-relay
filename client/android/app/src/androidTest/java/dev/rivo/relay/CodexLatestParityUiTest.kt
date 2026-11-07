@@ -52,19 +52,19 @@ class CodexLatestParityUiTest {
         compose.runOnIdle { state.value = state.value.copy(snapshot = snapshot()) }
         compose.onNodeWithTag("message_input").assertIsEnabled().assertTextContains("尚未发送的草稿", substring = true)
     }
-    @Test fun interruptedTaskOffersExplicitResumeEvenWithWaitingQueue() {
+    @Test fun interruptedTaskAllowsInputWithoutRecoveryPanel() {
         val recovery = queueTask(JSONObject("""{"id":"recovery","text":"完成剩余的验证工作","status":"unknown","revision":3,"error":"连接中断","recoveryRequired":true}"""))
         val current = snapshot().copy(recoveryTask = recovery, queue = listOf(recovery, QueueTask("waiting", "后续工作", "waiting", 1, "", JSONObject())))
-        var operation: JSONObject? = null
         compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize().systemBarsPadding()) { ChatScreen(SessionState(id = current.id, snapshot = current), false, false, emptyList(), {},
             onSend = { _, _, _, _ -> Unit }, onStop = {}, onRespond = { _, _ -> }, onRefresh = {}, onLoadModels = {}, onEarlier = {},
-            readFile = { JSONObject() }, onQueue = { body, _ -> operation = body }) } } }
-        compose.onNodeWithTag("codex_recovery_panel").assertIsDisplayed()
+            readFile = { JSONObject() }) } } }
+        compose.onNodeWithTag("codex_recovery_panel").assertDoesNotExist()
+        compose.onNodeWithTag("queue_item_recovery").assertDoesNotExist()
         compose.onNodeWithTag("queue_item_waiting").assertIsDisplayed()
         compose.onNodeWithTag("message_input").assertIsEnabled()
         evidence("codex-latest-recovery")
-        compose.onNodeWithTag("codex_recovery_continue").performClick()
-        compose.runOnIdle { assertEquals("recover", operation!!.getString("operation")); assertEquals("recovery", operation!!.getString("itemId")); assertEquals(3, operation!!.getInt("revision")) }
+        compose.onNodeWithTag("codex_recovery_continue").assertDoesNotExist()
+        compose.onNodeWithTag("codex_recovery_dismiss").assertDoesNotExist()
     }
     @Test fun fastModeAndModelSwitchSaveWithoutLosingSharedEffort() {
         val models = listOf(JSONObject("""{"id":"second","supportedReasoningEfforts":[{"reasoningEffort":"medium"},{"reasoningEffort":"high"}],"defaultReasoningEffort":"medium"}"""))

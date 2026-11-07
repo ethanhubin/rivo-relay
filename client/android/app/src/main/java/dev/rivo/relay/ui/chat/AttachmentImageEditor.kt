@@ -87,7 +87,7 @@ private val DefaultAnnotationRed = Color(0xFFF04444)
 private val EditorChromeColor = Color(0xCC181820)
 private val EditorSelectedBackground = Color(0x664E3D91)
 private val EditorSelectedIcon = Color(0xFFB8A8FF)
-private val InitialCrop = Rect(.15f, .15f, .85f, .85f)
+private val InitialCrop = Rect(0f, .25f, 1f, .75f)
 private val FullImageViewport = Rect(0f, 0f, 1f, 1f)
 
 internal enum class AttachmentEditorTool {
