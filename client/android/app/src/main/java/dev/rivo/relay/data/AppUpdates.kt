@@ -11,7 +11,7 @@ import org.json.JSONArray
 const val RELEASES_PAGE = "https://github.com/ethanhubin/rivo-relay/releases"
 private const val RELEASES_API = "https://api.github.com/repos/ethanhubin/rivo-relay/releases?per_page=100"
 
-data class AppRelease(val version: String, val notes: String, val apkUrl: String, val pageUrl: String, val preview: Boolean)
+data class AppRelease(val version: String, val notes: String, val apkUrl: String, val pageUrl: String, val preview: Boolean, val sha256: String = "", val size: Long = 0)
 
 /** Release tags use vMAJOR.MINOR.PATCH; compare numbers, never lexicographic strings. */
 internal fun versionParts(value: String): List<Int>? {

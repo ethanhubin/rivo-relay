@@ -13,6 +13,7 @@ from .codex.files import MAX_TRANSFER_BYTES, native_path
 from .codex.native_download import byte_range
 from .speech import MAX_SPEECH_BYTES, MAX_CHUNK_BYTES
 from .media import MediaError
+from .updates import latest_update, update_apk
 
 
 class ApiError(Exception):
@@ -122,6 +123,42 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             for data in download['chunks']:
                 self.wfile.write(data)
+        finally:
+            self.app.file_transfer_slots.release()
+
+    def send_update_apk(self, name):
+        try:
+            path = update_apk(self.app.config.workspace, name)
+        except FileNotFoundError as error:
+            raise ApiError(404, 'update_not_found', str(error))
+        if not self.app.file_transfer_slots.acquire(blocking=False):
+            raise ApiError(429, 'transfer_busy', '下载繁忙，请稍后重试')
+        try:
+            self.connection.settimeout(120)
+            with path.open('rb') as stream:
+                size = os.fstat(stream.fileno()).st_size
+                start, end, partial = byte_range(self.headers.get('Range'), size)
+                self.send_response(206 if partial else 200)
+                self.send_header('Content-Type', 'application/vnd.android.package-archive')
+                self.send_header('Content-Length', str(end - start + 1))
+                self.send_header('Content-Disposition', 'attachment; filename="rivo-relay-update.apk"')
+                self.send_header('Accept-Ranges', 'bytes')
+                if partial:
+                    self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+                self.send_header('Cache-Control', 'public, max-age=31536000, immutable')
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                self.send_header('Connection', 'close')
+                self.end_headers()
+                self._file_started = True
+                self.close_connection = True
+                stream.seek(start)
+                remaining = end - start + 1
+                while remaining:
+                    chunk = stream.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
         finally:
             self.app.file_transfer_slots.release()
 
@@ -250,6 +287,18 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(400, "invalid_request", "Invalid path")
             if self.command == "GET" and path == ["health"]:
                 self.send_json(200, {"status": "ok"})
+                return
+            if self.command == 'GET' and path == ['v1', 'app-updates', 'latest']:
+                try:
+                    result = latest_update(self.app.config.workspace)
+                except FileNotFoundError as error:
+                    raise ApiError(404, 'update_not_found', str(error))
+                except (ValueError, KeyError, TypeError):
+                    raise ApiError(503, 'update_unavailable', '节点更新文件暂不可用')
+                self.send_json(200, result)
+                return
+            if self.command == 'GET' and len(path) == 4 and path[:3] == ['v1', 'app-updates', 'apks']:
+                self.send_update_apk(path[3])
                 return
             if path == ["v1", "pair"] and self.command == "POST":
                 body = self.read_body(limit=4096)

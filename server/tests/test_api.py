@@ -126,6 +126,33 @@ class ApiTests(unittest.TestCase):
         self.paired = self._pair()
         self.token = self.paired["token"]
 
+    def test_public_updates_are_scoped_to_published_artifacts(self):
+        import hashlib
+        root = self.config.workspace / 'updates'
+        (root / 'apks').mkdir(parents=True)
+        payload = b'update fixture'
+        digest = hashlib.sha256(payload).hexdigest()
+        (root / 'apks' / (digest + '.apk')).write_bytes(payload)
+        (root / 'latest.json').write_text(json.dumps({'version': '0.2.13', 'versionCode': 25,
+            'sha256': digest, 'size': len(payload), 'notes': 'fixture'}))
+        status, manifest, headers = self.request('GET', '/v1/app-updates/latest')
+        self.assertEqual(200, status)
+        self.assertEqual('no-store', headers['Cache-Control'])
+        self.assertEqual(digest, manifest['sha256'])
+        for range_header, expected, code in [(None, payload, 200), ('bytes=2-5', payload[2:6], 206)]:
+            client = http.client.HTTPConnection('127.0.0.1', self.port, timeout=4)
+            try:
+                client.request('GET', manifest['apkPath'], headers={'Range': range_header} if range_header else {})
+                response = client.getresponse()
+                self.assertEqual(code, response.status)
+                self.assertEqual(expected, response.read())
+            finally:
+                client.close()
+        self.assertEqual(404, self.request('GET', '/v1/app-updates/apks/private.apk')[0])
+        (root / 'apks' / (digest + '.apk')).write_bytes(b'changed')
+        self.assertEqual(503, self.request('GET', '/v1/app-updates/latest')[0])
+        self.assertFalse(self.native.created)
+
     def test_goal_controls_validate_authentication_and_deduplicate(self):
         writes = []
         def update(thread_id, operation, **kwargs):
