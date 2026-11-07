@@ -12,6 +12,8 @@ Android 36 专用只读 `medium_phone` 模拟器最终 **88 项不同的交互�
 
 APK 0.2.20 / code 32 为 **18,889,236 字节**，SHA-256 为 `a657bb4aef14b56d2377e8466ba3146fff7452f14055c719fff22c8cfd61c0f1`。签名证书 SHA-256 `3f31e18aa34d6144102e35b4640ff94e5fdfa3c92b074df474d02583934e1800` 与 0.2.18 相同。记录：`workspace/artifacts/release-0.2.20/package.json`。
 
+已提交并推送全部功能改动（`8d788e0`），并发布到主节点 HTTP 更新源。部署前核验没有待处理提交/队列，三个 Relay 自有 writer 的最新任务均已终止；SQLite 在线备份及完整性检查通过。Relay PID 从 56015 更新为 52007，公共 Codex PID 保持 21622；`sessionIsolation=true`，21 个项目可读，原有授权保留，临时验证授权已撤销并确认 401。HTTP 清单为 0.2.20 / code 32，完整 APK 下载的长度及 SHA-256、Range 206 均匹配。未创建 GitHub Release 或 Git tag；本次专用模拟器已关闭。证据：`node-update.json`、`publication.json`、`http-verification.json`。
+
 真实 Codex 二进制另在临时 `CODEX_HOME` 下验证：A/B 会话拥有不同 PID；释放 A 后 B 和公共 daemon 均存活；A 恢复后获得新 writer，历史为 `ready`。模型仅指向本机拒绝连接的 fixture，没有调用真实模型或操作用户会话。结果：`workspace/artifacts/release-0.2.20/native-writer-verification.json`。
 
 以下为本机隔离微基准，不是手机帧时间、生产负载或模型首字速度：
