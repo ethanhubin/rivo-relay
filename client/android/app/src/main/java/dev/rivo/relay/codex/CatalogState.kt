@@ -50,6 +50,15 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
         return job
     }
 
+    suspend fun reconnect() {
+        // A transport cancellation can still be unwinding when refresh is called.
+        // Do not join/reuse that obsolete job as the new foreground refresh.
+        projectsJob?.cancelAndJoin()
+        listJob?.cancelAndJoin()
+        refreshProjects()
+        refreshThreads()
+    }
+
     private fun applyProjects(response: JSONObject, fresh: Boolean) {
         val projects = response.objects("projects").map {
             ProjectSummary(it.string("id"), it.string("name"), it.string("path"), it.optInt("threadCount"),

@@ -30,6 +30,31 @@ class CatalogControllerTest {
         assertTrue(latch.await(5, TimeUnit.SECONDS))
     }
 
+    @Test fun reconnectReplacesStalledCatalogReadImmediately() = runBlocking {
+        val server = MockWebServer()
+        val started = CountDownLatch(1)
+        val requests = AtomicInteger()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse =
+                if (requests.incrementAndGet() == 1) {
+                    started.countDown()
+                    MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE)
+                } else projects(0)
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val transport = api(server)
+        val controller = CatalogController(transport, scope, {})
+        try {
+            controller.refreshProjects()
+            await(started)
+            transport.resetTransport()
+            controller.reconnect()
+            withTimeout(2000) { controller.state.first { it.projectsFresh } }
+            assertEquals(2, requests.get())
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
     @Test fun cachedCatalogsRemainUnwritableUntilTheirOwnNetworkReadsSucceed() = runBlocking {
         val directory = java.nio.file.Files.createTempDirectory("relay-catalog-cache").toFile()
         val store = ConversationStore(directory)

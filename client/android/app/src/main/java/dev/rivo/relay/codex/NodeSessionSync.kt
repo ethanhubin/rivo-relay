@@ -45,7 +45,7 @@ class NodeSessionSync(private val api: RelayApi, private val scope: CoroutineSco
             // Control reads own their timeout window; an older notification request
             // must not acquire a new freshness deadline when the chat opens.
             read = reads[key]?.takeUnless { it.result.isCompleted || freshAfterNanos != null && it.startedNanos < freshAfterNanos } ?: Read(scope.async(start = CoroutineStart.LAZY) {
-                api.call("/v1/threads/${encoded(threadId)}")
+                api.call("/v1/threads/${encoded(threadId)}", background = freshAfterNanos == null)
             }, System.nanoTime()).also { reads[key] = it }
             read.users++
         }

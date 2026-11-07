@@ -38,6 +38,14 @@ class RelayApi(private val base: String, private val token: String = "", private
         .readTimeout(JSON_READ_IDLE_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
         .callTimeout(JSON_READ_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS).build()
     private var reader = readClient()
+    private fun backgroundClient() = reader.newBuilder()
+        .dispatcher(Dispatcher().apply { maxRequestsPerHost = 2 }).build()
+    private var backgroundReader = backgroundClient()
+    // SSE callbacks remain active for the lifetime of the stream. They must not
+    // consume a JSON dispatcher slot, and missing server heartbeats must expire.
+    private fun eventClient() = reader.newBuilder().dispatcher(Dispatcher())
+        .readTimeout(45, TimeUnit.SECONDS).callTimeout(0, TimeUnit.MILLISECONDS).build()
+    private var eventReader = eventClient()
     private fun forgetRead(call: Call) { synchronized(transportLock) { reads.remove(call) } }
     /** A lost route can leave HTTP/2 sockets alive but unusable. Never replay or cancel writes here. */
     suspend fun resetTransport() = withContext(Dispatchers.IO) {
@@ -45,6 +53,8 @@ class RelayApi(private val base: String, private val token: String = "", private
             val old = client
             client = newClient()
             reader = readClient()
+            backgroundReader = backgroundClient()
+            eventReader = eventClient()
             (old to reads.toList()).also { reads.clear() }
         }
         obsolete.forEach { it.cancel() }
@@ -56,9 +66,9 @@ class RelayApi(private val base: String, private val token: String = "", private
         if (method != "GET") builder.method(method, (body ?: JSONObject()).toString().toRequestBody("application/json".toMediaType()))
         return builder.build()
     }
-    suspend fun call(path: String, method: String = "GET", body: JSONObject? = null): JSONObject = withContext(Dispatchers.Default) { suspendCancellableCoroutine { continuation ->
+    suspend fun call(path: String, method: String = "GET", body: JSONObject? = null, background: Boolean = false): JSONObject = withContext(Dispatchers.Default) { suspendCancellableCoroutine { continuation ->
         val call = synchronized(transportLock) {
-            (if (method == "GET") reader else client).newCall(request(path, method, body)).also { if (method == "GET") reads.add(it) }
+            (if (method != "GET") client else if (background) backgroundReader else reader).newCall(request(path, method, body)).also { if (method == "GET") reads.add(it) }
         }
         continuation.invokeOnCancellation { call.cancel(); forgetRead(call) }
         call.enqueue(object : Callback {
@@ -179,8 +189,7 @@ class RelayApi(private val base: String, private val token: String = "", private
         val call = synchronized(transportLock) {
             val builder = request("/v1/events?threadId=" + encoded(threadId)).newBuilder().header("Accept", "text/event-stream")
             lastEventId?.takeIf { it.isNotBlank() && '\u0000' !in it && '\n' !in it && '\r' !in it }?.let { builder.header("Last-Event-ID", it) }
-            reader.newBuilder().readTimeout(0, TimeUnit.MILLISECONDS).callTimeout(0, TimeUnit.MILLISECONDS).build()
-                .newCall(builder.build())
+            eventReader.newCall(builder.build())
                 .also { reads.add(it) }
         }
         call.enqueue(object : Callback {

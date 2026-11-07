@@ -34,6 +34,14 @@ class MainActivity : ComponentActivity() {
             RivoTheme { RelayApp(model) }
         }
     }
+    override fun onStart() {
+        super.onStart()
+        model.onForeground()
+    }
+    override fun onStop() {
+        model.onBackground()
+        super.onStop()
+    }
     private fun handleNotification(intent: Intent?) {
         val task = TaskNotificationTarget.from(intent)
         if (task != null) model.openNotification(task)

@@ -169,6 +169,13 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
             nodeJob?.cancel(); pairing.invalidate(); mutable.value = AppState(error = "节点授权已失效，请重新扫码连接。", savedNodes = pairing.saved())
         } else mutable.update { it.copy(error = when (error) { is ApiException, is IllegalArgumentException -> error.message; else -> mutable.value.node?.api?.describeFailure(error) ?: connectionFailure(error) }) }
     }
+    private var wasBackgrounded = false
+    fun onBackground() { wasBackgrounded = true }
+    fun onForeground() {
+        if (!wasBackgrounded) return
+        wasBackgrounded = false
+        retryConnection()
+    }
     private var reconnectJob: Job? = null
     fun retryConnection() {
         if (reconnectJob?.isActive == true) return
@@ -177,11 +184,12 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
         reconnectJob = viewModelScope.launch {
             try {
                 node.api.resetTransport()
-                withTimeout(15_000) { node.api.call("/v1/node") }
                 if (mutable.value.node !== node) return@launch
-                node.catalog.refreshProjects()
-                if (node.catalog.state.value.selectedProject != null) node.catalog.refreshThreads()
+                // Read the actual visible state immediately; a preliminary node
+                // probe must not gate recovery of the conversation.
                 node.session.refresh()
+                node.catalog.reconnect()
+                node.todos.refresh()
             } catch (e: TimeoutCancellationException) {
                 if (mutable.value.node === node) fail(java.net.SocketTimeoutException("Reconnect timed out"))
             } catch (e: Exception) {
