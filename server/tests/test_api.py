@@ -743,6 +743,10 @@ class ApiTests(unittest.TestCase):
             client.close()
 
     def test_history_cursor_and_limit_are_forwarded_and_bad_limit_is_rejected(self):
+        status, page, _ = self.request("GET", "/v1/threads/thread-1", token=self.token)
+        self.assertEqual(status, 200)
+        self.assertEqual(page["nextCursor"], "next-page")
+        self.assertEqual(self.native.history_reads[-1], ("thread-1", None, 8))
         status, page, _ = self.request("GET", "/v1/threads/thread-1?cursor=page-a&limit=7", token=self.token)
         self.assertEqual(status, 200)
         self.assertEqual(page["nextCursor"], "next-page")

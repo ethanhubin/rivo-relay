@@ -90,6 +90,29 @@ class SettingsUiTest {
         compose.onNodeWithText("新增设置页").assertIsDisplayed()
         compose.onNodeWithText("完成").performClick()
     }
+    @Test fun downloadSurvivesLeavingSettings() {
+        val visible = androidx.compose.runtime.mutableStateOf(true)
+        val finished = CompletableDeferred<Unit>()
+        var downloads = 0
+        compose.setContent { RivoTheme { Surface {
+            if (visible.value) SettingsScreen(
+                checkUpdate = { AppRelease("99.0.0", "", "", "", true, size = 1024) },
+                downloadAndInstall = { downloads++; finished.await() })
+        } } }
+        compose.onNodeWithTag("check_updates").performClick()
+        compose.onNodeWithTag("download_update").performClick().assertIsNotEnabled()
+        compose.onNodeWithTag("update_download_progress").assertExists()
+        compose.runOnIdle { visible.value = false }
+        compose.onNodeWithTag("settings_screen").assertDoesNotExist()
+        compose.runOnIdle { visible.value = true }
+        compose.onNodeWithTag("update_available").assertExists()
+        compose.onNodeWithTag("download_update").assertIsNotEnabled()
+        compose.onNodeWithTag("update_download_progress").assertExists()
+        compose.runOnIdle { assertEquals(1, downloads); finished.complete(Unit) }
+        compose.onNodeWithTag("download_update").assertIsEnabled()
+        compose.onNodeWithTag("update_download_progress").assertDoesNotExist()
+    }
+
     @Test fun failedCheckCanRetryAndThenShowsCurrentVersion() {
         var calls = 0
         compose.setContent { RivoTheme { Surface { SettingsScreen(checkUpdate = {

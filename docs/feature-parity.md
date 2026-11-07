@@ -78,3 +78,24 @@ Codex 派发不属于此 outbox。它继续使用既有 submission ID 与结果�
 - 其它模块的 `ConversationStoreTest`、`TaskChangeTrackerTest`、`DeveloperPresentationTest`、`test_developer.py` 验证各自数据或展示边界。
 
 测试、现有节点更新和 Android 安装结果以[验证记录](validation.md)为准。未执行的模拟器、真机、系统提醒和原生节点交互不能记为通过。
+
+
+## 2026-11-07：连接与会话恢复复核（基于 0.2.21）
+
+本轮以状态转换而非功能入口为检查单位。自动化通过不等同于真机网络验收，也不代表所有 UI 与 QiGuang 逐像素一致。
+
+| 状态/边界 | 实现与回归证据 | 本轮结论 |
+| --- | --- | --- |
+| 前台恢复、手动重连、连接重置 | AppState / MainActivity；NetworkTransportTest、CatalogControllerTest | 0.2.21 已取消前置节点探测，重建只读传输并重开目录读取；后台读取与 SSE 独立调度，不取消或重放写入 |
+| 慢历史读取与兜底轮询 | SessionController；slowSnapshotDoesNotQueueAnotherPollWhileTransferIsRunning | 修复定时器在慢请求期间积压下一次全量读取，改为读取结束后计时；事件仍可触发刷新 |
+| 权限变化时旧请求阻塞 | SessionController；responseStartedBeforeInvalidationCannotRestorePermission | 取消已经失效的会话读取，并验证旧服务器响应仍阻塞时，新核验可以启动；保留权限代际检查 |
+| 首屏历史传输 | api.py；test_api、test_http_compression | 默认会话页由 30 改为 8 回合，对齐 QiGuang 服务默认值；保留 nextCursor 与显式 limit；大型会话 GET 协商 gzip，无内容裁剪 |
+| 离线缓存、切换会话、迟到响应 | SessionControllerTest、NodeSessionSyncTest | 缓存只读，新鲜核验前不恢复操作；旧会话/旧权限响应不得覆盖当前状态 |
+| 历史修复与分页竞态 | SessionControllerTest、test_native_runtime_identity | 历史深度恢复与当前权限读取分离；分页跨 revision 作废；保留现有 macOS 内核可执行路径身份修复 |
+| 独立 writer、释放与接管 | test_owned_writer、test_handoff、test_native_convergence | 回归覆盖单会话释放不影响其他 writer、锁未释放不能报成功、迟到审批失效、接管确认绑定身份 |
+| 请求结果未知、队列、审批 | SubmissionFailureTest、test_submissions、test_queue、test_owned_writer | 未知写入保留提交身份供核对；不自动重放；相同审批 ID 仍按 writer 区分 |
+| 消息、媒体、UI | 全部 Android JVM 与服务端回归 | 本轮未改媒体与 UI 展示协议；JVM/服务端测试不能替代播放器、系统弹窗和生命周期真机验证 |
+
+未完成的端到端验收：本轮修改尚未部署；没有连接中的 Android 设备，未完成新版本与 QiGuang 在同一设备/同一会话/同一弱网下的冷启动、后台恢复及断网重连对比。不能据此宣布恢复耗时已达标，或不存在其他遗漏。
+
+本轮自动化结果：服务端 437 项通过；独立源码快照 Android JVM 263 项通过，APK 构建与 lint 通过（43 warnings、3 hints，无 error）。验证日志与报告保存在 `workspace/artifacts/recovery-audit-20261107/`。独立快照避免与其他会话的设置页修改、Gradle 输出互相覆盖。

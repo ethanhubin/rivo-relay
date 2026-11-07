@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import secrets
 import json
 import os
@@ -21,6 +22,22 @@ class ApiError(Exception):
     def __init__(self, status: int, code: str, message: str):
         self.status, self.code = status, code
         super().__init__(message)
+
+
+def accepts_gzip(value: str) -> bool:
+    qualities = {}
+    for entry in value.lower().split(","):
+        name, *parameters = entry.strip().split(";")
+        quality = 1.0
+        for parameter in parameters:
+            key, _, raw = parameter.strip().partition("=")
+            if key == "q":
+                try:
+                    quality = float(raw)
+                except ValueError:
+                    quality = 0.0
+        qualities[name.strip()] = quality if 0 <= quality <= 1 else 0.0
+    return qualities.get("gzip", qualities.get("*", 0)) > 0
 
 
 def required(body: dict, key: str, limit: int = 200) -> str:
@@ -91,8 +108,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_json(self, status: int, data: dict):
         raw = json.dumps(data, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        # Large history snapshots dominate reconnect transfer time. Negotiate
+        # lossless compression only for successful thread reads; SSE, downloads,
+        # pairing responses and mutations keep their existing wire contracts.
+        compressible = (
+            self.command == "GET" and status == 200
+            and urlsplit(self.path).path.startswith("/v1/threads/")
+        )
+        compressed = False
+        if compressible and len(raw) >= 4096 and accepts_gzip(self.headers.get("Accept-Encoding", "")):
+            encoded = gzip.compress(raw, compresslevel=1, mtime=0)
+            if len(encoded) < len(raw):
+                raw = encoded
+                compressed = True
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        if compressible:
+            self.send_header("Vary", "Accept-Encoding")
+        if compressed:
+            self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -479,7 +513,7 @@ class Handler(BaseHTTPRequestHandler):
             thread_id = path[2]
             if len(path) == 3 and method == "GET":
                 options = {'native_revision': query['nativeRevision'][0]} if query.get('nativeRevision') else {}
-                result = codex.get_session(thread_id, cursor=query.get("cursor", [None])[0], limit=int(query.get("limit", ["30"])[0]), **options)
+                result = codex.get_session(thread_id, cursor=query.get("cursor", [None])[0], limit=int(query.get("limit", ["8"])[0]), **options)
                 result["queue"] = self.app.queue.list(thread_id)
                 return client_history(result)
             if len(path) == 4 and path[3] == "history" and method == "GET":

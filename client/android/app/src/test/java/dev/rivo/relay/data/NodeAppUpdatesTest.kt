@@ -22,7 +22,11 @@ class NodeAppUpdatesTest {
             server.enqueue(MockResponse().setBody(manifest().toString()))
             val release = updates.check("0.2.12")!!
             server.enqueue(MockResponse().setBody(okio.Buffer().write(bytes)))
-            assertArrayEquals(bytes, updates.download(release, dir).readBytes())
+            val progress = mutableListOf<Pair<Long, Long>>()
+            assertArrayEquals(bytes, updates.download(release, dir) { done, total -> progress.add(done to total) }.readBytes())
+            assertEquals(0L to bytes.size.toLong(), progress.first())
+            assertEquals(bytes.size.toLong() to bytes.size.toLong(), progress.last())
+            assertTrue(progress.zipWithNext().all { (a, b) -> a.first <= b.first })
             assertEquals("/v1/app-updates/latest", server.takeRequest().path)
             val request = server.takeRequest()
             assertNull(request.getHeader("Authorization"))

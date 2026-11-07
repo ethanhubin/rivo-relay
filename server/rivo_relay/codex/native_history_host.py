@@ -40,8 +40,20 @@ def verify_runtime(info):
         raise NativeHistoryReprojectionError('原生运行时已更换，历史操作已取消')
     if sys.platform.startswith('linux'):
         executable = os.path.realpath(f'/proc/{pid}/exe')
+    elif sys.platform == 'darwin':
+        # ps comm may be only argv[0] ("codex") for a PATH-launched daemon.
+        # Resolve the running image through the kernel, as WriterProcesses does;
+        # resolving that short name against this helper's cwd invents a path.
+        import ctypes
+        buffer = ctypes.create_string_buffer(4096)
+        size = ctypes.CDLL('/usr/lib/libproc.dylib').proc_pidpath(pid, buffer, len(buffer))
+        if size <= 0 or size >= len(buffer):
+            raise NativeHistoryReprojectionError('无法核实原生运行时可执行文件')
+        executable = os.fsdecode(buffer.value)
     else:
         executable = subprocess.check_output(['ps', '-ww', '-p', str(pid), '-o', 'comm='], text=True, timeout=5).strip()
+    if not Path(executable).is_absolute():
+        raise NativeHistoryReprojectionError('无法核实原生运行时可执行文件')
     if Path(executable).resolve() != Path(str(info.get('executable') or '')).resolve():
         raise NativeHistoryReprojectionError('原生运行时可执行文件已变化')
     if Path(executable).name.casefold() not in ('codex', 'codex.exe'):

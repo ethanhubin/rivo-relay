@@ -38,7 +38,7 @@ class NodeAppUpdates(
             base, true, digest, size).takeIf { compareVersions(version, currentVersion) > 0 }
     }
 
-    suspend fun download(release: AppRelease, directory: File): File {
+    suspend fun download(release: AppRelease, directory: File, progress: (Long, Long) -> Unit = { _, _ -> }): File {
         val expected = "${base.trimEnd('/')}/v1/app-updates/apks/${release.sha256}.apk"
         if (release.apkUrl != expected || !release.sha256.matches(Regex("[a-f0-9]{64}")) || release.size !in 1..268435456L)
             throw IOException("安装包地址无效")
@@ -50,6 +50,8 @@ class NodeAppUpdates(
                 if (body.contentLength() != release.size) throw IOException("安装包长度不匹配")
                 val digest = MessageDigest.getInstance("SHA-256")
                 var total = 0L
+                var lastReport = System.nanoTime()
+                progress(0L, release.size)
                 body.byteStream().use { input -> temporary.outputStream().use { output ->
                     val buffer = ByteArray(65536)
                     while (true) {
@@ -58,6 +60,11 @@ class NodeAppUpdates(
                         total += count
                         if (total > release.size) throw IOException("安装包超出声明长度")
                         digest.update(buffer, 0, count); output.write(buffer, 0, count)
+                        val now = System.nanoTime()
+                        if (total == release.size || now - lastReport >= 100_000_000L) {
+                            progress(total, release.size)
+                            lastReport = now
+                        }
                     }
                 } }
                 val hash = digest.digest().joinToString("") { "%02x".format(it) }

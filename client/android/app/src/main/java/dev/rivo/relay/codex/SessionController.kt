@@ -21,6 +21,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
     private val slowReadMillis: Long = 3000,
     private val readTimeoutMillis: Long = JSON_READ_TIMEOUT_MILLIS,
     private val sync: NodeSessionSync? = null,
+    private val pollIntervalMillis: Long = 5000,
     private val failure: (Throwable) -> Unit) {
     private val mutable = MutableStateFlow(SessionState())
     val state = mutable.asStateFlow()
@@ -29,6 +30,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
     private val resolvedPending = mutableMapOf<String, org.json.JSONObject>()
     private var pendingLoaded = false
     private var activeJob: Job? = null
+    private var activeRead: Deferred<org.json.JSONObject>? = null
     private var updates: Channel<Unit>? = null
     private var generation = 0L
     private var controlEpoch = 0L
@@ -37,6 +39,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
     private var historyDepthTarget: SessionSnapshot? = null
     private val requestedHistoryCursors = mutableSetOf<String>()
     init {
+        require(pollIntervalMillis > 0)
         scope.launch {
             try {
                 store?.loadPendingMessages().orEmpty().forEach { saved ->
@@ -158,7 +161,6 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                     delay(1800); signals.trySend(Unit)
                 }
             }
-            launch { while (isActive) { delay(5000); signals.trySend(Unit) } }
             if (mutable.value.snapshot == null) {
                 try {
                     val cached = store?.loadSnapshot(id)?.let { withContext(Dispatchers.Default) { sessionSnapshot(it) } }
@@ -166,7 +168,11 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                 } catch (e: Exception) { if (e is CancellationException) throw e }
             }
             signals.trySend(Unit)
-            for (ignored in signals) {
+            while (isActive) {
+                // Start the fallback interval after the previous read finishes.
+                // A slow transfer must not queue its own immediate full reread.
+                val signal = withTimeoutOrNull(pollIntervalMillis) { signals.receiveCatching() }
+                if (signal?.isClosed == true) break
                 val requestHistoryEpoch = historyEpoch
                 val requestControlEpoch = controlEpoch
                 val readStarted = System.nanoTime()
@@ -178,7 +184,13 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                 }
                 try {
                     reading = true
-                    val json = withTimeout(readTimeoutMillis) { sync?.read(id, freshAfterNanos = readStarted) ?: api.call("/v1/threads/" + encoded(id)) }
+                    val json = supervisorScope {
+                        val read = async {
+                            withTimeout(readTimeoutMillis) { sync?.read(id, freshAfterNanos = readStarted) ?: api.call("/v1/threads/" + encoded(id)) }
+                        }
+                        activeRead = read
+                        try { read.await() } finally { if (activeRead === read) activeRead = null }
+                    }
                     val head = withContext(Dispatchers.Default) { sessionSnapshot(json) }
                     require(head.id == id) { "节点返回了其他会话，请重新同步" }
                     if ((System.nanoTime() - readStarted) / 1_000_000 >= readTimeoutMillis)
@@ -311,6 +323,9 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
     fun invalidateControl(notice: String = "操作结果已变化，正在重新确认会话权限") {
         controlEpoch++
         sync?.invalidate()
+        // Its permission epoch is already obsolete. Waiting for this body to
+        // finish can otherwise delay a fresh ownership check for two minutes.
+        activeRead?.cancel()
         mutable.update { it.copy(stale = true, controlNotice = notice) }
         refresh()
     }

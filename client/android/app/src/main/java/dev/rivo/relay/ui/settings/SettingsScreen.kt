@@ -13,28 +13,26 @@ import dev.rivo.relay.BuildConfig
 import dev.rivo.relay.data.AppRelease
 import dev.rivo.relay.data.NodeAppUpdates
 import androidx.compose.ui.platform.LocalContext
-import androidx.core.content.FileProvider
-import android.content.Intent
-import java.io.File
 import dev.rivo.relay.data.RELEASES_PAGE
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.launch
+import android.text.format.Formatter
 
 @Composable
 fun SettingsScreen(nodeName: String? = null, nodeAddress: String? = null,
     checkUpdate: suspend () -> AppRelease? = { NodeAppUpdates().check(BuildConfig.VERSION_NAME) },
-    downloadAndInstall: (suspend (AppRelease) -> Unit)? = null) {
-    val scope = rememberCoroutineScope()
+    downloadAndInstall: (suspend (AppRelease) -> Unit)? = null,
+    updates: UpdateViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
     val context = LocalContext.current
-    var downloading by remember { mutableStateOf(false) }
     val uriHandler = LocalUriHandler.current
-    var checking by remember { mutableStateOf(false) }
-    var checked by remember { mutableStateOf(false) }
-    var release by remember { mutableStateOf<AppRelease?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
+    val downloading = updates.downloading
+    val downloadedBytes = updates.downloadedBytes
+    val bytesPerSecond = updates.bytesPerSecond
+    val checking = updates.checking
+    val checked = updates.checked
+    val release = updates.release
+    val error = updates.error
     var notesOpen by remember { mutableStateOf(false) }
     fun open(url: String) {
-        try { uriHandler.openUri(url) } catch (_: Exception) { error = "无法打开浏览器，请安装或启用浏览器后重试" }
+        try { uriHandler.openUri(url) } catch (_: Exception) { updates.error = "无法打开浏览器，请安装或启用浏览器后重试" }
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp).testTag("settings_screen"),
         verticalArrangement = Arrangement.spacedBy(20.dp)) {
@@ -45,15 +43,7 @@ fun SettingsScreen(nodeName: String? = null, nodeAddress: String? = null,
                 Text("Rivo Relay ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyLarge)
                 Text("默认从 Tailscale 节点检查更新和下载安装包，校验通过后由系统确认安装。", style = MaterialTheme.typography.bodySmall)
                 Button(onClick = {
-                    if (!checking) {
-                        checking = true; checked = false; release = null; error = null
-                        scope.launch {
-                            try { release = checkUpdate(); checked = true }
-                            catch (e: CancellationException) { throw e }
-                            catch (e: Exception) { error = e.message ?: "检查更新失败，请重试" }
-                            finally { checking = false }
-                        }
-                    }
+                    updates.check(checkUpdate)
                 }, enabled = !checking && !downloading, modifier = Modifier.testTag("check_updates")) {
                     if (checking) {
                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -65,25 +55,15 @@ fun SettingsScreen(nodeName: String? = null, nodeAddress: String? = null,
                 release?.let { latest ->
                     Text("发现新版本 ${latest.version}" + if (latest.preview) "（测试版）" else "", Modifier.testTag("update_available"))
                     Button(onClick = {
-                        if (!downloading) scope.launch {
-                            downloading = true; error = null
-                            try {
-                                if (downloadAndInstall != null) { downloadAndInstall(latest); return@launch }
-                                if (!context.packageManager.canRequestPackageInstalls()) {
-                                    context.startActivity(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                                        android.net.Uri.parse("package:${context.packageName}")))
-                                    error = "请允许安装未知应用，然后再次点击下载并安装"
-                                    return@launch
-                                }
-                                val file = NodeAppUpdates().download(latest, File(context.cacheDir, "downloads"))
-                                val uri = FileProvider.getUriForFile(context, context.packageName + ".files", file)
-                                context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
-                                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK))
-                            } catch (e: CancellationException) { throw e }
-                            catch (e: Exception) { error = e.message ?: "下载安装包失败，请重试" }
-                            finally { downloading = false }
-                        }
-                    }, enabled = !downloading, modifier = Modifier.testTag("download_update")) { Text(if (downloading) "下载并校验中…" else "下载并安装") }
+                        updates.download(context.applicationContext, latest, downloadAndInstall)
+                    }, enabled = !downloading, modifier = Modifier.testTag("download_update")) { Text(if (downloading) "下载并校验中…" else if (updates.readyFile != null) "安装已下载的更新" else "下载并安装") }
+                    if (downloading) {
+                        val fraction = if (latest.size > 0) (downloadedBytes.toFloat() / latest.size).coerceIn(0f, 1f) else 0f
+                        LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth().testTag("update_download_progress"))
+                        Text(if (latest.size > 0 && downloadedBytes >= latest.size) "下载完成，正在校验安装包…"
+                            else "${(fraction * 100).toInt()}% · ${Formatter.formatFileSize(context, downloadedBytes)} / ${Formatter.formatFileSize(context, latest.size.coerceAtLeast(0))} · ${Formatter.formatFileSize(context, bytesPerSecond)}/s",
+                            style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("update_download_status"))
+                    }
                     TextButton(onClick = { notesOpen = true }) { Text("查看更新说明") }
                 }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("update_error")) }

@@ -35,6 +35,28 @@ class SessionControllerTest {
         MockResponse().setHeader("Content-Type", "application/json").setBody(JSONObject("""{"thread":{"id":"t","name":"$name","turns":[{"id":"turn-$item","items":[{"id":"$item","type":"agentMessage","text":"$name"}]}]},"requests":[],"settings":{},"status":"idle"}""")
             .put("nativeRevision", revision).put("nextCursor", cursor ?: JSONObject.NULL).put("readOnly", readOnly).toString())
 
+    @Test fun slowSnapshotDoesNotQueueAnotherPollWhileTransferIsRunning() = runBlocking {
+        val server = MockWebServer()
+        val reads = AtomicInteger()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                reads.incrementAndGet()
+                return snapshot("t", "slow").setBodyDelay(800, TimeUnit.MILLISECONDS)
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = SessionController(api(server), scope, pollIntervalMillis = 500) { fail(it.message) }
+        try {
+            controller.open("t")
+            withTimeout(5000) { controller.state.first { it.snapshot?.name == "slow" && !it.loading } }
+            delay(350)
+            assertEquals("No timer backlog immediately after a slow snapshot", 1, reads.get())
+            withTimeout(3000) { while (reads.get() < 2) delay(20) }
+        } finally { controller.close(); scope.cancel(); server.shutdown() }
+    }
+
     @Test fun historyRestoreKeepsOlderPagesWhenLatestTurnHasNoItems() = runBlocking {
         val server = MockWebServer()
         val revision = AtomicInteger(1)
@@ -317,7 +339,9 @@ class SessionControllerTest {
             withTimeout(5000) { controller.state.first { it.snapshot?.name == "initial" && !it.stale } }
             controller.refresh(); await(secondStarted)
             controller.invalidateControl()
-            releaseSecond.countDown(); await(thirdStarted)
+            // Fresh permission verification starts while the obsolete server
+            // response is still blocked, rather than waiting for its timeout.
+            await(thirdStarted); releaseSecond.countDown()
             assertTrue(controller.state.value.stale)
             assertFalse(controller.state.value.control().canOperate)
             assertEquals("initial", controller.state.value.snapshot?.name)
