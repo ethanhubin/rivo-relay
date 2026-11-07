@@ -91,3 +91,13 @@ launchd 在 33.530 拒绝并记录 `37: Operation already in progress`；旧服�
 可按需执行隔离的真实 launchd 演练：`RIVO_TEST_LAUNCHD=1 .venv/bin/python -m unittest discover -s server/tests -p test_restart_launchd_integration.py`。它使用随机测试服务名、临时目录和本地端口，验证成功切换及健康失败回滚；默认单元测试跳过该演练，不操作线上 Relay 或 Codex 原生运行时。
 
 CLI 传入 `--expected-plist launchagent-before.plist`，部署 worker 在重启锁内核对当前配置；准备后配置已变化时提前失败，不停服、不覆盖回滚基准。launchd 明确返回提交失败时会持久化 `submission_failed`，resume 立即报告提交失败，不再空等部署完成；结果不明的提交仍禁止盲目重试。
+
+### 所选原生运行时连续性
+
+发布前按主节点 LaunchAgent 的 `--native-socket` 和 `--codex-home`（或 `CODEX_HOME`）只读连接原生接口，沿用 Relay 的主机身份核验。要求明确配置 `app_server`；记录实际 socket、PID、启动时间、可执行文件、数据目录和平台，在服务切换前后逐项比较。不会扫描并比较所有同路径 Codex 进程，也不会把每次连接产生的 generation 当成主机身份。
+
+辅助进程的启动或退出不再中止发布；所选主机变化、不可连接或身份无法核实时仍停止。部署记录保存 `deploymentBefore.nativeHost` 和验收中的 `nativeHost`。仅保存旧全进程列表的历史计划不能自动补造基准，需要核查后建立新计划。已完成服务切换的恢复仍先核对候选配置及主机身份，再继续发布，不重复重启服务。
+
+2026-11-08 的 0.2.39 发布曾因旧校验把辅助进程退出误报为原生主机变化而停止。实际所选主机 PID 21622 和启动时间未变；人工核验快照、授权和健康后完成发布。本修复将该核验范围固化到后续流程。
+
+恢复发布时，仍先核对本地源码与更新清单；若存在未完成部署，则先核对部署结果，再要求线上 HTTP 清单可访问。结果不明确或恢复失败时停止，不自动重复停服。`--retry-deploy` 先持久化日志归档意图，日志移走后中断可由下一次 resume 接续。已完成发布再次执行也会复核服务快照，服务版本发生变化时不重新发布 APK。

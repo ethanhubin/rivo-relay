@@ -198,7 +198,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             handoffScope.launch {
                 try {
                     val draft = captured.await()
-                    if (draft.text.isBlank() && draft.images.isEmpty() && draft.files.isEmpty() && node.conversations.pendingThreadId(id) == null)
+                    if (!draft.hasContent && node.conversations.pendingThreadId(id) == null)
                         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { node.conversations.finishPending(id) }
                 } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; setError(e.message ?: "无法清理空草稿") }
             }
@@ -273,8 +273,9 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     // A stalled request must not trap the user on this node; pending IDs are stored per node.
                     onSelectNode = selectNode,
                     onAddNode = disconnect, canAddNode = !submission.busy && !handoffLoading)
-                "sessions" -> SessionsScreen(catalog.selectedProject?.name ?: "会话", catalog.threads.filterNot { thread -> visiblePending.any { node.conversations.pendingThreadId(it.id) == thread.id } }, catalog.loading, threadsWritable,
-                    ::back, { openChat(it.id, "sessions") }, { if (node.catalog.state.value.threadsFresh) catalog.selectedProject?.let { openPending(it) } }, { node.catalog.refreshThreads() },
+                "sessions" -> SessionsScreen(catalog.selectedProject?.name ?: "会话", catalog.threads.filterNot { thread -> visiblePending.any { node.conversations.pendingThreadId(it.id) == thread.id } }, catalog.loading, writable && catalog.selectedProject != null,
+                    ::back, { openChat(it.id, "sessions") }, { if (writable) node.catalog.state.value.selectedProject?.let { openPending(it) } }, { node.catalog.refreshThreads() },
+                    canManageThreads = threadsWritable,
                     onPin = { thread, pinned ->
                         if (node.catalog.state.value.threadsFresh) node.submissions.submit("/v1/threads/${encoded(thread.id)}/pin", JSONObject().put("pinned", pinned), if (pinned) "置顶会话" else "取消置顶") {
                             node.catalog.refreshThreads()
@@ -302,11 +303,17 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     val draftKey = "pending:$localId"
                     val generation = pendingGeneration
                     val pendingMessages = (node.session.pendingMessagesFor(draftKey) + createdThread?.let(node.session::pendingMessagesFor).orEmpty()).distinctBy { it.clientId }
-                    ChatScreen(SessionState(id = draftKey, pendingMessages = pendingMessages, overlayRevision = session.overlayRevision), submission.busy, submission.pending != null, catalog.models,
+                    ChatScreen(SessionState(id = draftKey, pendingMessages = pendingMessages, overlayRevision = session.overlayRevision), submission.busy, submission.pending != null || network == null || handoffLoading, catalog.models,
                         onBack = ::back, onSend = { _, _, _, _ -> }, onStop = {}, onRespond = { _, _ -> },
                         onRefresh = {}, onLoadModels = node.catalog::loadModels, onEarlier = {},
                         readFile = { path -> node.api.call("/v1/files?path=" + encoded(path)) },
                         pendingTitle = project.name, pendingReady = pendingReady,
+                        pendingGoalApplied = node.conversations.pendingAppliedGoal(localId) != null,
+                        pendingFirstTurnSent = node.conversations.pendingGoalContinuation(localId) != null,
+                        pendingReceiptUnresolved = node.conversations.pendingHasUnresolvedSubmission(localId),
+                        onReconcilePending = node::reconcilePendingReceipts,
+                        readGoalCapability = { node.api.call("/v1/goals/capabilities").getBoolean("goalSupported") },
+                        onOpenPendingThread = { node.conversations.pendingThreadId(localId)?.let { openChat(it, "sessions") } },
                         pendingPermissionsEditable = createdThread == null && node.conversations.pendingThreadId(localId) == null, draftStore = node.conversations, pendingCwd = project.path,
                         readDirectory = { path -> node.api.call("/v1/directories?path=" + encoded(path)) },
                         uploadFile = { _, name, file -> node.api.uploadProjectFile(project.id, name, file) },
@@ -335,6 +342,11 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                                 node.conversations.completedPendingThreadId(localId)?.let { openChat(it, "sessions") }
                                 return@sendPending
                             }
+                            if (node.conversations.pendingHasUnresolvedSubmission(localId)) {
+                                setError("此新建流程还有未确认的提交，请先核对结果，避免重复发送。")
+                                node.reconcilePendingReceipts()
+                                return@sendPending
+                            }
                             val draftForSubmission = pendingDraft
                             val sendId = java.util.UUID.randomUUID().toString()
                             val body = JSONObject().put("input", input)
@@ -344,7 +356,26 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                                     node.session.resolveSubmission(message.submissionId, JSONObject().put("status", "failed"))
                                 }
                             }
+                            val goalAction = pendingGoalAction(permissions.optJSONObject("goal")?.toString(), node.conversations.pendingAppliedGoal(localId))
+                            if (goalAction != null) body.put("requireGoalSupport", true)
+                            fun finishGoal(id: String) {
+                                val continuation = node.conversations.pendingGoalContinuation(localId) ?: return
+                                val action = JSONObject(continuation.getString("goalAction"))
+                                node.submissions.submit("/v1/threads/${encoded(id)}/goal", action, "启用新会话目标",
+                                    beforeSend = { pending ->
+                                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            node.conversations.checkpointPendingSubmission(localId, pending.id, "finishGoal", action.toString())
+                                        }
+                                    }) {
+                                    accepted()
+                                    if (route == "new" && pendingGeneration == generation) openChat(id, "sessions")
+                                }
+                            }
                             fun sendFirst(id: String) {
+                                if (node.conversations.pendingGoalContinuation(localId) != null) {
+                                    finishGoal(id)
+                                    return
+                                }
                                 node.submissions.submit("/v1/threads/${encoded(id)}/turns", body, "发送任务",
                                     submissionId = sendId,
                                     prepared = { pending ->
@@ -352,20 +383,26 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                                         node.session.beginSubmission(id, pending.id, input)
                                     },
                                     beforeSend = { pending ->
-                                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { node.conversations.checkpointPendingSubmission(localId, pending.id, "send") }
+                                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            node.conversations.checkpointPendingSubmission(localId, pending.id,
+                                                if (goalAction == null) "send" else "sendWithGoal", goalAction?.toString())
+                                        }
                                         node.conversations.checkpointSentDraft(pending.id, id, draftForSubmission)
                                         node.session.persistSubmission(pending.id)
                                     }) { receipt ->
                                     node.notifications.watch(id, requestPermission = true, turnId = receipt.string("turnId"))
-                                    accepted()
-                                    if (route == "new" && pendingGeneration == generation) openChat(id, "sessions")
+                                    if (goalAction != null) finishGoal(id)
+                                    else {
+                                        accepted()
+                                        if (route == "new" && pendingGeneration == generation) openChat(id, "sessions")
+                                    }
                                 }
                             }
                             setError(null)
                             val existing = createdThread ?: node.conversations.pendingThreadId(localId)
                             if (existing != null) sendFirst(existing)
                             else {
-                                val create = JSONObject(permissions.toString()).put("projectId", project.id)
+                                val create = JSONObject(permissions.toString()).apply { remove("goal") }.put("projectId", project.id)
                                 pendingRef?.let { create.put("worktreeRef", it) }
                                 node.submissions.submit("/v1/threads", create, "新建会话",
                                     prepared = { pending ->

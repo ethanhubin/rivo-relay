@@ -6,6 +6,7 @@ from pathlib import Path
 import plistlib
 import sqlite3
 import subprocess
+import sys
 import tarfile
 import time
 
@@ -22,11 +23,48 @@ def tree_digest(directory):
     return result.hexdigest()
 
 
-def native_identities():
-    # Full start time distinguishes PID reuse; comm never exposes invocation secrets.
-    lines = output(['ps', '-ww', '-axo', 'pid=,lstart=,comm=']).splitlines()
-    return sorted(line.strip() for line in lines
-                  if '/app-server-daemon/releases/' in line and line.endswith('/bin/codex'))
+def _probe_native(socket_path, codex_home):
+    # Use the same read-only transport/host attestation as Relay, never resume a thread.
+    server = str(Path(__file__).resolve().parents[2] / 'server')
+    sys.path.insert(0, server)
+    try:
+        from rivo_relay.codex.connection import NativeConnection
+    finally:
+        sys.path.remove(server)
+    connection = NativeConnection(socket_path=socket_path, codex_home=codex_home)
+    try:
+        connection.start()
+        return connection.native_host_info()
+    finally:
+        connection.close()
+
+
+def native_identity(configuration):
+    arguments = configuration['ProgramArguments']
+    def option(name, default=None):
+        if name not in arguments:
+            return default
+        index = arguments.index(name) + 1
+        require(index < len(arguments), '缺少原生连接参数：' + name)
+        return arguments[index]
+    require(option('--codex-runtime', 'app_server') == 'app_server',
+            '发布连续性检查需要明确的 app_server 运行时配置')
+    socket_path = option('--native-socket')
+    require(socket_path and Path(socket_path).is_absolute(), '发布连续性检查需要明确的原生 socket 路径')
+    home = option('--codex-home') or configuration.get('EnvironmentVariables', {}).get('CODEX_HOME')
+    host = _probe_native(socket_path, home)
+    fields = ('pid', 'processStart', 'processStartMethod', 'executable', 'codexHome', 'platform')
+    require(all(host.get(key) for key in fields) and type(host['pid']) is int
+            and host['pid'] > 1 and host['processStartMethod'] == 'ps-lstart',
+            '无法核实所选原生运行时身份')
+    # Generation changes on every new RPC connection; auxiliary PIDs are irrelevant.
+    return {'socketPath': str(Path(socket_path).resolve()), **{key: host[key] for key in fields}}
+
+
+def verify_native_identity(configuration, before):
+    require(isinstance(before.get('nativeHost'), dict),
+            '旧发布计划缺少所选原生主机基准，不能自动确认连续性；请核查后新建发布计划')
+    require(native_identity(configuration) == before['nativeHost'], '所选原生运行时身份发生变化')
 
 
 def verify_snapshot(root, commit, target):
@@ -85,6 +123,25 @@ def wait_deployment(path, timeout=150):
     raise RuntimeError('服务切换结果尚未确认；稍后 resume 将继续等待，不会重复重启')
 
 
+def prepare_retry(release, plist, log):
+    state, directory = release.state, release.directory
+    pending = state.get('deploymentRetryArchive')
+    if not pending:
+        require('rollback_complete' in events(log), '只有已完成回滚的部署可使用 --retry-deploy')
+        require(plist.read_bytes() == (directory / 'launchagent-before.plist').read_bytes(), '当前服务配置不同于回滚基准')
+        pending = f'deployment-rollback-{time.time_ns()}.log'
+        release.record('deployment-retry-prepared', deploymentRetryArchive=pending)
+    require(Path(pending).name == pending, '无效的部署日志路径')
+    archive = directory / pending
+    require(plist.read_bytes() == (directory / 'launchagent-before.plist').read_bytes(), '当前服务配置不同于回滚基准')
+    if not archive.exists():
+        require('rollback_complete' in events(log), '缺少已完成回滚的记录')
+        log.rename(archive)
+    else:
+        require(not log.exists() and 'rollback_complete' in events(archive), '部署重试日志状态不一致')
+    release.record('deployment-prepared', deploymentRequested=False, deploymentRetryArchive=None)
+
+
 def deploy(release):
     root, directory, state = release.root, release.directory, release.state
     target = root / 'workspace/deployments' / state['commit']
@@ -122,8 +179,7 @@ def deploy(release):
         return
     database = root / 'workspace/local-node/data/relay.sqlite3'
     if 'deploymentBefore' not in state:
-        native = native_identities()
-        require(native, '未发现主机 Codex daemon，无法记录原生运行时连续性')
+        native = native_identity(configuration)
         with sqlite3.connect(database) as connection, sqlite3.connect(directory / 'relay-before-update.sqlite3') as backup:
             os.chmod(directory / 'relay-before-update.sqlite3', 0o600)
             connection.backup(backup)
@@ -131,15 +187,12 @@ def deploy(release):
         atomic(directory / 'launchagent-before.plist', plist.read_bytes())
         configuration.setdefault('EnvironmentVariables', {})['PYTHONPATH'] = str(target / 'server')
         atomic(directory / 'candidate.plist', plistlib.dumps(configuration))
-        release.record('deployment-prepared', deploymentBefore={'native': native})
+        release.record('deployment-prepared', deploymentBefore={'nativeHost': native})
     log = directory / 'deployment.log'
-    if state.get('deploymentRequested') and release.retry_deploy:
-        require('rollback_complete' in events(log), '只有已完成回滚的部署可使用 --retry-deploy')
-        require(plist.read_bytes() == (directory / 'launchagent-before.plist').read_bytes(), '当前服务配置不同于回滚基准')
-        log.rename(directory / f'deployment-rollback-{time.time_ns()}.log')
-        release.record('deployment-prepared', deploymentRequested=False)
+    if state.get('deploymentRetryArchive') or (state.get('deploymentRequested') and release.retry_deploy):
+        prepare_retry(release, plist, log)
     if not state.get('deploymentRequested'):
-        require(native_identities() == state['deploymentBefore']['native'], '原生运行时已变化，请重新检查发布环境')
+        verify_native_identity(configuration, state['deploymentBefore'])
         # Durable intent is written before submission. A crash here is ambiguous:
         # resume waits for the detached worker; it never blindly submits again.
         release.record('deploying', deploymentRequested=True)
@@ -150,10 +203,10 @@ def deploy(release):
                         'deployment-submission.log')
     wait_deployment(log)
     require(plist.read_bytes() == (directory / 'candidate.plist').read_bytes(), '实际部署配置与候选配置不同')
-    require(native_identities() == state['deploymentBefore']['native'], '原生运行时身份发生变化')
+    verify_native_identity(plistlib.loads(plist.read_bytes()), state['deploymentBefore'])
     require(get_json(BASE + '/health').get('status') == 'ok', '主节点健康检查失败')
     count = preserved_connections(directory / 'relay-before-update.sqlite3', database)
-    report = {'commit': state['commit'], 'serverSha256': expected, 'nativeIdentityUnchanged': True,
+    report = {'commit': state['commit'], 'serverSha256': expected, 'nativeIdentityUnchanged': True, 'nativeHost': state['deploymentBefore']['nativeHost'],
               'existingAuthorizationsPreserved': count, 'backupIntegrity': 'ok'}
     save(directory / 'node-update.json', report)
     state['steps']['deployment'] = report

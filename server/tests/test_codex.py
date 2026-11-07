@@ -151,16 +151,41 @@ class NativeSemanticsTests(unittest.TestCase):
             with self.assertRaises(CodexError):
                 service.read_goal("thread")
 
+    def test_goal_capability_probe_is_read_only_and_does_not_mask_errors(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        sentinel = '00000000-0000-0000-0000-000000000000'
+        for error, expected in [
+            (CodexError('thread not found: ' + sentinel, native_code=-32600), True),
+            (CodexError('Unknown method', native_code=-32601), False),
+            (CodexError('Unknown variant', code='native_method_unsupported'), False),
+        ]:
+            with patch.object(native, 'request', side_effect=error) as request:
+                self.assertEqual({'goalSupported': expected}, service.goal_capabilities())
+                request.assert_called_once_with('thread/goal/get', {'threadId': sentinel})
+        for error in [CodexError('Disconnected'), CodexError('Unauthorized', native_code=-32600)]:
+            with patch.object(native, 'request', side_effect=error):
+                with self.assertRaises(CodexError): service.goal_capabilities()
+
+    def test_goal_required_first_turn_refuses_unsupported_node_before_sending(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        with patch.object(service, 'goal_capabilities', return_value={'goalSupported': False}):
+            with self.assertRaises(CodexError) as failure:
+                service.send('thread', 'First task', require_goal_support=True)
+        self.assertEqual('goal_unsupported', failure.exception.code)
+        self.assertFalse(any(method in ('turn/start', 'thread/resume') for method, _ in native.calls))
+
     def test_goal_controls_preserve_native_budget_and_do_not_send_prompt(self):
         native = FakeNative()
         service = CodexService(connection=native)
         service.update_goal("thread", "set", objective="Finish", token_budget=1000)
-        self.assertEqual(("thread/goal/set", {"threadId": "thread", "objective": "Finish", "status": "active", "tokenBudget": 1000}), native.calls[-1])
+        self.assertEqual(("thread/goal/set", {"threadId": "thread", "origin": "user", "objective": "Finish", "status": "active", "tokenBudget": 1000}), native.calls[-1])
         for operation, status in (("pause", "paused"), ("resume", "active")):
             service.update_goal("thread", operation)
-            self.assertEqual(("thread/goal/set", {"threadId": "thread", "status": status}), native.calls[-1])
+            self.assertEqual(("thread/goal/set", {"threadId": "thread", "origin": "user", "status": status}), native.calls[-1])
         service.update_goal("thread", "clear")
-        self.assertEqual(("thread/goal/clear", {"threadId": "thread"}), native.calls[-1])
+        self.assertEqual(("thread/goal/clear", {"threadId": "thread", "origin": "user"}), native.calls[-1])
         self.assertFalse(any(method in {"turn/start", "turn/interrupt"} for method, _ in native.calls))
         for budget in (True, 0, -1, 1.5, 2**63):
             with self.assertRaises(CodexError):

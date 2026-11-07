@@ -26,6 +26,26 @@ class TaskChangeTrackerTest {
         assertEquals("completed", tracker.observe(snapshot("other" to "completed").put("goal", state("completed", "complete", 5).getJSONObject("goal"))).single().kind)
     }
 
+    @Test fun goalOutcomeAndLaterFinalTurnCompletionDoNotNotifyTwice() {
+        for (terminal in listOf("complete", "blocked", "budgetLimited", "usageLimited")) {
+            val tracker = TaskChangeTracker()
+            fun state(turn: String, goal: String) = snapshot("last" to turn)
+                .put("goal", JSONObject().put("createdAt", 1).put("status", goal))
+            tracker.observe(state("inProgress", "active"))
+            assertEquals(1, tracker.observe(state("inProgress", terminal)).size)
+            assertTrue(tracker.observe(state("completed", terminal)).isEmpty())
+            tracker.observe(snapshot("next" to "inProgress").put("goal", JSONObject().put("createdAt", 1).put("status", terminal)))
+            assertEquals("completed", tracker.observe(snapshot("next" to "completed").put("goal", JSONObject().put("createdAt", 1).put("status", terminal))).single().kind)
+        }
+    }
+
+    @Test fun failedGoalOwnedTurnStillReportsFailureAfterGoalStops() {
+        val tracker = TaskChangeTracker()
+        tracker.observe(snapshot("last" to "inProgress").put("goal", JSONObject().put("status", "active")))
+        tracker.observe(snapshot("last" to "inProgress").put("goal", JSONObject().put("status", "blocked")))
+        assertEquals("failed", tracker.observe(snapshot("last" to "failed").put("goal", JSONObject().put("status", "blocked"))).single().kind)
+    }
+
     @Test fun initialHistoryAndPendingRequestsNeverNotify() {
         val tracker = TaskChangeTracker()
         assertTrue(tracker.observe(snapshot("old" to "completed", request = "approval")).isEmpty())

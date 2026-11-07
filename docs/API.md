@@ -22,6 +22,7 @@
 | `GET /v1/project-directories?path=…` | path 可省略，起点为原生节点当前目录 | `{path,parentPath,entries}`；条目结构同 `/v1/directories` |
 | `GET /v1/projects/{projectId}/git` | Bearer | `{git:{available,head?,branch?,dirty?,refs:[{id,commit,name}],reason?}}` |
 | `GET /v1/models` | Bearer | `{models:[…],catalog:{source,stale,updatedAt}}`，原生模型目录及最近成功缓存；不使用固定模型清单 |
+| `GET /v1/goals/capabilities` | Bearer；只读，不创建会话 | `{goalSupported:boolean}`；能力读取故障返回错误，不等同于不支持 |
 | `GET /v1/usage` | Bearer | `{usage:{…}}`；原生 `account/rateLimits/read` 响应 |
 | `GET /v1/threads?projectId=…&archived=false` | 必填 projectId；archived 仅接受 `true` / `false`，默认 false | `{threads:[{id,name,preview,status,updatedAt,cwd,projectId,pinned}]}` |
 
@@ -33,6 +34,8 @@
 
 额度对象保留原生 `rateLimits` / `rateLimitsByLimitId`、窗口 `usedPercent`、`windowDurationMins`、`resetsAt` 等字段。缺失值表示尚无数据，不能推断剩余 100%。账户额度与下述单会话 `tokenUsage` 是不同数据。
 
+`requireGoalSupport=true` 用于带持续目标的新建流程：服务端在首轮发送前检查原生目标接口，不支持则拒绝发送。客户端在首轮 accepted 后单独提交目标设置；失败只恢复目标设置，不重复首轮。
+
 ## 会话、历史和输入
 
 | 方法与路径 | 请求 | HTTP 200 响应 |
@@ -40,7 +43,7 @@
 | `POST /v1/threads` | `{submissionId,projectId,worktreeRef?}` | 提交记录；接受时 `{threadId}` |
 | `GET /v1/threads/{threadId}` | 可选 `cursor`、`limit`（默认 30，钳制到 1–100） | `{thread,requests,settings,activeTurnId,status,readOnly,nextCursor,backwardsCursor,queue,plan,tokenUsage,changes,turnSettings}`；`thread.turns` 是本页原生 turns |
 | `GET /v1/threads/{threadId}/history` | 同上 | `{turns,nextCursor,backwardsCursor}` |
-| `POST /v1/threads/{threadId}/turns` | `{submissionId,text,model?,effort?,mode?,serviceTier?}`，或用 `input` 数组 | 提交记录；接受时 `{threadId,turnId}` |
+| `POST /v1/threads/{threadId}/turns` | `{submissionId,text,model?,effort?,mode?,serviceTier?,requireGoalSupport?}`，或用 `input` 数组 | 提交记录；接受时 `{threadId,turnId}` |
 | `POST /v1/threads/{threadId}/settings` | `{submissionId,model?,effort?,serviceTier?}` | 更新原生 thread settings；至少一个设置；`serviceTier` 为 `default` / `priority`；不改审批和权限 |
 | `POST /v1/threads/{threadId}/steer` | `{submissionId,expectedTurnId,text}`，或用 `input` 数组 | 提交记录；接受时 `{threadId,turnId}` |
 | `POST /v1/threads/{threadId}/interrupt` | `{submissionId,turnId}` | 提交记录；接受时 `{threadId,turnId}` |

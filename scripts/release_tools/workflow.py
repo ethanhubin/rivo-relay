@@ -194,6 +194,8 @@ class Release:
         own = self.state.get('apk')
         require(current == self.state['previous'] or own and all(current.get(k) == own[k]
                 for k in ('version', 'versionCode', 'sha256', 'size')), '更新源已有其他发布，停止此计划')
+        if self.state.get('deploymentRequested') and not self.state['steps'].get('deployment'):
+            return  # Reconcile the pending switch before requiring its HTTP server.
         remote = get_json(BASE + '/v1/app-updates/latest')
         require(all(remote.get(k) == current[k] for k in ('version', 'versionCode', 'sha256', 'size')),
                 '主节点 HTTP 清单与本地 workspace 不一致')
@@ -280,7 +282,14 @@ class Release:
             try:
                 self.state.pop('error', None)
                 self.preflight(commit)
+                from .deployment import deploy
+                if self.state.get('deploymentRequested') and not self.state['steps'].get('deployment'):
+                    require(self.state.get('apk') and self.state.get('commit'), '待恢复部署缺少已验证构建记录')
+                    deploy(self)
+                    self.preflight(commit)  # HTTP must pass after reconciliation.
                 if self.state['phase'] == 'complete':
+                    require(self.state['steps'].get('deployment'), '已完成发布缺少服务验证记录')
+                    deploy(self)
                     self.build()  # Verify the existing signed artifact, never rebuild it.
                     self.publish()  # Idempotent publication and fresh HTTP verification.
                     return

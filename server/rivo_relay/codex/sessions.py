@@ -683,9 +683,11 @@ class CodexService:
             raise CodexError("请输入消息", code="invalid_message", http_status=400)
         return [{"type": "text", "text": text, "text_elements": []}]
 
-    def send(self, thread_id, text, model=None, effort=None, client_message_id=None, *, input_items=None, mode=None, service_tier=None, acquire_released=False):
+    def send(self, thread_id, text, model=None, effort=None, client_message_id=None, *, input_items=None, mode=None, service_tier=None, acquire_released=False, require_goal_support=False):
         self.start()
         with self.operation_gate(thread_id):
+            if require_goal_support and not self.goal_capabilities()["goalSupported"]:
+                raise CodexError("此节点不支持持续目标，未发送首条消息", code="goal_unsupported", http_status=409)
             self._assert_workspace(thread_id)
             self._assert_submission_ready(thread_id, allow_recovery=acquire_released)
             self._resume(thread_id, acquire_released=acquire_released)
@@ -1295,6 +1297,20 @@ class CodexService:
     def upload_attachment(self, thread_id, name, encoded):
         return upload_attachment(self.connection, self._attachment_cwd(thread_id), name, encoded)
 
+    def goal_capabilities(self):
+        # Read-only sentinel: never start/resume a thread merely to discover support.
+        self.start()
+        sentinel = "00000000-0000-0000-0000-000000000000"
+        try:
+            self.connection.request("thread/goal/get", {"threadId": sentinel})
+        except CodexError as error:
+            if error.code == "native_method_unsupported" or error.native_code == -32601:
+                return {"goalSupported": False}
+            if error.native_code == -32600 and str(error) == f"thread not found: {sentinel}":
+                return {"goalSupported": True}
+            raise
+        return {"goalSupported": True}
+
     def read_goal(self, thread_id):
         # Goal RPC is independent of history and does not resume/acquire a writer.
         try:
@@ -1310,7 +1326,7 @@ class CodexService:
         self._assert_workspace(thread_id)
         if operation not in {"set", "pause", "resume", "clear"}:
             raise CodexError("目标操作无效", code="invalid_request", http_status=400)
-        params = {"threadId": thread_id}
+        params = {"threadId": thread_id, "origin": "user"}
         if operation == "set":
             if not isinstance(objective, str) or not objective.strip() or len(objective) > 200000:
                 raise CodexError("请填写目标", code="invalid_request", http_status=400)

@@ -36,6 +36,7 @@ internal class TaskChangeTracker {
     private val announced = linkedSetOf<String>()
     private var requests = emptySet<String>()
     private var goalState: String? = null
+    private val goalOwnedTurns = linkedSetOf<String>()
     fun expectTurn(id: String) { if (id.isNotBlank()) running += id }
     fun observe(json: JSONObject): List<TaskNotice> {
         val turns = json.optJSONObject("thread")?.objects("turns").orEmpty()
@@ -53,6 +54,11 @@ internal class TaskChangeTracker {
         }
         val goalOwnsCompletion = goal?.string("status") == "active" || goalState?.endsWith(":active") == true ||
             (nextGoalState != goalState && result.any { it.key.startsWith("goal:") })
+        if (goal?.string("status") == "active" || goalState?.endsWith(":active") == true) {
+            goalOwnedTurns += running
+            turns.filter { it.string("status") == "inProgress" }.mapTo(goalOwnedTurns) { it.string("id") }
+            json.string("activeTurnId").takeIf(String::isNotBlank)?.let { goalOwnedTurns += it }
+        }
         goalState = nextGoalState
         if (initialized || running.isNotEmpty()) (nextRequests - requests).forEach { result += TaskNotice("request:$it", "waiting") }
         val overlap = turns.any { it.string("id") in known }
@@ -63,16 +69,17 @@ internal class TaskChangeTracker {
             if (id.isNotBlank()) {
                 if (status == "inProgress") running += id
                 else if (status in setOf("completed", "failed")) {
-                    if ((!goalOwnsCompletion || status == "failed") && (id in running || (initialized && overlap && id == latest && id !in known)))
+                    if (((!goalOwnsCompletion && id !in goalOwnedTurns) || status == "failed") && (id in running || (initialized && overlap && id == latest && id !in known)))
                         result += TaskNotice("turn:$id:$status", if (status == "failed") "failed" else "completed")
-                    running -= id
-                } else if (status in setOf("interrupted", "canceled", "cancelled")) running -= id
+                    running -= id; goalOwnedTurns -= id
+                } else if (status in setOf("interrupted", "canceled", "cancelled")) { running -= id; goalOwnedTurns -= id }
                 known += id
             }
         }
         json.string("activeTurnId").takeIf(String::isNotBlank)?.let { running += it }
         initialized = true
         requests = nextRequests
+        while (goalOwnedTurns.size > 256) goalOwnedTurns.remove(goalOwnedTurns.first())
         while (known.size > 256) known.remove(known.first())
         return result.filter { announced.add(it.key) }.also { while (announced.size > 256) announced.remove(announced.first()) }
     }

@@ -12,10 +12,11 @@ import java.util.concurrent.ConcurrentHashMap
 /** Private, node-scoped recovery data. Never contains node credentials or authority to write. */
 data class StoredDraftImage(val id: String, val bytes: ByteArray)
 data class ConversationDraft(val text: String = "", val images: List<StoredDraftImage> = emptyList(),
-    val files: List<JSONObject> = emptyList(), val model: String? = null, val effort: String? = null, val mode: String? = null, val serviceTier: String? = null, val sandbox: String? = null, val approvalPolicy: String? = null) {
-    val empty get() = text.isEmpty() && images.isEmpty() && files.isEmpty() && model == null && effort == null && mode == null && serviceTier == null && sandbox == null && approvalPolicy == null
+    val files: List<JSONObject> = emptyList(), val model: String? = null, val effort: String? = null, val mode: String? = null, val serviceTier: String? = null, val sandbox: String? = null, val approvalPolicy: String? = null, val pendingGoal: String? = null) {
+    val hasContent get() = text.isNotBlank() || images.isNotEmpty() || files.isNotEmpty() || pendingGoal != null
+    val empty get() = text.isEmpty() && images.isEmpty() && files.isEmpty() && model == null && effort == null && mode == null && serviceTier == null && sandbox == null && approvalPolicy == null && pendingGoal == null
 }
-data class PendingConversation(val id: String, val projectId: String, val draft: ConversationDraft, val createdAt: Long) {
+data class PendingConversation(val id: String, val projectId: String, val draft: ConversationDraft, val createdAt: Long, val firstTurnSent: Boolean = false) {
     val draftKey get() = "pending:$id"
 }
 
@@ -151,7 +152,7 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
         }, json.string("model").takeIf(String::isNotBlank), json.string("effort").takeIf(String::isNotBlank),
             json.string("mode").takeIf { it == "plan" || it == "default" },
             json.string("serviceTier").takeIf { it == "default" || it == "priority" },
-            json.string("sandbox").takeIf(String::isNotBlank), json.string("approvalPolicy").takeIf(String::isNotBlank))
+            json.string("sandbox").takeIf(String::isNotBlank), json.string("approvalPolicy").takeIf(String::isNotBlank), json.string("pendingGoal").takeIf(String::isNotBlank))
     }.getOrDefault(ConversationDraft())
 
     private fun latestDraft(threadId: String): ConversationDraft {
@@ -187,6 +188,7 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
     }
     private fun draftJson(draft: ConversationDraft) = JSONObject().put("text", draft.text).put("model", draft.model)
         .put("effort", draft.effort).put("mode", draft.mode).put("serviceTier", draft.serviceTier).put("sandbox", draft.sandbox).put("approvalPolicy", draft.approvalPolicy)
+        .put("pendingGoal", draft.pendingGoal)
         .put("files", JSONArray(draft.files.take(16)))
         .put("images", JSONArray(draft.images.take(10).filter { it.bytes.size <= 20 * 1024 * 1024 }.map {
             JSONObject().put("id", it.id).put("bytes", Base64.getEncoder().encodeToString(it.bytes))
@@ -230,7 +232,7 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
             require(frozen.toByteArray().size <= DRAFT_LIMIT) { "草稿过大，无法保存在手机" }
             write("sent-input-${digest(submissionId)}", frozen)
         } }
-        val settings = draftJson(frozenDraft.copy(text = "", images = emptyList(), files = emptyList()))
+        val settings = draftJson(frozenDraft.copy(text = "", images = emptyList(), files = emptyList(), pendingGoal = null))
         putRecoveryMetadata("sent-draft:$submissionId", JSONObject().put("threadId", threadId)
             .put("fingerprint", fingerprint).put("baselineFingerprint", draftFingerprint(baseline))
             .put("preserveNewerDraft", preserveNewerDraft)
@@ -306,6 +308,8 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
     fun pendingCompleted(projectId: String) = getMetadata("completed:pending:$projectId") == "true"
     fun completedPendingThreadId(projectId: String): String? = getMetadata("pending-completed-thread:$projectId")
     fun pendingThreadId(projectId: String): String? = getMetadata("pending-thread:$projectId")
+    fun pendingGoalContinuation(id: String): JSONObject? = getMetadata("pending-goal-continuation:$id")?.let(::JSONObject)
+    fun pendingAppliedGoal(id: String): String? = getMetadata("pending-applied-goal:$id")
     fun pendingWorktreeRef(projectId: String): String? = getMetadata("pending-ref:$projectId")
     fun setPendingWorktreeRef(projectId: String, ref: String?) = putMetadata("pending-ref:$projectId", ref)
     fun beginPending(projectId: String) {
@@ -317,7 +321,7 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
     private fun migratePending(projectId: String) {
         if (pendingEntry(projectId) != null || pendingCompleted(projectId)) return
         val draft = latestDraft("pending:$projectId")
-        if (draft.text.isNotBlank() || draft.images.isNotEmpty() || draft.files.isNotEmpty() || pendingThreadId(projectId) != null) {
+        if (draft.hasContent || pendingThreadId(projectId) != null) {
             putRecoveryMetadata("pending-entry:$projectId", JSONObject().put("projectId", projectId)
                 .put("createdAt", System.currentTimeMillis()).toString())
         }
@@ -338,36 +342,77 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
             val entry = pendingEntry(id) ?: return@mapNotNull null
             if (entry.string("projectId") != projectId || pendingCompleted(id)) return@mapNotNull null
             val draft = loadDraft("pending:$id")
-            if (draft.text.isBlank() && draft.images.isEmpty() && draft.files.isEmpty() && pendingThreadId(id) == null) return@mapNotNull null
-            PendingConversation(id, projectId, draft, entry.optLong("createdAt"))
+            if (!draft.hasContent && pendingThreadId(id) == null) return@mapNotNull null
+            PendingConversation(id, projectId, draft, entry.optLong("createdAt"), pendingGoalContinuation(id) != null)
         }.sortedByDescending { it.createdAt }
     }
     /** Checkpoint before crossing the network boundary, so reconciliation survives process death. */
-    fun checkpointPendingSubmission(projectId: String, submissionId: String, kind: String) {
-        require(kind == "create" || kind == "send")
+    fun checkpointPendingSubmission(projectId: String, submissionId: String, kind: String, goalAction: String? = null) {
+        require(kind in setOf("create", "send", "goal", "sendWithGoal", "finishGoal"))
+        require(kind !in setOf("goal", "sendWithGoal", "finishGoal") || goalAction != null)
         putRecoveryMetadata("pending-submission:$submissionId", JSONObject().put("projectId", pendingEntry(projectId)?.string("projectId") ?: projectId)
-            .put("pendingId", projectId).put("kind", kind).toString())
+            .put("pendingId", projectId).put("kind", kind).put("goalAction", goalAction).toString())
+    }
+    fun pendingHasUnresolvedSubmission(id: String): Boolean = synchronized(metadataLock) {
+        if (metadata.optString("completed:pending:$id") == "true") return@synchronized false
+        metadata.keys().asSequence().filter { it.startsWith("pending-submission:") }.any { key ->
+            val checkpoint = JSONObject(metadata.getString(key))
+            checkpoint.string("pendingId").ifBlank { checkpoint.string("projectId") } == id
+        }
+    }
+    fun pendingSubmissionCheckpoints(): Map<String, JSONObject> = synchronized(lock) {
+        val disk = readMetadataStrict()
+        disk.keys().asSequence().filter { it.startsWith("pending-submission:") }.associate { key ->
+            key.removePrefix("pending-submission:") to JSONObject(disk.getString(key))
+        }
     }
     fun resolvePendingSubmission(submissionId: String, response: JSONObject): String? {
-        val checkpoint = getMetadata("pending-submission:$submissionId")?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return null
-        val projectId = checkpoint.string("projectId")
-        val pendingId = checkpoint.string("pendingId").ifBlank { projectId }
-        val threadId = response.optJSONObject("receipt")?.string("threadId")?.takeIf(String::isNotBlank)
-        if (checkpoint.string("kind") == "create" && threadId != null) putRecoveryMetadata("pending-thread:$pendingId", threadId)
-        if (response.string("status") == "accepted") {
-            if (checkpoint.string("kind") == "send") {
-                val acceptedThread = threadId ?: pendingThreadId(pendingId)
-                finishPending(pendingId)
-                if (acceptedThread != null) putRecoveryMetadata("pending-completed-thread:$pendingId", acceptedThread)
+        var clearDraft: String? = null
+        val project = synchronized(lock) {
+            // Read the durable state under the shared directory lock. Another store
+            // instance may have discarded this draft while the receipt was in flight.
+            val disk = readMetadataStrict()
+            val key = "pending-submission:$submissionId"
+            val checkpoint = disk.optString(key).takeIf(String::isNotBlank)?.let(::JSONObject) ?: return@synchronized null
+            val projectId = checkpoint.string("projectId")
+            val pendingId = checkpoint.string("pendingId").ifBlank { projectId }
+            val status = response.string("status")
+            val changes = linkedMapOf<String, String?>()
+            if (status in setOf("accepted", "failed")) changes[key] = null
+            if (disk.optString("completed:pending:$pendingId") != "true") {
+                val threadId = response.optJSONObject("receipt")?.string("threadId")?.takeIf(String::isNotBlank)
+                val kind = checkpoint.string("kind")
+                if (kind == "create" && threadId != null) changes["pending-thread:$pendingId"] = threadId
+                if (status == "accepted") {
+                    if (kind == "goal") changes["pending-applied-goal:$pendingId"] = checkpoint.getString("goalAction")
+                    if (kind == "sendWithGoal") {
+                        val receipt = response.getJSONObject("receipt")
+                        require(receipt.string("threadId").isNotBlank() && receipt.string("turnId").isNotBlank())
+                        changes["pending-goal-continuation:$pendingId"] = JSONObject()
+                            .put("receipt", receipt).put("goalAction", checkpoint.getString("goalAction")).toString()
+                    }
+                    if (kind in setOf("send", "finishGoal")) {
+                        val acceptedThread = threadId ?: disk.optString("pending-thread:$pendingId").takeIf(String::isNotBlank)
+                        changes.putAll(completedPendingMetadata(pendingId, acceptedThread))
+                        clearDraft = pendingId
+                    }
+                }
             }
+            // Stage advancement and receipt retirement share one atomic metadata write.
+            commitMetadata(changes)
+            projectId
         }
-        if (response.string("status") in setOf("accepted", "failed")) putRecoveryMetadata("pending-submission:$submissionId", null)
-        return projectId
+        clearDraft?.let { enqueueDraft("pending:$it", ConversationDraft()) }
+        return project
     }
-    fun finishPending(projectId: String) {
-        // Tombstone first: an old asynchronous draft write cannot resurrect accepted input.
-        commitMetadata(mapOf("completed:pending:$projectId" to "true", "pending-thread:$projectId" to null,
-            "pending-ref:$projectId" to null, "pending-entry:$projectId" to null))
+    private fun completedPendingMetadata(id: String, threadId: String?) = mapOf(
+        "completed:pending:$id" to "true", "pending-completed-thread:$id" to threadId,
+        "pending-thread:$id" to null, "pending-ref:$id" to null, "pending-entry:$id" to null,
+        "pending-applied-goal:$id" to null, "pending-goal-continuation:$id" to null)
+
+    fun finishPending(projectId: String, completedThreadId: String? = null) {
+        // Tombstone first: late receipts and old draft writes cannot resurrect it.
+        commitMetadata(completedPendingMetadata(projectId, completedThreadId))
         enqueueDraft("pending:$projectId", ConversationDraft())
     }
 

@@ -478,6 +478,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError(429, "too_many_downloads", "下载链接过多")
                 self.app.download_links[key] = (target, expiry)
             return {"url": self.app.config.public_url.rstrip("/") + "/v1/download-links/" + key, "expiresAt": expiry}
+        if path == ["v1", "goals", "capabilities"] and method == "GET":
+            return codex.goal_capabilities()
         if path == ["v1", "models"] and method == "GET":
             if hasattr(codex, 'capabilities'):
                 return codex.capabilities(refresh=query.get('refresh', ['0'])[0] == '1')
@@ -650,6 +652,10 @@ class Handler(BaseHTTPRequestHandler):
                         kwargs['service_tier'] = body['serviceTier']
                     if items is not None:
                         kwargs["input_items"] = items
+                    if 'requireGoalSupport' in body:
+                        if type(body['requireGoalSupport']) is not bool:
+                            raise ApiError(400, 'invalid_request', 'requireGoalSupport must be boolean')
+                        kwargs['require_goal_support'] = body['requireGoalSupport']
                     fn = lambda: codex.send(thread_id, text, acquire_released=True, **kwargs)
                 elif action == "steer":
                     items = native_input(body)

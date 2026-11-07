@@ -36,6 +36,8 @@ import androidx.compose.ui.unit.dp
 import dev.rivo.relay.codex.threadIsExecuting
 import dev.rivo.relay.codex.threadPendingLabel
 import dev.rivo.relay.codex.threadIsActive
+import org.json.JSONObject
+import dev.rivo.relay.data.string
 import dev.rivo.relay.data.PendingConversation
 import dev.rivo.relay.data.CodexUsage
 import dev.rivo.relay.data.ThreadSummary
@@ -55,12 +57,13 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
     usageLoading: Boolean = false, usageError: String? = null, onRefreshUsage: (() -> Unit)? = null,
     projectKey: String = projectName, initialCount: Int = 0,
     pendingConversations: List<PendingConversation> = emptyList(), canDiscardPending: Boolean = true,
-    onResumePending: (String) -> Unit = {}, onDiscardPending: (String) -> Unit = {}) {
+    onResumePending: (String) -> Unit = {}, onDiscardPending: (String) -> Unit = {},
+    canManageThreads: Boolean = canCreate) {
     var selectedIds by remember(projectKey, archived) { mutableStateOf(emptySet<String>()) }
     var search by rememberSaveable(projectKey) { mutableStateOf("") }
     var confirmDiscardId by remember(projectKey) { mutableStateOf<String?>(null) }
     fun pendingPreview(pending: PendingConversation) = pending.draft.let { draft -> draft.text.ifBlank {
-        listOfNotNull(draft.images.takeIf { it.isNotEmpty() }?.let { "${it.size} 张图片" },
+        listOfNotNull(draft.pendingGoal?.let { "目标：" + JSONObject(it).string("objective") }, draft.images.takeIf { it.isNotEmpty() }?.let { "${it.size} 张图片" },
             draft.files.takeIf { it.isNotEmpty() }?.let { "${it.size} 个附件" }).joinToString(" · ").ifBlank { "继续编辑草稿" }
     } }
     val shownPending = pendingConversations.filter { !archived && (search.isBlank() ||
@@ -110,10 +113,10 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                         if (!archived && singleSelected != null) TextButton(onClick = {
                             onPin(singleSelected, !singleSelected.pinned)
                             selectedIds = emptySet()
-                        }, enabled = canCreate, modifier = Modifier.testTag("pin_session"),
+                        }, enabled = canManageThreads, modifier = Modifier.testTag("pin_session"),
                             contentPadding = PaddingValues(horizontal = 6.dp)) { Text(if (singleSelected.pinned) "取消置顶" else "置顶") }
                         if (onArchive != null) TextButton(onClick = { onArchive(selected, !archived); selectedIds = emptySet() },
-                            enabled = canCreate && selected.isNotEmpty() && (archived || selected.none(::threadIsActive)), modifier = Modifier.testTag("archive_sessions"),
+                            enabled = canManageThreads && selected.isNotEmpty() && (archived || selected.none(::threadIsActive)), modifier = Modifier.testTag("archive_sessions"),
                             contentPadding = PaddingValues(horizontal = 6.dp)) { Text(if (archived) "恢复" else "归档") }
                         TextButton(onClick = { selectedIds = emptySet() }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("取消") }
                     }
@@ -129,7 +132,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                             Row(Modifier.padding(horizontal = RivoSpacing.Md, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text("◷", Modifier.size(28.dp), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleLarge)
                                 Column(Modifier.weight(1f).padding(start = 8.dp)) {
-                                    Text("待发送", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                                    Text(if (pending.firstTurnSent) "任务已发送 · 目标待设置" else "待发送", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                                     Text(pendingPreview(pending), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
                                 }
                                 TextButton(onClick = { confirmDiscardId = pending.id }, enabled = canDiscardPending,
@@ -186,7 +189,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
         }
     }
     pendingConversations.firstOrNull { it.id == confirmDiscardId }?.let { pending -> AlertDialog(onDismissRequest = { confirmDiscardId = null },
-        title = { Text("删除待发送草稿？") }, text = { Text("这会删除手机保存的文字和附件草稿，已经创建的原生会话会保留。") },
+        title = { Text("删除待发送草稿？") }, text = { Text(if (pending.firstTurnSent) "放弃尚未完成的目标设置。首条任务已发送，删除此记录不会停止任务；原生会话会保留。" else "这会删除手机保存的文字、附件和目标草稿，已经创建的原生会话会保留。") },
         confirmButton = { TextButton(onClick = { confirmDiscardId = null; onDiscardPending(pending.id) }, enabled = canDiscardPending,
             modifier = Modifier.testTag("confirm_delete_pending_conversation")) { Text("删除") } },
         dismissButton = { TextButton(onClick = { confirmDiscardId = null }) { Text("取消") } }) }

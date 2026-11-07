@@ -226,6 +226,29 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(503, self.request('GET', '/v1/app-updates/latest')[0])
         self.assertFalse(self.native.created)
 
+    def test_goal_capability_probe_requires_authentication(self):
+        calls = []
+        self.native.goal_capabilities = lambda: calls.append('probe') or {'goalSupported': True}
+        self.assertEqual(401, self.request('GET', '/v1/goals/capabilities')[0])
+        self.assertFalse(calls)
+        status, body, _ = self.request('GET', '/v1/goals/capabilities', token=self.token)
+        self.assertEqual(200, status)
+        self.assertTrue(body['goalSupported'])
+        self.assertEqual(['probe'], calls)
+        self.assertFalse(self.native.created)
+
+    def test_goal_required_turn_flag_is_validated_and_forwarded(self):
+        path = '/v1/threads/thread-1/turns'
+        body = {'submissionId': 'first-goal-turn', 'text': 'Task', 'requireGoalSupport': True}
+        status, result, _ = self.request('POST', path, body, token=self.token)
+        self.assertEqual(200, status)
+        self.assertEqual('accepted', result['status'])
+        self.assertTrue(self.native.sent[0][2]['require_goal_support'])
+        for value in ('true', 1, None):
+            status, _, _ = self.request('POST', path, {**body, 'requireGoalSupport': value}, token=self.token)
+            self.assertEqual(400, status)
+        self.assertEqual(1, len(self.native.sent))
+
     def test_goal_controls_validate_authentication_and_deduplicate(self):
         writes = []
         def update(thread_id, operation, **kwargs):

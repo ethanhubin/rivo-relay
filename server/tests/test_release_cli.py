@@ -50,6 +50,76 @@ class ReleaseCliTest(unittest.TestCase):
         note.write_text(note.read_text().replace('TODO：填写本次变更。', '会话同步优化。'))
         return w.Release(self.root, state['version'])
 
+    def test_retry_recovers_crash_after_log_rename(self):
+        release = self.ready()
+        release.state['deploymentRequested'] = True
+        plist = release.directory / 'current.plist'
+        plist.write_bytes(b'baseline')
+        (release.directory / 'launchagent-before.plist').write_bytes(b'baseline')
+        log = release.directory / 'deployment.log'
+        log.write_text('{"event":"rollback_complete"}\n')
+        original = release.record
+        def interrupted(phase, **fields):
+            if phase == 'deployment-prepared':
+                raise RuntimeError('injected crash')
+            original(phase, **fields)
+        with patch.object(release, 'record', side_effect=interrupted):
+            with self.assertRaisesRegex(RuntimeError, 'injected crash'):
+                d.prepare_retry(release, plist, log)
+        resumed = w.Release(self.root, release.state['version'])
+        self.assertTrue(resumed.state['deploymentRequested'])
+        self.assertFalse(log.exists())
+        d.prepare_retry(resumed, plist, log)
+        self.assertFalse(resumed.state['deploymentRequested'])
+        self.assertIsNone(resumed.state['deploymentRetryArchive'])
+
+    def test_pending_deployment_reconciled_before_build_and_publication(self):
+        release = self.ready()
+        release.record('deploying', deploymentRequested=True, apk={'verified': True}, commit='fixture')
+        order = []
+        def deploy(_):
+            order.append('deploy')
+            release.state['steps']['deployment'] = {'verified': True}
+        with patch.object(release, 'preflight', side_effect=lambda _: order.append('preflight')), \
+                patch.object(d, 'deploy', side_effect=deploy), \
+                patch.object(release, 'validate', side_effect=lambda: order.append('validate')), \
+                patch.object(release, 'build'), patch.object(release, 'commit'), patch.object(release, 'publish'):
+            release.run()
+        self.assertEqual(order[:4], ['preflight', 'deploy', 'preflight', 'validate'])
+
+    def test_pending_recovery_failure_prevents_build_and_publication(self):
+        release = self.ready()
+        release.record('deploying', deploymentRequested=True, apk={'verified': True}, commit='fixture')
+        with patch.object(release, 'preflight'), patch.object(release, 'build') as build, \
+                patch.object(release, 'publish') as publish, \
+                patch.object(d, 'deploy', side_effect=RuntimeError('rollback_failed')):
+            with self.assertRaisesRegex(RuntimeError, 'rollback_failed'):
+                release.run()
+            build.assert_not_called()
+            publish.assert_not_called()
+
+    def test_completed_release_refuses_publication_when_service_changed(self):
+        release = self.ready()
+        release.state['steps']['deployment'] = {'verified': True}
+        release.record('complete')
+        with patch.object(release, 'preflight'), patch.object(release, 'build') as build, \
+                patch.object(release, 'publish') as publish, \
+                patch.object(d, 'deploy', side_effect=RuntimeError('service changed')):
+            with self.assertRaisesRegex(RuntimeError, 'service changed'):
+                release.run()
+            build.assert_not_called()
+            publish.assert_not_called()
+
+    def test_pending_preflight_does_not_require_http(self):
+        release = self.ready()
+        release.state.update(sourceTree='fixture', deploymentRequested=True)
+        with patch.object(release, 'source_unchanged'), patch.object(w, 'get_json', side_effect=OSError('offline')) as http:
+            release.preflight(False)
+            http.assert_not_called()
+            release.state['steps']['deployment'] = {'verified': True}
+            with self.assertRaises(OSError):
+                release.preflight(False)
+
     def test_prepare_only_changes_version_notes_and_plan(self):
         original_head = c.git(self.root, 'rev-parse', 'HEAD')
         state = w.prepare(self.root, self.args)
@@ -230,7 +300,7 @@ class ReleaseCliTest(unittest.TestCase):
         release = self.ready()
         release.state['commit'] = c.git(self.root, 'rev-parse', 'HEAD')
         release.state['deploymentRequested'] = True
-        release.state['deploymentBefore'] = {'native': ['native identity']}
+        release.state['deploymentBefore'] = {'nativeHost': {'pid': 123, 'processStart': 'original'}}
         target = self.root / 'workspace/deployments' / release.state['commit'] / 'server/rivo_relay'
         target.mkdir(parents=True)
         (target / '__main__.py').write_text('print("fixture")\n')
@@ -242,12 +312,44 @@ class ReleaseCliTest(unittest.TestCase):
         plist.write_bytes(plistlib.dumps(config))
         (release.directory / 'candidate.plist').write_bytes(plist.read_bytes())
         (release.directory / 'deployment.log').write_text('{"event":"complete"}\n')
-        with patch.object(d.Path, 'home', return_value=home), patch.object(d, 'native_identities', return_value=['native identity']), \
+        with patch.object(d.Path, 'home', return_value=home), patch.object(d, 'native_identity', return_value={'pid': 123, 'processStart': 'original'}), \
                 patch.object(d, 'get_json', return_value={'status': 'ok'}), patch.object(d, 'preserved_connections', return_value=7), \
                 patch.object(release, 'command') as command:
             d.deploy(release)
             command.assert_not_called()
         self.assertEqual(7, release.state['steps']['deployment']['existingAuthorizationsPreserved'])
+
+    def test_native_identity_uses_configured_socket_and_ignores_connection_generation(self):
+        config = {'ProgramArguments': ['/python', '--native-socket', '/chosen.sock',
+                                      '--codex-runtime', 'app_server', '--codex-home', '/chosen-home']}
+        host = {'pid': 123, 'processStart': 'start', 'processStartMethod': 'ps-lstart',
+                'executable': '/codex', 'codexHome': '/chosen-home', 'platform': 'darwin', 'generation': 'one'}
+        with patch.object(d, '_probe_native', return_value=host) as probe, \
+             patch.object(d, 'output', side_effect=AssertionError('must not scan all processes')):
+            before = d.native_identity(config)
+            probe.assert_called_with('/chosen.sock', '/chosen-home')
+            host['generation'] = 'two'
+            host['auxiliaryPids'] = [456, 789]
+            d.verify_native_identity(config, {'nativeHost': before})
+            for field, changed in [('pid', 456), ('processStart', 'reused pid'),
+                                   ('executable', '/new-codex'), ('codexHome', '/other-home')]:
+                with self.subTest(field=field):
+                    original = host[field]
+                    host[field] = changed
+                    with self.assertRaisesRegex(RuntimeError, '身份发生变化'):
+                        d.verify_native_identity(config, {'nativeHost': before})
+                    host[field] = original
+
+    def test_native_identity_fails_closed_without_selected_host_evidence(self):
+        with self.assertRaisesRegex(RuntimeError, '缺少所选原生主机基准'):
+            d.verify_native_identity({}, {'native': ['legacy process list']})
+        config = {'ProgramArguments': ['/python', '--native-socket', '/chosen.sock']}
+        with patch.object(d, '_probe_native', side_effect=RuntimeError('unreachable')):
+            with self.assertRaisesRegex(RuntimeError, 'unreachable'):
+                d.native_identity(config)
+        with patch.object(d, '_probe_native', return_value={'pid': 123}):
+            with self.assertRaisesRegex(RuntimeError, '无法核实'):
+                d.native_identity(config)
 
     def test_ambiguous_deployment_waits_and_rollback_is_explicit(self):
         path = self.root / 'deployment.log'

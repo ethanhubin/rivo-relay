@@ -45,7 +45,8 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
             session.invalidateControl()
             session.resolveSubmission(pending.id, response)
             val (acceptedDraft, pendingChanged) = withContext(Dispatchers.IO) {
-                conversations.markSentDraftResolved(pending.id, response) to (conversations.resolvePendingSubmission(pending.id, response) != null)
+                val changed = conversations.resolvePendingSubmission(pending.id, response) != null
+                conversations.markSentDraftResolved(pending.id, response) to changed
             }
             if (acceptedDraft) scope.launch {
                 try { conversations.clearAcceptedSentDraft(pending.id) }
@@ -54,11 +55,19 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
             }
             if (pendingChanged) pendingRevisionMutable.value++
         }, failure = failure)
-    init {
-        // These are known submission receipts, never requests to repeat a write.
-        scope.launch {
-            for ((id, checkpoint) in conversations.sentDraftCheckpoints()) try {
-                val accepted = if (checkpoint.string("status") == "accepted") true else {
+    private var pendingRecoveryJob: Job? = null
+    fun reconcilePendingReceipts() {
+        if (pendingRecoveryJob?.isActive == true) return
+        // Read known receipts only; never repeat native mutations here.
+        pendingRecoveryJob = scope.launch {
+            val checkpoints = try { withContext(Dispatchers.IO) {
+                conversations.sentDraftCheckpoints().keys + conversations.pendingSubmissionCheckpoints().keys
+            } } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { failure(e); return@launch }
+            for (id in checkpoints) try {
+                val checkpoint = conversations.sentDraftCheckpoints()[id]
+                val needsPendingResolution = withContext(Dispatchers.IO) { id in conversations.pendingSubmissionCheckpoints() }
+                val accepted = if (checkpoint?.string("status") == "accepted" && !needsPendingResolution) true else {
                     val response = api.call("/v1/submissions/${encoded(id)}")
                     session.resolveSubmission(id, response)
                     val (pendingChanged, acceptedDraft) = withContext(Dispatchers.IO) {
@@ -69,9 +78,10 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
                 }
                 if (accepted) conversations.clearAcceptedSentDraft(id)
             } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { /* Keep the durable checkpoint for the next connection. */ }
+            catch (e: Exception) { failure(e) /* Keep the durable checkpoint for an explicit retry. */ }
         }
     }
+    init { reconcilePendingReceipts() }
     private val todoReminders = TodoReminderScheduler(context.applicationContext, "${connection.nodeId}:${connection.deviceId}:${connection.storageBase}", connection.base)
     val todos = TodosController(api, scope, failure, store = conversations, onChanged = { items ->
         todoReminders.update(items)

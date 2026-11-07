@@ -57,7 +57,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     submitTool: (String, JSONObject, () -> Unit) -> Unit = { _, _, _ -> },
     usage: CodexUsage? = null, onFillHistory: () -> Unit = {}, pinned: Boolean = false, canManage: Boolean = false,
     onPin: ((Boolean) -> Unit)? = null, onArchive: (() -> Unit)? = null,
-    pendingTitle: String? = null, pendingReady: Boolean = true, pendingPermissionsEditable: Boolean = true,
+    pendingTitle: String? = null, pendingReady: Boolean = true, pendingGoalApplied: Boolean = false, pendingFirstTurnSent: Boolean = false,
+    pendingReceiptUnresolved: Boolean = false, onReconcilePending: (() -> Unit)? = null,
+    readGoalCapability: (suspend () -> Boolean)? = null, onOpenPendingThread: (() -> Unit)? = null, pendingPermissionsEditable: Boolean = true,
     pendingWorkspace: (@Composable () -> Unit)? = null,
     onConfiguredSend: ((JSONArray, String?, String?, String?, String?, JSONObject, () -> Unit) -> Unit)? = null,
     onSettingsChange: ((JSONObject) -> Unit)? = null,
@@ -106,6 +108,17 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     BackHandler(settingsOpen) { settingsOpen = false }
     var developerOpen by remember(state.id) { mutableStateOf(false) }
     var selectedMode by rememberSaveable(state.id) { mutableStateOf<String?>(null) }
+    var pendingGoal by rememberSaveable(state.id) { mutableStateOf<String?>(null) }
+    var goalCapability by remember(state.id) { mutableStateOf<Boolean?>(null) }
+    var goalCapabilityError by remember(state.id) { mutableStateOf<String?>(null) }
+    var goalCapabilityRetry by remember(state.id) { mutableIntStateOf(0) }
+    LaunchedEffect(state.id, pendingTitle, goalCapabilityRetry) {
+        if (pendingTitle == null || readGoalCapability == null) return@LaunchedEffect
+        goalCapability = null; goalCapabilityError = null
+        try { goalCapability = readGoalCapability() }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { goalCapabilityError = "无法确认节点的目标能力，请重试；普通消息仍可发送。" }
+    }
     var draftLoaded by remember(state.id, draftStore) { mutableStateOf(draftStore == null) }
     var selectedModel by rememberSaveable(state.id) { mutableStateOf<String?>(null) }
     var selectedEffort by rememberSaveable(state.id) { mutableStateOf<String?>(null) }
@@ -130,7 +143,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val scope = rememberCoroutineScope()
     val currentSessionId by rememberUpdatedState(state.id)
     val canOperate = state.control().canOperate
-    val inputLocked = blocked || busy || writerBusy || (pendingTitle == null && !state.canCompose()) || snapshot?.requests?.isNotEmpty() == true
+    val inputLocked = blocked || busy || writerBusy || pendingFirstTurnSent || pendingReceiptUnresolved || (pendingTitle == null && !state.canCompose()) || snapshot?.requests?.isNotEmpty() == true
     val latestInputLocked by rememberUpdatedState(inputLocked)
     LaunchedEffect(inputLocked) {
         if (inputLocked) {
@@ -165,6 +178,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         if (id != null && draftStore != null) {
             draftLoaded = false
             val saved = draftStore.loadDraft(id)
+            pendingGoal = saved.pendingGoal.takeIf { pendingTitle != null }
             draft = saved.text; images = saved.images.map { DraftImage(it.id, it.bytes) }; files = saved.files
             selectedModel = saved.model; selectedEffort = saved.effort; selectedMode = saved.mode
             selectedServiceTier = saved.serviceTier
@@ -179,7 +193,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         }
         draftLoaded = true
     }
-    val currentDraft = ConversationDraft(draft, images.map { StoredDraftImage(it.id, it.bytes) }, files, selectedModel, selectedEffort, selectedMode, selectedServiceTier, selectedSandbox, selectedApproval)
+    val currentDraft = ConversationDraft(draft, images.map { StoredDraftImage(it.id, it.bytes) }, files, selectedModel, selectedEffort, selectedMode, selectedServiceTier, selectedSandbox, selectedApproval, pendingGoal)
     val latestDraft by rememberUpdatedState(currentDraft)
     // Disposal belongs to the departing chat. Updated-state delegates shared across
     // identities would observe the newly opened draft and its persistence callback.
@@ -437,9 +451,34 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             } }
         }
         var goalEditing by remember(state.id) { mutableStateOf(false) }
-        if (snapshot?.goalSupported == true) key(state.id) {
-            NativeGoalPanel(snapshot.goal, !busy && !blocked && !state.stale && canOperate, onGoal, goalEditing) { goalEditing = it }
+        val goalAvailable = (pendingTitle != null && (goalCapability == true || pendingGoal != null)) || snapshot?.goalSupported == true
+        val goalEnabled = !pendingReceiptUnresolved && !pendingFirstTurnSent && !busy && !blocked && !state.stale && draftLoaded && (pendingTitle != null || canOperate)
+        val displayedGoal = if (pendingTitle != null) pendingGoal?.let { JSONObject(it).put("status", "pending") } else snapshot?.goal
+        if (goalAvailable) key(state.id) {
+            NativeGoalPanel(displayedGoal, goalEnabled, { action ->
+                if (pendingTitle != null) pendingGoal = if (action.string("operation") == "clear") null else action.toString()
+                else onGoal(action)
+            }, goalEditing, pending = pendingTitle != null) { goalEditing = it }
         }
+        if (pendingTitle != null && !pendingFirstTurnSent && goalCapability != true) Column(Modifier.padding(horizontal = 16.dp)) {
+            Text(goalCapabilityError ?: if (goalCapability == false) "此节点不支持持续目标。" else "正在检查目标能力…",
+                style = MaterialTheme.typography.bodySmall)
+            if (pendingGoal != null) Text("草稿中的目标已保留；确认能力或移除目标后才能发送。", style = MaterialTheme.typography.bodySmall)
+            if (goalCapabilityError != null) TextButton(onClick = { goalCapabilityRetry++ }, enabled = !busy && !blocked) { Text("重新检查") }
+        }
+        if (pendingReceiptUnresolved && !busy && !blocked) Column(Modifier.padding(horizontal = 16.dp)) {
+            Text("该会话仍有未确认提交。结束手机等待不会取消原操作，请先核对结果。", style = MaterialTheme.typography.bodySmall)
+            onReconcilePending?.let { TextButton(onClick = it) { Text("核对新建结果") } }
+        }
+        if (pendingFirstTurnSent) Column(Modifier.padding(horizontal = 16.dp)) {
+            Text("首条任务已发送，持续目标尚待确认。恢复只提交原先保存的目标，不会重发消息。", style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { onConfiguredSend?.invoke(JSONArray(), null, null, null, null, JSONObject(), {}) },
+                enabled = !pendingReceiptUnresolved && !busy && !blocked && !state.stale) { Text("完成目标设置") }
+            onOpenPendingThread?.let { TextButton(onClick = it) { Text("查看已发送任务") } }
+        }
+        if (pendingTitle != null && pendingGoalApplied) Text(
+            "目标设置已提交到会话；首条任务尚待发送。重试不会重复提交相同目标。",
+            modifier = Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall)
         NativePlan(snapshot?.plan)
         snapshot?.recoveryTask?.let { task ->
             Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp).testTag("queue_recovery_panel")) {
@@ -468,7 +507,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             files = files, onRemoveFile = { reference -> files = files.filterNot { it === reference } },
             onOpenFile = { reference -> nativeFilePath(reference.string("path"), cwd)?.let(::openFile) },
             preparing = preparing, error = attachmentError, enabled = !busy && !inputLocked && draftLoaded,
-            canSend = (draft.isNotBlank() || images.isNotEmpty() || files.isNotEmpty()) && !state.stale && (snapshot != null || pendingTitle != null && pendingReady),
+            canSend = !pendingReceiptUnresolved && !pendingFirstTurnSent && (pendingGoal == null || goalCapability == true) && (draft.isNotBlank() || images.isNotEmpty() || files.isNotEmpty() || pendingGoal != null) && !state.stale && (snapshot != null || pendingTitle != null && pendingReady),
             isRunning = snapshot?.activeTurnId?.isNotBlank() == true, canStop = !busy && !blocked && !state.stale && canOperate, busy = busy,
             onAddImage = { focus.clearFocus(); keyboard?.hide(); imagePickerTarget = state.id; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
             onAddFile = { focus.clearFocus(); keyboard?.hide(); filePickerTarget = state.id; filePicker.launch(arrayOf("*/*")) },
@@ -476,12 +515,12 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             onAddWorkspaceFile = { focus.clearFocus(); keyboard?.hide(); workspaceFileDialog = true }, onSettings = ::openSettings,
             discussionMode = (selectedMode ?: snapshot?.settings?.optJSONObject("collaborationMode")?.string("mode")) == "plan",
             onToggleMode = { selectedMode = if ((selectedMode ?: snapshot?.settings?.optJSONObject("collaborationMode")?.string("mode")) == "plan") "default" else "plan" },
-            goalControl = if (snapshot?.goalSupported == true) { {
+            goalControl = if (goalAvailable) { {
                 IconButton(onClick = { goalEditing = true },
-                    enabled = !busy && !blocked && !state.stale && canOperate,
+                    enabled = goalEnabled,
                     modifier = Modifier.size(44.dp).testTag("create_goal")
-                        .semantics { contentDescription = if (snapshot.goal == null) "设置持续目标" else "编辑持续目标" }) {
-                    val color = if (!busy && !blocked && !state.stale && canOperate && snapshot.goal?.string("status") == "active") MaterialTheme.colorScheme.primary else LocalContentColor.current
+                        .semantics { contentDescription = if (displayedGoal == null) "设置持续目标" else "编辑持续目标" }) {
+                    val color = if (goalEnabled && displayedGoal != null && displayedGoal.string("status") in setOf("active", "pending")) MaterialTheme.colorScheme.primary else LocalContentColor.current
                     androidx.compose.foundation.Canvas(Modifier.size(22.dp)) {
                         drawCircle(color, style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()))
                         drawCircle(color, radius = size.minDimension * 0.28f, style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()))
@@ -491,7 +530,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             } } else null,
             focusRequest = inputFocusRequest, onPasteImages = ::addImages,
             settingsExpanded = settingsOpen, onDismissSettings = { settingsOpen = false }, settingsContent = {
-                NativeComposerSettings(snapshot?.settings, models, selectedModel, selectedEffort, selectedMode, !busy && !blocked && !state.stale && (state.canCompose() || pendingTitle != null && pendingReady) && draftLoaded,
+                NativeComposerSettings(snapshot?.settings, models, selectedModel, selectedEffort, selectedMode, !pendingReceiptUnresolved && !pendingFirstTurnSent && !busy && !blocked && !state.stale && (state.canCompose() || pendingTitle != null && pendingReady) && draftLoaded,
                     onModel = { modelId ->
                         selectedModel = modelId
                         val capability = models.firstOrNull { it.string("model").ifBlank { it.string("id") } == modelId }
@@ -517,12 +556,13 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 val sentDraft = currentDraft
                 targetId?.let { onPersistDraft(it, sentDraft) }
                 val accepted = { if (currentSessionId == targetId && latestDraft == sentDraft) {
-                    followLatest = true; draft = ""; images = emptyList<DraftImage>(); files = emptyList<JSONObject>()
+                    followLatest = true; pendingGoal = null; draft = ""; images = emptyList<DraftImage>(); files = emptyList<JSONObject>()
                     targetId?.let { onPersistDraft(it, ConversationDraft(model = sentDraft.model, effort = sentDraft.effort, mode = sentDraft.mode, serviceTier = sentDraft.serviceTier, sandbox = sentDraft.sandbox, approvalPolicy = sentDraft.approvalPolicy)) }
                 }
                     Unit }
-                if (onConfiguredSend != null) onConfiguredSend(nativeInputs(draft, images, files), selectedModel, selectedEffort, selectedMode, selectedServiceTier, JSONObject().apply {
+                if (onConfiguredSend != null) onConfiguredSend(nativeInputs(draft.ifBlank { pendingGoal?.let { JSONObject(it).string("objective") }.orEmpty() }, images, files), selectedModel, selectedEffort, selectedMode, selectedServiceTier, JSONObject().apply {
                     if (pendingTitle != null) {
+                        pendingGoal?.let { put("goal", JSONObject(it)) }
                         selectedSandbox?.takeUnless { it == "inherit" }?.let { put("sandbox", it) }
                         selectedApproval?.takeUnless { it == "inherit" }?.let { put("approvalPolicy", it) }
                     }
@@ -556,9 +596,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             if (files.size < 16 && files.none { it.string("path") == file.string("path") }) files = files + file
             workspaceFileDialog = false
         })
-    if (stopConfirm) AlertDialog(onDismissRequest = { stopConfirm = false }, title = { Text("停止当前任务？") },
-        text = { Text("将中断当前 Codex 执行。已产生的内容和改动会保留。") },
-        confirmButton = { Button(onClick = { stopConfirm = false; onStop() }, enabled = !busy && !blocked && canOperate) { Text("停止任务") } },
+    if (stopConfirm) AlertDialog(onDismissRequest = { stopConfirm = false }, title = { Text("停止当前轮次？") },
+        text = { Text("将中断当前 Codex 轮次。已产生的内容和改动会保留；这不等同于暂停或清除持续目标，队列也会保留。") },
+        confirmButton = { Button(onClick = { stopConfirm = false; onStop() }, enabled = !busy && !blocked && canOperate) { Text("停止当前轮次") } },
         dismissButton = { TextButton(onClick = { stopConfirm = false }) { Text("取消") } })
     forwardingLink?.let { link -> CodexLinkDestinationDialog(link, readTool,
         onConfirm = { projectId, threadId, source, name -> forwardingLink = null; onForwardLink?.invoke(projectId, threadId, source, name) },
