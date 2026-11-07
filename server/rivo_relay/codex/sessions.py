@@ -575,6 +575,15 @@ class CodexService:
             except NativeHistoryProtocolError as error:
                 raise CodexError(str(error), code="native_protocol") from error
             if cursor is None:
+                # A live external writer's persisted projection can mark its
+                # unfinished turn interrupted. Correct only that exact conflict;
+                # merge newer native events afterwards so terminal events win.
+                running_turn = self.native_journal.inspected_running_turn(thread_id)
+                for turn in result['turns']:
+                    if turn['id'] == running_turn and turn.get('status') == 'interrupted':
+                        turn['status'] = 'inProgress'
+                        for field in ('error', 'completedAt', 'durationMs'):
+                            turn.pop(field, None)
                 result["turns"] = self._merge_live(thread_id, result["turns"])
                 converging = not native_state.ready or canonical != result['turns']
                 if converging:

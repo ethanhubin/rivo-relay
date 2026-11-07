@@ -101,6 +101,17 @@ class NativeJournal:
         with self._inspection_lock:
             return (self._inspections.get(key) or {}).get('historyEpoch')
 
+    def inspected_running_turn(self, thread_id):
+        """Return running evidence from this read only, never cached ownership."""
+        if getattr(self._local, 'inspection_key', None) != (str(self.connection.generation), thread_id):
+            return None
+        inspection = getattr(self._local, 'inspection', None) or {}
+        journal = inspection.get('journal') or {}
+        if (inspection.get('available') and inspection.get('writerBusy')
+                and not inspection.get('changing') and journal.get('status') == 'inProgress'):
+            return journal.get('turnId')
+        return None
+
     def _remember(self, key, result):
         with self._inspection_lock:
             if result.get('available') and not result.get('changing'):

@@ -172,6 +172,62 @@ class JournalHostTests(unittest.TestCase):
 
 
 class JournalAdapterTests(unittest.TestCase):
+    def test_running_evidence_requires_same_read_stable_journal_and_writer(self):
+        journal = NativeJournal(FakeNative(), NativeHistoryAdapter())
+        journal._local.inspection_key = (str(journal.connection.generation), THREAD)
+        evidence = {'available': True, 'writerBusy': True,
+                    'journal': {'turnId': TURN, 'status': 'inProgress'}}
+        journal._local.inspection = evidence
+        self.assertEqual(TURN, journal.inspected_running_turn(THREAD))
+        self.assertIsNone(journal.inspected_running_turn('other'))
+        for change in ({'writerBusy': False}, {'changing': True}, {'available': False},
+                       {'journal': {'turnId': TURN, 'status': 'interrupted'}}):
+            journal._local.inspection = {**evidence, **change}
+            self.assertIsNone(journal.inspected_running_turn(THREAD))
+        journal._local.inspection = evidence
+        journal._local.inspection_key = ('previous-runtime', THREAD)
+        self.assertIsNone(journal.inspected_running_turn(THREAD))
+
+    def test_only_false_interruption_is_corrected_and_newer_terminal_event_wins(self):
+        for persisted, running, live_terminal, expected in (
+                ('interrupted', TURN, None, 'inProgress'),
+                ('interrupted', None, None, 'interrupted'),
+                ('interrupted', 'different-turn', None, 'interrupted'),
+                ('completed', TURN, None, 'completed'),
+                ('failed', TURN, None, 'failed'),
+                ('interrupted', TURN, 'interrupted', 'interrupted'),
+                ('interrupted', TURN, 'completed', 'completed')):
+            with self.subTest(persisted=persisted, running=running, live=live_terminal):
+                native = FakeNative()
+                original = native.request
+                def request(method, params, **kwargs):
+                    if method == 'thread/resume':
+                        raise CodexError('already has an active writer', code='native_rejected', http_status=409)
+                    if method == 'thread/turns/list':
+                        return {'data': [{'id': TURN, 'status': persisted,
+                            'error': {'message': 'old interruption'}, 'items': [
+                                {'id': 'body', 'type': 'agentMessage', 'text': 'Original answer'}]}], 'nextCursor': None}
+                    return original(method, params, **kwargs)
+                native.request = request
+                service = CodexService(connection=native)
+                service.native_journal.ensure = Mock(return_value=NativeConvergenceResult('converging', 0, 1))
+                service.native_journal.inspected_running_turn = Mock(return_value=running)
+                service.start()
+                if live_terminal:
+                    service._live[('thread', TURN)] = {'id': TURN, 'status': live_terminal, 'items': []}
+                    service._pending_terminal.add(('thread', TURN))
+                snapshot = service.get_session('thread')
+                turn = snapshot['thread']['turns'][0]
+                self.assertEqual(expected, turn['status'])
+                self.assertEqual('Original answer', turn['items'][0]['text'])
+                if expected == 'inProgress':
+                    self.assertNotIn('error', turn)
+                    self.assertEqual(TURN, snapshot['activeTurnId'])
+                    self.assertEqual('running', snapshot['status'])
+                    self.assertEqual('running', snapshot['nativeExecution'])
+                else:
+                    self.assertIsNone(snapshot['activeTurnId'])
+
     def test_local_history_helper_requires_fresh_socket_attestation(self):
         native = FakeNative()
         descriptor = {'generation': native.generation,
