@@ -242,6 +242,9 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                     // Transport reset cancels a Call, not this session. Only a
                     // canceled session job must terminate the refresh loop.
                     if (e is CancellationException) currentCoroutineContext().ensureActive()
+                    // A mutation deliberately cancels the obsolete read. Its
+                    // failure cannot describe the new permission epoch either.
+                    if (requestControlEpoch != controlEpoch) { signals.trySend(Unit); continue }
                     if (isCurrent(id, targetGeneration)) {
                         if (e is ApiException && e.status == 401) {
                             mutable.update { it.copy(loading = false, stale = true) }

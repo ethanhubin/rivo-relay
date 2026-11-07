@@ -343,6 +343,8 @@ class SessionControllerTest {
             // response is still blocked, rather than waiting for its timeout.
             await(thirdStarted); releaseSecond.countDown()
             assertTrue(controller.state.value.stale)
+            assertNull("Deliberately canceled reads must not flash a sync error", controller.state.value.readError)
+            assertEquals("操作结果已变化，正在重新确认会话权限", controller.state.value.controlNotice)
             assertFalse(controller.state.value.control().canOperate)
             assertEquals("initial", controller.state.value.snapshot?.name)
             releaseThird.countDown()
