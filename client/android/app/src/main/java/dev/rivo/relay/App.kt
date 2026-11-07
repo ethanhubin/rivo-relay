@@ -28,6 +28,7 @@ import dev.rivo.relay.ui.projects.*
 import dev.rivo.relay.ui.sessions.SessionsScreen
 import dev.rivo.relay.ui.chat.ChatScreen
 import dev.rivo.relay.ui.todos.TodosScreen
+import dev.rivo.relay.ui.todos.stageTodoAttachments
 import dev.rivo.relay.ui.settings.SettingsScreen
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
@@ -146,7 +147,11 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     val visiblePending = listedPending.filter { it.projectId == catalog.selectedProject?.id }
     // Use only the pinned IDs as the effect key: periodic timestamp refreshes retain tracker baselines.
     val pinnedThreads = pinnedThreadsToObserve(catalog)
-    LaunchedEffect(pinnedThreads) { pinnedThreads.forEach { node.notifications.watch(it) } }
+    LaunchedEffect(node, catalog.selectedProject?.id, catalog.threadsFresh, catalog.archived, pinnedThreads) {
+        if (catalog.threadsFresh && !catalog.archived) {
+            catalog.selectedProject?.id?.let { node.notifications.updatePinned(it, pinnedThreads) }
+        }
+    }
     val displayError = error ?: if (route == "chat" && session.id == threadId) session.readError ?: session.historyError else null
     LaunchedEffect(route, threadId) { handoffPrompt = null }
     LaunchedEffect(submission.pending?.id, network) {
@@ -272,13 +277,11 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     ::back, { openChat(it.id, "sessions") }, { if (node.catalog.state.value.threadsFresh) catalog.selectedProject?.let { openPending(it) } }, { node.catalog.refreshThreads() },
                     onPin = { thread, pinned ->
                         if (node.catalog.state.value.threadsFresh) node.submissions.submit("/v1/threads/${encoded(thread.id)}/pin", JSONObject().put("pinned", pinned), if (pinned) "置顶会话" else "取消置顶") {
-                            if (pinned) node.notifications.watch(thread.id, requestPermission = true)
                             node.catalog.refreshThreads()
                         }
                     }, archived = catalog.archived, onArchivedChanged = node.catalog::setArchived,
                     onBatchPin = { threads, pinned ->
                         if (node.catalog.state.value.threadsFresh) node.submissions.submitBatch(threads.map { BatchSubmission("/v1/threads/${encoded(it.id)}/pin", JSONObject().put("pinned", pinned), "批量置顶") }) {
-                            if (pinned) threads.forEach { node.notifications.watch(it.id, requestPermission = true) }
                             node.catalog.refreshThreads()
                         }
                     }, onArchive = { threads, archived ->
@@ -461,7 +464,6 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         val id = threadId
                         if (id != null && !current.stale && current.id == id && current.snapshot?.id == id && writable && current.control().canOperate)
                             node.submissions.submit("/v1/threads/${encoded(id)}/pin", JSONObject().put("pinned", pinned), if (pinned) "置顶会话" else "取消置顶") {
-                                if (pinned) node.notifications.watch(id, requestPermission = true)
                                 node.catalog.refreshThreads()
                             }
                     }, onArchive = {
@@ -499,7 +501,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         if (!node.catalog.state.value.projectsFresh) return@dispatch
                         val body = JSONObject().put("projectId", projectId); selectedThread?.let { body.put("threadId", it) }
                         node.todos.prepareDispatch(todo.id) { fresh ->
-                            node.submissions.submit("/v1/todos/${encoded(fresh.id)}/dispatch", body, "交付待办") { receipt ->
+                            node.submissions.submit("/v1/todos/${encoded(fresh.id)}/dispatch", body, "交付待办",
+                                prepareBody = { request -> stageTodoAttachments(context, node.api, fresh, request) }) { receipt ->
                                 accepted(); node.todos.refresh(); val id = receipt.string("threadId")
                                 if (id.isNotBlank()) { node.notifications.watch(id, requestPermission = true, turnId = receipt.string("turnId")); openChat(id, "todos") }
                             }
@@ -507,8 +510,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     }, onOpenThread = { openChat(it.threadId, "todos") }, onRefresh = { node.todos.refresh(); node.catalog.refreshProjects() },
                     onSaveDetails = node.todos::saveDetails, onUpdateDetails = node.todos::updateDetails,
                     onSynchronize = node.todos::synchronizeNow, onDiscardLocal = node.todos::discardLocalChanges,
-                    readDirectory = { path -> node.api.call("/v1/directories?path=" + encoded(path)) }, onOpenAttachment = { todoAttachment = it },
-                    uploadAttachment = if (projectsWritable) node.api::uploadProjectFile else null)
+                    readDirectory = { path -> node.api.call("/v1/directories?path=" + encoded(path)) }, onOpenAttachment = { todoAttachment = it })
             }
         }
         val cached = catalogCacheNoticeVisible(route, catalog, network != null)

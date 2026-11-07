@@ -138,6 +138,16 @@ class NativeParityTests(unittest.TestCase):
         self.assertEqual(result['path'], write['path'])
         self.assertFalse(any(method in ('thread/start', 'thread/resume', 'turn/start') for method, _ in native.calls))
 
+    def test_todo_upload_uses_shared_native_storage_without_project_or_thread(self):
+        native = FakeNative()
+        native.native_host_info = lambda: {'codexHome': '/native/.codex'}
+        service = CodexService(connection=native)
+        result = service.upload_todo_attachment_stream('report.txt', io.BytesIO(b'report'), 6)
+        self.assertTrue(result['path'].startswith('/native/.codex/rivo-relay-todo-media/'))
+        write = next(params for method, params in native.calls if method == 'fs/writeFile')
+        self.assertEqual(result['path'], write['path'])
+        self.assertFalse(any(method.startswith(('project/', 'thread/', 'turn/')) for method, _ in native.calls))
+
     def test_new_active_turn_can_accept_queue_without_dismissing_old_recovery(self):
         native = FakeNative()
         service = CodexService(connection=native)

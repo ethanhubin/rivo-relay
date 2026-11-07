@@ -5,6 +5,8 @@ stored separately; explicit handoff terminates only previewed native lock holder
 """
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import copy
 import hashlib
 import json
@@ -541,7 +543,19 @@ class CodexService:
                             'nativeHeadRevision': self._history_revision(thread_id, [], content=True),
                             'nativeSync': {'state': 'ready'}}
             native_state = self._native_history_state(thread_id)
-            if cursor is not None and (not native_state.ready or native_state.reprojected):
+            # A verified live writer may leave its current persisted turn marked
+            # interrupted. This blocks head convergence, but not older cursors.
+            running_turn = self.native_journal.inspected_running_turn(thread_id)
+            active_head_lag = (native_state.state == 'converging' and running_turn is not None
+                and native_state.journal_turn_id == running_turn
+                and native_state.projection_turn_id == running_turn
+                and not native_state.reprojected)
+            if active_head_lag:
+                persisted_head = self.history_adapter.read_head(self.native_journal.connection, thread_id).turns
+                active_head_lag = bool(persisted_head and persisted_head[-1]['id'] == running_turn
+                    and persisted_head[-1]['status'] == 'interrupted')
+            history_ready = native_state.ready or active_head_lag
+            if cursor is not None and (not history_ready or native_state.reprojected):
                 raise CodexError('原生历史已变化，请重新读取最近消息', code='history_changed', http_status=409)
             try:
                 if cursor is not None:
@@ -549,7 +563,7 @@ class CodexService:
                     revision = self._history_revision(thread_id, list(head.turns))
                     if native_revision is not None and native_revision != revision:
                         raise CodexError('原生历史已变化，请重新读取最近消息', code='history_changed', http_status=409)
-                    if self._merge_live(thread_id, copy.deepcopy(list(head.turns))) != list(head.turns):
+                    if not active_head_lag and self._merge_live(thread_id, copy.deepcopy(list(head.turns))) != list(head.turns):
                         raise CodexError('原生历史正在同步，请稍后读取更早消息', code='history_converging', http_status=409)
                 page = self.history_adapter.read_page(self.native_journal.connection, thread_id,
                         limit=max(1, min(100, int(limit))), cursor=cursor)
@@ -586,12 +600,14 @@ class CodexService:
                             turn.pop(field, None)
                 result["turns"] = self._merge_live(thread_id, result["turns"])
                 converging = not native_state.ready or canonical != result['turns']
-                if converging:
+                history_ready = history_ready and (not converging or active_head_lag)
+                if not history_ready:
                     result['nextCursor'] = None
                     result['backwardsCursor'] = None
                 result['nativeSync'] = {**native_state.public(), 'state': 'converging' if converging else 'ready'}
             else:
                 result['nativeSync'] = native_state.public()
+            result['nativeSync']['historyReady'] = history_ready
             result['nativeHeadRevision'] = self._history_revision(thread_id,
                 result['turns'] if cursor is None else revision_turns, content=True)
             return result
@@ -1074,9 +1090,10 @@ class CodexService:
             # Pause all affected Relay queues/automatic subscriptions before killing
             # the writer. Interrupted instructions are never resumed or replayed.
             for affected_id in affected:
+                ownership = {'released': True, 'releaseState': 'takeover', 'takeoverThreadId': thread_id}
                 if self.observations:
-                    self.observations.put(affected_id, 'ownership', '', {'released': True})
-                self._observe(affected_id, 'ownership', '', {'released': True})
+                    self.observations.put(affected_id, 'ownership', '', ownership)
+                self._observe(affected_id, 'ownership', '', ownership)
             self.writers.terminate(snapshot)
             for affected_id in affected:
                 with self._lock:
@@ -1226,6 +1243,16 @@ class CodexService:
     def upload_attachment_stream(self, thread_id, name, stream, size):
         self.start()
         return upload_attachment_stream(self.connection, self._attachment_cwd(thread_id), name, stream, size)
+
+    def upload_todo_attachment_stream(self, name, stream, size):
+        self.start()
+        # This directory belongs to Relay on the native host, including when
+        # the app-server socket points at a different machine.
+        lease = getattr(self.connection, 'auxiliary_connection', None)
+        with lease() if lease else nullcontext(self.connection) as connection:
+            home = connection.native_host_info()['codexHome']
+            return upload_attachment_stream(connection, home, name, stream, size,
+                                            directory_name='rivo-relay-todo-media')
 
     def _project_attachment_cwd(self, project_id):
         self.start()

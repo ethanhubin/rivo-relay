@@ -8,6 +8,38 @@
 
 普通“发布新版”只发布节点，不推送 Git、创建 tag 或 GitHub Release。用户明确要求提交/推送时单独执行；仅明确要求发布 Release 时同步 GitHub。
 
+## 统一 CLI
+
+常规发布使用 `python3 scripts/release.py`。底层仍调用 `publish-update.py` 和 `restart-service.py --submit`；不推送远端、不建 tag/GitHub Release，也不运行 lint。
+
+```sh
+# 默认递增 patch/versionCode；按实际改动指定相关测试，不自动跑全量。
+python3 scripts/release.py prepare \
+  --android-test dev.rivo.relay.SessionControllerTest \
+  --server-test test_api
+
+# prepare 输出新版本，并生成 docs/releases/<版本>.md。
+# 编辑说明，移除 TODO，明确真机/模拟器验证范围。
+# 暂存本次功能修改和新增源码；CLI 只自动暂存版本文件与发布说明。
+git add <本次改动的文件>
+python3 scripts/release.py run 0.2.28 --commit
+
+python3 scripts/release.py status 0.2.28
+python3 scripts/release.py resume 0.2.28
+```
+
+示例版本号须替换为 `prepare` 实际输出。`--version` 可指定更高版本，`--notes` 可使用仓库内已有说明，`--device-scope` 记录实际设备验证范围。已有明确的验证依据时，可通过 `--checks-note '检查记录及复用依据'` 留存说明；人工说明不会被 CLI 标记成自动执行通过。Android/服务端测试选项都可重复指定。源码已提交时省略 `--commit`；否则必须显式指定，且其他功能修改应已暂存。CLI 不会擅自提交未暂存或未跟踪的源码。
+
+`run` 和 `resume` 将整个流程交给独立后台进程，终端断开或聊天中断后继续运行。提交后台任务不代表发布成功；查看 `status` 的 `phase`、`running`、错误及日志位置，只有 `complete` 代表 HTTP 验收通过。日志和状态位于 `workspace/artifacts/release-<版本>/`，不提交 Git。
+
+流程依次执行：锁定源码 → 相关测试 → 最终 Debug APK → 包名/版本/与上版签名校验 → 按授权提交 → 从提交导出服务端快照 → 必要时备份数据库并切换 Relay → 原子发布 → 经主节点 HTTP 下载 APK 校验长度和 SHA-256。服务端内容没变时跳过重启；服务切换只针对 Relay，并核对原生 daemon 的 PID/启动时间和已有授权。
+
+同一源码、测试选择和工具链对应的成功检查可跨版本复用；版本号和文档变化不使检查失效，日志被修改或其他源码变化则不复用。保存过的 APK 会重新验签及校验哈希，恢复时不会重建已确认的安装包。构建前检查是否已有 Gradle wrapper 在运行，CLI 发布之间另有排他锁。
+
+恢复会重新确认源码、清单和产物，不能拿修改过的源码继续旧计划；需要新建版本计划。服务切换已完成时直接继续验收，不重复重启。若日志确认回滚完成，排查原因后可显式运行 `resume <版本> --retry-deploy`；若切换结果未知，CLI 继续等待并报出状态，不盲目卸载服务。`prepare` 只改版本/说明和计划，不会构建、提交或上线。
+
+当前 CLI 面向本机主节点 `workspace/local-node` 和 macOS LaunchAgent，需要已有上一版清单/APK、仓库 `.venv` 和 Android SDK/JDK；不负责首次部署、其他节点同步或 GitHub 发布。旧版本若由手工流程发布，没有 `release-state.json`，继续查看其原有发布验收文件，不使用 `resume` 接管。
+
 ## 发布
 
 递增 versionName/versionCode，构建并验证签名，运行相关测试。默认不运行 lint，版本号递增不触发 lint；仅在明确要求或排查具体静态检查/兼容性问题时按需执行。把 APK 复制到 `workspace/artifacts/release-<version>/rivo-relay-<version>-debug.apk`，准备说明后运行：

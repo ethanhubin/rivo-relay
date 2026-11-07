@@ -214,14 +214,14 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                     if (requestControlEpoch != controlEpoch) { signals.trySend(Unit); continue }
                     if (isCurrent(id, targetGeneration) && requestHistoryEpoch == historyEpoch) {
                         val previous = mutable.value
-                        val revisionChanged = head.nativeReady && head.nativeRevision != null &&
+                        val revisionChanged = head.historyReady && head.nativeRevision != null &&
                             previous.snapshot?.nativeRevision != head.nativeRevision
                         val restoreTarget = if (revisionChanged) historyDepthTarget ?: previous.snapshot?.takeIf { previous.earlierLoaded } else null
                         val snapshot = head
                         val keepEarlier = previous.earlierLoaded && (snapshot.nativeRevision == null || snapshot.nativeRevision == previous.snapshot?.nativeRevision)
                         val projected = withContext(Dispatchers.Default) {
                             when {
-                                !snapshot.nativeReady && previous.snapshot != null -> snapshot.copy(
+                                !snapshot.historyReady && previous.snapshot != null -> snapshot.copy(
                                     messages = mergeConvergingMessages(previous.snapshot.messages, snapshot.messages),
                                     turnSettings = mergeConvergingTurnSettings(previous.snapshot.turnSettings, snapshot.turnSettings),
                                     reviewDiagnostics = mergeTurnDiagnostics(previous.snapshot.reviewDiagnostics, snapshot.reviewDiagnostics),
@@ -246,7 +246,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                                 loadingEarlier = if (revisionChanged) false else current.loadingEarlier,
                                 historyError = if (revisionChanged) null else current.historyError,
                                 lastConfirmedControl = SessionState(snapshot = snapshot).control().takeUnless { it.state == ControlState.UNKNOWN } ?: current.lastConfirmedControl,
-                                historyCursor = if (!snapshot.nativeReady || keepEarlier) current.historyCursor else snapshot.historyCursor)
+                                historyCursor = if (!snapshot.historyReady || keepEarlier) current.historyCursor else snapshot.historyCursor)
                         }
                         // Publish current permissions before restoring old visible depth.
                         // Slow pagination must never consume the control-read timeout.
@@ -356,7 +356,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
     /** UI calls this only when the laid-out timeline still does not fill its viewport. */
     fun ensureVisibleHistory() {
         val current = mutable.value
-        if (current.loading || current.loadingEarlier || current.stale || current.snapshot?.nativeReady != true || current.historyError != null || current.historyCursor == null) return
+        if (current.loading || current.loadingEarlier || current.stale || current.snapshot?.historyReady != true || current.historyError != null || current.historyCursor == null) return
         loadEarlier()
     }
     fun loadEarlier() {
@@ -365,14 +365,14 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         val cursor = current.historyCursor ?: return
         val requestGeneration = generation
         val requestHistoryEpoch = historyEpoch
-        if (current.loadingEarlier || current.stale || current.snapshot?.nativeReady != true || !requestedHistoryCursors.add(cursor)) return
+        if (current.loadingEarlier || current.stale || current.snapshot?.historyReady != true || !requestedHistoryCursors.add(cursor)) return
         mutable.update { it.copy(loadingEarlier = true, historyError = null) }
         historyJob = scope.launch {
             try {
                 val json = withTimeout(readTimeoutMillis) { api.call(historyPagePath(id, cursor, current.snapshot?.nativeRevision)) }
                 val page = withContext(Dispatchers.Default) { sessionSnapshot(json) }
                 require(page.id == id) { "节点返回了其他会话，请重新同步" }
-                if (!page.nativeReady || current.snapshot?.nativeRevision != null && page.nativeRevision != current.snapshot.nativeRevision)
+                if (!page.historyReady || current.snapshot?.nativeRevision != null && page.nativeRevision != current.snapshot.nativeRevision)
                     throw ApiException(409, "history_changed", "会话历史已更新")
                 if (isCurrent(id, requestGeneration) && historyEpoch == requestHistoryEpoch) {
                     val latest = mutable.value
@@ -450,7 +450,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                     val json = withTimeout(readTimeoutMillis) { api.call(historyPagePath(id, cursor, head.nativeRevision)) }
                     val page = withContext(Dispatchers.Default) { sessionSnapshot(json) }
                     require(page.id == id) { "节点返回了其他会话，请重新同步" }
-                    if (!page.nativeReady || page.nativeRevision != head.nativeRevision)
+                    if (!page.historyReady || page.nativeRevision != head.nativeRevision)
                         throw ApiException(409, "history_changed", "会话历史正在更新，稍后自动同步")
                     if (!isCurrent(id, targetGeneration) || historyEpoch != targetEpoch) return@launch
                     if (mutable.value.snapshot?.nativeRevision != head.nativeRevision) return@launch

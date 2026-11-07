@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.media.RingtoneManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -19,6 +20,11 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collect
 import org.json.JSONObject
+
+internal const val PINNED_COMPLETION = "pinnedCompletion"
+internal const val PINNED_SOUND = "pinnedCompletionSound"
+internal const val PINNED_VIBRATION = "pinnedCompletionVibration"
+internal fun notificationPreferences(context: Context) = context.getSharedPreferences("notifications", Context.MODE_PRIVATE)
 
 internal data class TaskNotice(val key: String, val kind: String)
 
@@ -93,8 +99,26 @@ data class TaskNotificationTarget(val base: String, val threadId: String) {
 class TaskNotifications(private val context: Context, private val api: RelayApi, private val scope: CoroutineScope,
     private val nodeBase: String, var nodeName: String, private val requestPermission: () -> Unit,
     private val failure: (Throwable) -> Unit, private val sync: NodeSessionSync? = null) {
-    private data class Watch(val tracker: TaskChangeTracker, val job: Job, val signal: Channel<Unit>, var busy: Boolean = false, var lastReadNanos: Long = 0)
+    private data class Watch(val tracker: TaskChangeTracker, val job: Job, val signal: Channel<Unit>, var busy: Boolean = false, var lastReadNanos: Long = 0, var regular: Boolean = true)
     private val watches = linkedMapOf<String, Watch>()
+    private val pinnedByProject = mutableMapOf<String, Set<String>>()
+    private val preferences = notificationPreferences(context)
+
+    fun updatePinned(projectId: String, ids: Set<String>) {
+        val removed = pinnedByProject.put(projectId, ids).orEmpty() - ids
+        removed.forEach { id ->
+            val watch = watches[id] ?: return@forEach
+            if (!watch.regular && !isPinned(id)) {
+                watches.remove(id)
+                watch.job.cancel()
+                watch.signal.close()
+            }
+        }
+        ids.forEach { watch(it, pinnedOnly = true) }
+    }
+
+    private fun isPinned(id: String) = pinnedByProject.values.any { id in it }
+
     private var visibleThread: String? = null
     private var streamJob: Job? = null
     private val manager = NotificationManagerCompat.from(context)
@@ -113,12 +137,13 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
             watch(id)
         }
     }
-    fun watch(id: String, requestPermission: Boolean = false, turnId: String? = null) {
+    fun watch(id: String, requestPermission: Boolean = false, turnId: String? = null, pinnedOnly: Boolean = false) {
         if (id.isBlank()) return
         if (requestPermission) this.requestPermission()
         val existing = watches[id]
         if (existing != null) {
             watches.remove(id); watches[id] = existing
+            existing.regular = existing.regular || !pinnedOnly
             turnId?.let { existing.tracker.expectTurn(it); existing.busy = true }
             if (requestPermission) existing.busy = true
             existing.signal.trySend(Unit)
@@ -148,10 +173,11 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
                 delay(350)
             }
         }
-        watches[id] = Watch(tracker, job, signals, busy = !turnId.isNullOrBlank())
+        watches[id] = Watch(tracker, job, signals, busy = !turnId.isNullOrBlank(), regular = !pinnedOnly)
         // Bound read/cache state. All watched conversations share one node-level event stream.
         while (watches.size > 12) {
-            val oldest = watches.keys.firstOrNull { it != visibleThread && it != id } ?: break
+            val candidates = watches.keys.filter { it != visibleThread && it != id }
+            val oldest = candidates.firstOrNull { !isPinned(it) } ?: candidates.firstOrNull() ?: break
             watches.remove(oldest)?.let { it.job.cancel(); it.signal.close() }
         }
         job.start()
@@ -192,15 +218,34 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
         watch.lastReadNanos = System.nanoTime()
         watch.busy = json.optJSONObject("goal")?.string("status") == "active" || json.string("activeTurnId").isNotBlank() || json.string("status") in setOf("running", "waiting") ||
             json.objects("requests").isNotEmpty() || json.objects("queue").any { it.string("status") in setOf("queued", "pending", "waiting", "running") }
-        val title = visibleSessionText(json.getJSONObject("thread").string("name")).ifBlank { "Codex 会话" }
-        watch.tracker.observe(json).forEach { notice -> if (visibleThread != id) notify(id, title, notice) }
+        val title = sessionTitle(json.getJSONObject("thread"))
+        watch.tracker.observe(json).forEach { notice ->
+            if (notice.kind == "completed" && isPinned(id)) {
+                if (preferences.getBoolean(PINNED_COMPLETION, false)) notify(id, title, notice, pinned = true)
+            } else if (watch.regular && visibleThread != id) {
+                notify(id, title, notice)
+            }
+        }
     }
     private fun tag(id: String) = "relay:$nodeBase:$id"
-    private fun notify(id: String, title: String, notice: TaskNotice) {
+    private fun pinnedChannel(): String {
+        val sound = preferences.getBoolean(PINNED_SOUND, true)
+        val vibration = preferences.getBoolean(PINNED_VIBRATION, true)
+        val channelId = "pinned_completion_${sound}_${vibration}"
+        context.getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(channelId, "置顶任务完成", NotificationManager.IMPORTANCE_HIGH).apply {
+                setSound(if (sound) RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION) else null,
+                    android.app.Notification.AUDIO_ATTRIBUTES_DEFAULT)
+                enableVibration(vibration)
+            })
+        return channelId
+    }
+
+    private fun notify(id: String, title: String, notice: TaskNotice, pinned: Boolean = false) {
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
-        val text = when (notice.kind) { "waiting" -> "Codex 需要你的回应"; "failed" -> "Codex 任务失败，请打开会话查看"; "goalStopped" -> "Codex 目标受阻或达到限制，请打开会话查看"; else -> "Codex 任务已完成" }
+        val text = if (pinned) "置顶任务已完成" else when (notice.kind) { "waiting" -> "Codex 需要你的回应"; "failed" -> "Codex 任务失败，请打开会话查看"; "goalStopped" -> "Codex 目标受阻或达到限制，请打开会话查看"; else -> "Codex 任务已完成" }
         val pending = PendingIntent.getActivity(context, 0, TaskNotificationTarget(nodeBase, id).intent(context), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val notification = NotificationCompat.Builder(context, "codex_tasks").setSmallIcon(R.drawable.ic_launcher)
+        val notification = NotificationCompat.Builder(context, if (pinned) pinnedChannel() else "codex_tasks").setSmallIcon(R.drawable.ic_launcher)
             .setContentTitle(title.take(120)).setContentText(text).setSubText(nodeName).setContentIntent(pending)
             .setAutoCancel(true).setOnlyAlertOnce(false).setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setCategory(NotificationCompat.CATEGORY_STATUS).build()

@@ -688,6 +688,39 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(self.app.todos.get("details-todo")["details"], details)
 
+    def test_uploaded_todo_attachment_is_delivered_without_mutating_todo(self):
+        name = 'photo.jpg'
+        path = '/native/.codex/rivo-relay-todo-media/id/photo.jpg'
+        uploads = []
+
+        def upload(filename, stream, size):
+            uploads.append((filename, stream.read(size)))
+            return {'type': 'mention', 'name': filename, 'path': path}
+
+        self.native.upload_todo_attachment_stream = upload
+        url = '/v1/todos/attachments?name=photo.jpg'
+        headers = {'Content-Type': 'application/octet-stream'}
+        self.assertEqual(401, self.request('POST', url, raw=b'photo', extra_headers=headers)[0])
+        status, result, _ = self.request('POST', url, token=self.token, raw=b'photo', extra_headers=headers)
+        self.assertEqual(200, status)
+        self.assertEqual([(name, b'photo')], uploads)
+        self.assertEqual(path, result['path'])
+        self.assertFalse(self.native.created)
+
+        self.app.todos.create('Review photo', todo_id='photo-todo')
+        url = '/v1/todos/photo-todo/dispatch'
+        payload = {'projectId': 'project-1', 'submissionId': 'dispatch-photo',
+                   'uploadedAttachments': [{'name': name, 'path': path}]}
+        invalid = {**payload, 'uploadedAttachments': [{'name': name, 'path': 'content://phone/photo'}]}
+        self.assertEqual(400, self.request('POST', url, invalid, token=self.token)[0])
+        for _ in range(2):
+            status, receipt, _ = self.request('POST', url, payload, token=self.token)
+            self.assertEqual(200, status)
+            self.assertEqual('accepted', receipt['status'])
+        self.assertEqual(1, len(self.native.sent))
+        self.assertEqual({'type': 'mention', 'name': name, 'path': path}, self.native.sent[0][2]['input_items'][1])
+        self.assertFalse(self.app.todos.get('photo-todo')['details'].get('attachments'))
+
     def test_completed_todo_cannot_start_a_new_dispatch_but_existing_receipt_can_be_read(self):
         self.create_todo()
         self.request("PATCH", "/v1/todos/todo-1", {"completed": True}, token=self.token)

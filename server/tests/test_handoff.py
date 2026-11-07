@@ -161,6 +161,8 @@ class HandoffTests(unittest.TestCase):
         self.assertLess(steps.index('kill'), steps.index('thread/resume'))
         self.assertNotIn(('ownership', ''), service.observations_for(TID))
         self.assertTrue(service.observations_for(OTHER)[('ownership', '')]['released'])
+        self.assertEqual('takeover', service.observations_for(OTHER)[('ownership', '')]['releaseState'])
+        self.assertEqual(TID, service.observations_for(OTHER)[('ownership', '')]['takeoverThreadId'])
         self.assertNotIn('turn/start', steps)
 
     def test_release_does_not_resume(self):

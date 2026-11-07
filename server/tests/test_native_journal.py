@@ -385,6 +385,35 @@ class JournalAdapterTests(unittest.TestCase):
                 service.history('thread', cursor='previous-projection')
             self.assertEqual('history_changed', raised.exception.code)
 
+    def test_verified_running_head_lag_allows_older_history_only(self):
+        native = FakeNative()
+        original = native.request
+        def request(method, params, **kwargs):
+            if method == 'thread/turns/list':
+                older = params.get('cursor') is not None
+                return {'data': [{'id': 'old' if older else TURN,
+                    'status': 'completed' if older else 'interrupted', 'items': []}],
+                    'nextCursor': None if older else 'older'}
+            return original(method, params, **kwargs)
+        native.request = request
+        service = CodexService(connection=native)
+        service.native_journal.ensure = Mock(return_value=NativeConvergenceResult(
+            'converging', 0, 1, journal_turn_id=TURN, projection_turn_id=TURN))
+        service.native_journal.inspected_running_turn = Mock(return_value=TURN)
+        head = service.history('thread', limit=2)
+        self.assertEqual('converging', head['nativeSync']['state'])
+        self.assertTrue(head['nativeSync']['historyReady'])
+        self.assertEqual('older', head['nextCursor'])
+        page = service.history('thread', cursor='older', native_revision=head['nativeRevision'])
+        self.assertEqual('old', page['turns'][0]['id'])
+        self.assertTrue(page['nativeSync']['historyReady'])
+        with self.assertRaises(CodexError):
+            service.history('thread', cursor='older', native_revision='obsolete')
+        service.native_journal.inspected_running_turn.return_value = None
+        self.assertIsNone(service.history('thread')['nextCursor'])
+        with self.assertRaises(CodexError):
+            service.history('thread', cursor='older')
+
     def test_external_writer_projection_lag_preserves_canonical_message(self):
         native = FakeNative()
         original = native.request

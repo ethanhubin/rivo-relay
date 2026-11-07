@@ -30,7 +30,8 @@ fun todo(json: JSONObject) = Todo(json.string("id"), json.string("title"), json.
 data class NativeMessage(val id: String, val turnId: String, val type: String, val text: String, val raw: JSONObject,
     val content: List<JSONObject> = emptyList(), val activity: NativeActivity? = null, val turnStatus: String = "")
 data class NativeTurnSettings(val turnId: String, val model: String? = null, val effort: String? = null,
-    val status: String = "", val error: JSONObject? = null)
+    val status: String = "", val error: JSONObject? = null,
+    val startedAt: Long? = null, val completedAt: Long? = null, val durationMs: Long? = null)
 data class NativeRequest(val key: String, val method: String, val params: JSONObject)
 data class QueueTask(val id: String, val text: String, val status: String, val revision: Int, val error: String, val raw: JSONObject, val recoveryRequired: Boolean = false)
 fun queueTask(j: JSONObject) = QueueTask(j.string("id"), j.string("text"), j.string("status"), j.optInt("revision"), j.string("error"), j, j.optBoolean("recoveryRequired"))
@@ -38,9 +39,10 @@ data class SessionSnapshot(val id: String, val name: String, val status: String,
     val messages: List<NativeMessage>, val requests: List<NativeRequest>, val settings: JSONObject, val historyCursor: String? = null, val readOnly: Boolean = false, val queue: List<QueueTask> = emptyList(), val plan: JSONObject? = null, val tokenUsage: JSONObject? = null, val changes: List<JSONObject> = emptyList(), val updatedAt: Long = 0, val turnSettings: List<NativeTurnSettings> = emptyList(),
     val nativeRevision: String? = null, val nativeSyncState: String = "ready", val recoveryTask: QueueTask? = null,
     val recoveryRequired: Boolean = false, val nativeExecution: String = "", val deliveryState: String = "",
-    val displayState: String = "", val writerOwner: String = "", val queueDepth: Int = 0, val reviewDiagnostics: List<JSONObject> = emptyList(), val nativeRuntime: JSONObject? = null, val goal: JSONObject? = null, val goalSupported: Boolean = false, val control: JSONObject? = null, val workspaceUnavailable: Boolean = false) {
+    val displayState: String = "", val writerOwner: String = "", val queueDepth: Int = 0, val reviewDiagnostics: List<JSONObject> = emptyList(), val nativeRuntime: JSONObject? = null, val goal: JSONObject? = null, val goalSupported: Boolean = false, val control: JSONObject? = null, val workspaceUnavailable: Boolean = false, val persistedHistoryReady: Boolean = false) {
     val isOngoing: Boolean get() = activeTurnId.isNotBlank() || status == "running" || goal?.string("status") == "active"
     val nativeReady: Boolean get() = nativeSyncState == "ready"
+    val historyReady: Boolean get() = nativeReady || persistedHistoryReady
 }
 
 /** Project native items by IDs, never by text matching or by duplicating a local history. */
@@ -51,7 +53,9 @@ fun sessionSnapshot(json: JSONObject): SessionSnapshot {
         val id = turn.string("id")
         val observed = observedSettings[id]
         NativeTurnSettings(id, (observed?.opt("model") as? String)?.takeIf(String::isNotBlank),
-            (observed?.opt("effort") as? String)?.takeIf(String::isNotBlank), turn.string("status"), turn.optJSONObject("error"))
+            (observed?.opt("effort") as? String)?.takeIf(String::isNotBlank), turn.string("status"), turn.optJSONObject("error"),
+            nativeTimestamp(turn.opt("startedAt")), nativeTimestamp(turn.opt("completedAt")),
+            (turn.opt("durationMs") as? Number)?.toLong()?.takeIf { it >= 0 })
     }
     val messages = thread.objects("turns").flatMap { turn ->
         turn.objects("items").filterNot { it.string("type").replace("_", "").lowercase() == "hookprompt" }.map { item ->
@@ -81,7 +85,7 @@ fun sessionSnapshot(json: JSONObject): SessionSnapshot {
         json.string("nativeRevision").takeIf(String::isNotBlank), json.optJSONObject("nativeSync")?.string("state")?.ifBlank { "ready" } ?: "ready",
         json.optJSONObject("recoveryTask")?.let(::queueTask), json.optBoolean("recoveryRequired"), json.string("nativeExecution"),
         json.string("deliveryState"), json.string("displayState"), json.string("writerOwner"), json.optInt("queueDepth").coerceAtLeast(0),
-        mergeTurnDiagnostics(emptyList(), json.objects("reviewDiagnostics")), json.optJSONObject("nativeRuntime"), json.optJSONObject("goal"), json.optBoolean("goalSupported"), json.optJSONObject("control"), json.optBoolean("workspaceUnavailable"))
+        mergeTurnDiagnostics(emptyList(), json.objects("reviewDiagnostics")), json.optJSONObject("nativeRuntime"), json.optJSONObject("goal"), json.optBoolean("goalSupported"), json.optJSONObject("control"), json.optBoolean("workspaceUnavailable"), json.optJSONObject("nativeSync")?.optBoolean("historyReady") == true)
 }
 
 fun mergeTurnDiagnostics(previous: List<JSONObject>, latest: List<JSONObject>): List<JSONObject> =

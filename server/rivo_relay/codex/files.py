@@ -147,14 +147,14 @@ def upload_attachment(connection, cwd, name, encoded):
     return upload_attachment_stream(connection, cwd, name, io.BytesIO(data), len(data))
 
 
-def upload_attachment_stream(connection, cwd, name, stream, size):
+def upload_attachment_stream(connection, cwd, name, stream, size, *, directory_name='.rivo-attachments'):
     from contextlib import nullcontext
     lease = getattr(connection, 'auxiliary_connection', None)
     with lease() if lease else nullcontext(connection) as helper:
-        return _upload_attachment_stream(helper, cwd, name, stream, size)
+        return _upload_attachment_stream(helper, cwd, name, stream, size, directory_name=directory_name)
 
 
-def _upload_attachment_stream(connection, cwd, name, stream, size):
+def _upload_attachment_stream(connection, cwd, name, stream, size, *, directory_name='.rivo-attachments'):
     import uuid
     cwd = native_path(cwd)
     if (not isinstance(name, str) or not name.strip() or len(name) > 200
@@ -169,7 +169,7 @@ def _upload_attachment_stream(connection, cwd, name, stream, size):
             raise CodexError('文件上传不完整', code='incomplete_upload', http_status=400)
         return data
     paths = ntpath if ntpath.splitdrive(cwd)[0] or cwd.startswith('\\\\') else posixpath
-    directory = paths.join(cwd, '.rivo-attachments', str(uuid.uuid4()))
+    directory = paths.join(cwd, directory_name, str(uuid.uuid4()))
     target = paths.join(directory, name)
     fs_request(connection, 'fs/createDirectory', {'path': directory, 'recursive': True})
     if size <= 8 * 1024 * 1024:

@@ -65,7 +65,8 @@ class RelayApp:
         native = self.codex.status()
         return {"id": self.config.node_id, "name": self.node_name.get(),
                 "connected": bool(native.get("connected")),
-                "capabilities": {**native.get("capabilities", {}), **self.media_capabilities()}, "runtime": native}
+                "capabilities": {**native.get("capabilities", {}), **self.media_capabilities(),
+                             "todoAttachmentUpload": True}, "runtime": native}
 
     def media_capabilities(self):
         return {'media': {'proxy': True, 'thumbnails': True, 'thumbnailProfile': 'max-1536-webp-q82-v2',
@@ -138,7 +139,7 @@ class RelayApp:
             subtasks = details.get('subtasks', [])
             if subtasks:
                 text += '\n\n事项：\n' + '\n'.join(('[x] ' if item['completed'] else '[ ] ') + item['title'] for item in subtasks)
-            attachments = details.get('attachments', [])
+            attachments = details.get('attachments', []) + payload.get('uploadedAttachments', [])
             if attachments:
                 inputs = [{'type': 'text', 'text': text, 'text_elements': []}] + [{'type': 'mention', 'name': item['name'], 'path': item['path']} for item in attachments]
                 receipt = self.codex.send(thread_id, text, client_message_id=submission_id, input_items=inputs)

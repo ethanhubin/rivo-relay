@@ -278,9 +278,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 list.requestScrollToItem(list.layoutInfo.totalItemsCount - 1)
         }
     }
-    LaunchedEffect(list, state.id, state.historyCursor, state.loading, state.loadingEarlier, state.stale, snapshot?.nativeReady) {
+    LaunchedEffect(list, state.id, state.historyCursor, state.loading, state.loadingEarlier, state.stale, snapshot?.historyReady) {
         snapshotFlow { list.layoutInfo.visibleItemsInfo.size > 0 && !list.canScrollForward && !list.canScrollBackward }
-            .collect { unfilled -> if (unfilled && !state.loading && !state.loadingEarlier && !state.stale && snapshot?.nativeReady == true && state.historyCursor != null) onFillHistory() }
+            .collect { unfilled -> if (unfilled && !state.loading && !state.loadingEarlier && !state.stale && snapshot?.historyReady == true && state.historyCursor != null) onFillHistory() }
     }
     val showLatest by remember(list) { derivedStateOf { list.canScrollForward } }
     val quoteText: ((String) -> Unit)? = if (!busy && !inputLocked && draftLoaded) ({ text ->
@@ -330,7 +330,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             if (pendingTitle != null && timeline.isEmpty()) item {
                 Text("今天想从哪里开始？", Modifier.padding(vertical = 24.dp), style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (state.historyCursor != null) item { TextButton(onClick = { followLatest = false; onEarlier() }, enabled = !state.loadingEarlier && snapshot?.nativeReady == true, modifier = Modifier.fillMaxWidth().testTag("load_earlier")) { Text(if (snapshot?.nativeReady != true) "历史同步中…" else if (state.loadingEarlier) "正在加载…" else "加载更早的消息") } }
+            if (state.historyCursor != null) item { TextButton(onClick = { followLatest = false; onEarlier() }, enabled = !state.loadingEarlier && snapshot?.historyReady == true, modifier = Modifier.fillMaxWidth().testTag("load_earlier")) { Text(if (snapshot?.historyReady != true) "历史同步中…" else if (state.loadingEarlier) "正在加载…" else "加载更早的消息") } }
             if (!state.loading && snapshot != null && timeline.isEmpty()) item {
                 Text("继续这个项目中的工作", Modifier.padding(vertical = 24.dp), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -377,6 +377,14 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                             }
                         }
                     } else if (assistant) {
+                        val isLastReply = snapshot?.messages?.lastOrNull {
+                            it.turnId == message.turnId && it.type in setOf("agentMessage", "agent_message", "exitedReviewMode")
+                        }?.id == message.id
+                        val timing = nativeMessageTiming(message, snapshot?.turnSettings?.firstOrNull { it.turnId == message.turnId }, isLastReply)
+                        timing.elapsedSeconds?.let { seconds ->
+                            Text("已思考 ${formatNativeThinkingDuration(seconds)}", style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("message_thinking_time"))
+                        }
                         MessageContent(message.text, cwd, onQuoteText = quoteText, onSaveFile = saveFile, inlineImage = { source ->
                                 val target = if (isHttpWebLink(source)) source else nativeFilePath(source, cwd)
                                 target?.let { NativeImage(it, readFile, downloadFile = downloadFile) }
@@ -385,6 +393,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                             ChangeSummary(snapshot.changes.firstOrNull { it.string("turnId") == message.turnId }) { developerOpen = true }
                             ReviewDiagnostic(snapshot.reviewDiagnostics.lastOrNull { it.string("turnId") == message.turnId })
                         }
+                        AssistantMessageFooter(message.text, "${message.turnId}:${message.id}", timing.outputAt)
                     }
                     else if (message.type == "imageGeneration" && (message.raw.string("savedPath").isNotBlank() || message.raw.string("result").isNotBlank())) {
                         generatedImageSource(message, mediaIndex)?.let { NativeImage(it, readFile, downloadFile = downloadFile, identity = "${message.turnId}:${message.id}") }

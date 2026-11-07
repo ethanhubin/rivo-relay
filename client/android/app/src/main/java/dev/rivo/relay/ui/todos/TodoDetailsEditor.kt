@@ -1,6 +1,8 @@
 package dev.rivo.relay.ui.todos
 
 import android.Manifest
+import android.content.Intent
+import android.provider.OpenableColumns
 import android.app.TimePickerDialog
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -50,7 +52,8 @@ import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.content.ContextCompat
 import dev.rivo.relay.data.*
 import dev.rivo.relay.ui.chat.WorkspaceFilePicker
-import dev.rivo.relay.ui.chat.prepareFile
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import dev.rivo.relay.ui.projects.ProjectSummary
 import dev.rivo.relay.ui.theme.*
 import kotlinx.coroutines.CancellationException
@@ -84,8 +87,7 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
     readDirectory: (suspend (String) -> JSONObject)?, onDismiss: () -> Unit,
     onSave: (String, String, JSONObject) -> Unit, onDelete: () -> Unit,
     onStartCodex: ((String, String, JSONObject) -> Unit)? = null,
-    onOpenAttachment: ((String) -> Unit)? = null, onOpenThread: (() -> Unit)? = null,
-    uploadAttachment: (suspend (String, String, java.io.File) -> JSONObject)? = null) {
+    onOpenAttachment: ((String) -> Unit)? = null, onOpenThread: (() -> Unit)? = null) {
     val context = LocalContext.current
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -103,11 +105,10 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
     var deleteConfirm by remember { mutableStateOf(false) }
     var reminderOpen by remember { mutableStateOf(false) }
     var chooseAttachmentSource by remember { mutableStateOf(false) }
-    var projectPickerSource by remember { mutableStateOf<TodoAttachmentSource?>(null) }
-    var uploadProjectId by rememberSaveable(item?.id) { mutableStateOf<String?>(null) }
-    var uploading by remember { mutableStateOf(false) }
+    var chooseAttachmentProject by remember { mutableStateOf(false) }
+    var readingAttachments by remember { mutableStateOf(false) }
     var attachmentError by remember { mutableStateOf<String?>(null) }
-    val busy = saving || uploading
+    val busy = saving || readingAttachments
     val scope = rememberCoroutineScope()
     var attachmentRoot by remember { mutableStateOf<String?>(null) }
     var permissionError by remember { mutableStateOf(false) }
@@ -117,67 +118,74 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
     }
     val subtasks = JSONObject().put("items", JSONArray(subtasksJson)).objects("items")
     val attachments = JSONObject().put("items", JSONArray(attachmentsJson)).objects("items")
-    fun addAttachment(name: String, path: String) {
+    fun addAttachment(name: String, path: String, type: String = "file") {
         val current = JSONArray(attachmentsJson)
         if (current.length() < MAX_TODO_ATTACHMENTS &&
             (0 until current.length()).none { current.getJSONObject(it).string("path") == path }) {
-            attachmentsJson = current.put(JSONObject().put("name", name).put("path", path).put("type", "file")).toString()
+            attachmentsJson = current.put(JSONObject().put("name", name).put("path", path).put("type", type)).toString()
         }
     }
-    fun uploadSelected(uris: List<Uri>) {
-        val projectId = uploadProjectId ?: return
-        uploadProjectId = null
+    fun addLocalAttachments(uris: List<Uri>) {
         if (uris.isEmpty() || busy) return
-        val upload = uploadAttachment
-        if (upload == null) {
-            attachmentError = "节点当前不可用，请连接后重新选择附件"
-            return
-        }
-        val available = MAX_TODO_ATTACHMENTS - JSONArray(attachmentsJson).length()
-        uploading = true
+        val existingPaths = attachments.mapTo(mutableSetOf()) { it.string("path") }
+        val selected = uris.filter { existingPaths.add(it.toString()) }
+        val available = (MAX_TODO_ATTACHMENTS - attachments.size).coerceAtLeast(0)
+        readingAttachments = true
         attachmentError = null
         scope.launch {
             var failed = 0
-            var firstError: String? = null
             try {
-                for (uri in uris.take(available)) {
+                for (uri in selected.take(available)) {
                     try {
-                        val prepared = prepareFile(context, uri)
-                        val uploaded = try { upload(projectId, prepared.name, prepared.file) } finally { prepared.file.delete() }
-                        addAttachment(uploaded.getString("name"), uploaded.getString("path"))
+                        val name = withContext(Dispatchers.IO) {
+                            val resolver = context.contentResolver
+                            val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                                if (it.moveToFirst()) it.getString(0) else null
+                            }
+                            resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            name?.takeIf(String::isNotBlank)?.take(300) ?: "附件"
+                        }
+                        addAttachment(name, uri.toString(), LOCAL_TODO_ATTACHMENT)
                     } catch (e: CancellationException) { throw e }
-                    catch (e: Exception) { failed++; if (firstError == null) firstError = e.message }
+                    catch (_: Exception) { failed++ }
                 }
                 attachmentError = listOfNotNull(
-                    if (failed > 0) "$failed 个附件上传失败：${firstError ?: "请重试"}" else null,
-                    if (uris.size > available) "最多添加 $MAX_TODO_ATTACHMENTS 个附件，其余文件未上传" else null,
+                    if (failed > 0) "$failed 个附件无法保存读取权限，请重新选择" else null,
+                    if (selected.size > available) "最多添加 $MAX_TODO_ATTACHMENTS 个附件" else null,
                 ).joinToString("；").ifBlank { null }
-            } finally { uploading = false }
+            } finally { readingAttachments = false }
         }
     }
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments(), ::uploadSelected)
-    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(MAX_TODO_ATTACHMENTS), ::uploadSelected)
-    fun pickAttachment(source: TodoAttachmentSource, project: ProjectSummary) {
-        projectPickerSource = null
-        attachmentError = null
-        if (source == TodoAttachmentSource.Workspace) {
-            attachmentRoot = project.path
-        } else {
-            uploadProjectId = project.id
-            try {
-                if (source == TodoAttachmentSource.Files) filePicker.launch(arrayOf("*/*"))
-                else photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-            } catch (_: android.content.ActivityNotFoundException) {
-                uploadProjectId = null
-                attachmentError = "此设备没有可用的文件或相册选择器"
-            }
-        }
-    }
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments(), ::addLocalAttachments)
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(MAX_TODO_ATTACHMENTS), ::addLocalAttachments)
     fun selectSource(source: TodoAttachmentSource) {
         chooseAttachmentSource = false
-        val preferred = projects.firstOrNull { it.id == item?.projectId } ?: projects.singleOrNull()
-        if (preferred != null && source != TodoAttachmentSource.Workspace) pickAttachment(source, preferred)
-        else projectPickerSource = source
+        attachmentError = null
+        try {
+            when (source) {
+                TodoAttachmentSource.Files -> filePicker.launch(arrayOf("*/*"))
+                TodoAttachmentSource.Photos -> photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                TodoAttachmentSource.Workspace -> chooseAttachmentProject = true
+            }
+        } catch (_: android.content.ActivityNotFoundException) {
+            attachmentError = "此设备没有可用的文件或相册选择器"
+        }
+    }
+    fun openAttachment(attachment: JSONObject) {
+        val path = attachment.string("path")
+        if (attachment.string("type") != LOCAL_TODO_ATTACHMENT) {
+            onOpenAttachment?.invoke(path)
+            return
+        }
+        val uri = Uri.parse(path)
+        try {
+            val intent = Intent(Intent.ACTION_VIEW).setData(uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            context.startActivity(intent)
+        } catch (_: android.content.ActivityNotFoundException) {
+            attachmentError = "没有可打开此附件的应用"
+        } catch (_: SecurityException) {
+            attachmentError = "无法读取本地附件，请重新添加"
+        }
     }
     val filled = subtasks.filter { it.string("title").isNotBlank() }
     val normalizedTitle = title.trim().ifBlank { if (filled.size == 1) filled.single().string("title").trim().take(200) else "待办清单" }
@@ -241,7 +249,7 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
                         attachments.forEachIndexed { index, attachment -> Surface(Modifier.width(96.dp), shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
                             Column(Modifier.padding(6.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    TextButton(onClick = { onOpenAttachment?.invoke(attachment.string("path")) }, enabled = onOpenAttachment != null,
+                                    TextButton(onClick = { openAttachment(attachment) }, enabled = attachment.string("type") == LOCAL_TODO_ATTACHMENT || onOpenAttachment != null,
                                         modifier = Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) { Text("附件") }
                                     TextButton(onClick = { attachmentsJson = JSONArray(attachments.filterIndexed { i, _ -> i != index }).toString() }, enabled = !busy,
                                         modifier = Modifier.size(28.dp).testTag("todo_attachment_remove_$index"), contentPadding = PaddingValues(0.dp)) { Text("×") }
@@ -250,7 +258,7 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
                             }
                         } }
                     }
-                    if (uploading) Text("正在上传附件…", style = MaterialTheme.typography.bodySmall)
+                    if (readingAttachments) Text("正在读取附件…", style = MaterialTheme.typography.bodySmall)
                     attachmentError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                     if (permissionError) Text("未获得通知权限，可在系统设置中开启。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                     if (due.isNotBlank()) Text(buildString { append(due); if (reminderEnabled) append(" $reminderTime"); if (repeat != "none") append(" · ${repeatRuleLabel(repeat)}") },
@@ -282,29 +290,25 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
     if (deleteConfirm) AlertDialog(onDismissRequest = { deleteConfirm = false }, title = { Text("删除这条待办？") }, text = { Text("待办会被删除，已关联的 Codex 会话仍会保留。") },
         confirmButton = { Button(onClick = { deleteConfirm = false; onDelete() }, enabled = !busy) { Text("删除") } }, dismissButton = { TextButton(onClick = { deleteConfirm = false }) { Text("取消") } })
     if (chooseAttachmentSource) AlertDialog(onDismissRequest = { chooseAttachmentSource = false }, title = { Text("添加附件") }, text = {
-        val canUpload = uploadAttachment != null && projects.isNotEmpty()
         Column {
-            TextButton(onClick = { selectSource(TodoAttachmentSource.Files) }, enabled = canUpload,
+            TextButton(onClick = { selectSource(TodoAttachmentSource.Files) },
                 modifier = Modifier.testTag("todo_attachment_local_files")) { Text("本地文件") }
-            TextButton(onClick = { selectSource(TodoAttachmentSource.Photos) }, enabled = canUpload,
+            TextButton(onClick = { selectSource(TodoAttachmentSource.Photos) },
                 modifier = Modifier.testTag("todo_attachment_photos")) { Text("相册") }
             TextButton(onClick = { selectSource(TodoAttachmentSource.Workspace) }, enabled = readDirectory != null && projects.isNotEmpty(),
                 modifier = Modifier.testTag("todo_attachment_workspace")) { Text("节点项目文件") }
-            Text(when {
-                projects.isEmpty() -> "添加附件前，请先在节点上添加项目。"
-                !canUpload -> "连接节点并刷新项目后，可上传本地文件或照片。"
-                else -> "本地文件和照片将上传到节点项目。"
-            }, style = MaterialTheme.typography.bodySmall)
+            Text("本地文件和照片保留在这台手机上。", style = MaterialTheme.typography.bodySmall)
         }
     }, confirmButton = { TextButton(onClick = { chooseAttachmentSource = false }) { Text("取消") } })
-    projectPickerSource?.let { source ->
-        AlertDialog(onDismissRequest = { projectPickerSource = null },
-            title = { Text(if (source == TodoAttachmentSource.Workspace) "选择文件所在项目" else "选择附件保存到哪个项目") }, text = {
-                Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
-                    projects.forEach { project -> TextButton(onClick = { pickAttachment(source, project) }) { Text(project.name) } }
-                }
-            }, confirmButton = { TextButton(onClick = { projectPickerSource = null }) { Text("取消") } })
-    }
+    if (chooseAttachmentProject) AlertDialog(onDismissRequest = { chooseAttachmentProject = false },
+        title = { Text("选择文件所在项目") }, text = {
+            Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
+                projects.forEach { project -> TextButton(onClick = {
+                    attachmentRoot = project.path
+                    chooseAttachmentProject = false
+                }) { Text(project.name) } }
+            }
+        }, confirmButton = { TextButton(onClick = { chooseAttachmentProject = false }) { Text("取消") } })
     val root = attachmentRoot
     if (root != null && readDirectory != null) WorkspaceFilePicker(root, readDirectory, { attachmentRoot = null }) { reference ->
         addAttachment(reference.string("name"), reference.string("path"))

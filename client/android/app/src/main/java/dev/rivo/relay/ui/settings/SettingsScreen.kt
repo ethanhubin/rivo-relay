@@ -74,6 +74,8 @@ fun SettingsScreen(nodeName: String? = null, nodeAddress: String? = null,
             }
         }
 
+        PinnedCompletionSettings()
+
         if (nodeName != null) Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("当前节点", style = MaterialTheme.typography.titleMedium)

@@ -93,6 +93,44 @@ class TodoSyncTest {
         } finally { firstScope.cancel(); secondScope.cancel(); server.shutdown(); folder.deleteRecursively() }
     }
 
+    @Test fun localAttachmentSurvivesSyncAndRestartWithoutSendingItsReference() = runBlocking {
+        val folder = Files.createTempDirectory("rivo-todo-local-attachment").toFile()
+        val server = MockWebServer()
+        val accepted = AtomicReference<JSONObject>()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.method == "POST") {
+                    val item = JSONObject(request.body.readUtf8())
+                    accepted.set(item)
+                    return MockResponse().setBody(JSONObject().put("todo", item).toString())
+                }
+                return MockResponse().setBody(JSONObject().put("todos", JSONArray(listOf(accepted.get()))).toString())
+            }
+        }
+        server.start()
+        val firstScope = CoroutineScope(coroutineContext + SupervisorJob())
+        val secondScope = CoroutineScope(coroutineContext + SupervisorJob())
+        try {
+            val store = ConversationStore(folder)
+            val localPath = "content://documents/photo"
+            val nodePath = "/project/notes.txt"
+            val details = JSONObject().put("attachments", JSONArray()
+                .put(JSONObject().put("name", "photo.jpg").put("path", localPath).put("type", "local"))
+                .put(JSONObject().put("name", "notes.txt").put("path", nodePath).put("type", "file")))
+            val controller = TodosController(api(server), firstScope, { throw it }, store)
+            controller.saveDetails(null, "Task", "", details) {}
+            withTimeout(5_000) { controller.state.first { it.online && !it.syncing } }
+
+            assertEquals(listOf(nodePath), accepted.get().getJSONObject("details").objects("attachments").map { it.string("path") })
+            assertEquals(setOf(localPath, nodePath), controller.state.value.items.single().details.objects("attachments").map { it.string("path") }.toSet())
+            firstScope.cancel()
+
+            val restored = TodosController(api(server), secondScope, { throw it }, store)
+            withTimeout(5_000) { restored.refresh().join() }
+            assertEquals(setOf(localPath, nodePath), restored.state.value.items.single().details.objects("attachments").map { it.string("path") }.toSet())
+        } finally { firstScope.cancel(); secondScope.cancel(); server.shutdown(); folder.deleteRecursively() }
+    }
+
     @Test fun dispatchWaitsForSuccessfulSynchronizationAndNeverRunsOffline() = runBlocking {
         val server = MockWebServer()
         val item = JSONObject().put("id", "todo").put("title", "Task").put("completed", false)

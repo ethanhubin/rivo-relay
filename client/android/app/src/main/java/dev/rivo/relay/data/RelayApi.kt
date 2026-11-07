@@ -107,6 +107,8 @@ class RelayApi(private val base: String, private val token: String = "", private
         uploadAttachment("/v1/threads/${encoded(threadId)}/attachments", name, file)
     suspend fun uploadProjectFile(projectId: String, name: String, file: java.io.File): JSONObject =
         uploadAttachment("/v1/projects/${encoded(projectId)}/attachments", name, file)
+    suspend fun uploadTodoFile(name: String, file: java.io.File): JSONObject =
+        uploadAttachment("/v1/todos/attachments", name, file)
     private suspend fun uploadAttachment(path: String, name: String, file: java.io.File): JSONObject = suspendCancellableCoroutine { continuation ->
         val body = file.asRequestBody("application/octet-stream".toMediaType())
         val req = request("$path?name=${encoded(name)}")

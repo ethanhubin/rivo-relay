@@ -66,7 +66,8 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
         if (threadId != pending.threadId) save(pending.copy(threadId = threadId))
     }
     fun submit(path: String, body: JSONObject, label: String, submissionId: String = UUID.randomUUID().toString(),
-        prepared: (PendingSubmission) -> Unit = {}, beforeSend: suspend (PendingSubmission) -> Unit = {}, accepted: (JSONObject) -> Unit = {}) {
+        prepared: (PendingSubmission) -> Unit = {}, beforeSend: suspend (PendingSubmission) -> Unit = {},
+        prepareBody: suspend (JSONObject) -> JSONObject = { it }, accepted: (JSONObject) -> Unit = {}) {
         if (mutable.value.busy || mutable.value.pending != null) return
         val originalThread = Regex("^/v1/threads/([^/]+)/").find(path)?.groupValues?.get(1)?.let { java.net.URLDecoder.decode(it, "UTF-8") }
         val pending = PendingSubmission(submissionId, path, label, originalThread)
@@ -85,10 +86,11 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
             var completed: JSONObject? = null
             var requestStarted = false
             try {
+                val requestBody = prepareBody(frozenBody)
                 save(pending)
                 beforeSend(pending)
                 requestStarted = true
-                val response = api.call(path, "POST", frozenBody)
+                val response = api.call(path, "POST", requestBody)
                 when (response.string("status")) {
                     "accepted" -> { onResolved(pending, response); save(null); afterAccepted = null; mutable.update { it.copy(notice = null) }; completed = response.optJSONObject("receipt") ?: JSONObject() }
                     "failed" -> { onResolved(pending, response); save(null); afterAccepted = null; failure(ApiException(422, "submission_failed", failureMessage(response, label))) }

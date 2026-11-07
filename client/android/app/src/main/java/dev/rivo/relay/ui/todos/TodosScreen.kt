@@ -57,8 +57,7 @@ fun TodosScreen(state: TodosState, projects: List<ProjectSummary>, canDispatch: 
     onSaveDetails: ((Todo?, String, String, JSONObject, () -> Unit) -> Unit)? = null,
     onUpdateDetails: ((Todo, JSONObject) -> Unit)? = null,
     onSynchronize: (() -> Unit)? = null, onDiscardLocal: (() -> Unit)? = null,
-    readDirectory: (suspend (String) -> JSONObject)? = null, onOpenAttachment: ((String) -> Unit)? = null,
-    uploadAttachment: (suspend (String, String, java.io.File) -> JSONObject)? = null) {
+    readDirectory: (suspend (String) -> JSONObject)? = null, onOpenAttachment: ((String) -> Unit)? = null) {
     var editor by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Todo?>(null) }
     var delivery by remember { mutableStateOf<Todo?>(null) }
@@ -172,7 +171,7 @@ fun TodosScreen(state: TodosState, projects: List<ProjectSummary>, canDispatch: 
         onSave = { title, notes, details -> save(title, notes, details, false) }, onDelete = { editing?.let { item -> onDelete(item) { editor = false } } },
         onStartCodex = if (canDispatch && state.online && state.pendingCount == 0 && !state.syncing && editing?.completed != true && editing?.threadId.orEmpty().isBlank())
             { { title, notes, details -> save(title, notes, details, true) } } else null,
-        onOpenAttachment = onOpenAttachment, uploadAttachment = uploadAttachment?.takeIf { state.online },
+        onOpenAttachment = onOpenAttachment,
         onOpenThread = editing?.takeIf { it.threadId.isNotBlank() }?.let { item -> { editor = false; onOpenThread(item) } })
     delivery?.let { item -> DispatchSheet(item, projects, canDispatch && state.online && state.pendingCount == 0 && !state.syncing, loadThreads, { delivery = null }) { project, thread -> onDispatch(item, project, thread) { delivery = null } } }
     if (deleteConfirm) AlertDialog(onDismissRequest = { deleteConfirm = false }, title = { Text("删除 ${selectedIds.size} 项待办？") },
@@ -296,6 +295,9 @@ private fun DispatchSheet(item: Todo, projects: List<ProjectSummary>, enabled: B
             }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Text("提交待办标题和备注，并保留会话关联。待办完成由你确认。", style = MaterialTheme.typography.bodySmall)
+            if (item.localAttachments().isNotEmpty()) {
+                Text("开始执行后，本机附件会上传到节点的附件目录，并随待办发送给 Codex。", style = MaterialTheme.typography.bodySmall)
+            }
         }
     }, confirmButton = { Button(onClick = { selectedProject?.let { onDispatch(it.id, selectedThread) } }, enabled = enabled && selectedProject != null && !loading && error == null,
         modifier = Modifier.testTag("confirm_dispatch")) { Text("开始执行") } }, dismissButton = { TextButton(onDismiss) { Text("取消") } })

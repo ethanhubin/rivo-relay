@@ -109,6 +109,50 @@ class SessionControllerTest {
         }
     }
 
+    @Test fun convergingHeadStillAllowsVerifiedPersistedHistory() = runBlocking {
+        for (shared in listOf(false, true)) {
+            fun lagging(response: MockResponse): MockResponse {
+                val json = JSONObject(response.getBody()!!.readUtf8())
+                json.put("nativeSync", JSONObject().put("state", "converging").put("historyReady", true))
+                return response.setBody(json.toString())
+            }
+            val server = MockWebServer()
+            val requests = Collections.synchronizedList(mutableListOf<String>())
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                    requests += request.path!!
+                    val url = request.requestUrl!!
+                    if (url.queryParameter("cursor") != null)
+                        return lagging(revisionSnapshot("older", "r1", null, "older"))
+                    if (url.queryParameter("limit") != "2") return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                    return lagging(revisionSnapshot("head", "r1", "older", "latest"))
+                }
+            }
+            server.start()
+            val scope = CoroutineScope(coroutineContext + SupervisorJob())
+            val transport = api(server)
+            val controller = SessionController(transport, scope,
+                sync = if (shared) dev.rivo.relay.codex.NodeSessionSync(transport, scope) else null) { fail(it.message) }
+            try {
+                controller.open("t")
+                withTimeout(3000) { controller.state.first { it.snapshot?.name == "head" && !it.stale } }
+                assertEquals(listOf("latest"), controller.state.value.snapshot!!.messages.map { it.id })
+                assertFalse(controller.state.value.snapshot!!.nativeReady)
+                assertTrue(controller.state.value.snapshot!!.historyReady)
+                assertFalse(requests.any { it.contains("cursor=") })
+                controller.ensureVisibleHistory()
+                withTimeout(3000) { controller.state.first { it.earlierLoaded && !it.loadingEarlier } }
+                assertEquals(listOf("older", "latest"), controller.state.value.snapshot!!.messages.map { it.id })
+                assertTrue(requests.any { it.contains("cursor=older") && it.contains("limit=30") })
+                controller.invalidateControl()
+                val refreshed = withTimeout(3000) { controller.state.first { !it.stale } }
+                assertEquals(listOf("older", "latest"), refreshed.snapshot!!.messages.map { it.id })
+                assertTrue(refreshed.earlierLoaded)
+            } finally { controller.close(); scope.cancel(); server.shutdown() }
+        }
+    }
+
     @Test fun rapidThreadSwitchRestoresRecentViewImmediatelyButNeverItsPermission() = runBlocking {
         val server = MockWebServer()
         val block = AtomicBoolean(false)

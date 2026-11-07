@@ -34,6 +34,7 @@ internal fun NativeActivityGroup(row: NativeTimelineRow.Activities, isCurrent: B
             onClick = if (canExpand) ({ if (imagePath != null) onFile(imagePath) else expanded = !expanded }) else null,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            NativeActivityGlyph(row.messages.mapNotNull { it.activity?.kind }.distinct().singleOrNull() ?: "turn")
             if (canExpand) Text(if (expanded) "▾" else "›", color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (isCurrent) ShimmeringStageText(label,
                 modifier = Modifier.weight(1f).testTag("activity_group_shimmer"), maxLines = if (canExpand) 1 else Int.MAX_VALUE, overflow = TextOverflow.Ellipsis)

@@ -238,6 +238,8 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(429, "transfer_busy", "文件传输繁忙，请稍后重试")
         try:
             self.connection.settimeout(120)
+            if target_id is None:
+                return self.app.codex.upload_todo_attachment_stream(name, self.rfile, size)
             upload = self.app.codex.upload_project_attachment_stream if project else self.app.codex.upload_attachment_stream
             return upload(target_id, name, self.rfile, size)
         finally:
@@ -390,6 +392,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.command == "GET" and path == ["v1", "files", "download"]:
                 self.send_file(required({"path": query.get("path", [None])[0]}, "path", 4096))
+                return
+            if self.command == "POST" and path == ["v1", "todos", "attachments"]:
+                if self.headers.get_content_type() != "application/octet-stream":
+                    raise ApiError(415, "invalid_request", "附件需要二进制上传")
+                self.send_json(200, self.receive_file(None, query))
                 return
             if (self.command == "POST" and len(path) == 4 and path[:2] in (["v1", "threads"], ["v1", "projects"])
                     and path[3] == "attachments" and self.headers.get_content_type() == "application/octet-stream"):
@@ -693,6 +700,15 @@ class Handler(BaseHTTPRequestHandler):
                 required(body, "submissionId")
                 if body.get("threadId") is not None:
                     required(body, "threadId")
+                if "uploadedAttachments" in body:
+                    uploads = body["uploadedAttachments"]
+                    if not isinstance(uploads, list) or not 1 <= len(uploads) <= 16:
+                        raise ApiError(400, "invalid_request", "本机附件数量无效")
+                    for item in uploads:
+                        if not isinstance(item, dict) or set(item) != {"name", "path"}:
+                            raise ApiError(400, "invalid_request", "本机附件引用无效")
+                        required(item, "name", 200)
+                        native_path(required(item, "path", 4096))
                 return self.app.dispatch_todo(todo_id, connection_id, body)
             if len(path) == 3:
                 if method == "GET":

@@ -9,6 +9,28 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
+internal const val LOCAL_TODO_ATTACHMENT = "local"
+
+internal fun Todo.localAttachments() = details.objects("attachments").filter { it.string("type") == LOCAL_TODO_ATTACHMENT }
+
+private fun JSONObject.withoutLocalAttachments(): JSONObject {
+    val details = optJSONObject("details") ?: return this
+    val attachments = details.objects("attachments")
+    if (attachments.none { it.string("type") == LOCAL_TODO_ATTACHMENT }) return this
+    return JSONObject(toString()).put("details", JSONObject(details.toString()).put("attachments",
+        JSONArray(attachments.filterNot { it.string("type") == LOCAL_TODO_ATTACHMENT })))
+}
+
+private fun keepLocalAttachments(remote: List<Todo>, current: List<Todo>): List<Todo> {
+    val localById = current.associate { it.id to it.localAttachments() }
+    return remote.map { todo ->
+        val local = localById[todo.id].orEmpty()
+        val attachments = todo.details.objects("attachments").filterNot { it.string("type") == LOCAL_TODO_ATTACHMENT }
+        if (local.isEmpty() && attachments.size == todo.details.objects("attachments").size) todo
+        else todo.copy(details = JSONObject(todo.details.toString()).put("attachments", JSONArray(attachments + local)))
+    }
+}
+
 data class TodosState(val items: List<Todo> = emptyList(), val loading: Boolean = false, val mutating: Boolean = false,
     val syncing: Boolean = false, val pendingCount: Int = 0, val online: Boolean = false, val syncError: String? = null)
 
@@ -72,7 +94,7 @@ class TodosController(private val api: RelayApi, private val scope: CoroutineSco
             while (true) {
                 val operation = stateLock.withLock { outbox.firstOrNull() } ?: break
                 try {
-                    api.call(if (operation.method == "POST") "/v1/todos" else "/v1/todos/${encoded(operation.todoId)}", operation.method, operation.body)
+                    api.call(if (operation.method == "POST") "/v1/todos" else "/v1/todos/${encoded(operation.todoId)}", operation.method, operation.body.withoutLocalAttachments())
                 } catch (e: ApiException) {
                     if (!(operation.method == "DELETE" && e.status == 404)) throw e
                 }
@@ -84,7 +106,7 @@ class TodosController(private val api: RelayApi, private val scope: CoroutineSco
             stateLock.withLock {
                 var merged = remote
                 outbox.forEach { merged = applyOperation(merged, it) }
-                commit(merged, outbox)
+                commit(keepLocalAttachments(merged, mutable.value.items), outbox)
             }
             mutable.update { it.copy(online = true, syncError = null) }
             true
@@ -148,7 +170,7 @@ class TodosController(private val api: RelayApi, private val scope: CoroutineSco
                         val remaining = outbox.filterNot { it.id in discardedIds }
                         var merged = remote
                         remaining.forEach { merged = applyOperation(merged, it) }
-                        commit(merged, remaining)
+                        commit(keepLocalAttachments(merged, mutable.value.items), remaining)
                     }
                     mutable.update { it.copy(online = true, syncError = null) }
                 } catch (e: CancellationException) { throw e }
