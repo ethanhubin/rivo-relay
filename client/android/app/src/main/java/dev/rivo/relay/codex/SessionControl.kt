@@ -2,7 +2,7 @@ package dev.rivo.relay.codex
 
 import dev.rivo.relay.data.string
 
-enum class ControlState { WRITABLE, EXTERNAL, RELEASED, WORKSPACE_UNAVAILABLE, UNKNOWN }
+enum class ControlState { WRITABLE, EXTERNAL, RELEASED, RELEASE_PENDING, WORKSPACE_UNAVAILABLE, UNKNOWN }
 data class SessionControl(val state: ControlState, val action: String? = null, val reason: String = "") {
     val canOperate get() = state == ControlState.WRITABLE
 }
@@ -16,6 +16,7 @@ fun SessionState.control(): SessionControl {
         "writable" -> if (wire.optBoolean("canOperate") && !snapshot.readOnly) ControlState.WRITABLE else ControlState.UNKNOWN
         "external" -> ControlState.EXTERNAL
         "released" -> ControlState.RELEASED
+        "release_pending" -> ControlState.RELEASE_PENDING
         "workspace_unavailable" -> ControlState.WORKSPACE_UNAVAILABLE
         else -> ControlState.UNKNOWN
     } else when {
@@ -59,4 +60,4 @@ fun SessionState.displayControl(): SessionControl =
         ?: lastConfirmedControl ?: SessionControl(ControlState.UNKNOWN)
 
 fun SessionState.showTakeover(): Boolean = displayControl().state in setOf(
-    ControlState.EXTERNAL, ControlState.RELEASED, ControlState.WORKSPACE_UNAVAILABLE)
+    ControlState.EXTERNAL, ControlState.RELEASED, ControlState.RELEASE_PENDING, ControlState.WORKSPACE_UNAVAILABLE)

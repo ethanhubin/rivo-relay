@@ -12,7 +12,7 @@ class SessionControlTest {
             .put("control", JSONObject().put("state", state).put("canOperate", writable).put("action", "resume"))))
 
     @Test fun unavailableStatesNeverEnableInput() {
-        for (state in listOf("external", "released", "workspace_unavailable", "future_state"))
+        for (state in listOf("external", "released", "release_pending", "workspace_unavailable", "future_state"))
             assertFalse(session(state).control().canOperate)
         assertEquals(ControlState.RELEASED, session("released").control().state)
         assertEquals("resume", session("released").control().action)
@@ -68,5 +68,11 @@ class SessionControlTest {
         assertTrue(external.showTakeover())
         assertTrue(external.copy(stale = true, lastConfirmedControl = external.control()).showTakeover())
         assertFalse(writable.copy(lastConfirmedControl = external.control()).showTakeover())
+    }
+    @Test fun pendingReleaseIsNotReportedAsReleased() {
+        val pending = session("release_pending")
+        assertEquals(ControlState.RELEASE_PENDING, pending.control().state)
+        assertFalse(pending.control().canOperate)
+        assertTrue(pending.showTakeover())
     }
 }

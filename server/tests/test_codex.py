@@ -89,6 +89,21 @@ class NativeSemanticsTests(unittest.TestCase):
             self.assertEqual("running", session["status"])
             self.assertEqual("running", session["nativeExecution"])
 
+    def test_external_execution_overrides_unloaded_metadata_in_list_and_detail(self):
+        native = FakeNative()
+        native.thread['status'] = {'type': 'notLoaded'}
+        service = CodexService(connection=native)
+        with patch.object(service.projects, 'get', return_value={'id': 'project', 'roots': []}), \
+             patch('rivo_relay.codex.sessions.pages', return_value=[native.thread]), \
+             patch.object(service.native_journal, 'execution_states') as states:
+            for state in ('running', 'idle', 'unknown'):
+                states.return_value = {'thread': state} if state != 'unknown' else {}
+                self.assertEqual(state, service.list_sessions('project')[0]['nativeExecution'])
+                snapshot = service.get_session('thread')
+                self.assertEqual(state, snapshot['status'])
+                self.assertEqual(state, snapshot['nativeExecution'])
+                self.assertIsNone(snapshot['activeTurnId'])
+
     def test_goal_unsupported_is_distinct_from_native_failure(self):
         native = FakeNative()
         service = CodexService(connection=native)
@@ -150,9 +165,10 @@ class NativeSemanticsTests(unittest.TestCase):
         with self.assertRaises(CodexError):
             service.get_session("thread")
 
-    def test_project_activity_uses_existing_native_list_and_project_assignment(self):
+    def test_project_activity_uses_native_goals_and_project_assignment(self):
         native = FakeNative()
         calls = []
+        goal_status = 'active'
         threads = [
             {"id": "running", "cwd": "/workspace", "projectId": "project", "status": {"type": "active", "activeFlags": []}},
             {"id": "waiting", "cwd": "/workspace", "projectId": "project", "status": {"type": "active", "activeFlags": ["waitingOnApproval", "waitingOnUserInput"]}},
@@ -170,16 +186,26 @@ class NativeSemanticsTests(unittest.TestCase):
                         {"id": "empty", "name": "Empty", "roots": [{"path": "/empty"}]}]
             elif method == "thread/list":
                 data = threads
+            elif method == "thread/goal/get":
+                return {"goal": {"status": goal_status} if params["threadId"] in {"notLoaded", "running"} else None}
             else:
-                self.fail("Project activity must not request per-thread metadata or history")
+                self.fail("Project activity must not request thread history or resume")
             return {"data": data, "nextCursor": None}
 
         native.request = request
-        projects = CodexService(connection=native).list_projects()
+        service = CodexService(connection=native)
+        projects = service.list_projects()
         self.assertEqual(7, projects[0]["threadCount"])
-        self.assertEqual(4, projects[0]["outstandingWorkCount"])
+        self.assertEqual(5, projects[0]["outstandingWorkCount"])
+        self.assertEqual(4, projects[0]["runningTurnCount"])
+        self.assertEqual(2, projects[0]["activeGoalCount"])
         self.assertEqual(0, projects[1]["outstandingWorkCount"])
-        self.assertEqual(["project/list", "thread/list"], calls)
+        self.assertEqual(["project/list", "thread/list"] + ["thread/goal/get"] * len(threads), calls)
+        for goal_status in ('paused', 'complete', 'blocked', 'budgetLimited', 'usageLimited'):
+            service._event({'method': 'thread/goal/updated', 'params': {'threadId': 'notLoaded'}})
+            projects = service.list_projects()
+            self.assertEqual(4, projects[0]['outstandingWorkCount'])
+            self.assertEqual(0, projects[0]['activeGoalCount'])
 
     def test_shared_cwd_does_not_override_native_project_assignment(self):
         native = FakeNative()

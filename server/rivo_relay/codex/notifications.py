@@ -42,3 +42,13 @@ class NotificationQueue(queue.Queue):
             self._put(event)
             self.unfinished_tasks += 1
             self.not_empty.notify()
+
+    def put_disconnect(self, event):
+        """A saturated stream must still invalidate its consumer's live state."""
+        with self.not_full:
+            if self.maxsize > 0 and self._qsize() >= self.maxsize:
+                self._get()
+                self.unfinished_tasks -= 1
+            self._put(event)
+            self.unfinished_tasks += 1
+            self.not_empty.notify()

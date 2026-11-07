@@ -48,6 +48,12 @@ class Interactions:
                                  if not (v["params"].get("threadId", v['params'].get('conversationId')) == thread_id and
                                          (not turn_id or not v["params"].get("turnId") or v["params"].get("turnId") == turn_id))}
 
+    def discard_thread(self, thread_id):
+        """Expire requests after the owning writer has stopped; never answer them."""
+        with self._lock:
+            self._pending = {key: value for key, value in self._pending.items()
+                if value['params'].get('threadId', value['params'].get('conversationId')) != thread_id}
+
     def list(self, thread_id):
         with self._lock:
             return [copy.deepcopy(v) for v in self._pending.values()

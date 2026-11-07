@@ -102,3 +102,13 @@ class PerformanceTests(unittest.TestCase):
         q.put_nowait(event(delta='a'))
         q.put_nowait(event(generation='two', delta='b'))
         self.assertEqual(2, q.qsize())
+
+class DisconnectQueueTests(unittest.TestCase):
+    def test_disconnect_survives_saturated_notifications(self):
+        from rivo_relay.codex.notifications import NotificationQueue
+        q = NotificationQueue(maxsize=1)
+        q.put_nowait({'method': 'turn/started'})
+        q.put_disconnect({'method': 'relay/nativeDisconnected'})
+        self.assertEqual('relay/nativeDisconnected', q.get_nowait()['method'])
+        q.task_done()
+        self.assertEqual(0, q.unfinished_tasks)

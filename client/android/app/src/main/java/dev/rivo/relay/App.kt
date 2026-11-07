@@ -531,7 +531,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
         ModalBottomSheet(onDismissRequest = { handoffPrompt = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp).navigationBarsPadding()) {
                 val rebound = preview.optJSONObject("workspaceRebind")
-                Text(if (rebound != null) "确认接管与工作区恢复" else "确认强制接管及影响范围", style = MaterialTheme.typography.titleLarge)
+                Text(if (rebound != null) "确认接管与工作区恢复" else if (operation == "release") "确认释放权限及影响范围" else "确认强制接管及影响范围", style = MaterialTheme.typography.titleLarge)
                 Text("节点：${node.connection.name}", style = MaterialTheme.typography.bodyMedium)
                 if (rebound != null) Text("原工作树已不存在，将改用 ${rebound.string("path")} 目录。原路径：${rebound.string("missingPath")}",
                     modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.error)

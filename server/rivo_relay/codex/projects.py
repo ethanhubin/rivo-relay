@@ -39,6 +39,8 @@ class ProjectCatalog:
         self._cached = None
         self._expires = 0.0
         self.queue_provider = lambda: {}
+        self.goal_provider = lambda thread_id: None
+        self.execution_provider = lambda threads: {}
         self.external_worktrees = None
         self._trust_lock = threading.Lock()
 
@@ -78,6 +80,11 @@ class ProjectCatalog:
                 by_project[thread["projectId"]].append(thread)
         result = []
         queues = self.queue_provider()
+        execution = self.execution_provider(threads)
+        # Goals continue between turns and can belong to another native writer.
+        # Query native goal state independently of thread/list's loaded status.
+        active_goals = {thread['id'] for thread in threads
+                        if (self.goal_provider(thread['id']) or {}).get('status') == 'active'}
         for project in projects:
             roots = [r.get("path") for r in project.get("roots", []) if r.get("path")]
             matches = by_project[project["id"]] + [t for root in set(roots) for t in by_root[root]]
@@ -85,9 +92,10 @@ class ProjectCatalog:
                            "path": roots[0] if roots else "", "roots": roots,
                            "threadCount": len(matches),
                            "outstandingWorkCount": sum(
-                               1 for thread in matches if queues.get(thread['id']) or
+                               1 for thread in matches if queues.get(thread['id']) or thread['id'] in active_goals or execution.get(thread['id']) == 'running' or
                                (isinstance(thread.get("status"), dict) and thread['status'].get('type') == 'active')),
-                           "runningTurnCount": sum(1 for thread in matches if isinstance(thread.get('status'), dict) and thread['status'].get('type') == 'active'),
+                           "runningTurnCount": sum(1 for thread in matches if execution.get(thread['id']) == 'running' or (isinstance(thread.get('status'), dict) and thread['status'].get('type') == 'active')),
+                           "activeGoalCount": sum(thread['id'] in active_goals for thread in matches),
                            "queuedTaskCount": sum(sum(item['status'] == 'waiting' for item in queues.get(thread['id'], [])) for thread in matches),
                            "recoveryCount": sum(any(item.get('recoveryRequired') for item in queues.get(thread['id'], [])) for thread in matches)})
         return result

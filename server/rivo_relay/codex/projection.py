@@ -16,9 +16,9 @@ def execution_projection(status, queue=(), *, read_only=False, requests=()):
     display = ('waiting' if requests else 'executing_with_queue' if running and waiting else
                'executing' if running else 'recovery' if recovery else
                'dispatching' if dispatching else 'queued' if waiting else
-               'failed' if failed else 'idle')
+               'failed' if failed else 'unknown' if status == 'unknown' else 'idle')
     return {
-        'nativeExecution': 'running' if running else 'idle',
+        'nativeExecution': 'running' if running else 'unknown' if status == 'unknown' else 'idle',
         'deliveryState': delivery, 'displayState': display,
         'queueDepth': len(waiting), 'recoveryRequired': recovery is not None,
         'hasOutstandingWork': running or bool(queue), 'recoveryTask': recovery,

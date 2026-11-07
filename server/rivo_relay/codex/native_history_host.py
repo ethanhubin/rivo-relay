@@ -201,6 +201,22 @@ def writer_busy(home, thread_id):
 
 def dispatch(request):
     home = verify_runtime(request['runtime'])
+    if request['operation'] == 'activity':
+        states = {}
+        for thread_id in request['threadIds']:
+            if not writer_busy(home, thread_id):
+                continue
+            inspected = inspect_journal(home, thread_id)
+            journal = inspected.get('journal') or {}
+            # A lock alone only proves ownership; idle Desktop sessions hold it too.
+            if inspected.get('changing') or not inspected.get('writerBusy'):
+                continue
+            if journal.get('status') == 'inProgress':
+                states[thread_id] = 'running'
+            elif journal.get('status') in ('completed', 'interrupted', 'failed'):
+                states[thread_id] = 'idle'
+        verify_runtime(request['runtime'])
+        return {'states': states}
     thread_id = request['threadId']
     before = inspect_journal(home, thread_id, request.get('known') if request['operation'] == 'inspect' else None)
     if request['operation'] == 'inspect':

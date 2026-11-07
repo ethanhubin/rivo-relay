@@ -78,6 +78,26 @@ class NativeJournal:
                 return dict(descriptor)
         return None
 
+    def execution_states(self, thread_ids):
+        if not self.supported or not thread_ids:
+            return {}
+        binder = getattr(self._connection, 'history_host_connection', None)
+        groups = {}
+        for thread_id in thread_ids:
+            connection = binder(thread_id) if binder else self._connection
+            groups.setdefault(connection, []).append(thread_id)
+        states = {}
+        for connection, ids in groups.items():
+            try:
+                self._local.connection = connection
+                states.update(self._call(ids[0], 'activity', threadIds=ids).get('states', {}))
+            except CodexError:
+                # Unverified hosts cannot turn unknown execution into idle.
+                pass
+            finally:
+                self._local.__dict__.pop('connection', None)
+        return states
+
     def _host(self):
         with self._descriptor_lock:
             generation = str(self.connection.generation)
@@ -93,14 +113,14 @@ class NativeJournal:
         if generation != str(self.connection.generation) or str(runtime.get('generation')) != generation:
             raise CodexError('原生运行时已更换，请重新读取历史', code='history_changed', http_status=409)
         request = {'runtime': runtime, 'threadId': thread_id, 'operation': operation, **extra}
-        if runtime.get('identityMethod') == 'local-socket-and-open-state-database':
+        if runtime.get('identityMethod') in {'local-socket-and-open-state-database', 'relay-owned-child'}:
             # A sandboxed command cannot inspect ps even after the transport
             # proved this is a local socket. Re-attest locality for every call;
             # cached descriptors alone never authorize local filesystem access.
             from .host_probe import local_native_host_info
             from .native_history_host import dispatch
             from .native_reprojection import NativeHistoryReprojectionError
-            current = local_native_host_info(self.connection)
+            current = self.connection.native_host_info() if runtime.get('identityMethod') == 'relay-owned-child' else local_native_host_info(self.connection)
             if current != runtime or generation != str(self.connection.generation):
                 with self._descriptor_lock:
                     self._hosts.pop(generation, None)

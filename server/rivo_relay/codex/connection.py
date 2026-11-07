@@ -197,13 +197,11 @@ class NativeConnection:
                         target.put_nowait(CodexError("Codex 连接断开，需核对结果", request_sent=True))
                     except queue.Full:
                         pass
-            sock.close()
             try:
-                self._events.put_nowait({"method": "relay/nativeDisconnected", "params": {},
-                                        "connectionId": generation})
-            except queue.Full:
-                # The dispatcher will observe disconnected state before any new write.
-                pass
+                sock.close()
+            finally:
+                self._events.put_disconnect({"method": "relay/nativeDisconnected", "params": {},
+                                             "connectionId": generation})
 
     def _dispatch(self):
         while not self._dispatch_stop.is_set():

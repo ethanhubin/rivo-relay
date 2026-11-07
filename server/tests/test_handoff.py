@@ -164,7 +164,7 @@ class HandoffTests(unittest.TestCase):
         original = native.native_host_info()
         native.native_host_info = Mock(side_effect=[original, {**original, 'processStart': 'reused'}])
         with self.assertRaises(CodexError):
-            service.handoff(TID, 'release', owner='phone', ticket='ticket')
+            service.handoff(TID, 'release', owner='phone', ticket='ticket', confirmed=True)
         writers.terminate.assert_not_called()
         self.assertFalse(service.observations_for(TID))
 
@@ -180,6 +180,78 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual('native_history_unavailable', raised.exception.code)
         self.assertTrue(service.observations_for(TID)[('ownership', '')]['released'])
         self.assertNotIn('thread/resume', [method for method, _ in native.calls])
+
+    def test_joined_daemon_release_uses_process_preview_and_checks_writer_lock(self):
+        service, native, writers = self.service()
+        service._joined.add(TID)
+        writers.preview.return_value = {'ticket': 'ticket', 'affectedThreadIds': [TID, OTHER],
+            'processIds': [10], 'requiresConfirmation': False}
+        preview = service.preview_handoff(TID, 'release', 'phone')
+        self.assertEqual('writer-process', preview['releaseScope'])
+        self.assertTrue(preview['requiresConfirmation'])
+        self.assertEqual([TID, OTHER], preview['affectedThreadIds'])
+        service.handoff(TID, 'release', owner='phone', ticket=preview['ticket'], confirmed=True)
+        writers.terminate.assert_called_once()
+        writers.busy.assert_any_call(TID)
+        self.assertNotIn('thread/unsubscribe', [method for method, _ in native.calls])
+        self.assertNotIn('thread/resume', [method for method, _ in native.calls])
+
+    def test_release_interrupts_owned_turn_and_does_not_require_restart(self):
+        service, native, writers = self.service(restart=True)
+        service._joined.add(TID)
+        service._active[TID] = 'active-turn'
+        service.interactions.receive({'id': 7, 'method': 'item/tool/requestUserInput', 'params': {'threadId': TID}})
+        service.interactions.receive({'id': 8, 'method': 'item/tool/requestUserInput', 'params': {'threadId': 'unrelated'}})
+        writers.restart_command.side_effect = AssertionError('release must not require daemon restartability')
+        def stop(snapshot):
+            self.assertIn(('turn/interrupt', {'threadId': TID, 'turnId': 'active-turn'}), native.calls)
+            with self.assertRaises(CodexError): service._resume(TID)
+        writers.terminate.side_effect = stop
+        result = service.handoff(TID, 'release', owner='phone', ticket='ticket', confirmed=True)
+        self.assertTrue(result['released'])
+        self.assertEqual('verified', service.observations_for(TID)[('ownership', '')]['releaseState'])
+        self.assertEqual('verified', service.observations_for(OTHER)[('ownership', '')]['releaseState'])
+        self.assertNotIn(TID, service._joined)
+        self.assertFalse(service.interactions.list(TID))
+        self.assertEqual(1, len(service.interactions.list('unrelated')))
+        writers.restart.assert_not_called()
+
+    def test_release_failure_keeps_queue_fence_but_never_marks_verified(self):
+        service, native, writers = self.service()
+        writers.terminate.side_effect = CodexError('still held', code='writer_still_held')
+        with self.assertRaises(CodexError):
+            service.handoff(TID, 'release', owner='phone', ticket='ticket', confirmed=True)
+        for target in (TID, OTHER):
+            ownership = service.observations_for(target)[('ownership', '')]
+            self.assertTrue(ownership['released'])
+            self.assertEqual('failed', ownership['releaseState'])
+            with self.assertRaises(CodexError): service._resume(target)
+
+    def test_interrupt_failure_does_not_block_confirmed_release(self):
+        service, native, writers = self.service()
+        service._joined.add(TID)
+        service._active[TID] = 'active-turn'
+        original = native.request
+        def request(method, params, **kwargs):
+            if method == 'turn/interrupt': raise CodexError('timeout', request_sent=True)
+            return original(method, params, **kwargs)
+        native.request = request
+        self.assertTrue(service.handoff(TID, 'release', owner='phone', ticket='ticket', confirmed=True)['released'])
+        writers.terminate.assert_called_once()
+
+    def test_process_release_requires_explicit_confirmation(self):
+        service, native, writers = self.service()
+        with self.assertRaises(CodexError) as caught:
+            service.handoff(TID, 'release', owner='phone', ticket='ticket')
+        self.assertEqual('handoff_confirmation_required', caught.exception.code)
+        writers.terminate.assert_not_called()
+
+    def test_release_cannot_succeed_when_writer_lock_remains(self):
+        service, native, writers = self.service()
+        writers.busy.return_value = True
+        with self.assertRaises(CodexError) as caught:
+            service.handoff(TID, 'release', owner='phone', ticket='ticket', confirmed=True)
+        self.assertEqual('writer_still_held', caught.exception.code)
 
     def test_shared_desktop_releases_owned_subscription_without_process_signals(self):
         service, native, writers = self.service()
@@ -197,6 +269,7 @@ class HandoffTests(unittest.TestCase):
 
     def test_subscription_release_ticket_is_bound_to_writer_generation(self):
         service, native, writers = self.service()
+        native.status = lambda: {'connected': True, 'runtime': 'desktop', 'desktopShared': True}
         service._joined.add(TID)
         preview = service.preview_handoff(TID, 'release', 'phone')
         native.generation = 'different-writer'
@@ -207,6 +280,7 @@ class HandoffTests(unittest.TestCase):
 
     def test_uncertain_unsubscribe_keeps_release_intent_and_never_replays(self):
         service, native, writers = self.service()
+        native.status = lambda: {'connected': True, 'runtime': 'desktop', 'desktopShared': True}
         service._joined.add(TID)
         preview = service.preview_handoff(TID, 'release', 'phone')
         native.request = Mock(side_effect=CodexError('disconnected after dispatch', request_sent=True))
@@ -263,6 +337,42 @@ class PreviewTests(unittest.TestCase):
         ticket = manager.preview(TID, 'phone', 'takeover')['ticket']
         manager.clock = lambda: 121
         with self.assertRaises(CodexError): manager.consume(TID, 'phone', 'takeover', ticket, True)
+
+    def test_exited_children_do_not_invalidate_preview_but_new_children_do(self):
+        for added in (False, True):
+            manager, snapshot = self.manager()
+            child = {'pid': 456, 'start': 'start', 'command': 'tool', 'executable': '/tool'}
+            snapshot['holders'][0]['children'] = [child]
+            manager.snapshot.return_value = copy.deepcopy(snapshot)
+            ticket = manager.preview(TID, 'phone', 'release')['ticket']
+            snapshot['holders'][0]['children'] = [{**child, 'pid': 789}] if added else []
+            manager.snapshot.return_value = snapshot
+            if added:
+                with self.assertRaises(CodexError): manager.consume(TID, 'phone', 'release', ticket, True)
+            else:
+                self.assertEqual(123, manager.consume(TID, 'phone', 'release', ticket, True)['holders'][0]['pid'])
+
+    def test_surviving_previewed_child_is_stopped_after_parent_exits(self):
+        manager, snapshot = self.manager()
+        child = {'pid': 456, 'start': 'start', 'command': 'tool', 'executable': '/tool'}
+        snapshot['holders'][0]['children'] = [child]
+        manager.snapshot.return_value = {'threadId': TID, 'holders': []}
+        manager.identity = Mock(return_value=child)
+        manager.busy = Mock(return_value=False)
+        with patch('rivo_relay.codex.writers.os.kill') as kill:
+            manager.terminate(snapshot)
+        import signal
+        kill.assert_called_once_with(456, signal.SIGKILL)
+
+    def test_already_released_lock_completes_without_signals(self):
+        manager, snapshot = self.manager()
+        ticket = manager.preview(TID, 'phone', 'release')['ticket']
+        manager.snapshot.return_value = {'threadId': TID, 'holders': []}
+        current = manager.consume(TID, 'phone', 'release', ticket, True)
+        manager.busy = Mock(return_value=False)
+        with patch('rivo_relay.codex.writers.os.kill') as kill:
+            manager.terminate(current)
+        kill.assert_not_called()
 
     def test_restart_rejects_arbitrary_command_or_different_socket(self):
         manager, snapshot = self.manager()

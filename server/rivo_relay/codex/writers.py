@@ -130,13 +130,35 @@ class WriterProcesses:
                 'requiresConfirmation': len(affected) > 1, 'affectedThreadIds': affected,
                 'processIds': [h['pid'] for h in snapshot['holders']], 'childProcessCount': sum(len(h['children']) for h in snapshot['holders'])}
 
+    @staticmethod
+    def compatible(expected, current, *, releasing=False):
+        """Allow natural shutdown within the preview; never widen its scope."""
+        if current['threadId'] != expected['threadId']:
+            return False
+        old = {h['pid']: h for h in expected['holders']}
+        if not releasing and set(old) != {h['pid'] for h in current['holders']}:
+            return False
+        for holder in current['holders']:
+            previous = old.get(holder['pid'])
+            if previous is None:
+                return False
+            if any(holder[key] != previous[key] for key in ('pid', 'start', 'command', 'executable')):
+                return False
+            if (not set(holder['threads']) <= set(previous['threads']) if releasing
+                    else set(holder['threads']) != set(previous['threads'])):
+                return False
+            if any(child not in previous['children'] for child in holder['children']):
+                return False
+        return True
+
     def consume(self, thread_id, owner, action, ticket, confirmed):
         with self._lock:
             item = self._tickets.pop(ticket, None)
         if not item or self.clock() >= item['expires'] or item['owner'] != owner or item['action'] != action or item['snapshot']['threadId'] != thread_id:
             raise conflict('交接预览已失效，请重新操作')
         expected = item['snapshot']
-        if self.snapshot(thread_id) != expected:
+        current = self.snapshot(thread_id)
+        if not self.compatible(expected, current, releasing=action == 'release'):
             raise conflict('持锁进程或关联会话已变化，请重新确认')
         affected = {thread_id, *(t for h in expected['holders'] for t in h['threads'])}
         if len(affected) > 1 and confirmed is not True:
@@ -145,9 +167,11 @@ class WriterProcesses:
 
     def terminate(self, snapshot):
         # Revalidate after other preflight work, immediately before sending a signal.
-        if self.snapshot(snapshot['threadId']) != snapshot:
+        current = self.snapshot(snapshot['threadId'])
+        if not self.compatible(snapshot, current, releasing=True):
             raise conflict('持锁进程已变化，未结束任何进程')
-        for holder in snapshot['holders']:
+        approved_children = [child for holder in snapshot['holders'] for child in holder['children']]
+        for holder in current['holders']:
             pid = holder['pid']
             try:
                 os.kill(pid, signal.SIGTERM)
@@ -162,14 +186,14 @@ class WriterProcesses:
                     os.kill(pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-            # Native shutdown normally reaps tools. Reap only verified descendants
-            # that survived, never a process group or a newly reused PID.
-            for child in reversed(holder['children']):
-                if self.identity(child['pid']) == child:
-                    try:
-                        os.kill(child['pid'], signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+        # Preserve the preview's descendants even if their parent exits naturally.
+        # Reap only the same verified processes, never reused PIDs or new children.
+        for child in reversed(approved_children):
+            if self.identity(child['pid']) == child:
+                try:
+                    os.kill(child['pid'], signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
         deadline = self.clock() + 5
         while self.busy(snapshot['threadId']):
             if self.clock() >= deadline:

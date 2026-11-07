@@ -46,6 +46,7 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
             Text("$nodeName · " + when (control.state) {
                 ControlState.WRITABLE -> if (runtime?.optBoolean("desktopShared") == true) "可操作 · Desktop 共享" else "可操作"
                 ControlState.EXTERNAL -> "当前 App 无操作权限 · 外部 Codex 占用"
+                ControlState.RELEASE_PENDING -> "写权限释放尚未确认"
                 ControlState.RELEASED -> "当前 App 无操作权限 · 已主动释放"
                 ControlState.WORKSPACE_UNAVAILABLE -> "当前会话不可操作 · 工作目录不可用"
                 ControlState.UNKNOWN -> "操作权限待确认 · 正在等待同步"
@@ -56,7 +57,7 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
             control.action?.takeUnless { it == "takeover" }?.let { action ->
                 if (onAction != null) TextButton(onClick = { onAction(action) }, enabled = !busy && confirmedNow,
                     modifier = Modifier.testTag("writer_action")) {
-                    Text(if (busy) "处理中…" else when (action) { "resume" -> "恢复操作"; "takeover" -> "强制接管"; else -> "释放权限" })
+                    Text(if (busy) "处理中…" else when (action) { "resume" -> "恢复操作"; "takeover" -> "强制接管"; else -> if (control.state == ControlState.RELEASE_PENDING) "继续释放" else if (runtime?.optBoolean("desktopShared") == true) "释放订阅" else "释放权限" })
                 }
             }
         }

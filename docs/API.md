@@ -29,7 +29,7 @@
 
 `runtime` 包含连接方式、runtimeId、generation、runtimeMode、preferredWriter 与 bridge 就绪/验证状态。只有已验证的 Desktop 桥接连接可报告 `desktopShared=true`；普通 daemon 或未知状态不能推断为 Desktop 共享。`capabilities.media/speech` 明确广告可用媒体/语音能力，缺省字段不能推断支持。
 
-添加项目时，省略 `folderName` 表示添加已有目录；提供它则在 path 下新建单层文件夹并添加项目。名称不能是 `.`、`..` 或包含路径分隔符、NUL。Git 信息中的 refs 最多包含当前 HEAD 和 200 条本地/远程分支；`worktreeRef` 使用其 commit ID，不传用户拼接的工作树路径。`outstandingWorkCount` 统计项目中的原生活跃会话，不包含 Relay 等待队列。
+添加项目时，省略 `folderName` 表示添加已有目录；提供它则在 path 下新建单层文件夹并添加项目。名称不能是 `.`、`..` 或包含路径分隔符、NUL。Git 信息中的 refs 最多包含当前 HEAD 和 200 条本地/远程分支；`worktreeRef` 使用其 commit ID，不传用户拼接的工作树路径。`outstandingWorkCount` 按会话去重统计原生执行中、持续目标 active 或存在 Relay 队列的会话；目标在轮次间隔或外部运行时持有时仍计入。`runningTurnCount` 仅统计当前原生活跃线程，`activeGoalCount` 统计持续目标 active 的会话。
 
 额度对象保留原生 `rateLimits` / `rateLimitsByLimitId`、窗口 `usedPercent`、`windowDurationMins`、`resetsAt` 等字段。缺失值表示尚无数据，不能推断剩余 100%。账户额度与下述单会话 `tokenUsage` 是不同数据。
 
@@ -290,6 +290,14 @@ No automatic original-instruction replay. A shared-process confirmation is requi
 for release as well as takeover. Changed/expired previews must be fetched again.
 
 
+### 未持久化空会话的释放保护
+
+独立 writer 的释放预览和执行可能返回 `409 thread_unmaterialized`：原生首条消息尚未持久化，关闭进程会使该原生 ID 无法恢复。此错误保留 writer、会话和队列状态；在真实首条消息持久化后可再次释放。不能把此结果显示为“已释放”。
+
+### App 独立 writer
+
+`auto`/`app_server` 下，App 会话使用独立 writer。其 release 预览返回 `releaseScope=session-writer`，影响范围仅目标会话；执行会暂停该会话队列、中断任务、关闭 writer 并核验 OS 锁。断线必须明确恢复，旧审批不会路由到新 writer。空闲会话的 GET 不取得写锁，`writerOwner=none` 且 `control.canOperate=true` 表示允许首次执行，`control.action=null` 表示尚无 Relay writer 可释放。外部 writer 与旧共享 daemon 仍使用上文影响范围确认。
+
 ## Desktop 与原生历史能力（2026-11-07）
 
 运行模式：`--codex-runtime auto|desktop|app_server`，桥接目录参数 `--desktop-bridge-dir`。`/v1/node.runtime` 提供所选 writer、桥接可用/就绪、验证状态；会话快照 `nativeRuntime` 绑定该 thread 的实际 writer。原生历史修复通过实际节点执行，`nativeSync.state` 为 ready/converging/unavailable；收敛期间暂停分页，修复成功发送 `relay/historyInvalidated` 并改变 nativeRevision。旧游标不得继续使用。所有原生写入仍受稳定 submission ID 与 writer 边界约束。
@@ -320,7 +328,7 @@ for release as well as takeover. Changed/expired previews must be fetched again.
 媒体记录含 `id,source,threadId,turnId,itemId,status,mediaType,mimeType,favorite,hasGenerationInfo,originalUrl,thumbnailUrl`；API相对URL只在当前认证节点使用，不能当作远端原生文件路径。pending记录不能用于读取成品。公网图片40MiB，原生生成图片64MiB，媒体传输上限1GiB；缓存2GiB/24小时。ASR通过 `RIVO_SPEECH_BACKEND_URL` / `RIVO_SPEECH_BACKEND_TOKEN` 显式配置，不自动部署模型或服务。
 
 
-进程级 ownership takeover 仅适用于已核实的本地主机 daemon，描述符、原生HOME、PID启动时间/二进制/socket在预览和执行时重复核对。已有本连接订阅的 release 使用 `thread/unsubscribe`，返回 `releaseScope=relay-subscription`，Desktop/远程均不杀进程，也不宣称释放了其他客户端的锁。`nativeRuntime.handoffAvailable` 仅表达强制接管能力；正常释放不依赖该值。
+进程级 ownership takeover 仅适用于已核实的本地主机 daemon，描述符、原生HOME、PID启动时间/二进制/socket在预览和执行时重复核对。显式共享 Desktop 模式已有本连接订阅的 release 使用 `thread/unsubscribe`，返回 `releaseScope=relay-subscription`，Desktop/远程均不杀进程，也不宣称释放了其他客户端的锁。`nativeRuntime.handoffAvailable` 仅表达强制接管能力；正常释放不依赖该值。
 
 ### 会话权限选择
 

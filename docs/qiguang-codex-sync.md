@@ -53,7 +53,7 @@
 这些差异不能标为“所有细节已经一致”：
 
 - 当前仓库包含 Desktop 客户端与宿主适配模块，QiGuang 源仓库本身未包含宿主加载器。已安装 Desktop 没有发现该桥接加载入口；本次未修改或注入应用。需要宿主集成实际持有的 AppServerConnection 才能启用真实 Desktop 共享，普通 daemon 连接不冒称 Desktop 已接通。详见 [桥接说明](codex-desktop-bridge.md)。
-- Relay 的进程交接可能影响同 PID 的多个会话，必须保留其真实影响范围确认；不能套用 QiGuang 每会话独立 writer 的释放承诺。
+- 外部或旧版共享 daemon 的进程交接可能影响同 PID 的多个会话，仍保留真实影响范围确认。新 App 会话使用独立 writer，释放范围仅为目标会话，详见下方独立 writer 补齐记录。
 - Relay 继续使用认证配对、stable submission 核对和自己的队列存储。没有把 QiGuang sidecar 的旧任务、历史或 token 复制到 Relay；不会以相似正文匹配原生身份。
 - ASR 只接入管理员配置的现有服务，不部署或下载模型；真实麦克风/ASR质量和真实 Desktop 双向接续仍需设备验收。通用助手、Manager、TTS自动播报和壁纸生成不属于本次 Codex 范围。源版 Codex 输入分支没有通用助手的自动TTS流程。详见 [语音说明](codex-voice-input.md)。
 - 显示 overlay 独立持久化（每节点最多 64 条、64 MiB），它不构成第二份完整聊天数据库，也不能提供执行权限。源文档部分描述等待项同时出现在气泡和队列中，实际最新版 `CodexChatTimelineProjection` 已将 waiting 项只展示在队列，本次按实际代码迁移。
@@ -63,3 +63,41 @@
 编译、服务端回归、Android 单元测试和模拟器定向交互的最终结果记录在 `docs/validation.md` 的本次条目。截图和构建产物位于忽略目录 `workspace/artifacts/qiguang-codex-sync-20261107/`。
 
 真实 Desktop 双向接续、多个实际节点、Windows 和真实设备的运行验收不由这些测试替代。本次没有更新 LaunchAgent、部署远端 Relay、发布或安装到实体手机，也没有提交或推送 Git。
+
+## 释放写权限语义核对（此前共享 daemon 的兼容路径）
+
+`QiGuang-Next/qiguang/server/qiguang_codex.py` 的 `release_session_writer` 会取消当前会话任务、关闭独立 gateway / writer 输入，并等待 writer 收敛；`_close_gateway` 会终止其独立进程。它不是单纯取消订阅。
+
+Relay 普通 app-server 的释放现改用已核验的进程交接路径：预览全部受影响会话，显式确认后结束持锁进程，检查写锁后才返回成功。`thread/unsubscribe` 仅保留给共享 Desktop 的“释放订阅”，不能承诺释放 Desktop 自己的 writer。Relay 共用 daemon 的多会话影响范围与 QiGuang 独立 writer 不同，不能跳过确认直接关闭共享进程。
+
+进一步补齐释放闭环：释放前以持久标记暂停受影响会话的自动 resume/队列派发；先尝试中断本节点已知运行 turn，中断失败仍继续已确认的进程关闭。释放路径不要求 daemon 可重建、不主动重启或 resume。所有影响范围的锁检查完成后才标记 verified，失败保留暂停标记并显示继续释放；成功清除对应审批请求、运行缓存并通知历史失效。等待任务保留供用户后续处理，不自动重发原任务。
+
+预览允许已确认进程/工具自然退出，不允许新增进程、PID 身份变化或范围扩大；原父进程自然退出后仍核验并清理预览内存活子进程。对共享 Desktop 仅释放 Relay 订阅，不终止 Desktop；远程或未核验主机不套用本机 PID。以上是对共享 daemon 的适配，不是 QiGuang 单会话 writer 隔离架构的完整复制。
+
+## writer 状态与失败边界复核（2026-11-07，第二轮）
+
+在独立 writer 实现基础上补齐以下遗漏：
+
+- 初始化或创建 RPC 期间关闭服务：跟踪尚未登记的子进程，阻止迟到成功结果重新登记；一个关闭失败仍继续清理其他 writer 和公共连接。
+- 创建失败和辅助 RPC 完成：即使没有 EOF 也显式退休审批命名空间；恢复返回错误 thread ID 时关闭该连接。
+- 审批回复与同会话释放串行；失败重试仅保留给仍连接且未退休的原 writer。
+- 通知队列饱和仍保证断线通知入队，使对应运行状态与审批失效。
+- 父进程先退出时仍清理独立进程组内的命令子进程；重复关闭不重复发送信号。stdio 写入有超时，半条 JSON 写入失败即关闭传输；输出按上限读取并关闭流。
+- 释放失败保留具体错误和队列暂停状态。
+- 空会话释放保护：首条消息尚未持久化时，关闭 writer 会使原 ID 无法恢复。预览和执行均核验公共连接可读的原生历史；无法证明时返回 `thread_unmaterialized`（409），保留 writer。首条消息结果不确定时仍保留待核验标记。原生空会话遭进程崩溃后不能承诺恢复原 ID，不通过伪造历史或发送假消息补偿。
+
+本轮服务端完整 385 项测试通过，最后的流资源清理改动另经 27 项定向回归通过。真实隔离环境验证父进程退出后的子进程清理、A/B 释放隔离与恢复、空会话拒绝释放后仍可操作。本轮没有改 Android 实现，未新增真机验收，未部署或发布。证据位于 `workspace/artifacts/codex-parity-reaudit/` 的 `server-boundary-tests.log`、`service-writers.json` 与 `empty-writer.json`。
+
+## 独立 writer 补齐（2026-11-07，第一轮）
+
+本轮逐项参考本机 QiGuang-Next `1642fc810f543a7995ca334e0e4916c20968d858` 的 gateway 创建、释放和只读会话查询。保留已有 Rivo goals、权限策略、持久队列、stable submission、多节点、更新入口与媒体能力；未覆盖此前会话的未提交改动。
+
+- `app_server` 和 `auto` 下，App 创建/执行/恢复的每个会话使用独立 stdio app-server 子进程，原生二进制和 CODEX_HOME 由所选本机 daemon 的 socket/PID/数据库证据核验。公共连接只执行明确列出的只读 RPC；其他无会话操作使用短生命周期隔离进程，未知会话写请求拒绝执行。
+- 仅查看空闲会话不 resume、不取写锁。首次明确执行取得 writer；观察到外部持锁时显示只读。执行前仍由原生锁判定竞争结果。未读取到的原生设置不伪造默认值。
+- 释放先持久暂停目标会话队列，再中断目标 turn、关闭对应 writer，实际 OS 写锁空闲才返回成功。其他会话与公共 daemon 不关闭；释放失败保留暂停状态。
+- 审批身份包含 writer 代数，同名原生 request ID 不串会话。断线清理仅影响该 writer 的审批和实时缓存，迟到事件不能复活旧状态；恢复必须明确操作，不自动重放结果未知的 turn。历史 helper 绑定实际 writer 主机与进程身份。
+- `auto` 不再因为发现 Desktop 桥接而自动把 App 写入切回共享 Desktop。显式 `desktop` 模式仍是用户选择的共享订阅，释放只退订，不能标成独立 writer 的 OS 写锁释放。外部持锁者接管仍走已核验的预览/影响范围确认。
+
+边界：当前独立子进程要求可证明的本机原生 HOME；转发 socket 不冒充本机进程，也不退回共享连接写入。远端应由该节点自己的 Relay 创建 writer；单纯转发 socket 的远程独立 writer 执行尚未实现；所有权无法核实时保持只读查询，标记 `writerOwner=unknown`。
+
+验证：服务端 376 项回归通过；Android 199 项 JVM 测试、androidTest 编译及 lint 通过。使用临时 CODEX_HOME 和本机真实 Codex 二进制验证了 A/B 不同 PID、释放 A 后 B 与公共 daemon 存活、实际锁空闲、A 明确恢复后更换 PID，以及历史 `ready`。测试模型仅指向本机拒绝连接的 fixture，不调用真实模型、不触碰用户会话。证据在 `workspace/artifacts/codex-parity-reaudit/`。未部署生产节点、未发布 APK、未进行本轮真机验证；此记录不代表其余 Codex UI/媒体全量对照已完成。

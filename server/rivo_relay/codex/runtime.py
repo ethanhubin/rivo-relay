@@ -15,7 +15,10 @@ class RuntimeConnection:
         if mode not in {'auto', 'desktop', 'app_server'}:
             raise ValueError('invalid Codex runtime mode')
         self.mode, self.on_event, self._clock = mode, on_event or (lambda _: None), clock
-        self.native = native or NativeConnection(socket_path, codex_home=codex_home)
+        if native is None:
+            from .owned_writer import SessionWriters
+            native = SessionWriters(NativeConnection(socket_path, codex_home=codex_home))
+        self.native = native
         self.desktop = desktop or DesktopConnection(bridge_directory, codex_home=codex_home)
         self.codex_home, self.socket_path = self.native.codex_home, self.native.socket_path
         self.generation = uuid.uuid4().hex
@@ -75,6 +78,12 @@ class RuntimeConnection:
         except CodexError:
             pass
         self._observe_backend_generation('desktop')
+        # With per-session ownership, auto discovery must not silently route an
+        # App-created/resumed thread back into Desktop's shared writer. Explicit
+        # desktop mode remains available for intentional Desktop sharing.
+        if self.native.status().get('sessionIsolation'):
+            self._preferred = 'app_server'
+            return
         ready = self.desktop.status().get('connected', False)
         native_ready = self.native.status().get('connected', False)
         if ready and native_ready:
@@ -168,7 +177,28 @@ class RuntimeConnection:
         with self._lock:
             self._refresh()
             selected = self._pins.setdefault(thread_id, self._preferred)
-            return self._backend(selected)
+            backend = self._backend(selected)
+            bind = getattr(backend, 'history_host_connection', None)
+            return bind(thread_id) if bind else backend
+
+    def owns_writer(self, thread_id):
+        return self._pins.get(thread_id, self._preferred) == 'app_server' and getattr(self.native, 'owns', lambda _: False)(thread_id)
+
+    def writer_owner(self, thread_id):
+        if self._pins.get(thread_id, self._preferred) == 'app_server':
+            inspect = getattr(self.native, 'writer_owner', None)
+            return inspect(thread_id) if inspect else None
+        return None
+
+    def release_writer(self, thread_id, expected):
+        return self.native.release(thread_id, expected)
+
+    def verify_release_history(self, thread_id):
+        metadata = getattr(self.native, 'metadata', None)
+        if metadata is not None:
+            metadata.request('thread/read', {'threadId': thread_id, 'includeTurns': False})
+            metadata.request('thread/turns/list', {'threadId': thread_id, 'limit': 1,
+                                                 'sortDirection': 'desc', 'itemsView': 'full'})
 
     def _event(self, name, event):
         backend = self._backend(name)
@@ -189,6 +219,14 @@ class RuntimeConnection:
                 key = f'{name}:{backend.generation}:{type(native_id).__name__}:{native_id}'
                 self._requests.pop(key, None)
                 forwarded['params'] = {**event.get('params', {}), 'requestId': key}
+            if event.get('method') == 'relay/writerDisconnected':
+                expired = []
+                native_expired = set(event.get('params', {}).get('requestIds', []))
+                for key, value in list(self._requests.items()):
+                    if value[0] == name and value[2] in native_expired:
+                        expired.append(key)
+                        self._requests.pop(key, None)
+                forwarded['params'] = {**event.get('params', {}), 'requestIds': expired}
             if event.get('method') == 'relay/nativeDisconnected':
                 expired = [key for key, value in self._requests.items() if value[0] == name]
                 self._requests = {key: value for key, value in self._requests.items() if value[0] != name}
@@ -204,5 +242,7 @@ class RuntimeConnection:
 
     def close(self):
         self._closed = True
-        self.desktop.close()
-        self.native.close()
+        try:
+            self.desktop.close()
+        finally:
+            self.native.close()

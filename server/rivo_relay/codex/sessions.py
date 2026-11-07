@@ -69,6 +69,7 @@ class CodexService:
         self._settings = {}
         self._created = {}
         self._materializing = {}
+        self._unmaterialized = set()
         self._joined = set()
         self._handoff_workspaces = OrderedDict()
         self._handoff_hosts = OrderedDict()
@@ -78,7 +79,7 @@ class CodexService:
         self.observations = None
         self.workspaces = None
         self._observed = OrderedDict()
-        if connection is None and runtime_mode != 'app_server':
+        if connection is None:
             from .runtime import RuntimeConnection
             connection = RuntimeConnection(socket_path, self._event, codex_home,
                                            mode=runtime_mode, bridge_directory=desktop_bridge_dir)
@@ -88,11 +89,13 @@ class CodexService:
         self.writers = WriterProcesses(getattr(self.connection, 'codex_home', codex_home or Path.home() / '.codex'))
         self._handoff_log = self.writers.home / 'rivo-handoff-runtime.log'
         self.projects = ProjectCatalog(self.connection)
+        self.projects.goal_provider = lambda thread_id: self.read_goal(thread_id).get('goal')
         self.projects.external_worktrees = ExternalWorktrees(self.connection, self._observe, self.observations_for)
         self.review_guard = ReviewGuard(self.connection, self._observe, self.observations_for, self._forget_observation)
         self.interactions = Interactions(self.connection)
         self.history_adapter = NativeHistoryAdapter()
         self.native_journal = NativeJournal(self.connection, self.history_adapter, self._history_repaired)
+        self.projects.execution_provider = self._external_execution
         self.model_catalog = ModelCatalog(self._load_models, lambda: str(self.connection.generation))
 
     def _history_repaired(self, thread_id, result):
@@ -158,6 +161,7 @@ class CodexService:
                 self._created.clear()
                 self._materializing.clear()
                 self._joined.clear()
+                self._unmaterialized.clear()
                 self._active.clear()
                 self._live.clear()
                 self._pending_terminal.clear()
@@ -165,7 +169,7 @@ class CodexService:
         return status
 
     def close(self):
-        # Closing this client never stops the shared daemon or its turns.
+        # Close only Relay-owned session writers; never terminate the metadata daemon.
         self.connection.close()
 
     def status(self):
@@ -184,6 +188,9 @@ class CodexService:
         reason = '实际运行节点尚未确认，不能执行进程级交接'
         if not status.get('connected'):
             reason = '原生运行时尚未连接，不能执行进程级交接'
+        elif status.get('ownedWriter'):
+            available = True
+            reason = ''
         elif status.get('runtime') == 'desktop' or status.get('desktopShared') is True:
             reason = '共享 Desktop 不支持进程级接管；当前会话可以正常停止或释放订阅'
         else:
@@ -248,6 +255,9 @@ class CodexService:
         project = self.projects.add(path, name=name, idempotency_key=idempotency_key, trust_confirmed=trust_confirmed)
         return {"projectId": project["id"]}
 
+    def _external_execution(self, threads):
+        return self.native_journal.execution_states([t['id'] for t in threads if thread_status(t) == 'unknown'])
+
     def list_sessions(self, project_id, archived=False):
         self.start()
         project = self.projects.get(project_id)
@@ -272,9 +282,10 @@ class CodexService:
         if self.workspaces:
             with self.workspaces.db.read() as c:
                 managed = {row['thread_id']: dict(row) for row in c.execute('SELECT * FROM workspaces WHERE project_id=?', (project_id,))}
+        external = self._external_execution(list(by_id.values()))
         statuses = {t["id"]: ("waiting" if self.interactions.list(t["id"]) else
                     "running" if (self.read_goal(t["id"]).get("goal") or {}).get("status") == "active"
-                    else thread_status(t)) for t in by_id.values()}
+                    else external.get(t['id'], thread_status(t))) for t in by_id.values()}
         return [{"id": t["id"], "name": t.get("name") or t.get("preview") or "新会话",
                  "preview": t.get("preview", ""), "status": statuses[t["id"]],
                  "pinned": str((t.get("section") or {}).get("name", "")).casefold() == "pinned",
@@ -386,13 +397,25 @@ class CodexService:
         # No cwd/model/permission values are supplied.
         read_only = False
         workspace_unavailable = False
+        writer_owner = None
         try:
             workspace = self.workspaces.row(thread_id) if self.workspaces else None
             if workspace and workspace['status'] != 'ready':
                 # A removed managed worktree does not erase its native history.
                 # Reading must not resume the thread into a missing/rebound cwd.
                 raise CodexError('工作树不可执行', code='workspace_unavailable', http_status=409)
-            thread = self._resume(thread_id)
+            ownership = self.observations_for(thread_id).get(('ownership', ''), {})
+            if ownership.get('released'):
+                raise CodexError('会话已主动释放', code='writer_released', http_status=409)
+            inspect_owner = getattr(self.connection, 'writer_owner', None)
+            writer_owner = inspect_owner(thread_id) if inspect_owner else None
+            if writer_owner in ('none', 'external', 'unknown'):
+                # Viewing an idle thread must not acquire its writer. The first
+                # explicit execution/resume acquires and rechecks ownership.
+                thread = self.connection.request('thread/read', {'threadId': thread_id, 'includeTurns': False})['thread']
+                read_only = writer_owner != 'none'
+            else:
+                thread = self._resume(thread_id)
         except CodexError as error:
             workspace_unavailable = error.code == 'workspace_unavailable' or missing_workspace(error)
             if not workspace_unavailable and error.code != 'writer_released' and (error.code != "native_rejected" or "already has an active writer" not in str(error)):
@@ -415,7 +438,8 @@ class CodexService:
                            if t.get("status") == "inProgress"), None)
         goal_state = self.read_goal(thread_id)
         goal_active = (goal_state.get("goal") or {}).get("status") == "active"
-        status = "waiting" if requests else ("running" if active or goal_active else thread_status(thread))
+        external = self._external_execution([thread]) if not active and not goal_active else {}
+        status = "waiting" if requests else ("running" if active or goal_active else external.get(thread_id, thread_status(thread)))
         observations = self.observations_for(thread_id)
         latest_turn = thread['turns'][-1] if thread['turns'] else {}
         plan = observations.get(('plan', active or latest_turn.get('id', '')))
@@ -437,6 +461,14 @@ class CodexService:
         control = control_projection(read_only=read_only,
             released=bool(observations.get(('ownership', ''), {}).get('released')),
             workspace_unavailable=workspace_unavailable, runtime=runtime)
+        if writer_owner == 'none' and not read_only:
+            control['action'] = None
+        ownership = observations.get(('ownership', ''), {})
+        if ownership.get('released') and not runtime.get('desktopShared'):
+            phase = ownership.get('releaseState', 'unverified')
+            if phase in ('pending', 'failed', 'unverified') and not ownership.get('externalWriter'):
+                control = {'state': 'release_pending', 'canOperate': False, 'action': 'release',
+                           'unavailableReason': ownership.get('releaseError') or '释放尚未确认，请继续释放并核验实际写锁'}
         if control.get('action') == 'resume' and observations.get(('ownership', ''), {}).get('externalWriter'):
             control = control_projection(read_only=True, released=False,
                 workspace_unavailable=workspace_unavailable, runtime=runtime)
@@ -447,7 +479,7 @@ class CodexService:
                 "backwardsCursor": history["backwardsCursor"],
                 "nativeRevision": history['nativeRevision'], "nativeSync": history['nativeSync'],
                 'nativeRuntime': runtime,
-                "writerOwner": 'none' if observations.get(('ownership', ''), {}).get('released') or (workspace and workspace['status'] != 'ready') else 'external' if read_only else 'relay',
+                "writerOwner": 'none' if observations.get(('ownership', ''), {}).get('released') or (workspace and workspace['status'] != 'ready') else writer_owner or ('external' if read_only else 'relay'),
                 'workspaceUnavailable': workspace_unavailable, 'workspaceRebind': rebind,
                 'reviewDiagnostics': review_diagnostics,
                 **execution_projection(status, queue, read_only=read_only, requests=requests)}
@@ -484,6 +516,7 @@ class CodexService:
             if turns:
                 with self._lock:
                     self._materializing.pop(thread_id, None)
+                    self._unmaterialized.discard(thread_id)
         except CodexError as error:
             if self._materializing_thread(thread_id) is not None and awaiting_rollout(error):
                 result = {"turns": [], "nextCursor": None, "backwardsCursor": None,
@@ -543,6 +576,7 @@ class CodexService:
                 raise
             with self._lock:
                 self._created[thread_id] = copy.deepcopy(result["thread"])
+                self._unmaterialized.add(thread_id)
                 self._joined.add(thread_id)
                 self._settings[thread_id] = self._settings_from(result)
             receipt = {"threadId": thread_id}
@@ -705,12 +739,33 @@ class CodexService:
                 raise CodexError("Codex 没有返回可核对的 turn ID", code="native_protocol", request_sent=True)
             return {"threadId": thread_id, "turnId": result.get("turnId")}
 
+    def _verify_release_history(self, thread_id):
+        with self._lock:
+            materializing = thread_id in self._unmaterialized or thread_id in self._created or thread_id in self._materializing
+        verify = getattr(self.connection, 'verify_release_history', None)
+        if materializing and verify:
+            try:
+                verify(thread_id)
+                with self._lock:
+                    self._unmaterialized.discard(thread_id)
+            except CodexError as error:
+                raise CodexError('会话尚未形成可恢复的原生历史，暂不能关闭 writer；当前会话已保留，请在首条消息持久化后重试',
+                                 code='thread_unmaterialized', http_status=409) from error
+
     def preview_handoff(self, thread_id, action, owner):
         self.start()
         with self._lock:
             joined = thread_id in self._joined
-        if action == 'resume' or (action == 'release' and joined):
-            connection = self._thread_connection(thread_id)
+        connection = self._thread_connection(thread_id)
+        status = connection.status()
+        shared_desktop = status.get('runtime') == 'desktop' or status.get('desktopShared') is True
+        # Unsubscribing a daemon connection does not relinquish its writer lock.
+        # Only shared Desktop uses subscription release; local daemons must go
+        # through verified process handoff with the complete impact preview.
+        owned = getattr(self.connection, 'owns_writer', lambda _: False)(thread_id)
+        if action == 'release' and owned:
+            self._verify_release_history(thread_id)
+        if action == 'resume' or (action == 'release' and (owned or (joined and shared_desktop))):
             ticket = secrets.token_urlsafe(32)
             with self._lock:
                 self._subscription_releases[ticket] = {'threadId': thread_id, 'owner': owner, 'operation': action,
@@ -719,7 +774,7 @@ class CodexService:
                 while len(self._subscription_releases) > 128:
                     self._subscription_releases.popitem(last=False)
             return {'ticket': ticket, 'threadId': thread_id, 'operation': action,
-                    'releaseScope': 'relay-subscription', 'requiresConfirmation': False,
+                    'releaseScope': 'session-writer' if owned else 'relay-subscription', 'requiresConfirmation': False,
                     'affectedThreadIds': [thread_id], 'affectedThreads': [{'id': thread_id, 'title': thread_id}],
                     'processIds': [], 'childProcessCount': 0, 'workspaceRebind': None}
         connection, descriptor = self._handoff_connection(thread_id)
@@ -727,6 +782,9 @@ class CodexService:
         rebind = self._workspace_rebind(thread, require_target=True) if action == 'takeover' else None
         preview = self.writers.preview(thread_id, owner, action)
         preview['workspaceRebind'] = rebind
+        if action == 'release':
+            preview['releaseScope'] = 'writer-process'
+            preview['requiresConfirmation'] = True
         if rebind:
             preview['requiresConfirmation'] = True
         with self._lock:
@@ -757,6 +815,37 @@ class CodexService:
                 or preview['connection'] is not connection or preview['generation'] != str(connection.generation)
                 or preview['expires'] < time.monotonic()):
             raise CodexError('释放订阅预览已失效，请重新操作', code='handoff_changed', http_status=409)
+        if getattr(self.connection, 'owns_writer', lambda _: False)(thread_id):
+            self._verify_release_history(thread_id)
+            if self.observations:
+                self.observations.put(thread_id, 'ownership', '', {'released': True, 'releaseState': 'pending'})
+            self._observe(thread_id, 'ownership', '', {'released': True, 'releaseState': 'pending'})
+            # Stop only this writer's active turn, then close its input/process.
+            # Interruption rejection/timeout cannot suppress an explicit release.
+            with self._lock:
+                active = self._active.get(thread_id)
+            if active:
+                try:
+                    connection.request('turn/interrupt', {'threadId': thread_id, 'turnId': active}, timeout=3)
+                except CodexError:
+                    pass
+            try:
+                self.connection.release_writer(thread_id, connection)
+            except Exception as error:
+                self._observe(thread_id, 'ownership', '', {'released': True, 'releaseState': 'failed', 'releaseError': str(error)})
+                raise
+            self.interactions.discard_thread(thread_id)
+            with self._lock:
+                self._joined.discard(thread_id)
+                self._created.pop(thread_id, None)
+                self._materializing.pop(thread_id, None)
+                self._settings.pop(thread_id, None)
+                self._active.pop(thread_id, None)
+                self._live = OrderedDict((key, value) for key, value in self._live.items() if key[0] != thread_id)
+                self._pending_terminal = {key for key in self._pending_terminal if key[0] != thread_id}
+            self._observe(thread_id, 'ownership', '', {'released': True, 'releaseState': 'released'})
+            self.on_event({'method': 'relay/ownershipChanged', 'params': {'threadId': thread_id}})
+            return {'threadId': thread_id, 'released': True, 'releaseScope': 'session-writer', 'affectedThreadIds': [thread_id]}
         # Freeze automatic queue/resume before dispatch. An uncertain response
         # must keep this intent rather than reacquiring the writer automatically.
         self._observe(thread_id, 'ownership', '', {'released': True})
@@ -812,6 +901,51 @@ class CodexService:
             return None
         return {'path': roots[0], 'missingPath': path}
 
+    def _release_process_writer(self, thread_id, snapshot, affected):
+        # The released bit is the persistent queue/resume fence, not proof of unlock.
+        def mark(phase, error=None):
+            for target in affected:
+                payload = {'released': True, 'releaseState': phase}
+                if error:
+                    payload['releaseError'] = str(error)
+                if self.observations:
+                    self.observations.put(target, 'ownership', '', payload)
+                self._observe(target, 'ownership', '', payload)
+                self.on_event({'method': 'relay/ownershipChanged', 'params': {'threadId': target}})
+        mark('pending')
+        try:
+            for target in affected:
+                with self._lock:
+                    active = self._active.get(target) if target in self._joined else None
+                if active:
+                    try:
+                        self.connection.request('turn/interrupt', {'threadId': target, 'turnId': active}, timeout=3)
+                    except CodexError:
+                        # A wedged RPC must not block the already confirmed process fallback.
+                        pass
+            self.writers.terminate(snapshot)
+            if any(self.writers.busy(target) for target in affected):
+                raise CodexError('仍有受影响会话的写锁未释放，请重新预览释放', code='writer_still_held', http_status=409)
+            # Releasing never needs to restart/resume the daemon. Desktop can acquire now.
+            for target in affected:
+                with self._lock:
+                    self._joined.discard(target)
+                    self._active.pop(target, None)
+                    self._created.pop(target, None)
+                    self._materializing.pop(target, None)
+                    self._settings.pop(target, None)
+                    for key in [key for key in self._live if key[0] == target]:
+                        self._live.pop(key, None)
+                        self._pending_terminal.discard(key)
+                self.interactions.discard_thread(target)
+                self.on_event({'method': 'relay/historyInvalidated', 'params': {'threadId': target}})
+            mark('verified')
+        except Exception as error:
+            mark('failed', error)
+            raise
+        return {'threadId': thread_id, 'released': True, 'releaseScope': 'writer-process',
+                'affectedThreadIds': sorted(affected)}
+
     def handoff(self, thread_id, action, *, owner, ticket, confirmed=False, rebind_workspace=None):
         # Queue dispatch and read-side resume remain blocked until handoff finishes.
         with getattr(self, 'queue_lock', self._operations), self._operations, self._subscriptions:
@@ -826,6 +960,8 @@ class CodexService:
                         or preview['generation'] != str(connection.generation)
                         or preview['expires'] < time.monotonic() or rebind_workspace is not None):
                     raise CodexError('恢复预览已失效，请重新操作', code='handoff_changed', http_status=409)
+                if getattr(self.connection, 'owns_writer', lambda _: False)(thread_id) and not connection.status().get('connected'):
+                    self.connection.release_writer(thread_id, connection)
                 self._assert_workspace(thread_id)
                 # Ordinary resume never terminates another writer or starts a turn.
                 try:
@@ -854,6 +990,8 @@ class CodexService:
                 expected_host = self._handoff_hosts.pop(ticket, None)
             if expected_host != descriptor:
                 raise CodexError('原生主机或交接预览已变化，请重新预览', code='handoff_host_changed', http_status=409)
+            if action == 'release' and confirmed is not True:
+                raise CodexError('请确认释放持锁进程及受影响会话', code='handoff_confirmation_required', http_status=409)
             if action == 'takeover':
                 thread = self.connection.request('thread/read', {'threadId': thread_id, 'includeTurns': False})['thread']
                 current_rebind = self._workspace_rebind(thread, require_target=True)
@@ -866,11 +1004,13 @@ class CodexService:
             elif rebind_workspace is not None:
                 raise CodexError('释放操作不能修改工作目录', code='invalid_request', http_status=400)
             snapshot = self.writers.consume(thread_id, owner, action, ticket, confirmed)
-            restart_args = self.writers.restart_command(snapshot, descriptor['pid'], connection.socket_path)
+            restart_args = self.writers.restart_command(snapshot, descriptor['pid'], connection.socket_path) if action == 'takeover' else None
             _current_connection, current_host = self._handoff_connection(thread_id)
             if current_host != descriptor or _current_connection is not connection:
                 raise CodexError('原生主机已变化，未结束任何进程', code='handoff_host_changed', http_status=409)
             affected = {thread_id, *(t for holder in snapshot['holders'] for t in holder['threads'])}
+            if action == 'release':
+                return self._release_process_writer(thread_id, snapshot, affected)
             # Pause all affected Relay queues/automatic subscriptions before killing
             # the writer. Interrupted instructions are never resumed or replayed.
             for affected_id in affected:
@@ -1143,6 +1283,7 @@ class CodexService:
                 previous = self.observations_for(thread_id).get(('turnSettings', turn_id), {})
                 self._observe(thread_id, 'turnSettings', turn_id, {**previous, 'model': params['toModel'], 'rerouted': True})
             if method == "relay/nativeDisconnected":
+                self._unmaterialized.clear()
                 self._active.clear()
                 self._live.clear()
                 self._pending_terminal.clear()
@@ -1153,6 +1294,9 @@ class CodexService:
             elif method == 'relay/writerDisconnected':
                 lost = set(params.get('threadIds', []))
                 for tid in lost:
+                    self._unmaterialized.discard(tid)
+                    if params.get('ownedWriter') and not self.observations_for(tid).get(('ownership', ''), {}).get('released'):
+                        self._observe(tid, 'ownership', '', {'released': True, 'releaseState': 'disconnected'})
                     self._active.pop(tid, None)
                     self._settings.pop(tid, None)
                     self._created.pop(tid, None)
