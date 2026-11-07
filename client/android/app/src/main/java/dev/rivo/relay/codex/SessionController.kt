@@ -295,6 +295,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         }
     }
     private fun reconcilePending(id: String, snapshot: SessionSnapshot) {
+        api.sentImages.reconcile(snapshot, pendingByThread[id].orEmpty())
         if (pendingLoaded && pendingByThread[id].isNullOrEmpty()) return
         val clientIds = snapshot.messages.filter { it.type in setOf("userMessage", "user_message") }
             .map { it.raw.string("clientId") }.filter(String::isNotBlank).toSet()

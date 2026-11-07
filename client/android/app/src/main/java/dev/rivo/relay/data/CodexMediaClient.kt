@@ -12,6 +12,7 @@ class CodexMediaClient(val api: RelayApi, val threadId: String, context: Context
     val imageLoader = ImageLoader.Builder(context.applicationContext).okHttpClient(api.mediaTransport())
         .memoryCache { coil.memory.MemoryCache.Builder(context.applicationContext).maxSizeBytes(32 * 1024 * 1024).build() }.build()
     fun imageRequest(context: Context, source: String, thumbnail: Boolean): ImageRequest.Builder {
+        api.sentImages.get(source)?.let { return ImageRequest.Builder(context).data(it) }
         if (source.startsWith("data:") || source.startsWith("content:") || source.startsWith("file:"))
             return ImageRequest.Builder(context).data(source)
         val req = api.mediaRequest(source, thumbnail)

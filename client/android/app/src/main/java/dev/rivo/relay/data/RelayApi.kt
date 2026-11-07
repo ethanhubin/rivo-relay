@@ -28,6 +28,7 @@ const val JSON_READ_IDLE_TIMEOUT_MILLIS = 30_000L
 
 /** Adapted from QiGuang HttpTransport: cancellable JSON and SSE, with Rivo envelopes and no write retry. */
 class RelayApi(private val base: String, private val token: String = "", private val dns: Dns = TailnetDns()) {
+    internal val sentImages = SentImageCache()
     fun describeFailure(error: Throwable) = connectionFailure(error, base)
     private fun newClient() = OkHttpClient.Builder().dns(dns).retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false)
         .connectTimeout(10, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS).callTimeout(100, TimeUnit.SECONDS).build()
