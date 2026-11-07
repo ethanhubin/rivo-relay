@@ -27,7 +27,7 @@ import androidx.compose.ui.platform.LocalContext
 import android.text.format.Formatter
 
 @Composable
-fun SettingsScreen(nodeName: String? = null, nodeAddress: String? = null,
+fun SettingsScreen(
     checkUpdate: suspend () -> AppRelease? = { NodeAppUpdates().check(BuildConfig.VERSION_NAME) },
     downloadAndInstall: (suspend (AppRelease) -> Unit)? = null,
     updates: UpdateViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
@@ -75,25 +75,6 @@ fun SettingsScreen(nodeName: String? = null, nodeAddress: String? = null,
         }
 
         PinnedCompletionSettings()
-
-        if (nodeName != null) Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("当前节点", style = MaterialTheme.typography.titleMedium)
-                val ping by produceState("Ping …", nodeAddress) {
-                    value = "Ping …"
-                    val millis = nodeAddress?.let { measureNodePing(it) }
-                    value = millis?.let { "Ping $it ms" } ?: "Ping 不可用"
-                }
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(nodeName, Modifier.weight(1f))
-                    Text(ping, style = MaterialTheme.typography.bodySmall)
-                }
-            }
-        }
 
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {

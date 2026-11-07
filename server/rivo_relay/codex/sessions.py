@@ -49,6 +49,15 @@ def thread_status(thread):
     return "unknown"
 
 
+def goal_running(thread, goal, external):
+    # An interrupted/unloaded writer can leave a persisted active goal behind.
+    # Preserve between-turn execution for loaded writers, but do not override
+    # authoritative idle evidence from the native journal for an unloaded one.
+    return ((goal or {}).get('status') == 'active'
+            and not (thread_status(thread) == 'unknown'
+                     and external.get(thread['id']) == 'idle'))
+
+
 def thread_waiting(thread):
     status = thread.get('status')
     return (isinstance(status, dict) and status.get('type') == 'active'
@@ -304,7 +313,7 @@ class CodexService:
                 managed = {row['thread_id']: dict(row) for row in c.execute('SELECT * FROM workspaces WHERE project_id=?', (project_id,))}
         external = self._external_execution(list(by_id.values()))
         statuses = {t["id"]: ("waiting" if self.interactions.list(t["id"]) or thread_waiting(t) else
-                    "running" if (self.read_goal(t["id"]).get("goal") or {}).get("status") == "active"
+                    "running" if goal_running(t, self.read_goal(t["id"]).get("goal"), external)
                     else external.get(t['id'], thread_status(t))) for t in by_id.values()}
         return [{"id": t["id"], "name": t.get("name") or t.get("preview") or "新会话",
                  "preview": t.get("preview", ""), "status": statuses[t["id"]],
@@ -470,8 +479,8 @@ class CodexService:
             active = next((t["id"] for t in reversed(thread["turns"])
                            if t.get("status") == "inProgress"), None)
         goal_state = self.read_goal(thread_id)
-        goal_active = (goal_state.get("goal") or {}).get("status") == "active"
-        external = self._external_execution([thread]) if not active and not goal_active else {}
+        external = self._external_execution([thread]) if not active else {}
+        goal_active = goal_running(thread, goal_state.get("goal"), external)
         status = "waiting" if requests or thread_waiting(thread) else ("running" if active or goal_active else external.get(thread_id, thread_status(thread)))
         observations = self.observations_for(thread_id)
         latest_turn = thread['turns'][-1] if thread['turns'] else {}

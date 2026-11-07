@@ -78,7 +78,7 @@ class SettingsUiTest {
             CompositionLocalProvider(LocalUriHandler provides object : UriHandler {
                 override fun openUri(uri: String) { opened = uri }
             }) {
-                SettingsScreen("测试节点", "https://node.example", checkUpdate = { calls++; result.await() }, downloadAndInstall = { opened = it.apkUrl })
+                SettingsScreen(checkUpdate = { calls++; result.await() }, downloadAndInstall = { opened = it.apkUrl })
             }
         } } } }
         compose.onNodeWithTag("check_updates").performClick().assertIsNotEnabled()

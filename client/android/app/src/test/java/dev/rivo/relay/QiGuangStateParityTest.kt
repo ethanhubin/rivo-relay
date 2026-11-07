@@ -54,6 +54,10 @@ class QiGuangStateParityTest {
         assertTrue(externalWaiting.isOngoing)
         assertTrue(externalWaiting.shouldQueueInput)
         assertTrue(idle.copy(goal = JSONObject().put("status", "active")).shouldQueueInput)
+        val stoppedGoal = idle.copy(nativeExecution = "idle", goal = JSONObject().put("status", "active"))
+        assertFalse(stoppedGoal.isOngoing)
+        assertFalse(stoppedGoal.shouldQueueInput)
+        assertTrue(stoppedGoal.copy(status = "running").isOngoing)
         assertFalse(idle.copy(readOnly = true).shouldQueueInput)
     }
 

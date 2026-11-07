@@ -89,6 +89,22 @@ class NativeSemanticsTests(unittest.TestCase):
             self.assertEqual("running", session["status"])
             self.assertEqual("running", session["nativeExecution"])
 
+    def test_interrupted_unloaded_goal_does_not_report_running(self):
+        native = FakeNative()
+        native.thread['status'] = {'type': 'notLoaded'}
+        service = CodexService(connection=native)
+        goal = {'status': 'active'}
+        with patch.object(service.projects, 'get', return_value={'id': 'project', 'roots': []}), \
+             patch('rivo_relay.codex.sessions.thread_pages', return_value=[native.thread]), \
+             patch.object(service, 'read_goal', return_value={'goal': goal}), \
+             patch.object(service.native_journal, 'execution_states', return_value={'thread': 'idle'}):
+            session = service.list_sessions('project')[0]
+            self.assertEqual('idle', session['nativeExecution'])
+            snapshot = service.get_session('thread')
+            self.assertEqual('idle', snapshot['status'])
+            self.assertIsNone(snapshot['activeTurnId'])
+            self.assertEqual(goal, snapshot['goal'])
+
     def test_external_execution_overrides_unloaded_metadata_in_list_and_detail(self):
         native = FakeNative()
         native.thread['status'] = {'type': 'notLoaded'}
