@@ -11,10 +11,10 @@ import java.io.IOException
 import java.net.URLEncoder
 
 class NodeTransportTest {
-    private fun client(base: String, routes: NodeRoutes): OkHttpClient {
+    private fun client(base: String, routes: NodeRoutes, observer: ConnectionStatusObserver? = null): OkHttpClient {
         RouteMemory.read = { null }; RouteMemory.write = { _, _ -> }
         val probe = OkHttpClient.Builder().retryOnConnectionFailure(false).build()
-        return probe.newBuilder().addInterceptor(NodeRouteInterceptor(base, routes, probe)).build()
+        return probe.newBuilder().apply { observer?.let { addInterceptor(it) } }.addInterceptor(NodeRouteInterceptor(base, routes, probe)).build()
     }
     @Test fun selfSignedGatewayRequiresExactPin() {
         val store = java.security.KeyStore.getInstance("PKCS12").apply {
@@ -81,8 +81,13 @@ class NodeTransportTest {
             relay.enqueue(MockResponse().setBody("{}"))
             relay.enqueue(MockResponse().setBody("recovered"))
             val base = direct.url("/").toString().trimEnd('/')
-            client(base, NodeRoutes(base, relay.url("/").toString().trimEnd('/'))).newCall(Request.Builder().url("$base/v1/read").build())
+            val routes = NodeRoutes(base, relay.url("/").toString().trimEnd('/'))
+            val observer = ConnectionStatusObserver(routes, base)
+            client(base, routes, observer).newCall(Request.Builder().url("$base/v1/read").build())
                 .execute().use { assertEquals("recovered", it.body!!.string()) }
+            assertEquals(routes.relay, observer.status.value.endpoint)
+            assertEquals(200, observer.status.value.httpCode)
+            assertTrue(observer.status.value.checkedAt > 0)
         } }
     }
     @Test fun directModeDoesNotFallBack() {
@@ -94,4 +99,26 @@ class NodeTransportTest {
             assertEquals(0, relay.requestCount)
         }
     }
+    @Test fun failedProbeDoesNotReportSavedRouteAsConnected() {
+        val base = "http://127.0.0.1:1"
+        val routes = NodeRoutes(direct = base, mode = ConnectionMode.DIRECT)
+        val observer = ConnectionStatusObserver(routes, base)
+        assertThrows(IOException::class.java) { client(base, routes, observer)
+            .newCall(Request.Builder().url("$base/v1/node").build()).execute() }
+        assertTrue(observer.status.value.failed)
+        assertEquals("", observer.status.value.endpoint)
+    }
+    @Test fun legacyConnectionReportsAuthorizationFailure() {
+        MockWebServer().use { server ->
+            val base = server.url("/").toString().trimEnd('/')
+            val observer = ConnectionStatusObserver(null, base)
+            server.enqueue(MockResponse().setResponseCode(401))
+            OkHttpClient.Builder().addInterceptor(observer).build()
+                .newCall(Request.Builder().url("$base/v1/node").build()).execute().close()
+            assertEquals(base, observer.status.value.endpoint)
+            assertEquals(401, observer.status.value.httpCode)
+            assertFalse(observer.status.value.failed)
+        }
+    }
+
 }

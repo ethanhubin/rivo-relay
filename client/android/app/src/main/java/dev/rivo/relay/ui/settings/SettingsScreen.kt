@@ -29,6 +29,7 @@ import android.text.format.Formatter
 @Composable
 fun SettingsScreen(
     connection: dev.rivo.relay.connection.NodeConnection? = null,
+    api: dev.rivo.relay.data.RelayApi? = null,
     setConnectionMode: (dev.rivo.relay.connection.ConnectionMode) -> Unit = {},
     checkUpdate: (suspend () -> AppRelease?)? = null,
     downloadAndInstall: (suspend (AppRelease) -> Unit)? = null,
@@ -76,26 +77,7 @@ fun SettingsScreen(
             }
         }
 
-        connection?.routes?.let { routes ->
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("节点连接", style = MaterialTheme.typography.titleMedium)
-                    dev.rivo.relay.connection.ConnectionMode.entries.forEach { mode ->
-                        val available = when (mode) {
-                            dev.rivo.relay.connection.ConnectionMode.AUTO -> true
-                            dev.rivo.relay.connection.ConnectionMode.DIRECT -> routes.direct.isNotBlank()
-                            dev.rivo.relay.connection.ConnectionMode.RELAY -> routes.relay.isNotBlank()
-                        }
-                        Row(Modifier.fillMaxWidth().selectable(selected = routes.mode == mode, enabled = available,
-                            role = Role.RadioButton, onClick = { setConnectionMode(mode) }), verticalAlignment = Alignment.CenterVertically) {
-                            RadioButton(selected = routes.mode == mode, onClick = null, enabled = available)
-                            Text(mode.label, Modifier.padding(8.dp))
-                        }
-                    }
-                    Text("自动模式优先尝试直连，并记住最近可用路径。", style = MaterialTheme.typography.bodySmall)
-                }
-            }
-        }
+        connection?.let { ConnectionSettings(it, api, setConnectionMode) }
         PinnedCompletionSettings()
 
         Card(Modifier.fillMaxWidth()) {
