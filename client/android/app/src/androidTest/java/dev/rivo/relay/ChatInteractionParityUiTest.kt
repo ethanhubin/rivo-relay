@@ -54,7 +54,8 @@ class ChatInteractionParityUiTest {
         } } }
         compose.onNodeWithTag("conversation_configuration", useUnmergedTree = true).assertTextEquals("model-a · high")
         compose.onNodeWithTag("codex_task_mode").performClick()
-        compose.onNodeWithText("讨论模式").assertIsDisplayed()
+        compose.onNodeWithTag("composer_mode_plan").performClick()
+        compose.onNodeWithText("计划模式").assertIsDisplayed()
         compose.onNodeWithText("输入想讨论的方案或问题").assertIsDisplayed()
         compose.onNodeWithTag("conversation_status").performClick()
         compose.onNodeWithTag("composer_settings_panel").assertIsDisplayed()

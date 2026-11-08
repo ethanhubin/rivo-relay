@@ -157,7 +157,7 @@ internal fun MediaFilePreview(name: String, video: Boolean, file: File?, error: 
 
 private fun mediaTime(value: Long) = "%d:%02d".format(value / 60000, value / 1000 % 60)
 
-/** Local HTML is untrusted: no JavaScript, file/content access, or app bridge. */
+/** Run self-contained HTML scripts in an opaque origin without file/network access or an app bridge. */
 @Composable
 internal fun HtmlFilePreview(html: String, modifier: Modifier = Modifier) {
     val handler = LocalUriHandler.current
@@ -165,7 +165,7 @@ internal fun HtmlFilePreview(html: String, modifier: Modifier = Modifier) {
     DisposableEffect(Unit) { onDispose { webView?.destroy() } }
     AndroidView(factory = { context -> WebView(context).apply {
         webView = this
-        settings.javaScriptEnabled = false
+        settings.javaScriptEnabled = true
         settings.domStorageEnabled = false
         settings.allowFileAccess = false
         settings.allowContentAccess = false
@@ -177,5 +177,14 @@ internal fun HtmlFilePreview(html: String, modifier: Modifier = Modifier) {
                 return true
             }
         }
-    } }, update = { view -> if (view.tag != html) { view.tag = html; view.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null) } }, modifier = modifier.fillMaxWidth())
+    } }, update = { view -> if (view.tag != html) { view.tag = html; view.loadDataWithBaseURL(null, htmlPreviewDocument(html), "text/html", "UTF-8", null) } }, modifier = modifier.fillMaxWidth())
 }
+
+/** Prefix before authored markup so even fragments get a mobile viewport and isolation policy. */
+internal fun htmlPreviewDocument(html: String): String = """
+    <!doctype html>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <style>:root{color-scheme:light dark}body{margin:8px;font-family:system-ui,sans-serif}</style>
+""".trimIndent() + "\n" + html

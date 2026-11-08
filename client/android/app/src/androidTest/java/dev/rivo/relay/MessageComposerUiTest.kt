@@ -97,7 +97,8 @@ class MessageComposerUiTest {
         compose.onNodeWithTag("add_workspace_file").assertIsDisplayed().performClick()
         compose.onNodeWithTag("composer_settings").assertDoesNotExist()
         compose.onNodeWithTag("codex_task_mode").assertIsDisplayed().performClick()
-        compose.onNodeWithText("讨论模式").assertIsDisplayed()
+        compose.onNodeWithTag("composer_mode_plan").performClick()
+        compose.onNodeWithText("计划模式").assertIsDisplayed()
         compose.onNodeWithTag("stop_turn").assertDoesNotExist()
         compose.onNodeWithTag("send_message").assertIsDisplayed().performClick()
         compose.runOnIdle { draft = "" }

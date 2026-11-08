@@ -1,0 +1,89 @@
+<div id="rivo-layout-preview" class="viz-carousel viz-dotted-background" aria-label="新会话排版方案" data-previous-label="上一版" data-next-label="下一版">
+  <section data-variant="底部集中" aria-label="底部集中方案"><div class="rivo-stage"><div class="rivo-phone" id="rivo-bottom" aria-label="底部集中布局"></div></div></section>
+  <section data-variant="顶部表单" aria-label="顶部表单方案" hidden><div class="rivo-stage"><div class="rivo-phone rivo-top" id="rivo-top" aria-label="顶部表单布局"></div></div></section>
+  <template id="rivo-screen-template">
+    <div class="rivo-status"><span>10:59</span><span class="rivo-status-icons"><i data-lucide="signal" aria-hidden="true"></i><i data-lucide="wifi" aria-hidden="true"></i><i data-lucide="battery-medium" aria-hidden="true"></i></span></div>
+    <header class="rivo-header"><button class="rivo-back" aria-label="返回"><i data-lucide="arrow-left" aria-hidden="true"></i></button><div><h2>新会话</h2><p>Rivo-Relay</p></div></header>
+    <div class="rivo-hero"><h3>今天想从哪里开始？</h3></div>
+    <div class="rivo-compose-area">
+      <div class="rivo-config">
+        <label class="rivo-workspace"><span>工作区</span><select aria-label="工作区"><option>本地目录</option><option>独立工作树</option></select></label>
+        <div class="rivo-settings-title">会话设置</div>
+        <div class="rivo-settings-grid">
+          <label><span>模型</span><select aria-label="模型"><option>gpt-6-astra</option><option>沿用节点默认</option><option>gpt-6-sol</option></select></label>
+          <label><span>思考强度</span><select aria-label="思考强度"><option>low</option><option>medium</option><option>high</option><option>沿用节点默认</option></select></label>
+          <label><span>文件访问权限</span><select aria-label="文件访问权限"><option>完全访问</option><option>工作区写入</option><option>只读</option><option>沿用节点默认</option></select></label>
+          <label><span>审批策略</span><select aria-label="审批策略"><option>按需审批</option><option>从不审批</option><option>沿用节点默认</option></select></label>
+        </div>
+      </div>
+      <div class="rivo-composer">
+        <div class="rivo-input-row"><textarea rows="3" aria-label="任务内容" placeholder="描述要实现或修改的功能"></textarea><button class="rivo-mic" aria-label="语音输入"><i data-lucide="mic" aria-hidden="true"></i></button></div>
+        <div class="rivo-toolbar"><button class="rivo-icon-btn" aria-label="添加附件"><i data-lucide="plus" aria-hidden="true"></i></button><button class="rivo-mode"><i data-lucide="zap" aria-hidden="true"></i><span>普通模式</span></button><button class="rivo-icon-btn rivo-goal" aria-label="持续目标" aria-pressed="false"><i data-lucide="target" aria-hidden="true"></i></button><button class="rivo-send" disabled><i data-lucide="arrow-up" aria-hidden="true"></i><span>发送</span></button></div>
+      </div>
+    </div>
+    <div class="rivo-home"><span></span></div>
+  </template>
+</div>
+<style>
+#rivo-layout-preview .rivo-stage{display:flex;justify-content:center;padding:18px 8px;min-height:820px;box-sizing:border-box}
+#rivo-layout-preview .rivo-phone{--rp-bg:light-dark(#f8f7fc,#0f0e13);--rp-text:light-dark(#242329,#eeedf2);--rp-sub:light-dark(#77747f,#aaa7b4);--rp-line:light-dark(#ddd9e5,#37343f);--rp-panel:light-dark(#efedf5,#25232d);--rp-accent:light-dark(#7e63ce,#b5a0f2);--rp-onaccent:light-dark(#fff,#251b44);--rp-gap:12px;color:var(--rp-text);background:var(--rp-bg);font-family:system-ui,-apple-system,"PingFang SC",sans-serif;font-size:15px;line-height:1.45;width:min(100%,390px);min-height:780px;display:flex;flex-direction:column;border:1px solid var(--rp-line);border-radius:28px;overflow:hidden;box-sizing:border-box}
+#rivo-layout-preview .rivo-phone *{box-sizing:border-box}
+#rivo-layout-preview .rivo-phone h2,#rivo-layout-preview .rivo-phone h3,#rivo-layout-preview .rivo-phone p{margin:0}
+#rivo-layout-preview .rivo-phone button,#rivo-layout-preview .rivo-phone select,#rivo-layout-preview .rivo-phone textarea{font:inherit;color:inherit}
+#rivo-layout-preview .rivo-phone button{display:inline-flex;align-items:center;justify-content:center;gap:5px;cursor:pointer}
+#rivo-layout-preview .rivo-phone button:focus-visible,#rivo-layout-preview .rivo-phone select:focus-visible,#rivo-layout-preview .rivo-phone textarea:focus-visible{outline:2px solid var(--rp-accent);outline-offset:2px}
+#rivo-layout-preview .rivo-phone svg{width:19px;height:19px;flex-shrink:0}
+#rivo-layout-preview .rivo-status{display:flex;justify-content:space-between;padding:18px 24px 12px;font-weight:500;font-size:14px}
+#rivo-layout-preview .rivo-status-icons{display:flex;gap:5px}
+#rivo-layout-preview .rivo-status-icons svg{width:15px;height:15px}
+#rivo-layout-preview .rivo-header{display:flex;align-items:center;gap:12px;padding:10px 16px 0}
+#rivo-layout-preview .rivo-header h2{font-size:23px;font-weight:500}
+#rivo-layout-preview .rivo-header p{font-size:14px;color:var(--rp-sub);margin-top:2px}
+#rivo-layout-preview .rivo-back{height:44px;width:32px;border:0;background:transparent;color:var(--rp-accent)!important}
+#rivo-layout-preview .rivo-hero{padding:48px 20px 32px}
+#rivo-layout-preview .rivo-hero h3{font-size:22px;font-weight:500;color:var(--rp-sub)}
+#rivo-layout-preview .rivo-compose-area{margin-top:auto;padding:0 14px;display:flex;flex-direction:column;gap:16px}
+#rivo-layout-preview .rivo-config{padding:0 6px}
+#rivo-layout-preview .rivo-config label{display:flex;flex-direction:column;gap:6px;min-width:0}
+#rivo-layout-preview .rivo-config label>span{font-size:12px;color:var(--rp-sub)}
+#rivo-layout-preview .rivo-config select{width:100%;height:44px;padding:0 9px;border:1px solid var(--rp-line);border-radius:13px;background:var(--rp-bg);font-size:14px}
+#rivo-layout-preview .rivo-settings-title{font-size:14px;font-weight:500;margin:18px 0 10px}
+#rivo-layout-preview .rivo-settings-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--rp-gap)}
+#rivo-layout-preview .rivo-composer{border:1px solid var(--rp-line);border-radius:24px;background:var(--rp-panel);overflow:hidden}
+#rivo-layout-preview .rivo-input-row{display:flex;align-items:flex-start;padding:14px 12px 10px;gap:8px}
+#rivo-layout-preview .rivo-input-row textarea{flex:1;min-width:0;resize:none;background:transparent;border:0;outline-offset:0;line-height:25px;height:81px;padding:3px 2px;font-size:15px}
+#rivo-layout-preview .rivo-input-row textarea::placeholder{color:var(--rp-sub)}
+#rivo-layout-preview .rivo-mic{width:36px;height:36px;background:transparent;border:0;color:var(--rp-sub)!important}
+#rivo-layout-preview .rivo-toolbar{padding:8px;display:flex;align-items:center;gap:6px;border-top:1px solid var(--rp-line)}
+#rivo-layout-preview .rivo-icon-btn{height:40px;min-width:36px;border:0;background:transparent;color:var(--rp-sub)!important;border-radius:50%}
+#rivo-layout-preview .rivo-mode{height:38px;padding:0 8px;border:1px solid var(--rp-line);border-radius:20px;background:transparent;font-size:13px!important;white-space:nowrap}
+#rivo-layout-preview .rivo-send{height:40px;padding:0 13px;margin-left:auto;border:0;border-radius:22px;background:var(--rp-accent);color:var(--rp-onaccent)!important;font-size:14px!important;white-space:nowrap}
+#rivo-layout-preview .rivo-send:disabled{opacity:.35;cursor:default}
+#rivo-layout-preview .rivo-goal[aria-pressed=true]{color:var(--rp-accent)!important}
+#rivo-layout-preview .rivo-home{display:flex;justify-content:center;padding:15px 0 10px}
+#rivo-layout-preview .rivo-home span{width:110px;height:4px;border-radius:10px;background:var(--rp-sub);opacity:.5}
+#rivo-layout-preview .rivo-top .rivo-compose-area{margin-top:0}
+#rivo-layout-preview .rivo-top .rivo-hero{padding-top:32px;padding-bottom:24px}
+#rivo-layout-preview .rivo-top .rivo-home{margin-top:auto}
+@media(max-width:360px){#rivo-layout-preview .rivo-stage{padding:12px 0}#rivo-layout-preview .rivo-compose-area{padding:0 8px}#rivo-layout-preview .rivo-toolbar{gap:2px}#rivo-layout-preview .rivo-send{padding:0 9px}#rivo-layout-preview .rivo-mode{padding:0 5px}}
+</style>
+<script>
+(() => {
+ const root = document.getElementById('rivo-layout-preview');
+ const template = root.querySelector('#rivo-screen-template');
+ root.querySelectorAll('.rivo-phone').forEach(phone => {
+   phone.appendChild(template.content.cloneNode(true));
+   const text = phone.querySelector('textarea');
+   const send = phone.querySelector('.rivo-send');
+   text.addEventListener('input',()=>{send.disabled=!text.value.trim();});
+   phone.querySelector('.rivo-mode').addEventListener('click',e=>{const label=e.currentTarget.querySelector('span');label.textContent=label.textContent==='普通模式'?'讨论模式':'普通模式';});
+   phone.querySelector('.rivo-goal').addEventListener('click',e=>{const b=e.currentTarget;b.setAttribute('aria-pressed',b.getAttribute('aria-pressed')==='true'?'false':'true');});
+   send.addEventListener('click',()=>{phone.querySelector('.rivo-hero h3').textContent=text.value;});
+   const design = {appearance:'跟随系统',gap:12};
+   const render = ()=>{phone.style.colorScheme=design.appearance==='浅色'?'light':design.appearance==='深色'?'dark':'light dark';phone.style.setProperty('--rp-gap',design.gap+'px');};
+   render();
+   if(globalThis.Tweak){const tweak=new Tweak({container:phone,onChange:render});tweak.addSelect(design,'appearance',{label:'外观',options:['跟随系统','浅色','深色']});tweak.addSlider(design,'gap',{label:'设置间距',min:8,max:20,unit:'px'});}
+ });
+ if(globalThis.lucide)lucide.createIcons({attrs:{width:19,height:19}});
+})();
+</script>

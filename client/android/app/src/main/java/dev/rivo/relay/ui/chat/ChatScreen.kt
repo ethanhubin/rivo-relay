@@ -109,6 +109,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     BackHandler(settingsOpen) { settingsOpen = false }
     var developerOpen by remember(state.id) { mutableStateOf(false) }
     var selectedMode by rememberSaveable(state.id) { mutableStateOf<String?>(null) }
+    var goalModeSelected by rememberSaveable(state.id) { mutableStateOf(false) }
     var pendingGoal by rememberSaveable(state.id) { mutableStateOf<String?>(null) }
     var goalCapability by remember(state.id) { mutableStateOf<Boolean?>(null) }
     var goalCapabilityError by remember(state.id) { mutableStateOf<String?>(null) }
@@ -455,8 +456,10 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         val goalAvailable = (pendingTitle != null && (goalCapability == true || pendingGoal != null)) || snapshot?.goalSupported == true
         val goalEnabled = !pendingReceiptUnresolved && !pendingFirstTurnSent && !busy && !blocked && !state.stale && draftLoaded && (pendingTitle != null || canOperate)
         val displayedGoal = if (pendingTitle != null) pendingGoal?.let { JSONObject(it).put("status", "pending") } else snapshot?.goal
+        val goalMode = goalModeSelected || displayedGoal?.string("status") in setOf("active", "pending")
         if (goalAvailable) key(state.id) {
             NativeGoalPanel(displayedGoal, goalEnabled, { action ->
+                if (action.string("operation") == "clear") goalModeSelected = false
                 if (pendingTitle != null) pendingGoal = if (action.string("operation") == "clear") null else action.toString()
                 else onGoal(action)
             }, goalEditing, pending = pendingTitle != null) { goalEditing = it }
@@ -514,34 +517,38 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 onSandbox = { selectedSandbox = it ?: "inherit" },
                 onApproval = { selectedApproval = it ?: "inherit" }, workspace = pendingWorkspace)
         }
+        if (goalMode && goalAvailable) TextButton(onClick = { goalEditing = true }, enabled = goalEnabled,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("edit_goal")) {
+            TaskModeIcon("goal")
+            Spacer(Modifier.width(8.dp))
+            Text(if (displayedGoal == null) "设置持续目标" else "编辑持续目标")
+        }
         MessageComposer(
+            inputMinLines = if (pendingTitle != null) 3 else 2,
             text = draft, onTextChange = { draft = it }, images = images,
             onEditImage = { focus.clearFocus(); keyboard?.hide(); editingImage = it },
             onRemoveImage = { image -> images = images.filterNot { it.id == image.id } },
             files = files, onRemoveFile = { reference -> files = files.filterNot { it === reference } },
             onOpenFile = { reference -> nativeFilePath(reference.string("path"), cwd)?.let(::openFile) },
             preparing = preparing, error = attachmentError, enabled = !busy && !inputLocked && draftLoaded,
-            canSend = !pendingReceiptUnresolved && !pendingFirstTurnSent && (pendingGoal == null || goalCapability == true) && (draft.isNotBlank() || images.isNotEmpty() || files.isNotEmpty() || pendingGoal != null) && !state.stale && (snapshot != null || pendingTitle != null && pendingReady),
+            canSend = !(goalMode && displayedGoal == null) && !pendingReceiptUnresolved && !pendingFirstTurnSent && (pendingGoal == null || goalCapability == true) && (draft.isNotBlank() || images.isNotEmpty() || files.isNotEmpty() || pendingGoal != null) && !state.stale && (snapshot != null || pendingTitle != null && pendingReady),
             isRunning = snapshot?.activeTurnId?.isNotBlank() == true, canStop = !busy && !blocked && !state.stale && canOperate, busy = busy,
             onAddImage = { focus.clearFocus(); keyboard?.hide(); imagePickerTarget = state.id; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
             onAddFile = { focus.clearFocus(); keyboard?.hide(); filePickerTarget = state.id; filePicker.launch(arrayOf("*/*")) },
             onAddVideo = { focus.clearFocus(); keyboard?.hide(); filePickerTarget = state.id; filePicker.launch(arrayOf("video/*")) },
             onAddWorkspaceFile = { focus.clearFocus(); keyboard?.hide(); workspaceFileDialog = true }, onSettings = ::openSettings,
             discussionMode = (selectedMode ?: snapshot?.settings?.optJSONObject("collaborationMode")?.string("mode")) == "plan",
-            onToggleMode = { selectedMode = if ((selectedMode ?: snapshot?.settings?.optJSONObject("collaborationMode")?.string("mode")) == "plan") "default" else "plan" },
-            goalControl = if (goalAvailable) { {
-                IconButton(onClick = { goalEditing = true },
-                    enabled = goalEnabled,
-                    modifier = Modifier.size(44.dp).testTag("create_goal")
-                        .semantics { contentDescription = if (displayedGoal == null) "设置持续目标" else "编辑持续目标" }) {
-                    val color = if (goalEnabled && displayedGoal != null && displayedGoal.string("status") in setOf("active", "pending")) MaterialTheme.colorScheme.primary else LocalContentColor.current
-                    androidx.compose.foundation.Canvas(Modifier.size(22.dp)) {
-                        drawCircle(color, style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()))
-                        drawCircle(color, radius = size.minDimension * 0.28f, style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()))
-                        drawCircle(color, radius = 2.dp.toPx())
-                    }
+            goalMode = goalMode, goalModeEnabled = goalAvailable && goalEnabled,
+            onSelectMode = { mode ->
+                if (mode == "goal") {
+                    selectedMode = "default"; goalModeSelected = true
+                } else {
+                    goalModeSelected = false
+                    selectedMode = mode
+                    if (pendingTitle != null) pendingGoal = null
+                    else if (displayedGoal?.string("status") == "active") onGoal(JSONObject().put("operation", "pause"))
                 }
-            } } else null,
+            },
             focusRequest = inputFocusRequest, onPasteImages = ::addImages,
             settingsExpanded = settingsOpen, onDismissSettings = { settingsOpen = false }, settingsContent = {
                 NativeComposerSettings(snapshot?.settings, models, selectedModel, selectedEffort, selectedMode, !pendingReceiptUnresolved && !pendingFirstTurnSent && !busy && !blocked && !state.stale && (state.canCompose() || pendingTitle != null && pendingReady) && draftLoaded,

@@ -104,7 +104,10 @@ fun MessageComposer(
     settingsExpanded: Boolean = false,
     onDismissSettings: () -> Unit = {},
     settingsContent: (@Composable () -> Unit)? = null,
-    goalControl: (@Composable () -> Unit)? = null,
+    goalMode: Boolean = false,
+    goalModeEnabled: Boolean = false,
+    onSelectMode: ((String) -> Unit)? = null,
+    inputMinLines: Int = 2,
 ) {
     var attachmentsOpen by remember { mutableStateOf(false) }
     LaunchedEffect(enabled) { if (!enabled) attachmentsOpen = false }
@@ -292,7 +295,7 @@ fun MessageComposer(
                                 .padding(horizontal = 16.dp, vertical = 14.dp).testTag("message_input"),
                             textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
                             cursorBrush = SolidColor(MaterialTheme.colorScheme.onSurface),
-                            minLines = 3,
+                            minLines = inputMinLines,
                             maxLines = 3,
                             decorationBox = { inner ->
                                 Box {
@@ -322,14 +325,11 @@ fun MessageComposer(
                             ComposerToolButton({ attachmentsOpen = true }, enabled && !preparing,
                                 "添加附件", "add_attachment") { ComposerAddIcon() }
                         }
-                        OutlinedButton(onClick = onToggleMode, enabled = enabled,
-                            modifier = Modifier.height(36.dp).focusProperties { canFocus = false }.testTag("codex_task_mode"),
-                            contentPadding = PaddingValues(horizontal = 8.dp)) {
-                            ComposerModeIcon(discussionMode)
-                            Spacer(Modifier.width(5.dp))
-                            Text(if (discussionMode) "讨论模式" else "普通模式", style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                        ComposerModeSelector(if (goalMode) "goal" else if (discussionMode) "plan" else "default",
+                            enabled, goalModeEnabled) { mode ->
+                            if (onSelectMode != null) onSelectMode(mode)
+                            else if ((mode == "plan") != discussionMode) onToggleMode()
                         }
-                        goalControl?.invoke()
                         Spacer(Modifier.weight(1f))
                         if (enabled && settingsExpanded && settingsContent != null) Dialog(onDismissRequest = onDismissSettings) {
                             Surface(Modifier.fillMaxWidth().heightIn(max = 560.dp).testTag("composer_settings_panel"),
