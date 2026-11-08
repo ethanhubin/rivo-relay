@@ -218,3 +218,38 @@ class GatewayCredentialTests(unittest.TestCase):
             self.assertEqual(decode_key(value)['gateway'], 'https://134.175.156.219:8443')
             self.assertNotIn(value, output.getvalue())
             self.assertEqual((path / 'access-key.json').stat().st_mode & 0o777, 0o600)
+
+class NodePairingCliTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pair_only_keeps_gateway_key_with_runtime_options(self):
+        from argparse import Namespace
+        from urllib.parse import urlsplit, parse_qs
+        from rivo_relay.config import Config
+        from rivo_relay.gateway.__main__ import node
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            config = Config(workspace=workspace)
+            config.prepare()
+            key = encode_key({'v': 2, 'slot': 'a' * 32, 'secret': 's' * 32,
+                              'pin': 'b' * 64, 'gateway': 'https://1.2.3.4:80'})
+            (workspace / 'gateway-client.json').write_text(json.dumps({'key': key}))
+            app = web.Application()
+            async def health(request):
+                return web.json_response({'status': 'ok', 'nodeId': config.node_id})
+            app.router.add_get('/health', health)
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, '127.0.0.1', 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+            try:
+                await node(Namespace(workspace=workspace, mode='auto', direct_url='https://example.ts.net',
+                    configure=False, ip=None, codex_runtime='stdio', codex_executable=Path('/bin/codex'),
+                    codex_home=None, update_source=False, local_port=port, attach=True,
+                    pair_only=True, no_pair=False))
+                link = json.loads((workspace / 'artifacts/pairing.json').read_text())['url']
+                fields = parse_qs(urlsplit(link).fragment)
+                self.assertEqual(fields['relay'], ['https://1.2.3.4:80/relay/' + 'a' * 32])
+                self.assertEqual(fields['pin'], ['b' * 64])
+                self.assertEqual(fields['direct'], ['https://example.ts.net'])
+            finally:
+                await runner.cleanup()

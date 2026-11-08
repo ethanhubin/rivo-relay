@@ -96,10 +96,10 @@ async def node(args):
         stored.update(gateway=base, key=credential)
     if mode == 'direct' and not direct:
         raise ValueError('Direct mode requires a Tailscale URL')
-    for key in ('codex_runtime', 'codex_executable', 'codex_home'):
-        value = getattr(args, key, None)
+    for option in ('codex_runtime', 'codex_executable', 'codex_home'):
+        value = getattr(args, option, None)
         if value is not None:
-            stored[key] = str(value)
+            stored[option] = str(value)
     stored.update(mode=mode, direct=direct or '', updates=args.update_source or stored.get('updates', False))
     save_private(path, stored)
     relay = base + '/relay/' + key['slot'] if key else ''
@@ -126,9 +126,9 @@ async def node(args):
         if not args.attach:
             command = [sys.executable, '-m', 'rivo_relay', 'serve', '--workspace', str(workspace),
                        '--host', '127.0.0.1', '--port', str(args.local_port), '--url', public]
-            for key in ('codex_runtime', 'codex_executable', 'codex_home'):
-                if stored.get(key):
-                    command.extend(['--' + key.replace('_', '-'), stored[key]])
+            for option in ('codex_runtime', 'codex_executable', 'codex_home'):
+                if stored.get(option):
+                    command.extend(['--' + option.replace('_', '-'), stored[option]])
             if os.name == 'nt':
                 from ..codex.windows_process import spawn_owned
                 child = spawn_owned(command)

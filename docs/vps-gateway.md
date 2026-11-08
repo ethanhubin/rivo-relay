@@ -2,6 +2,8 @@
 
 同一个桌面 Relay 可以同时接受 Tailscale 直连和 VPS 中转。Android 按节点 ID 保存一个节点，路径切换保留连接令牌、设备 ID、草稿和缓存。旧版 v1 二维码及原直连启动命令保持支持。
 
+完整的新机器安装、后台启动和验收步骤见[跨平台节点部署指南](node-deployment.md)。
+
 ## 桌面使用
 
 需要 Python 3.11+，本机已有可用的 Codex 原生运行时。macOS / Linux：
@@ -25,7 +27,7 @@ cd Rivo-Relay
 - `--update-source`：将此节点声明为 App 更新源。普通节点不覆盖手机已保存的更新源。
 - `--no-pair`：后台运行时不生成配对码。
 
-启动命令默认前台常驻；退出会关闭其创建的 Relay 子进程，接入已有 Relay 时只关闭连接器。后台保活应由 launchd/systemd 管理此命令；保存配置后不再需要输入。当前实现使用 POSIX 进程与信号接口，尚不提供 Windows 启动器。
+启动命令默认前台常驻；退出会关闭其创建的 Relay 子进程，接入已有 Relay 时只关闭连接器。后台保活应由 launchd/systemd 管理此命令；保存配置后不再需要输入。Windows 使用同一 `rivo_relay.gateway node` 命令，配合无窗口计划任务运行；平台差异仅限进程、信号及后台启动方式。
 
 旧版 `rivo1.…` 密钥仍可使用，首次配置时会额外询问 IP；已有 IP + 密钥配置无需迁移。凭证只是封装，不是加密，须像密码一样保管。封装已有密钥不会改变授权或使原配置失效。
 
@@ -89,3 +91,9 @@ VPS 是可信中转端：手机到 VPS 为 HTTPS，桌面到 VPS 为固定证书
 - 原 Relay 启动配置与数据库部署前备份：`workspace/gateway-deployment/`。此目录包含私有文件，不进入 Git。
 
 验证范围与限制见[本次验证记录](validation-vps-gateway.md)；支持代码、回归测试、模拟器验证和真机验证应分别报告。
+
+### Windows 节点接入验证（2026-11-08）
+
+Windows 节点已使用独立接入凭据连接现有 VPS。`Rivo Relay Gateway` 无窗口计划任务通过共用 `rivo_relay.gateway node --attach --no-pair` 接入既有 Relay，不重启原生运行时。配置位于 Windows workspace 的 `gateway-client.json`；后台包装配置及日志位于 `workspace/windows-gateway/`。使用同一命令加 `--pair-only` 生成包含直连、VPS 和证书指纹的 v2 二维码，不再使用仅直连的旧 `rivo_relay pair` 命令。
+
+验证：真实 VPS 配对及授权节点读取成功，临时手机令牌已撤销；进程 Session 0、窗口句柄为 0。网关原有 17 项测试及新增双通道二维码回归测试通过。用户随后确认 Android 真机扫描双通道二维码配对成功。
