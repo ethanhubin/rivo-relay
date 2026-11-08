@@ -3,6 +3,7 @@ package dev.rivo.relay.data
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
@@ -14,6 +15,20 @@ class NodeAppUpdatesTest {
     private val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     private fun manifest() = JSONObject().put("version", "0.2.13").put("versionCode", 25).put("sha256", hash)
         .put("size", bytes.size).put("apkPath", "/v1/app-updates/apks/$hash.apk").put("notes", "node update")
+    @Test fun interruptedDownloadRetriesAndVerifiesCompleteFile() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val dir = Files.createTempDirectory("updates").toFile()
+        try {
+            val updates = NodeAppUpdates(server.url("/").toString().trimEnd('/'))
+            server.enqueue(MockResponse().setBody(manifest().toString()))
+            val release = updates.check("0.2.12")!!
+            server.enqueue(MockResponse().setBody(okio.Buffer().write(bytes)).setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY))
+            server.enqueue(MockResponse().setBody(okio.Buffer().write(bytes)))
+            assertArrayEquals(bytes, updates.download(release, dir).readBytes())
+            assertEquals(3, server.requestCount)
+            assertEquals(1, dir.listFiles()!!.size)
+        } finally { server.shutdown(); dir.deleteRecursively() }
+    }
     @Test fun nodeCheckAndVerifiedDownloadDoNotUseCredentialsOrGithub() = runBlocking {
         val server = MockWebServer(); server.start()
         val dir = Files.createTempDirectory("updates").toFile()
