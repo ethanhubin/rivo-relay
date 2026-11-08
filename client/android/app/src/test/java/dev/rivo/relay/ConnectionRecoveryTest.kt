@@ -11,6 +11,19 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ConnectionRecoveryTest {
+    @Test fun unavailableHistoryDoesNotDisconnectNode() = runTest {
+        var probes = 0
+        val recovery = ConnectionRecovery(this, { probes++ }, {}, {}, {})
+        val error = ApiException(503, "native_history_unavailable", "历史暂不可用")
+        assertFalse(isConnectionFailure(error))
+        recovery.failed(error)
+        advanceUntilIdle()
+        assertEquals(RecoveryState.CONNECTED, recovery.state.value)
+        assertEquals(0, probes)
+        assertTrue(isConnectionFailure(ApiException(503, "node_offline", "节点离线")))
+        assertTrue(isConnectionFailure(IOException("connection reset")))
+    }
+
     @Test fun savingWaitsForProbeThenDownloadsExactlyOnce() = runBlocking {
         val server = MockWebServer(); server.start()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)

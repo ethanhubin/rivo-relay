@@ -10,7 +10,8 @@ enum class RecoveryState { CONNECTED, CONNECTING, DISCONNECTED }
 class ConnectionPausedException : IOException("节点已断开，请在设置中重连")
 internal class ReconnectProbe
 fun isConnectionFailure(error: Throwable): Boolean =
-    error is IOException && error !is ApiException || error is ApiException && error.status in 502..504
+    error is IOException && error !is ApiException || error is ApiException &&
+        error.status in 502..504 && error.code != "native_history_unavailable"
 
 /** Retries a read-only probe, never the failed operation. Exhaustion requires manual recovery. */
 class ConnectionRecovery(private val scope: CoroutineScope, private val probe: suspend () -> Unit,

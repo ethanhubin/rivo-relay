@@ -7,7 +7,7 @@ name = "rivo-relay"
 version = "0.1.0"
 description = "Mobile continuation of Codex Desktop"
 requires-python = ">=3.11"
-dependencies = ["websockets==15.0.1", "qrcode[pil]==8.2", "Pillow==13.0.0"]
+dependencies = ["websockets==15.0.1", "qrcode[pil]==8.2", "Pillow==13.0.0", "zstandard==0.25.0"]
 
 [project.optional-dependencies]
 gateway = ["aiohttp==3.14.0"]
