@@ -89,12 +89,12 @@ internal fun FileTransferDialog(state: FileTransferState, onCancel: () -> Unit, 
                     if (state.bytesPerSecond > 0) " · ${formatTransferBytes(state.bytesPerSecond)}/s" else "", modifier = Modifier.testTag("file_transfer_details"))
             }
             Text(state.message, color = if (state.failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
-        } },
+        } } },
         confirmButton = { when {
             state.running -> TextButton(onClick = onCancel, modifier = Modifier.testTag("file_transfer_cancel")) { Text("取消") }
             state.failed -> TextButton(onClick = onRetry, modifier = Modifier.testTag("file_transfer_retry")) { Text("重试") }
             else -> TextButton(onClick = onClose, modifier = Modifier.testTag("file_transfer_close")) { Text("关闭") }
-        } }, dismissButton = { if (state.failed) TextButton(onClick = onClose) { Text("关闭") } })
+       } }, dismissButton = { if (state.failed) TextButton(onClick = onClose) { Text("关闭") } })
 }
 
 internal fun formatTransferBytes(bytes: Long): String = when {

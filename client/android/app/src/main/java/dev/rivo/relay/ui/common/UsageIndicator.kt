@@ -49,7 +49,7 @@ fun UsageIndicator(usage: CodexUsage?, modifier: Modifier = Modifier, contextPer
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         }
-    }, confirmButton = { TextButton(onClick = { details = false }) { Text("完成") } },
+    } }, confirmButton = { TextButton(onClick = { details = false }) { Text("完成") } },
         dismissButton = { onRefresh?.let { TextButton(onClick = it, enabled = !loading) { Text("刷新") } } })
 }
 

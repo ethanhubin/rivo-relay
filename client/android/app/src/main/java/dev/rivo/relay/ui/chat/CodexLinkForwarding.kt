@@ -73,7 +73,7 @@ internal fun CodexLinkDestinationDialog(link: CodexLinkAttachment, read: suspend
                     Text(sessionTitle(session), Modifier.padding(top = 12.dp))
                 } }
             }
-        } }, confirmButton = { TextButton(onClick = { projectId?.let { onConfirm(it, selected, link.source, link.name) } },
+        } } }, confirmButton = { TextButton(onClick = { projectId?.let { onConfirm(it, selected, link.source, link.name) } },
             enabled = !loading && error == null && projectId != null && (selected == null || sessions.any { it.string("id") == selected }),
             modifier = Modifier.testTag("confirm_forward_link")) { Text("确认添加") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } })

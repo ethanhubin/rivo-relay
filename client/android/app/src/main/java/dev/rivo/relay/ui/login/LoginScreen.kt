@@ -69,7 +69,7 @@ fun LoginScreen(busy: Boolean, error: String?, onPair: (String, String) -> Unit,
                     OutlinedTextField(code, { code = it }, label = { Text("配对码") }, supportingText = { Text("完整配对链接无需再填") },
                         singleLine = true, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth().testTag("pairing_code"))
                 }
-            }, confirmButton = { Button(onClick = { manual = false; onPair(address, code); code = "" }, enabled = address.isNotBlank() && !busy && !readingImage,
+            } }, confirmButton = { Button(onClick = { manual = false; onPair(address, code); code = "" }, enabled = address.isNotBlank() && !busy && !readingImage,
                 modifier = Modifier.testTag("manual_connect")) { Text("连接") } },
             dismissButton = { TextButton(onClick = { manual = false }, enabled = !busy && !readingImage) { Text("取消") } })
     }

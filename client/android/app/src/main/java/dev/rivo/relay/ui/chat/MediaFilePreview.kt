@@ -181,7 +181,7 @@ internal fun HtmlFilePreview(html: String, modifier: Modifier = Modifier) {
                 return true
             }
         }
-    } }, update = { view -> if (view.tag != html) { view.tag = html; view.loadDataWithBaseURL(null, htmlPreviewDocument(html), "text/html", "UTF-8", null) } }, modifier = modifier.fillMaxWidth())
+   } }, update = { view -> if (view.tag != html) { view.tag = html; view.loadDataWithBaseURL(null, htmlPreviewDocument(html), "text/html", "UTF-8", null) } }, modifier = modifier.fillMaxWidth())
 }
 
 /** Prefix before authored markup so even fragments get a mobile viewport and isolation policy. */

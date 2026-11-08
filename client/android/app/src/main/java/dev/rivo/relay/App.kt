@@ -362,7 +362,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                                     try { node.conversations.setPendingWorktreeRef(localId, ref) }
                                     catch (e: Exception) { setError(e.message ?: "无法保存工作区选择") }
                                 } else pendingReady = true
-                            } },
+                           } },
                         onConfiguredSend = sendPending@{ input, model, effort, mode, serviceTier, permissions, accepted ->
                             if (node.conversations.pendingCompleted(localId)) {
                                 node.conversations.completedPendingThreadId(localId)?.let { openChat(it, "sessions") }

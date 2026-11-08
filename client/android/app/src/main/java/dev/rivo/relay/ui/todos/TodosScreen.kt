@@ -311,13 +311,13 @@ private fun DispatchSheet(item: Todo, projects: List<ProjectSummary>, enabled: B
                             modifier = Modifier.clickable { selectedThread = thread.id; threadMenu = false })
                     }
                 }
-            }, confirmButton = { TextButton({ threadMenu = false }) { Text("取消") } })
+            } }, confirmButton = { TextButton({ threadMenu = false }) { Text("取消") } })
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Text("提交待办内容并保留会话关联。Codex 验证完成或收到你的完成确认后，会回写待办状态。", style = MaterialTheme.typography.bodySmall)
             if (item.localAttachments().isNotEmpty()) {
                 Text("开始执行后，本机附件会上传到节点的附件目录，并随待办发送给 Codex。", style = MaterialTheme.typography.bodySmall)
             }
         }
-    }, confirmButton = { Button(onClick = { selectedProject?.let { onDispatch(it.id, selectedThread) } }, enabled = enabled && selectedProject != null,
+    } }, confirmButton = { Button(onClick = { selectedProject?.let { onDispatch(it.id, selectedThread) } }, enabled = enabled && selectedProject != null,
         modifier = Modifier.testTag("confirm_dispatch")) { Text("开始执行") } }, dismissButton = { TextButton(onDismiss) { Text("取消") } })
 }

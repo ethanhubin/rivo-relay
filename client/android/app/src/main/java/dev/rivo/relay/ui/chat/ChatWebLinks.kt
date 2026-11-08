@@ -81,7 +81,7 @@ internal fun rememberConfirmedWebLinkOpener(
           if (shareFailed) Text("无法打开分享面板，请重试。", color = MaterialTheme.colorScheme.error)
           if (failed) Text("无法打开链接，请检查是否已安装浏览器。", color = MaterialTheme.colorScheme.error)
         }
-      },
+      } },
       confirmButton = {
         TextButton(onClick = {
           // Android intent matching expects a lowercase scheme.
