@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
-import getpass
 import json
 import logging
 import os
@@ -14,7 +12,7 @@ import subprocess
 import sys
 from urllib.parse import urlencode
 
-from .config import decode_key, gateway_url, initialize, issue_key, save_private, discover_direct_url
+from .config import initialize, issue_key, save_private, discover_direct_url, node_gateway
 
 
 def main():
@@ -30,7 +28,7 @@ def main():
     parser.add_argument('--update-source', action='store_true', help='Advertise this node as the app update source')
     parser.add_argument('--attach', action='store_true', help='Connect an already-running local Relay')
     parser.add_argument('--pair-only', action='store_true', help='Generate a fresh QR for an already configured/running node')
-    parser.add_argument('--configure', action='store_true', help='Replace the saved VPS IP and access key interactively')
+    parser.add_argument('--configure', action='store_true', help='Replace the saved access credential interactively')
     parser.add_argument('--no-pair', action='store_true', help='Background reconnect without creating a new pairing code')
     args = parser.parse_args()
     os.umask(0o077)
@@ -51,9 +49,10 @@ def main():
         pin = initialize(args.workspace, ip)
         keys = json.loads((args.workspace / 'keys.json').read_text())
         if args.command == 'issue-key' or not keys:
-            access = issue_key(args.workspace, pin)
+            host = f"[{ip}]" if ":" in ip else ip
+            access = issue_key(args.workspace, pin, f"https://{host}:{args.port}")
             save_private(args.workspace / 'access-key.json', {'key': access})
-            print('Node access key saved to', args.workspace / 'access-key.json', flush=True)
+            print('Node access credential (includes VPS address) saved to', args.workspace / 'access-key.json', flush=True)
             if sys.stdout.isatty():
                 print(access, flush=True)
         if args.command == 'issue-key':
@@ -90,9 +89,8 @@ async def node(args):
     if args.configure:
         stored.pop('key', None); stored.pop('gateway', None)
     if mode != 'direct':
-        base = gateway_url(args.ip or stored.get('gateway') or input('VPS IP（可带 :端口）: ').strip())
-        key = decode_key(stored.get('key') or getpass.getpass('节点授权密钥: ').strip())
-        stored.update(gateway=base, key=stored.get('key') or 'rivo1.' + base64.urlsafe_b64encode(json.dumps(key).encode()).decode().rstrip('='))
+        base, key, credential = node_gateway(stored, args.ip)
+        stored.update(gateway=base, key=credential)
     if mode == 'direct' and not direct:
         raise ValueError('Direct mode requires a Tailscale URL')
     stored.update(mode=mode, direct=direct or '', updates=args.update_source or stored.get('updates', False))

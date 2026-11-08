@@ -6,7 +6,8 @@ import tempfile
 import unittest
 
 from aiohttp import ClientSession, ClientTimeout, web
-from rivo_relay.gateway.config import decode_key, gateway_url, initialize, issue_key
+from rivo_relay.gateway.config import decode_key, gateway_url, initialize, issue_key, access_credential, node_gateway, encode_key
+from unittest.mock import patch
 from rivo_relay.gateway.connector import Connector
 from rivo_relay.gateway.server import Gateway
 
@@ -155,3 +156,65 @@ class GatewayConfigTests(unittest.TestCase):
             save_private(workspace / 'gateway-client.json', {'mode': 'direct', 'direct': 'https://node.example'})
             expected = hashlib.sha256(b'https://node.example\n\n').hexdigest()
             self.assertEqual(pairing_route_binding(workspace), expected)
+
+
+class GatewayCredentialTests(unittest.TestCase):
+    def setUp(self):
+        self.legacy = encode_key({'v': 1, 'slot': 'a' * 32, 'secret': 's' * 43, 'pin': 'b' * 64})
+        self.credential = access_credential(self.legacy, '134.175.156.219:80')
+
+    def test_single_paste_never_prompts_for_ip(self):
+        with patch('getpass.getpass', return_value=self.credential) as prompt, patch('builtins.input', side_effect=AssertionError('Unexpected IP prompt')):
+            base, key, saved = node_gateway({})
+        prompt.assert_called_once()
+        self.assertEqual(base, 'https://134.175.156.219:80')
+        self.assertEqual(saved, self.credential)
+        for field in ('slot', 'secret', 'pin'):
+            self.assertEqual(key[field], decode_key(self.legacy)[field])
+
+    def test_existing_configs_do_not_prompt(self):
+        with patch('getpass.getpass', side_effect=AssertionError()), patch('builtins.input', side_effect=AssertionError()):
+            for stored in ({'key': self.legacy, 'gateway': '134.175.156.219'}, {'key': self.credential}):
+                self.assertEqual(node_gateway(stored)[0], 'https://134.175.156.219:80')
+
+    def test_legacy_key_can_still_request_ip(self):
+        with patch('getpass.getpass', return_value=self.legacy), patch('builtins.input', return_value='134.175.156.219:8443'):
+            self.assertEqual(node_gateway({})[0], 'https://134.175.156.219:8443')
+
+    def test_conflicting_explicit_ip_is_rejected(self):
+        with self.assertRaises(ValueError):
+            node_gateway({'key': self.credential}, '1.2.3.4')
+
+    def test_ipv6_and_custom_port(self):
+        key = decode_key(access_credential(self.legacy, 'https://[2001:db8::1]:8443'))
+        self.assertEqual(key['gateway'], 'https://[2001:db8::1]:8443')
+
+    def test_invalid_bundle_is_rejected_without_echoing_secret(self):
+        for value in ['rivo2.!!!!', 'rivo2.W10', self.legacy.replace('rivo1.', 'rivo2.'),
+                      encode_key(dict(decode_key(self.credential), gateway='http://1.2.3.4'))]:
+            with self.subTest(value=value[:6]), self.assertRaisesRegex(ValueError, '^Invalid gateway access credential$'):
+                decode_key(value)
+
+    def test_issue_credential_registers_same_authorization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / 'keys.json').write_text('{}')
+            credential = issue_key(path, 'b' * 64, '134.175.156.219:8443')
+            key = decode_key(credential)
+            self.assertEqual(key['gateway'], 'https://134.175.156.219:8443')
+            self.assertEqual(json.loads((path / 'keys.json').read_text())[key['slot']], hashlib.sha256(key['secret'].encode()).hexdigest())
+
+    def test_issue_cli_includes_port_and_does_not_log_credential(self):
+        import io
+        from contextlib import redirect_stdout
+        from rivo_relay.gateway.__main__ import main
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / 'keys.json').write_text('{}')
+            output = io.StringIO()
+            with patch('sys.argv', ['gateway', 'issue-key', '--workspace', directory, '--ip', '134.175.156.219', '--port', '8443']), patch('rivo_relay.gateway.__main__.initialize', return_value='b' * 64), redirect_stdout(output):
+                main()
+            value = json.loads((path / 'access-key.json').read_text())['key']
+            self.assertEqual(decode_key(value)['gateway'], 'https://134.175.156.219:8443')
+            self.assertNotIn(value, output.getvalue())
+            self.assertEqual((path / 'access-key.json').stat().st_mode & 0o777, 0o600)

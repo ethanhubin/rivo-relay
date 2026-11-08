@@ -33,4 +33,4 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
 systemctl enable --now rivo-gateway.service
-printf 'Access key is in /var/lib/rivo-gateway/access-key.json (owner-only).\n'
+printf 'Access credential (includes VPS address) is in /var/lib/rivo-gateway/access-key.json (owner-only).\n'

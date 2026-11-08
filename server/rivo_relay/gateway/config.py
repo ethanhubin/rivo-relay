@@ -38,29 +38,65 @@ def initialize(directory: Path, address: str):
     return hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert.read_text())).hexdigest()
 
 
-def issue_key(directory: Path, fingerprint: str):
+def issue_key(directory: Path, fingerprint: str, address: str | None = None):
+    endpoint = gateway_url(address) if address else None
     slot, secret = secrets.token_hex(16), secrets.token_urlsafe(32)
     path = directory / 'keys.json'
     keys = json.loads(path.read_text())
     keys[slot] = hashlib.sha256(secret.encode()).hexdigest()
     save_private(path, keys)
     bundle = {'v': 1, 'slot': slot, 'secret': secret, 'pin': fingerprint}
-    return 'rivo1.' + base64.urlsafe_b64encode(json.dumps(bundle, separators=(',', ':')).encode()).decode().rstrip('=')
+    key = encode_key(bundle)
+    return access_credential(key, endpoint) if endpoint else key
+
+
+def encode_key(bundle: dict):
+    prefix = 'rivo2.' if bundle['v'] == 2 else 'rivo1.'
+    return prefix + base64.urlsafe_b64encode(json.dumps(bundle, separators=(',', ':')).encode()).decode().rstrip('=')
 
 
 def decode_key(value: str):
-    if not value.startswith('rivo1.') or len(value) > 2048:
-        raise ValueError('Invalid gateway access key')
     try:
-        raw = value.split('.', 1)[1]
-        bundle = json.loads(base64.urlsafe_b64decode(raw + '=' * (-len(raw) % 4)))
-        assert bundle['v'] == 1
-        assert len(bytes.fromhex(bundle['pin'])) == 32
-        assert len(bytes.fromhex(bundle['slot'])) == 16
-        assert 32 <= len(bundle['secret']) <= 128
+        if not isinstance(value, str) or len(value) > 2048:
+            raise ValueError()
+        prefix, raw = value.strip().split('.', 1)
+        version = {'rivo1': 1, 'rivo2': 2}[prefix]
+        bundle = json.loads(base64.b64decode(raw + '=' * (-len(raw) % 4), altchars=b'-_', validate=True))
+        if not isinstance(bundle, dict) or bundle.get('v') != version:
+            raise ValueError()
+        for field, length in [('pin', 64), ('slot', 32)]:
+            value = bundle[field]
+            if not isinstance(value, str) or len(value) != length or any(c not in '0123456789abcdef' for c in value):
+                raise ValueError()
+        if not isinstance(bundle['secret'], str) or not 32 <= len(bundle['secret']) <= 128:
+            raise ValueError()
+        if version == 2:
+            bundle['gateway'] = gateway_url(bundle['gateway'])
         return bundle
-    except (ValueError, KeyError, AssertionError, TypeError) as error:
-        raise ValueError('Invalid gateway access key') from error
+    except (ValueError, KeyError, TypeError, UnicodeError) as error:
+        raise ValueError('Invalid gateway access credential') from None
+
+
+def access_credential(key: str, address: str):
+    """Wrap an existing authorization without rotating its slot, secret or certificate."""
+    bundle = decode_key(key)
+    bundle.update(v=2, gateway=gateway_url(address))
+    return encode_key(bundle)
+
+
+def node_gateway(stored: dict, address: str | None = None):
+    """A new desktop prompts once; old separate IP/key configurations remain valid."""
+    import getpass
+    value = stored.get('key') or getpass.getpass('节点接入凭证（粘贴完整凭证串）: ').strip()
+    key = decode_key(value)
+    embedded = key.get('gateway')
+    if embedded:
+        if address and gateway_url(address) != embedded:
+            raise ValueError('VPS address conflicts with the access credential')
+        base = embedded
+    else:
+        base = gateway_url(address or stored.get('gateway') or input('旧版密钥，请补充 VPS IP（可带 :端口）: ').strip())
+    return base, key, value
 
 
 def gateway_url(address: str):

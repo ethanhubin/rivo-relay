@@ -12,20 +12,22 @@ cd Rivo-Relay
 ./scripts/start-node.sh
 ```
 
-首次只询问 VPS IP 和节点授权密钥。脚本建立虚拟环境并安装依赖，保存配置、启动 Relay、连接 VPS，生成 `workspace/local-node/artifacts/pairing.png`。终端支持时同时显示二维码。手机使用支持 v2 配对的开发版 App 扫描；二维码有效期为 5 分钟，只能兑换一次。
+首次只需粘贴一条 `rivo2.…` 节点接入凭证，已包含 VPS IP、端口、独立节点密钥和证书指纹，不再分别填写 IP 与密钥。脚本建立虚拟环境并安装依赖，保存配置、启动 Relay、连接 VPS，生成 `workspace/local-node/artifacts/pairing.png`。终端支持时同时显示二维码。手机使用支持 v2 配对的开发版 App 扫描；二维码有效期为 5 分钟，只能兑换一次。
 
 脚本会复用已有 Tailscale Serve HTTPS 映射，不自动修改 Tailscale 配置。没有映射时仍可仅通过 VPS 连接。已有明确入口可用 `--direct-url http://100.124.150.1:18767` 或目标节点 HTTPS 地址指定。监听本地端口默认 18765；与已有服务共享 workspace 时校验健康接口的节点 ID 后自动接入，不再启动第二个 Relay。
 
 - `--mode direct`：仅直连，需要可用直连地址。
 - `--mode relay`：仅 VPS。
 - `--mode auto`：两条路径同时提供（默认）。
-- `--configure`：重新输入 VPS IP 和节点授权密钥。
+- `--configure`：重新粘贴节点接入凭证。
 - `--workspace PATH --local-port PORT`：其他 workspace / 本地端口。
 - `--pair-only`：为已运行节点生成新二维码，不建立第二条控制连接。
 - `--update-source`：将此节点声明为 App 更新源。普通节点不覆盖手机已保存的更新源。
 - `--no-pair`：后台运行时不生成配对码。
 
 启动命令默认前台常驻；退出会关闭其创建的 Relay 子进程，接入已有 Relay 时只关闭连接器。后台保活应由 launchd/systemd 管理此命令；保存配置后不再需要输入。当前实现使用 POSIX 进程与信号接口，尚不提供 Windows 启动器。
+
+旧版 `rivo1.…` 密钥仍可使用，首次配置时会额外询问 IP；已有 IP + 密钥配置无需迁移。凭证只是封装，不是加密，须像密码一样保管。封装已有密钥不会改变授权或使原配置失效。
 
 配置 `gateway-client.json` 包含密钥，权限为 0600；workspace 不进入 Git。每个桌面节点使用一份独立接入密钥。同一密钥同时连接第二个桌面时网关拒绝连接，不会替换在线节点。
 
@@ -38,18 +40,18 @@ cd /opt/rivo-relay
 ./scripts/install-gateway-service.sh <公网IP>
 ```
 
-安装器创建受限用户 `rivo-gateway`、systemd 服务和 `/var/lib/rivo-gateway` 私有状态目录。首次自动生成自签名 TLS 证书与一份节点接入密钥。密钥在 `/var/lib/rivo-gateway/access-key.json`，由管理员安全复制给桌面用户。不要公开这个文件或将其放入日志。
+安装器创建受限用户 `rivo-gateway`、systemd 服务和 `/var/lib/rivo-gateway` 私有状态目录。首次自动生成自签名 TLS 证书与一份包含地址的节点接入凭证。凭证在 `/var/lib/rivo-gateway/access-key.json`，由管理员安全复制给桌面用户。不要公开这个文件或将其放入日志。
 
-默认入口为 `https://公网IP:80`，**80 上运行 TLS，不是明文 HTTP**。本部署的 443 已被 Merge Release 使用，80 已在云防火墙放通；因此采用这一端口。其他部署可通过安装脚本第二参数指定端口，桌面输入 `IP:端口`。IP 未指定端口时固定使用 80。需要在云防火墙放通所选 TCP 端口。
+默认入口为 `https://公网IP:80`，**80 上运行 TLS，不是明文 HTTP**。本部署的 443 已被 Merge Release 使用，80 已在云防火墙放通；因此采用这一端口。其他部署可通过安装脚本第二参数指定端口，签发凭证时使用相同的 `--port`，桌面无需再输入端口。IP 未指定端口时固定使用 80。需要在云防火墙放通所选 TCP 端口。
 
 每增加一台桌面，签发独立密钥：
 
 ```sh
 sudo -u rivo-gateway /opt/rivo-relay/.venv/bin/python -m rivo_relay.gateway issue-key \
-  --workspace /var/lib/rivo-gateway --ip <公网IP>
+  --workspace /var/lib/rivo-gateway --ip <公网IP> --port 80
 ```
 
-该命令更新 `access-key.json` 为新密钥，不撤销已有密钥；交互终端也会显示新密钥。证书和密钥库应一并备份。不要删除证书后重新生成；证书改变需要重新分发节点密钥及手机二维码。
+该命令更新 `access-key.json` 的 `key` 字段为新的完整凭证，不撤销已有密钥；交互终端也会显示新密钥。证书和密钥库应一并备份。不要删除证书后重新生成；证书改变需要重新分发节点密钥及手机二维码。
 
 撤销某节点：
 
@@ -82,7 +84,7 @@ VPS 是可信中转端：手机到 VPS 为 HTTPS，桌面到 VPS 为固定证书
 ## 本机部署位置
 
 - VPS：`134.175.156.219:80`，`rivo-gateway.service`，程序 `/opt/rivo-relay`，状态 `/var/lib/rivo-gateway`。
-- 主节点 Relay：原 `local.rivo-relay` 服务及 `workspace/local-node`，兼容性更新采用 `workspace/deployments/gateway-development/server` 快照。
+- 主节点 Relay：原 `local.rivo-relay` 服务及 `workspace/local-node`，使用已发布提交的 `workspace/deployments/<commit>/server` 快照。
 - 主节点连接器：`~/Library/LaunchAgents/local.rivo-relay.gateway.plist`，连接器日志在 `workspace/local-node/logs/gateway*.log`。
 - 原 Relay 启动配置与数据库部署前备份：`workspace/gateway-deployment/`。此目录包含私有文件，不进入 Git。
 
