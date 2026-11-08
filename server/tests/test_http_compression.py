@@ -76,3 +76,34 @@ class SnapshotCompressionTest(unittest.TestCase):
                 headers, body = self.request('gzip', path, method)
                 self.assertNotIn('Content-Encoding', headers)
                 json.loads(body)
+
+
+class SlowSnapshotTest(unittest.TestCase):
+    def test_backpressure_does_not_truncate_history_or_block_other_requests(self):
+        import socket
+        import time
+        from http.server import ThreadingHTTPServer
+        payload = {'message': 'large history ' * 500000}
+        class SlowHandler(Handler):
+            def setup(self):
+                super().setup()
+                self.connection.settimeout(.05)
+                self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+            def do_GET(self):
+                self.send_json(200, payload if self.path.endswith('/old') else {'status': 'ok'})
+        server = ThreadingHTTPServer(('127.0.0.1', 0), SlowHandler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        old = http.client.HTTPConnection(*server.server_address, timeout=5)
+        healthy = http.client.HTTPConnection(*server.server_address, timeout=5)
+        try:
+            old.request('GET', '/v1/threads/old')
+            response = old.getresponse()
+            time.sleep(.2)  # Exceed the header timeout while applying backpressure.
+            healthy.request('GET', '/health')
+            self.assertEqual(json.loads(healthy.getresponse().read()), {'status': 'ok'})
+            body = response.read()
+            self.assertEqual(len(body), int(response.getheader('Content-Length')))
+            self.assertEqual(json.loads(body), payload)
+        finally:
+            old.close(); healthy.close(); server.shutdown(); server.server_close(); worker.join()

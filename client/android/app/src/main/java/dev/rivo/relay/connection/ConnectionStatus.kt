@@ -36,6 +36,7 @@ fun ConnectionStatus.indicatorState(recovery: RecoveryState?): RecoveryState = w
     recovery == RecoveryState.CONNECTING -> RecoveryState.CONNECTING
     recovery == RecoveryState.DISCONNECTED -> RecoveryState.DISCONNECTED
     checkedAt == 0L -> RecoveryState.CONNECTING
+    recovery == RecoveryState.CONNECTED -> RecoveryState.CONNECTED
     !failed && httpCode in 200..299 -> RecoveryState.CONNECTED
     else -> RecoveryState.DISCONNECTED
 }

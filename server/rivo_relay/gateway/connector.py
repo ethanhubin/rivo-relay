@@ -74,6 +74,11 @@ class Connector:
                     finished, _ = await asyncio.wait({forwarding, watcher}, return_when=asyncio.FIRST_COMPLETED)
                     if forwarding in finished:
                         await forwarding
+                        # send_bytes only drains the local transport buffer. Let
+                        # the gateway consume EOF and close after delivering the
+                        # response; initiating WS close here starts aiohttp's
+                        # 10-second close timer while megabytes may still be queued.
+                        await asyncio.wait_for(watcher, 180)
                 finally:
                     forwarding.cancel(); watcher.cancel()
                     await asyncio.gather(forwarding, watcher, return_exceptions=True)

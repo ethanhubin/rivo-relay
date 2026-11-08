@@ -68,6 +68,10 @@ class RelayApi(private val base: String, private val token: String = "", private
         .readTimeout(JSON_READ_IDLE_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
         .callTimeout(JSON_READ_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS).build()
     private var reader = readClient()
+    // Health checks must not queue behind large history bodies or reuse their sockets.
+    private fun probeClient() = newClient().newBuilder().dispatcher(Dispatcher())
+        .connectionPool(ConnectionPool()).callTimeout(12, TimeUnit.SECONDS).build()
+    private val probes by lazy { probeClient() }
     // Bulk bodies occupy callback threads until fully consumed. Reserve a separate
     // bounded dispatcher so transfers cannot queue chat reads or submissions.
     private fun transferClient() = client.newBuilder()
@@ -110,7 +114,7 @@ class RelayApi(private val base: String, private val token: String = "", private
     }
     suspend fun call(path: String, method: String = "GET", body: JSONObject? = null, background: Boolean = false, reconnectProbe: Boolean = false): JSONObject = withContext(Dispatchers.Default) { suspendCancellableCoroutine { continuation ->
         val call = synchronized(transportLock) {
-            (if (method != "GET") client else if (background) backgroundReader else reader).newCall(request(path, method, body).newBuilder().apply { if (reconnectProbe) tag(ReconnectProbe::class.java, ReconnectProbe()) }.build()).also { if (method == "GET") reads.add(it) }
+            (if (reconnectProbe) probes else if (method != "GET") client else if (background) backgroundReader else reader).newCall(request(path, method, body).newBuilder().apply { if (reconnectProbe) tag(ReconnectProbe::class.java, ReconnectProbe()) }.build()).also { if (method == "GET") reads.add(it) }
         }
         continuation.invokeOnCancellation { call.cancel(); forgetRead(call) }
         call.enqueue(object : Callback {

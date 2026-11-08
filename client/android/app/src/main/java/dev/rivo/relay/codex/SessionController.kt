@@ -60,7 +60,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         }
     }
     private fun isCurrent(id: String, targetGeneration: Long) = mutable.value.id == id && generation == targetGeneration
-    private fun message(error: Exception): String? = if (error is CancellationException || isConnectionFailure(error)) null else if (error is ApiException) error.message else api.describeFailure(error)
+    private fun message(error: Exception): String? = if (error is CancellationException) null else if (error is ApiException) error.message else api.describeFailure(error)
     private fun invalidateHistory() { historyEpoch++; historyJob?.cancel(); historyJob = null; historyDepthTarget = null; requestedHistoryCursors.clear() }
     fun dismissReadError() { mutable.update { it.copy(readError = null, historyError = null) } }
     fun open(id: String, online: Boolean = true) {
@@ -278,7 +278,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                         if (e is ApiException && e.status == 401) {
                             mutable.update { it.copy(loading = false, stale = true) }
                             failure(e)
-                        } else if (requestHistoryEpoch == historyEpoch) mutable.update { it.copy(loading = false, stale = true, readError = message(e), controlNotice = "同步失败，暂时禁止操作，等待重新连接") }
+                        } else if (requestHistoryEpoch == historyEpoch) mutable.update { it.copy(loading = false, stale = true, readError = message(e), controlNotice = "当前会话同步失败，暂时禁止操作，请重试或切换会话") }
                     }
                 }
                 finally { slowRead.cancel(); reading = false }

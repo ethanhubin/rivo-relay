@@ -40,6 +40,8 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     self.cancelled.set()
                 return response
+            if request.path == '/v1/large':
+                return web.Response(body=b'z' * (8 * 1024 * 1024))
             if request.path == '/v1/download':
                 return web.Response(body=b'z' * 200000, headers={'ETag': 'test'})
             return web.json_response({'status': 'ok'})
@@ -102,6 +104,43 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(self.cancelled.wait(), 3)
         await asyncio.sleep(.1)
         self.assertEqual(len(self.gateway.pending), 0)
+
+    async def test_slow_response_drain_does_not_start_sender_close_timeout(self):
+        import aiohttp
+        from unittest.mock import patch
+        original_connect = aiohttp.ClientSession.ws_connect
+        original_write = web.StreamResponse.write
+        delayed = False
+        written = 0
+        blocked, release = asyncio.Event(), asyncio.Event()
+        def connect(session, *args, **kwargs):
+            kwargs['timeout'] = aiohttp.ClientWSTimeout(ws_close=.01)
+            return original_connect(session, *args, **kwargs)
+        async def slow_write(response, data):
+            nonlocal delayed, written
+            if response._req and response._req.path.endswith('/v1/large'):
+                written += len(data)
+                if not delayed and written >= 8 * 1024 * 1024:
+                    delayed = True
+                    blocked.set()
+                    await release.wait()
+            return await original_write(response, data)
+        async def download():
+            async with self.client.get(self.url + '/v1/large') as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(await response.read(), b'z' * (8 * 1024 * 1024))
+        with patch.object(aiohttp.ClientSession, 'ws_connect', connect), patch.object(web.StreamResponse, 'write', slow_write):
+            task = asyncio.create_task(download())
+            try:
+                await asyncio.wait_for(blocked.wait(), 3)
+                await asyncio.sleep(.1)
+                self.assertTrue(self.connector.tasks, 'Sender closed before downstream delivery finished')
+            finally:
+                release.set()
+                await task
+        self.assertTrue(delayed)
+        async with self.client.get(self.url + '/health') as response:
+            self.assertEqual(response.status, 200)
 
     async def test_offline_and_reconnect(self):
         await self.gateway.nodes[self.key['slot']].close()

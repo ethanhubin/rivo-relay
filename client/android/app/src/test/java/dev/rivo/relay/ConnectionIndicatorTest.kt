@@ -7,6 +7,11 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class ConnectionIndicatorTest {
+    @org.junit.Test fun failedBusinessResponseDoesNotOverrideNodeRecovery() {
+        assertEquals(RecoveryState.CONNECTED, ConnectionStatus(httpCode = 503, checkedAt = 1).indicatorState(RecoveryState.CONNECTED))
+        assertEquals(RecoveryState.CONNECTED, ConnectionStatus(failed = true, checkedAt = 1).indicatorState(RecoveryState.CONNECTED))
+    }
+
     @Test fun successfulTransportStaysConnectedRegardlessOfPageRefresh() {
         val status = ConnectionStatus(httpCode = 200, checkedAt = 1)
         assertEquals(RecoveryState.CONNECTED, status.indicatorState(null))

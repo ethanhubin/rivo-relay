@@ -24,12 +24,32 @@ class ConnectionRecovery(private val scope: CoroutineScope, private val probe: s
 
     @Synchronized fun reconnect(manual: Boolean = false) {
         if (job?.isActive == true || (!manual && mutable.value == RecoveryState.DISCONNECTED)) return
-        mutable.value = RecoveryState.CONNECTING
+        val verifyFirst = !manual && mutable.value == RecoveryState.CONNECTED
+        if (!verifyFirst) mutable.value = RecoveryState.CONNECTING
         job = scope.launch {
             var connected = false
             try {
+                // A failed business response does not prove that the node is offline.
+                // Keep unrelated requests and subscriptions alive during this probe.
+                if (verifyFirst) {
+                    try {
+                        withTimeout(timeoutMillis) { probe() }
+                        return@launch // No reset, refresh, or replay of the failing read.
+                    } catch (_: TimeoutCancellationException) {
+                        currentCoroutineContext().ensureActive()
+                    } catch (_: CancellationException) {
+                        currentCoroutineContext().ensureActive()
+                    } catch (e: Exception) {
+                        if (!isConnectionFailure(e)) {
+                            rejected(e)
+                            return@launch
+                        }
+                    }
+                    mutable.value = RecoveryState.CONNECTING
+                }
                 reset()
-                for (attempt in 0 until 3) {
+                val attempts = if (verifyFirst) 2 else 3
+                for (attempt in 0 until attempts) {
                     try {
                         withTimeout(timeoutMillis) { probe() }
                         connected = true
@@ -44,7 +64,7 @@ class ConnectionRecovery(private val scope: CoroutineScope, private val probe: s
                     catch (e: Exception) {
                         if (!isConnectionFailure(e)) { rejected(e); break }
                     }
-                    if (attempt < 2) delay(backoffMillis * (attempt + 1))
+                    if (attempt < attempts - 1) delay(backoffMillis * (attempt + 1))
                 }
                 mutable.value = if (connected) RecoveryState.CONNECTED else RecoveryState.DISCONNECTED
                 if (connected) restored()

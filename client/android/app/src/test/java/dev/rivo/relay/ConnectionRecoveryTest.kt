@@ -11,6 +11,37 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ConnectionRecoveryTest {
+    @Test fun truncatedHistoryKeepsConcurrentRequestsAlive() = runBlocking {
+        val server = MockWebServer()
+        val probeStarted = CompletableDeferred<Unit>()
+        val releaseProbe = CompletableDeferred<Unit>()
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse = when (request.path) {
+                "/v1/threads/old" -> MockResponse().setBody("x".repeat(100000))
+                    .setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY)
+                else -> MockResponse().setBody("{}")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val api = RelayApi(server.url("/").toString())
+            val recovery = ConnectionRecovery(scope, {
+                probeStarted.complete(Unit); releaseProbe.await()
+                api.call("/v1/node", reconnectProbe = true)
+            }, { error("Must not reset shared transport") }, { error("Must not reload failed history") }, {})
+            api.recovery = recovery
+            try { api.call("/v1/threads/old"); fail("Expected truncated body") }
+            catch (_: IOException) { }
+            withTimeout(3000) { probeStarted.await() }
+            assertEquals(RecoveryState.CONNECTED, recovery.state.value)
+            for (path in listOf("/v1/projects", "/v1/todos", "/v1/threads/other")) api.call(path)
+            releaseProbe.complete(Unit)
+            withTimeout(3000) { while (server.requestCount < 5) delay(10) }
+            assertEquals(RecoveryState.CONNECTED, recovery.state.value)
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
     @Test fun unavailableHistoryDoesNotDisconnectNode() = runTest {
         var probes = 0
         val recovery = ConnectionRecovery(this, { probes++ }, {}, {}, {})
@@ -80,7 +111,7 @@ class ConnectionRecoveryTest {
             { restored++ }, { error("Unexpected error") })
         recovery.failed(IOException("offline"))
         recovery.reconnect() // Concurrent callers share one attempt sequence.
-        assertEquals(RecoveryState.CONNECTING, recovery.state.value)
+        assertEquals(RecoveryState.CONNECTED, recovery.state.value) // Diagnostic probe is non-disruptive.
         advanceUntilIdle()
         assertEquals(3, attempts)
         assertEquals(RecoveryState.DISCONNECTED, recovery.state.value)
@@ -98,13 +129,13 @@ class ConnectionRecoveryTest {
     @Test fun stalledAttemptsExpireAndAuthorizationErrorsAreNotHidden() = runTest {
         var attempts = 0
         val stalled = ConnectionRecovery(this, { attempts++; awaitCancellation() }, {}, {}, {}, timeoutMillis = 10, backoffMillis = 1)
-        stalled.reconnect(); advanceUntilIdle()
+        stalled.reconnect(manual = true); advanceUntilIdle()
         assertEquals(3, attempts)
         assertEquals(RecoveryState.DISCONNECTED, stalled.state.value)
         var rejection: Throwable? = null
         val denied = ApiException(401, "unauthorized", "expired")
         val auth = ConnectionRecovery(this, { throw denied }, {}, {}, { rejection = it })
-        auth.reconnect(); advanceUntilIdle()
+        auth.reconnect(manual = true); advanceUntilIdle()
         assertSame(denied, rejection)
         assertEquals(RecoveryState.DISCONNECTED, auth.state.value)
     }
@@ -140,13 +171,13 @@ class ConnectionRecoveryTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         try {
             val api = RelayApi(server.url("/").toString())
-            val restored = CompletableDeferred<Unit>()
-            val recovery = ConnectionRecovery(scope, { api.call("/v1/node", reconnectProbe = true) },
-                { api.resetTransport() }, { restored.complete(Unit) }, { restored.completeExceptionally(it) }, backoffMillis = 1)
+            val probed = CompletableDeferred<Unit>()
+            val recovery = ConnectionRecovery(scope, { api.call("/v1/node", reconnectProbe = true); probed.complete(Unit) },
+                { error("Healthy node must not reset") }, { error("Failed mutation must not refresh") }, { probed.completeExceptionally(it) }, backoffMillis = 1)
             api.recovery = recovery
             try { api.call("/v1/submissions", "POST"); fail("Expected original operation failure") }
             catch (e: ApiException) { assertEquals(503, e.status) }
-            withTimeout(2000) { restored.await() }
+            withTimeout(2000) { probed.await() }
             assertEquals("POST", server.takeRequest().method)
             val probe = server.takeRequest()
             assertEquals("GET", probe.method)

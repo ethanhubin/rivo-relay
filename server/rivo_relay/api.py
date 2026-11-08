@@ -141,9 +141,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Connection", "close")
+        # Large histories can be backpressured by the VPS/mobile link. The
+        # 10-second request-header timeout must not truncate a valid response.
+        self.connection.settimeout(120)
         self.end_headers()
-        self.wfile.write(raw)
-        self.close_connection = True
+        try:
+            for offset in range(0, len(raw), 65536):
+                self.wfile.write(raw[offset:offset + 65536])
+        finally:
+            self.close_connection = True
 
     def send_file(self, path):
         if not self.app.file_transfer_slots.acquire(blocking=False):

@@ -723,7 +723,7 @@ class SessionControllerTest {
             controller.open("t")
             val cached = withTimeout(5_000) { controller.state.first { it.snapshot?.name == "cached" && it.stale && !it.loading } }
             assertTrue(cached.stale)
-            assertNull("Transport failures recover silently", cached.readError)
+            assertNotNull("Failed history remains visible within this session", cached.readError)
             assertTrue(cached.snapshot!!.requests.isEmpty())
             controller.loadEarlier()
             assertEquals(0, pages.get())
