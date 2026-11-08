@@ -196,6 +196,19 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         draftLoaded = true
     }
     val currentDraft = ConversationDraft(draft, images.map { StoredDraftImage(it.id, it.bytes) }, files, selectedModel, selectedEffort, selectedMode, selectedServiceTier, selectedSandbox, selectedApproval, pendingGoal)
+    var submittedDraft by remember(state.id) { mutableStateOf<ConversationDraft?>(null) }
+    val unchangedSubmission = submittedDraft != null && submittedDraft == currentDraft
+    val composerInput = remember(draft, images, files, pendingGoal, unchangedSubmission, state.pendingMessages.isEmpty()) {
+        if (unchangedSubmission || state.pendingMessages.isEmpty()) JSONArray() else runCatching {
+            nativeInputs(draft.ifBlank { pendingGoal?.let { JSONObject(it).string("objective") }.orEmpty() }, images, files)
+        }.getOrDefault(JSONArray())
+    }
+    val submissionInFlight = busy || pendingFirstTurnSent || state.pendingMessages.any { it.delivery in setOf("submitting", "unknown") }
+    val hideSubmitted = hideSubmittedDraft(submissionInFlight, unchangedSubmission,
+        composerInput, state.pendingMessages)
+    // Drop the mask after a definitive outcome. Never mutate the recovery copy here.
+    SideEffect { if (!submissionInFlight && submittedDraft != null) submittedDraft = null }
+
     val latestDraft by rememberUpdatedState(currentDraft)
     // Disposal belongs to the departing chat. Updated-state delegates shared across
     // identities would observe the newly opened draft and its persistence callback.
@@ -525,10 +538,10 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         }
         MessageComposer(
             inputMinLines = if (pendingTitle != null) 3 else 2,
-            text = draft, onTextChange = { draft = it }, images = images,
+            text = if (hideSubmitted) "" else draft, onTextChange = { draft = it }, images = if (hideSubmitted) emptyList() else images,
             onEditImage = { focus.clearFocus(); keyboard?.hide(); editingImage = it },
             onRemoveImage = { image -> images = images.filterNot { it.id == image.id } },
-            files = files, onRemoveFile = { reference -> files = files.filterNot { it === reference } },
+            files = if (hideSubmitted) emptyList() else files, onRemoveFile = { reference -> files = files.filterNot { it === reference } },
             onOpenFile = { reference -> nativeFilePath(reference.string("path"), cwd)?.let(::openFile) },
             preparing = preparing, error = attachmentError, enabled = !busy && !inputLocked && draftLoaded,
             canSend = !(goalMode && displayedGoal == null) && !pendingReceiptUnresolved && !pendingFirstTurnSent && (pendingGoal == null || goalCapability == true) && (draft.isNotBlank() || images.isNotEmpty() || files.isNotEmpty() || pendingGoal != null) && !state.stale && (snapshot != null || pendingTitle != null && pendingReady),
@@ -575,6 +588,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             onSend = {
                 val targetId = state.id
                 val sentDraft = currentDraft
+                submittedDraft = sentDraft
                 targetId?.let { onPersistDraft(it, sentDraft) }
                 val accepted = { if (currentSessionId == targetId && latestDraft == sentDraft) {
                     followLatest = true; pendingGoal = null; draft = ""; images = emptyList<DraftImage>(); files = emptyList<JSONObject>()
