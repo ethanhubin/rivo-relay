@@ -31,6 +31,54 @@ import java.io.File
 class SettingsUiTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
+    @Test fun foregroundRecoveryIsSilentAndSettingsCanReconnectAfterExhaustion() {
+        val available = java.util.concurrent.atomic.AtomicBoolean(true)
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (!available.get()) return MockResponse().setResponseCode(503).setBody("{}")
+                return MockResponse().setBody(if (request.path == "/v1/pair")
+                    """{"node":{"name":"重连测试","id":"reconnect-fixture"},"deviceId":"fixture","token":"test-only"}"""
+                    else """{"projects":[],"todos":[],"models":[],"connected":true}""")
+            }
+        }
+        server.start()
+        val address = server.url("/").toString()
+        val store = ViewModelStore()
+        lateinit var vm: AppViewModel
+        try {
+            compose.runOnUiThread {
+                vm = AppViewModel(compose.activity.application)
+                store.put("reconnect-test", vm)
+                vm.pair(address, "fixture-code")
+            }
+            compose.setContent { RivoTheme { RelayApp(vm) } }
+            compose.waitUntil(10_000) { vm.state.value.node?.connection?.base?.trimEnd('/') == address.trimEnd('/') }
+            compose.waitUntil(10_000) { compose.onAllNodesWithTag("nav_settings").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithTag("nav_settings").performClick()
+            fun foreground() { compose.runOnUiThread { vm.onBackground(); vm.onForeground() } }
+            fun awaitState(expected: dev.rivo.relay.data.RecoveryState) {
+                compose.waitUntil(10_000) { vm.state.value.node?.recovery?.state?.value == expected }
+            }
+            available.set(false); foreground()
+            awaitState(dev.rivo.relay.data.RecoveryState.DISCONNECTED)
+            compose.onNodeWithTag("app_error").assertDoesNotExist()
+            compose.onNodeWithTag("bottom_notice_panel").assertDoesNotExist()
+            compose.onNodeWithTag("settings_reconnect").assertIsEnabled()
+            available.set(true); foreground()
+            awaitState(dev.rivo.relay.data.RecoveryState.CONNECTED)
+            available.set(false); foreground()
+            awaitState(dev.rivo.relay.data.RecoveryState.DISCONNECTED)
+            available.set(true)
+            compose.onNodeWithTag("settings_reconnect").performClick()
+            awaitState(dev.rivo.relay.data.RecoveryState.CONNECTED)
+            compose.onNodeWithTag("app_error").assertDoesNotExist()
+        } finally {
+            compose.runOnUiThread { store.clear() }
+            server.shutdown()
+        }
+    }
+
     @Test fun bottomSettingsNavigationAndRestore() {
         val server = MockWebServer()
         server.dispatcher = object : Dispatcher() {

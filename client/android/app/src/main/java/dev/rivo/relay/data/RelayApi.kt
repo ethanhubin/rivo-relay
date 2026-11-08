@@ -33,6 +33,7 @@ const val JSON_READ_IDLE_TIMEOUT_MILLIS = 30_000L
 class RelayApi(private val base: String, private val token: String = "", private val dns: Dns = TailnetDns(), private val routes: NodeRoutes? = null, private val nodeId: String = "") {
     private val connectionObserver = dev.rivo.relay.connection.ConnectionStatusObserver(routes, base)
     val connectionStatus = connectionObserver.status
+    @Volatile var recovery: ConnectionRecovery? = null
     internal val sentImages = SentImageCache()
     fun describeFailure(error: Throwable) = connectionFailure(error, when (routes?.mode) {
         dev.rivo.relay.connection.ConnectionMode.RELAY -> routes.relay
@@ -49,6 +50,15 @@ class RelayApi(private val base: String, private val token: String = "", private
     }
     private fun newClient() = OkHttpClient.Builder().dns(dns).retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false)
         .connectTimeout(10, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS).callTimeout(100, TimeUnit.SECONDS)
+        .addInterceptor { chain ->
+            val probe = chain.request().tag(ReconnectProbe::class.java) != null
+            if (!probe && recovery?.state?.value?.let { it != RecoveryState.CONNECTED } == true) throw ConnectionPausedException()
+            try { chain.proceed(chain.request()) }
+            catch (e: IOException) {
+                if (!probe && !chain.call().isCanceled()) recovery?.failed(e)
+                throw e
+            }
+        }
         .addInterceptor(connectionObserver)
         .apply { routes?.let { gatewayTrust(it) }; routing?.let { addInterceptor(it) } }.build()
     private val transportLock = Any()
@@ -98,13 +108,13 @@ class RelayApi(private val base: String, private val token: String = "", private
         if (method != "GET") builder.method(method, (body ?: JSONObject()).toString().toRequestBody("application/json".toMediaType()))
         return builder.build()
     }
-    suspend fun call(path: String, method: String = "GET", body: JSONObject? = null, background: Boolean = false): JSONObject = withContext(Dispatchers.Default) { suspendCancellableCoroutine { continuation ->
+    suspend fun call(path: String, method: String = "GET", body: JSONObject? = null, background: Boolean = false, reconnectProbe: Boolean = false): JSONObject = withContext(Dispatchers.Default) { suspendCancellableCoroutine { continuation ->
         val call = synchronized(transportLock) {
-            (if (method != "GET") client else if (background) backgroundReader else reader).newCall(request(path, method, body)).also { if (method == "GET") reads.add(it) }
+            (if (method != "GET") client else if (background) backgroundReader else reader).newCall(request(path, method, body).newBuilder().apply { if (reconnectProbe) tag(ReconnectProbe::class.java, ReconnectProbe()) }.build()).also { if (method == "GET") reads.add(it) }
         }
         continuation.invokeOnCancellation { call.cancel(); forgetRead(call) }
         call.enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) { forgetRead(call); if (continuation.isActive) continuation.resumeWithException(if (call.isCanceled() && e !is InterruptedIOException) CancellationException("Network route changed") else e) }
+            override fun onFailure(call: Call, e: IOException) { forgetRead(call); if (!reconnectProbe && (!call.isCanceled() || e is InterruptedIOException)) recovery?.failed(e); if (continuation.isActive) continuation.resumeWithException(if (call.isCanceled() && e !is InterruptedIOException) CancellationException("Network route changed") else e) }
             override fun onResponse(call: Call, response: Response) {
                 try {
                     response.use {
@@ -116,7 +126,7 @@ class RelayApi(private val base: String, private val token: String = "", private
                         }
                         if (continuation.isActive) continuation.resume(json)
                     }
-                } catch (e: Exception) { if (continuation.isActive) continuation.resumeWithException(if (call.isCanceled() && e !is InterruptedIOException) CancellationException("Network route changed") else e) }
+                } catch (e: Exception) { if (!reconnectProbe && (!call.isCanceled() || e is InterruptedIOException)) recovery?.failed(e); if (continuation.isActive) continuation.resumeWithException(if (call.isCanceled() && e !is InterruptedIOException) CancellationException("Network route changed") else e) }
                 finally { forgetRead(call) }
             }
         })

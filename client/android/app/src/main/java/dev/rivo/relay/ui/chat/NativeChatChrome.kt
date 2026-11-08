@@ -103,7 +103,7 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
 internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: () -> Unit, onSettings: () -> Unit,
     onRefresh: () -> Unit, onReview: () -> Unit, onStop: () -> Unit, canStop: Boolean,
     pinned: Boolean, canManage: Boolean, onPin: ((Boolean) -> Unit)?, onArchive: (() -> Unit)?,
-    onWriterAction: ((String) -> Unit)? = null, writerBusy: Boolean = false, writerBlockedReason: String? = null) {
+    onWriterAction: ((String) -> Unit)? = null, writerBusy: Boolean = false, writerBlockedReason: String? = null, recoveryState: RecoveryState? = null) {
     val snapshot = state.snapshot
     val context = LocalContext.current
     var menu by remember(state.id) { mutableStateOf(false) }
@@ -131,6 +131,9 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
                 Row(Modifier.fillMaxWidth().clickable(onClick = onSettings).testTag("conversation_status"), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                     ConnectionStatusDot(when {
+                        recoveryState == RecoveryState.CONNECTING -> null
+                        recoveryState == RecoveryState.DISCONNECTED -> false
+                        recoveryState == RecoveryState.CONNECTED -> true
                         state.loading -> null
                         state.stale || state.readError != null -> false
                         snapshot == null -> null

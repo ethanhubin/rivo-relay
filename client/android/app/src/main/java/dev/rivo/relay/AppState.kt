@@ -101,6 +101,17 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
     fun openNotificationTodos() { navigationMutable.value = null; todoNavigationMutable.value = true }
     fun consumeTodoNavigation() { todoNavigationMutable.value = false }
     fun consumeNavigation() { navigationMutable.value = null }
+    val recovery = ConnectionRecovery(scope,
+        probe = { api.call("/v1/node", reconnectProbe = true) },
+        reset = { api.resetTransport() },
+        restored = {
+            session.dismissReadError()
+            session.refresh()
+            catalog.reconnect()
+            todos.refresh()
+            reconcilePendingReceipts()
+        }, rejected = failure)
+    init { api.recovery = recovery }
     fun persistDraft(threadId: String, draft: ConversationDraft) {
         conversations.enqueueDraft(threadId, draft) { error ->
             scope.launch { failure(IllegalArgumentException(error.message ?: "无法保存手机草稿，请检查可用空间")) }
@@ -217,6 +228,8 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
         if (error is CancellationException) return
         if (error is ApiException && error.status == 401) {
             nodeJob?.cancel(); pairing.invalidate(); mutable.value = AppState(error = "节点授权已失效，请重新扫码连接。", savedNodes = pairing.saved())
+        } else if (isConnectionFailure(error) && mutable.value.node != null) {
+            mutable.value.node?.recovery?.failed(error)
         } else mutable.update { it.copy(error = when (error) { is ApiException, is IllegalArgumentException -> error.message; else -> mutable.value.node?.api?.describeFailure(error) ?: connectionFailure(error) }) }
     }
     private var wasBackgrounded = false
@@ -224,33 +237,11 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
     fun onForeground() {
         if (!wasBackgrounded) return
         wasBackgrounded = false
-        retryConnection()
+        mutable.value.node?.recovery?.reconnect(manual = true)
     }
-    private var reconnectJob: Job? = null
     fun retryConnection() {
-        if (reconnectJob?.isActive == true) return
-        val node = mutable.value.node ?: return
-        mutable.update { it.copy(error = null, reconnecting = true) }
-        reconnectJob = viewModelScope.launch {
-            try {
-                node.api.resetTransport()
-                node.reconcilePendingReceipts()
-                syncNodeName(node, this)
-                if (mutable.value.node !== node) return@launch
-                // Read the actual visible state immediately; a preliminary node
-                // probe must not gate recovery of the conversation.
-                node.session.refresh()
-                node.catalog.reconnect()
-                node.todos.refresh()
-            } catch (e: TimeoutCancellationException) {
-                if (mutable.value.node === node) fail(java.net.SocketTimeoutException("Reconnect timed out"))
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-                if (mutable.value.node === node) fail(e)
-            } finally {
-                if (mutable.value.node === node) mutable.update { it.copy(reconnecting = false) }
-            }
-        }
+        mutable.update { it.copy(error = null) }
+        mutable.value.node?.recovery?.reconnect(manual = true)
     }
     fun disconnect() {
         // Clear the active selection; saved node credentials remain available for switching.

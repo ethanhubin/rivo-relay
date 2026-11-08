@@ -263,17 +263,19 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
                     if (permissionError) Text("未获得通知权限，可在系统设置中开启。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                     if (due.isNotBlank()) Text(buildString { append(due); if (reminderEnabled) append(" $reminderTime"); if (repeat != "none") append(" · ${repeatRuleLabel(repeat)}") },
                         style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = { focus.clearFocus(); keyboard?.hide(); reminderOpen = true }, enabled = !busy, modifier = Modifier.testTag("todo_due_date"), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("◴", style = MaterialTheme.typography.titleLarge) }
-                        TextButton(onClick = { focus.clearFocus(); keyboard?.hide(); chooseAttachmentSource = true }, enabled = !busy && attachments.size < MAX_TODO_ATTACHMENTS,
-                            modifier = Modifier.testTag("todo_add_attachment"), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("＋附件") }
-                        if (due.isNotBlank()) TextButton(onClick = { due = ""; reminderEnabled = false; repeat = "none" }, enabled = !busy, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("清除") }
-                        if (onStartCodex != null) TextButton(onClick = { onStartCodex(normalizedTitle, notes, details()) }, enabled = hasContent && !busy,
-                            modifier = Modifier.testTag("todo_start_codex"), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Codex") }
-                        if (onOpenThread != null) TextButton(onClick = onOpenThread, enabled = !busy, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("会话") }
-                        Spacer(Modifier.weight(1f))
-                        TextButton(onClick = { onSave(normalizedTitle, notes, details()) }, enabled = hasContent && !busy, modifier = Modifier.testTag("save_todo"), contentPadding = PaddingValues(horizontal = 8.dp)) {
-                            Text(if (saving) "保存中…" else "完成", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    BoxWithConstraints(Modifier.fillMaxWidth()) {
+                        Row(Modifier.horizontalScroll(rememberScrollState()).widthIn(min = maxWidth), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            TodoEditorButton(onClick = { focus.clearFocus(); keyboard?.hide(); reminderOpen = true }, enabled = !busy, modifier = Modifier.testTag("todo_due_date").semantics { contentDescription = "设置提醒" }, contentPadding = PaddingValues(horizontal = 8.dp)) { TodoReminderIcon() }
+                            TodoEditorButton(onClick = { focus.clearFocus(); keyboard?.hide(); chooseAttachmentSource = true }, enabled = !busy && attachments.size < MAX_TODO_ATTACHMENTS,
+                                modifier = Modifier.testTag("todo_add_attachment"), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("＋附件") }
+                            if (due.isNotBlank()) TodoEditorButton(onClick = { due = ""; reminderEnabled = false; repeat = "none" }, enabled = !busy, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("清除") }
+                            if (onStartCodex != null) TodoEditorButton(onClick = { onStartCodex(normalizedTitle, notes, details()) }, enabled = hasContent && !busy,
+                                modifier = Modifier.testTag("todo_start_codex"), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Codex") }
+                            if (onOpenThread != null) TodoEditorButton(onClick = onOpenThread, enabled = !busy, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("会话") }
+                            Spacer(Modifier.weight(1f).widthIn(min = 2.dp))
+                            TodoEditorButton(onClick = { onSave(normalizedTitle, notes, details()) }, enabled = hasContent && !busy, modifier = Modifier.testTag("save_todo"), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                                Text(if (saving) "保存中…" else "完成", style = MaterialTheme.typography.labelLarge)
+                            }
                         }
                     }
                     if (item != null) TextButton(onClick = { deleteConfirm = true }, enabled = !busy, contentPadding = PaddingValues(0.dp)) { Text("删除待办", color = MaterialTheme.colorScheme.error) }

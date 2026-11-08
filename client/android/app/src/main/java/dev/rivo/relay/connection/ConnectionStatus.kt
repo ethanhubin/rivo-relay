@@ -1,5 +1,6 @@
 package dev.rivo.relay.connection
 
+import dev.rivo.relay.data.RecoveryState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.Interceptor
@@ -28,4 +29,13 @@ class ConnectionStatusObserver(private val routes: NodeRoutes?, private val base
             throw error
         }
     }
+}
+
+/** Connection indicators describe the transport, never project/session loading. */
+fun ConnectionStatus.indicatorState(recovery: RecoveryState?): RecoveryState = when {
+    recovery == RecoveryState.CONNECTING -> RecoveryState.CONNECTING
+    recovery == RecoveryState.DISCONNECTED -> RecoveryState.DISCONNECTED
+    checkedAt == 0L -> RecoveryState.CONNECTING
+    !failed && httpCode in 200..299 -> RecoveryState.CONNECTED
+    else -> RecoveryState.DISCONNECTED
 }

@@ -60,7 +60,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         }
     }
     private fun isCurrent(id: String, targetGeneration: Long) = mutable.value.id == id && generation == targetGeneration
-    private fun message(error: Exception) = if (error is ApiException) error.message else api.describeFailure(error)
+    private fun message(error: Exception): String? = if (error is CancellationException || isConnectionFailure(error)) null else if (error is ApiException) error.message else api.describeFailure(error)
     private fun invalidateHistory() { historyEpoch++; historyJob?.cancel(); historyJob = null; historyDepthTarget = null; requestedHistoryCursors.clear() }
     fun dismissReadError() { mutable.update { it.copy(readError = null, historyError = null) } }
     fun open(id: String, online: Boolean = true) {
@@ -198,8 +198,8 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                         val read = async {
                             // Keep control confirmation and live refresh independent of old context.
                             // Older turns remain available through cursor pagination/viewport fill.
-                            withTimeout(readTimeoutMillis) { sync?.read(id, freshAfterNanos = readStarted, limit = 2, knownHeadRevision = knownHeadRevision)
-                                ?: api.call("/v1/threads/${encoded(id)}?limit=2" +
+                            withTimeout(readTimeoutMillis) { sync?.read(id, freshAfterNanos = readStarted, limit = 5, knownHeadRevision = knownHeadRevision)
+                                ?: api.call("/v1/threads/${encoded(id)}?limit=5" +
                                     knownHeadRevision?.let { "&knownHeadRevision=${encoded(it)}" }.orEmpty()) }
                         }
                         activeRead = read
@@ -258,6 +258,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                     }
                 } catch (e: Exception) {
                     headCache.clear()
+                    if (e is TimeoutCancellationException) api.recovery?.failed(java.net.SocketTimeoutException("Session read timed out"))
                     // Transport reset cancels a Call, not this session. Only a
                     // canceled session job must terminate the refresh loop.
                     if (e is CancellationException) currentCoroutineContext().ensureActive()

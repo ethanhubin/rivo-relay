@@ -69,7 +69,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     pendingWorkspace: (@Composable () -> Unit)? = null,
     onConfiguredSend: ((JSONArray, String?, String?, String?, String?, JSONObject, () -> Unit) -> Unit)? = null,
     onSettingsChange: ((JSONObject) -> Unit)? = null,
-    takeoverBlockedReason: String? = null, nodeName: String = "当前节点", writerBusy: Boolean = false, onWriterAction: ((String) -> Unit)? = null,
+    recoveryState: RecoveryState? = null, takeoverBlockedReason: String? = null, nodeName: String = "当前节点", writerBusy: Boolean = false, onWriterAction: ((String) -> Unit)? = null,
     defaultSettings: JSONObject? = null, onSaveDefaults: ((JSONObject) -> Unit)? = null, modelCatalogNotice: String? = null,
     onForwardLink: ((String, String?, String, String) -> Unit)? = null, draftReloadKey: Long = 0, pendingCwd: String = "",
     mediaApi: dev.rivo.relay.data.RelayApi? = null,
@@ -372,7 +372,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             Column(Modifier.clickable(onClick = ::openSettings).testTag("conversation_status")) { Text("新会话", style = MaterialTheme.typography.titleLarge); Text(pendingTitle, style = MaterialTheme.typography.bodySmall) }
         } else NativeChatHeader(state, usage, onBack, ::openSettings, onRefresh, { developerOpen = true }, { stopConfirm = true },
             !busy && !blocked && !state.stale && canOperate, pinned, canManage, onPin, onArchive,
-            onWriterAction, writerBusy || busy || blocked, takeoverBlockedReason)
+            onWriterAction, writerBusy || busy || blocked, takeoverBlockedReason, recoveryState)
         if (pendingTitle == null && state.showTakeover()) NativeWriterStatus(state, nodeName, writerBusy || busy || blocked, onWriterAction, takeoverBlockedReason, onRefresh)
         if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         var bottomOverlayHeight by remember { mutableIntStateOf(0) }

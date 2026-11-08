@@ -93,3 +93,38 @@ internal fun TodoExpandButton(expanded: Boolean, enabled: Boolean, tag: String, 
         }
     }
 }
+
+@Composable
+internal fun TodoEditorButton(onClick: () -> Unit, enabled: Boolean, modifier: Modifier = Modifier,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 12.dp), content: @Composable RowScope.() -> Unit) {
+    val dark = MaterialTheme.colorScheme.surface.red < .5f
+    val background = if (dark) Color(0xFF29292E) else Color(0xFFF0F0F0)
+    androidx.compose.material3.TextButton(
+        onClick = onClick, enabled = enabled, modifier = modifier.heightIn(min = 48.dp).widthIn(min = 40.dp),
+        shape = CircleShape,
+        colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+            containerColor = background, contentColor = MaterialTheme.colorScheme.onSurface,
+            disabledContainerColor = background,
+            disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = .38f)),
+        contentPadding = contentPadding, content = content)
+}
+
+/** Alarm-clock outline that remains consistent across device fonts. */
+@Composable
+internal fun TodoReminderIcon() {
+    val color = androidx.compose.material3.LocalContentColor.current
+    Canvas(Modifier.size(22.dp)) {
+        val unit = size.width / 24f
+        fun point(x: Float, y: Float) = Offset(x * unit, y * unit)
+        fun line(x1: Float, y1: Float, x2: Float, y2: Float) =
+            drawLine(color, point(x1, y1), point(x2, y2), 1.8f * unit, StrokeCap.Round)
+        drawCircle(color, 7.6f * unit, point(12f, 13f),
+            style = androidx.compose.ui.graphics.drawscope.Stroke(1.8f * unit))
+        line(12f, 8f, 12f, 13f)
+        line(12f, 13f, 15.5f, 15f)
+        line(3f, 5f, 6f, 2.8f)
+        line(18f, 2.8f, 21f, 5f)
+        line(7f, 19f, 5f, 22f)
+        line(17f, 19f, 19f, 22f)
+    }
+}

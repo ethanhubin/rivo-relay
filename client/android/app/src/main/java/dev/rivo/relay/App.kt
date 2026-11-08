@@ -1,5 +1,7 @@
 package dev.rivo.relay
 
+import dev.rivo.relay.connection.indicatorState
+
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -133,7 +135,11 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     }
     val catalog by node.catalog.state.collectAsStateWithLifecycle()
     val session by node.session.state.collectAsStateWithLifecycle()
-    val network by node.network.collectAsStateWithLifecycle()
+    val transportNetwork by node.network.collectAsStateWithLifecycle()
+    val recovery by node.recovery.state.collectAsStateWithLifecycle()
+    val connectionStatus by node.api.connectionStatus.collectAsStateWithLifecycle()
+    val connectionIndicator = connectionStatus.indicatorState(recovery)
+    val network = transportNetwork.takeIf { recovery == RecoveryState.CONNECTED }
     val todos by node.todos.state.collectAsStateWithLifecycle()
     val submission by node.submissions.state.collectAsStateWithLifecycle()
     val owner = LocalLifecycleOwner.current
@@ -266,11 +272,10 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     onRefreshUsage = { node.catalog.refreshUsage(true) }, canAdd = projectsWritable,
                     savedNodes = savedNodes, currentBase = node.connection.base,
                     pinnedProjectIds = catalog.pinnedProjectIds, onPinProject = node.catalog::setProjectPinned,
-                    nodeConnected = when {
-                        network == null -> false
-                        catalog.projectsFresh -> true
-                        catalog.projectsLoading -> null
-                        else -> false
+                    nodeConnected = when (connectionIndicator) {
+                        RecoveryState.CONNECTED -> true
+                        RecoveryState.CONNECTING -> null
+                        RecoveryState.DISCONNECTED -> false
                     },
                     // A stalled request must not trap the user on this node; pending IDs are stored per node.
                     onSelectNode = selectNode,
@@ -431,7 +436,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         })
                 }
                 "chat" -> ChatScreen(session.takeIf { it.id == threadId }?.let { if (network == null) it.copy(stale = true, controlNotice = "网络不可用，恢复连接并同步后才能操作") else it } ?: SessionState(id = threadId, loading = true, stale = true), submission.busy, submission.pending != null || handoffLoading || network == null, catalog.models, ::back,
-                    nodeName = node.connection.name, writerBusy = handoffLoading, onWriterAction = ::requestHandoff,
+                    recoveryState = connectionIndicator, nodeName = node.connection.name, writerBusy = handoffLoading, onWriterAction = ::requestHandoff,
                     takeoverBlockedReason = when {
                         network == null -> "网络不可用，请恢复节点连接后接管"
                         handoffLoading -> "正在核验接管条件，请稍候"
@@ -549,7 +554,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     readDirectory = { path -> node.api.call("/v1/directories?path=" + encoded(path)) }, onOpenAttachment = { todoAttachment = it })
             }
         }
-        val cached = catalogCacheNoticeVisible(route, catalog, network != null)
+        val cached = network != null && catalogCacheNoticeVisible(route, catalog, true)
         if (displayError != null || submission.pending != null || submission.notice != null || cached) {
             Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).testTag("bottom_notice_panel"),
                 shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp), tonalElevation = 3.dp, shadowElevation = 4.dp,

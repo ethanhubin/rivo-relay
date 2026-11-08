@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.connection.*
+import dev.rivo.relay.data.RecoveryState
 import dev.rivo.relay.data.RelayApi
 import dev.rivo.relay.ui.common.ConnectionStatusDot
 import kotlinx.coroutines.CancellationException
@@ -27,6 +28,8 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
     val scope = rememberCoroutineScope()
     var checking by remember(connection) { mutableStateOf(false) }
     var nodeMenuOpen by remember(connection) { mutableStateOf(false) }
+    val recovery = api?.recovery?.state?.collectAsState()?.value
+    val reconnecting = recovery == RecoveryState.CONNECTING
     val status = api?.connectionStatus?.collectAsState()?.value ?: ConnectionStatus()
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -75,6 +78,8 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
             if (routes?.relay.isNullOrBlank()) Text("此节点尚未配置 VPS，请扫描该桌面节点新生成的双通道二维码。", style = MaterialTheme.typography.bodySmall)
             HorizontalDivider()
             val statusLabel = when {
+                reconnecting -> "正在重连…"
+                recovery == RecoveryState.DISCONNECTED -> "连接已断开"
                 checking -> "正在检测连接…"
                 status.checkedAt == 0L -> "尚未检测"
                 status.failed -> "连接失败，当前路径未确认"
@@ -85,11 +90,12 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
             val routeLabel = if (status.endpoint.isBlank()) null
                 else if (routes != null && status.endpoint == routes.relay) "VPS 中转" else "Tailscale 直连"
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ConnectionStatusDot(when {
-                    checking -> null
-                    api == null -> false
-                    status.checkedAt == 0L -> null
-                    else -> !status.failed && status.httpCode in 200..299
+                val indicator = if (api == null) RecoveryState.DISCONNECTED else if (checking) RecoveryState.CONNECTING
+                    else status.indicatorState(recovery)
+                ConnectionStatusDot(when (indicator) {
+                    RecoveryState.CONNECTED -> true
+                    RecoveryState.CONNECTING -> null
+                    RecoveryState.DISCONNECTED -> false
                 }, Modifier.testTag("settings_connection_status"))
                 Text(
                     listOfNotNull(statusLabel, routeLabel, status.latencyMs?.let { "Ping ${it} ms" }).joinToString(" · "),
@@ -99,7 +105,9 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            OutlinedButton(enabled = api != null && !checking, onClick = {
+            OutlinedButton(enabled = api != null && !checking && !reconnecting, modifier = Modifier.testTag("settings_reconnect"), onClick = {
+                if (api?.recovery != null) api.recovery?.reconnect(manual = true)
+                else
                 scope.launch {
                     checking = true
                     try { api?.call("/v1/node") }
@@ -107,7 +115,7 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
                     catch (_: Exception) { /* Transport status is reported by the observer. */ }
                     finally { checking = false }
                 }
-            }) { Text(if (checking) "正在检测…" else "检测连接") }
+            }) { Text(if (reconnecting) "正在重连…" else if (checking) "正在检测…" else if (api?.recovery != null) "重连" else "检测连接") }
         }
     }
 }

@@ -41,7 +41,7 @@ fun SettingsScreen(
     updates: UpdateViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
     var inspectedConnection by remember(connection?.base) { mutableStateOf(connection) }
     val inspectedApi = remember(inspectedConnection, api) {
-        if (inspectedConnection === connection) api else inspectedConnection?.api()
+        if (inspectedConnection?.base == connection?.base) api else inspectedConnection?.api()
     }
     val (themeMode, setThemeMode) = rememberThemePreference()
     val context = LocalContext.current
