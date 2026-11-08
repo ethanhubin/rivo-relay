@@ -10,14 +10,14 @@ val MoonlightSuccess = Color(0xFF45C58A)
 val MoonlightWarning = Color(0xFFF3AE62)
 val MoonlightDanger = Color(0xFFFF909A)
 
-// Black canvas and neutral gray controls, matching the reference dark interface.
-val NightBackground = Color(0xFF000000)
-val NightSurface = Color(0xFF303030)
-val NightSurfaceHigh = Color(0xFF383838)
-val NightSurfaceHighest = Color(0xFF404040)
+// Near-black canvas with subtle neutral layers matching the reference interface.
+val NightBackground = Color(0xFF111111)
+val NightSurface = Color(0xFF1F1F1F)
+val NightSurfaceHigh = Color(0xFF262626)
+val NightSurfaceHighest = Color(0xFF303030)
 val NightOutline = Color(0xFF737373)
-val NightOutlineSoft = Color(0xFF484848)
-val NightText = Color(0xFFF5F5F5)
+val NightOutlineSoft = Color(0xFF2C2C2C)
+val NightText = Color(0xFFE0E0E0)
 val NightTextMuted = Color(0xFFAAAAAA)
 
 val DayBackground = Color(0xFFFAFAFA)
@@ -31,4 +31,4 @@ val DayTextMuted = Color(0xFF686868)
 
 // List rows stay quieter than search fields and navigation surfaces.
 val androidx.compose.material3.ColorScheme.listItemBackground: Color
-    get() = if (background == NightBackground) Color(0xFF242424) else surfaceContainerLow
+    get() = if (background == NightBackground) Color(0xFF191919) else surfaceContainerLow
