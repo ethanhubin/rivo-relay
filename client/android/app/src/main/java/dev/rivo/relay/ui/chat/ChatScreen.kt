@@ -32,6 +32,8 @@ import androidx.compose.ui.unit.dp
 import dev.rivo.relay.codex.SessionState
 import dev.rivo.relay.codex.control
 import dev.rivo.relay.codex.showTakeover
+import dev.rivo.relay.codex.canManageQueue
+import dev.rivo.relay.codex.canResumeQueue
 import dev.rivo.relay.codex.canCompose
 import dev.rivo.relay.data.*
 import org.json.JSONObject
@@ -551,8 +553,13 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 }
             }
         }
+        if (state.canResumeQueue() && onWriterAction != null) {
+            TextButton(onClick = { onWriterAction("resume") },
+                enabled = !busy && !blocked && !writerBusy,
+                modifier = Modifier.testTag("resume_queue")) { Text("恢复队列") }
+        }
         val waitingQueue = snapshot?.queue.orEmpty().filter { it.status !in setOf("running", "dispatching") && !it.recoveryRequired && it.id != snapshot?.recoveryTask?.id }
-        if (snapshot != null && waitingQueue.isNotEmpty()) ExecutionQueuePanel(snapshot.id, waitingQueue, !busy && !blocked && canOperate,
+        if (snapshot != null && waitingQueue.isNotEmpty()) ExecutionQueuePanel(snapshot.id, waitingQueue, !busy && !blocked && !writerBusy && state.canManageQueue(),
             canSteer = canOperate && snapshot.activeTurnId.isNotBlank() && snapshot.requests.isEmpty(),
             onEdit = ::editQueuedTask, onWithdraw = { removingQueue = it },
             onSteer = { task -> onQueue(JSONObject().put("operation", "steer").put("itemId", task.id).put("revision", task.revision).put("expectedTurnId", snapshot.activeTurnId), {}) },
@@ -664,7 +671,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     removingQueue?.let { task -> AlertDialog(onDismissRequest = { if (!busy) removingQueue = null },
         title = { Text(if (task.recoveryRequired) "忽略待恢复记录？" else "撤回待发任务？") },
         text = { Text(if (task.recoveryRequired) "仅移除此队列记录，不会停止或重新发送原任务。请先核对会话历史。" else "该任务将从等待队列移除，不再执行。") },
-        confirmButton = { TextButton(onClick = { onQueue(JSONObject().put("operation", if (task.recoveryRequired) "dismiss" else "remove").put("itemId", task.id).put("revision", task.revision)) { removingQueue = null } }, enabled = !busy && !blocked && !state.stale && (canOperate || task.recoveryRequired), modifier = Modifier.testTag("queue_remove")) { Text(if (task.recoveryRequired) "确认忽略" else "确认撤回") } },
+        confirmButton = { TextButton(onClick = { onQueue(JSONObject().put("operation", if (task.recoveryRequired) "dismiss" else "remove").put("itemId", task.id).put("revision", task.revision)) { removingQueue = null } }, enabled = !busy && !blocked && !writerBusy && state.canManageQueue(), modifier = Modifier.testTag("queue_remove")) { Text(if (task.recoveryRequired) "确认忽略" else "确认撤回") } },
         dismissButton = { TextButton(onClick = { removingQueue = null }) { Text("取消") } }) }
     filePath?.let { FilePreviewDialog(it, readFile, downloadFile, initialAction = fileAction) { filePath = null; fileAction = null } }
     if (workspaceFileDialog && !inputLocked) WorkspaceFilePicker(cwd, readDirectory,

@@ -69,3 +69,15 @@ fun SessionState.showRelease(): Boolean = control().let { it.canOperate && it.ac
 fun SessionState.canCompose(): Boolean = control().let {
     it.canOperate || it.state == ControlState.RELEASED && it.action == "resume"
 }
+
+/** Queue bookkeeping does not acquire a native writer or execute input. */
+fun SessionState.canManageQueue(): Boolean =
+    !stale && !loading && snapshot != null && id == snapshot.id
+
+fun SessionState.canQueueOperation(operation: String): Boolean =
+    if (operation in setOf("edit", "remove", "reorder", "dismiss")) canManageQueue()
+    else control().canOperate
+
+fun SessionState.canResumeQueue(): Boolean = canManageQueue() &&
+    control().let { it.state == ControlState.RELEASED && it.action == "resume" } &&
+    snapshot?.queue?.any { it.status == "waiting" } == true

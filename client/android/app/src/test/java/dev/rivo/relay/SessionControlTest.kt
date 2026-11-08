@@ -109,4 +109,32 @@ class SessionControlTest {
             assertFalse(session(name).canCompose())
     }
 
+    @Test fun queueBookkeepingDoesNotRequireNativeWriter() {
+        for (name in listOf("released", "external", "release_pending", "ownership_unverified", "workspace_unavailable")) {
+            val current = session(name)
+            for (operation in listOf("remove", "edit", "reorder", "dismiss")) {
+                assertTrue(current.canQueueOperation(operation))
+                assertFalse(current.copy(stale = true).canQueueOperation(operation))
+                assertFalse(current.copy(loading = true).canQueueOperation(operation))
+                assertFalse(current.copy(id = "other").canQueueOperation(operation))
+            }
+            for (operation in listOf("steer", "recover", "enqueue"))
+                assertFalse(current.canQueueOperation(operation))
+        }
+        assertFalse(SessionState().canManageQueue())
+    }
+
+    @Test fun waitingQueueCanResumeWithoutSendingMessage() {
+        val base = session("released")
+        val waiting = sessionSnapshot(JSONObject()
+            .put("thread", JSONObject().put("id", "thread"))
+            .put("queue", org.json.JSONArray().put(JSONObject().put("id", "q").put("status", "waiting"))))
+        val released = base.copy(snapshot = base.snapshot!!.copy(queue = waiting.queue))
+        assertTrue(released.canResumeQueue())
+        assertFalse(released.copy(stale = true).canResumeQueue())
+        assertFalse(released.copy(loading = true).canResumeQueue())
+        assertFalse(base.canResumeQueue())
+        assertFalse(session("external").let { it.copy(snapshot = it.snapshot!!.copy(queue = waiting.queue)) }.canResumeQueue())
+    }
+
 }
