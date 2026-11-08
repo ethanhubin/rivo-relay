@@ -414,15 +414,18 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 val assistant = message.type in setOf("agentMessage", "agent_message", "exitedReviewMode")
                 var expanded by remember(message.id) { mutableStateOf(false) }
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = if (user) Alignment.End else Alignment.Start) {
-                    if (user) Surface(color = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    if (user) {
+                        val content = message.content
+                        val attachmentImages = content.mapNotNull { nativeImageSource(it, cwd) }
+                        val textParts = content.filter { nativeImageSource(it, cwd) == null }
+                        if (textParts.isNotEmpty() || content.isEmpty()) Surface(color = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                         shape = MaterialTheme.shapes.large, modifier = Modifier.widthIn(max = 326.dp)) {
                         Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            val content = message.content
                             if (content.isEmpty()) MessageContent(message.text, cwd, onQuoteText = quoteText, onSaveFile = saveFile, inlineImage = { source ->
                                 val target = if (isHttpWebLink(source)) source else nativeFilePath(source, cwd)
                                 target?.let { NativeImage(it, readFile, downloadFile = downloadFile) }
                             }, onFile = ::openFile)
-                            content.filter { nativeImageSource(it, cwd) == null }.forEach { part ->
+                            textParts.forEach { part ->
                                 when (part.string("type")) {
                                 "text" -> MessageContent(part.string("text"), cwd, onQuoteText = quoteText, onSaveFile = saveFile, inlineImage = { source ->
                                 val target = if (isHttpWebLink(source)) source else nativeFilePath(source, cwd)
@@ -433,8 +436,11 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                                 "mention", "skill" -> TextButton(onClick = { nativeFilePath(part.string("path"), cwd)?.let(::openFile) }) { Text((if (part.string("type") == "skill") "技能：" else "文件：") + part.string("name")) }
                                 else -> Text(part.toString(2), style = MaterialTheme.typography.bodySmall)
                             } }
-                            val attachmentImages = content.mapNotNull { nativeImageSource(it, cwd) }
-                            if (attachmentImages.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        }
+                        }
+                            if (attachmentImages.isNotEmpty()) Row(
+                                modifier = Modifier.padding(top = if (textParts.isNotEmpty()) 6.dp else 0.dp).testTag("user_message_attachments"),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 attachmentImages.take(3).forEachIndexed { imageIndex, source ->
                                     NativeImage(source, readFile, downloadFile = downloadFile, compact = true,
                                         remaining = if (imageIndex == 2) (attachmentImages.size - 3).coerceAtLeast(0) else 0)
@@ -444,7 +450,6 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                                 Text(when (delivery) { "submitting" -> "发送中…"; "accepted" -> "已送达，等待同步"; else -> "正在确认是否送达" },
                                     style = MaterialTheme.typography.labelSmall, modifier = Modifier.testTag("message_delivery_$delivery"))
                             }
-                        }
                     } else if (assistant) {
                         val isLastReply = snapshot?.messages?.lastOrNull {
                             it.turnId == message.turnId && it.type in setOf("agentMessage", "agent_message", "exitedReviewMode")

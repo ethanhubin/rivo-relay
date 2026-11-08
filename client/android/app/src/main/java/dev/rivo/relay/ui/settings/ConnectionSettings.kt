@@ -31,7 +31,8 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
     val recovery = api?.recovery?.state?.collectAsState()?.value
     val reconnecting = recovery == RecoveryState.CONNECTING
     val status = api?.connectionStatus?.collectAsState()?.value ?: ConnectionStatus()
-    Card(Modifier.fillMaxWidth()) {
+    Card(Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("连接设置", style = MaterialTheme.typography.titleMedium)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,

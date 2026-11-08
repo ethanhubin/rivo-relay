@@ -219,8 +219,11 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     val notificationThread by node.navigation.collectAsStateWithLifecycle()
     LaunchedEffect(notificationThread) { notificationThread?.let { openChat(it, "projects"); node.consumeNavigation() } }
     LaunchedEffect(route) { node.conversations.putMetadata("lastRoute", route); node.catalog.refreshUsage() }
-    LaunchedEffect(session.snapshot, session.stale) {
-        if (route == "chat" && !session.stale && session.snapshot?.id == threadId) threadId?.let { node.catalog.markRead(it, session.snapshot?.updatedAt ?: 0) }
+    LaunchedEffect(node, route, threadId, session.snapshot, session.stale) {
+        if (route == "chat" && !session.stale && session.snapshot?.id == threadId) session.snapshot?.let {
+            node.catalog.reconcileSession(it)
+            node.catalog.markRead(it.id, it.updatedAt)
+        }
     }
 
     LaunchedEffect(route, pendingId, pendingRevision) {

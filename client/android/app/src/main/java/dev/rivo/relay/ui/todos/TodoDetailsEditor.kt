@@ -93,7 +93,7 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
     val keyboard = LocalSoftwareKeyboardController.current
     val existingList = item?.details?.objects("subtasks")?.isNotEmpty() == true
     var title by rememberSaveable(item?.id) { mutableStateOf(if (existingList) item?.title.orEmpty() else "") }
-    var notes by rememberSaveable(item?.id) { mutableStateOf(item?.notes.orEmpty()) }
+    val notes = item?.notes.orEmpty()
     var due by rememberSaveable(item?.id) { mutableStateOf(item?.details?.string("dueDate").orEmpty()) }
     var repeat by rememberSaveable(item?.id) { mutableStateOf(item?.details?.string("repeatRule")?.ifBlank { "none" } ?: "none") }
     var reminderEnabled by rememberSaveable(item?.id) { mutableStateOf((item?.details?.optLong("reminderAt") ?: 0) > 0) }
@@ -241,10 +241,7 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
                                 modifier = Modifier.size(36.dp).semantics { contentDescription = "移除子任务" }, contentPadding = PaddingValues(0.dp)) { Text("×") }
                         }
                     }
-                    BasicTextField(notes, { notes = it.take(4000) }, Modifier.fillMaxWidth().padding(vertical = 8.dp).testTag("todo_notes"), enabled = !busy,
-                        textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant), cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        decorationBox = { inner -> Box { if (notes.isEmpty()) Text("备注", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant); inner() } })
-                    Spacer(Modifier.height(if (subtasks.size == 1 && !existingList) 32.dp else RivoSpacing.Md))
+                    Spacer(Modifier.height(RivoSpacing.Md))
                     if (attachments.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = RivoSpacing.Sm), horizontalArrangement = Arrangement.spacedBy(RivoSpacing.Sm)) {
                         attachments.forEachIndexed { index, attachment -> Surface(Modifier.width(96.dp), shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
                             Column(Modifier.padding(6.dp)) {

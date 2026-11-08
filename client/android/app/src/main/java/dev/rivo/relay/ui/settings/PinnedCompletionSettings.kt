@@ -33,7 +33,8 @@ internal fun PinnedCompletionSettings() {
     }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { setEnabled(it) }
 
-    Card(Modifier.fillMaxWidth()) {
+    Card(Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
         Column(Modifier.padding(20.dp)) {
             Text("通知", style = MaterialTheme.typography.titleMedium)
             NotificationToggle("置顶任务完成通知", enabled) { checked ->

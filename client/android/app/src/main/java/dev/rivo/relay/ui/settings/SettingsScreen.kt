@@ -99,7 +99,8 @@ fun SettingsScreen(
         }
         PinnedCompletionSettings()
 
-        Card(Modifier.fillMaxWidth()) {
+        Card(Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("应用更新", style = MaterialTheme.typography.titleMedium)
                 Text("Rivo Relay ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyLarge)

@@ -422,7 +422,7 @@ private fun ComposerToolButton(
 @Composable
 private fun ComposerAddIcon() {
     val color = LocalContentColor.current
-    Canvas(Modifier.size(20.dp)) {
+    Canvas(Modifier.size(28.dp)) {
         val stroke = size.minDimension * .10f
         val inset = size.minDimension * .22f
         val center = Offset(size.width / 2f, size.height / 2f)

@@ -23,6 +23,25 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 class CatalogControllerTest {
+    @Test fun completedDetailClearsListSpinner() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setBody("""{"threads":[{"id":"t","status":"running","nativeExecution":"running","hasOutstandingWork":true,"updatedAt":10}]}"""))
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = CatalogController(api(server), scope, { throw it })
+        try {
+            controller.project(ProjectSummary("p", "Project", "/p", 1))
+            withTimeout(3000) { controller.state.first { it.threadsFresh } }
+            val completed = dev.rivo.relay.data.SessionSnapshot("t", "Thread", "idle", "",
+                emptyList(), emptyList(), JSONObject(), updatedAt = 10, nativeExecution = "idle")
+            controller.reconcileSession(completed.copy(nativeSyncState = "converging"))
+            assertTrue(dev.rivo.relay.codex.threadIsExecuting(controller.state.value.threads.single()))
+            controller.reconcileSession(completed)
+            assertFalse(dev.rivo.relay.codex.threadIsExecuting(controller.state.value.threads.single()))
+            assertFalse(controller.state.value.threads.single().hasOutstandingWork)
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
     @Test fun switchingNodesDoesNotDescribeLoadingCacheAsOffline() {
         val cached = CatalogState(projects = listOf(ProjectSummary("p", "Project", "/p", 1)), projectsLoading = true)
         assertFalse(dev.rivo.relay.codex.catalogCacheNoticeVisible("projects", cached, true))

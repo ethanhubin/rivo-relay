@@ -156,6 +156,27 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
             unreadThreadIds = unread(threads), threadsFresh = fresh) }
     }
 
+    /** Fresh detail reads also reconcile the list; read markers alone cannot stop its spinner. */
+    fun reconcileSession(snapshot: SessionSnapshot) {
+        if (!snapshot.nativeReady) return
+        val current = mutable.value
+        val prior = current.threads.firstOrNull { it.id == snapshot.id } ?: return
+        if (snapshot.updatedAt < prior.updatedAt) return
+        val updated = prior.copy(status = snapshot.status, nativeExecution = snapshot.nativeExecution,
+            deliveryState = snapshot.deliveryState, displayState = snapshot.displayState,
+            queueDepth = snapshot.queueDepth, recoveryRequired = snapshot.recoveryRequired,
+            hasOutstandingWork = snapshot.isOngoing || snapshot.queue.isNotEmpty(),
+            updatedAt = snapshot.updatedAt)
+        if (updated == prior) return
+        // A list read started before this detail observation must not restore stale execution.
+        generation++
+        listJob?.cancel()
+        listJob = null
+        val threads = current.threads.map { if (it.id == updated.id) updated else it }
+        mutable.update { it.copy(threads = stableThreadOrder(threads, current.threads.map { t -> t.id }),
+            threadsLoading = false, unreadThreadIds = unread(threads)) }
+    }
+
     private fun unread(threads: List<ThreadSummary>) = threads.filter { thread ->
         val readAt = readVersions.getOrPut(thread.id) {
             // Existing server history starts read; persist the baseline across app restarts.

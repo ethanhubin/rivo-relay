@@ -56,7 +56,7 @@ private fun clipboardImageUris(context: Context, clip: ClipData): List<Uri> = bu
 @Composable
 internal fun ComposerModeIcon(discussion: Boolean) {
     val color = LocalContentColor.current
-    Canvas(Modifier.size(16.dp).testTag(if (discussion) "codex_mode_icon_plan" else "codex_mode_icon_default")) {
+    Canvas(Modifier.size(24.dp).testTag(if (discussion) "codex_mode_icon_plan" else "codex_mode_icon_default")) {
         val stroke = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round)
         if (!discussion) {
             drawRoundRect(color, Offset(size.width * .12f, size.height * .12f), Size(size.width * .76f, size.height * .76f), CornerRadius(size.width * .16f), style = stroke)

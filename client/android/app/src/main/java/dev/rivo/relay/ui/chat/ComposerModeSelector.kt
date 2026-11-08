@@ -26,7 +26,7 @@ internal class ModeMenuPosition(private val gap: Int) : PopupPositionProvider {
 internal fun TaskModeIcon(mode: String) {
     if (mode != "goal") ComposerModeIcon(mode == "plan") else {
         val color = LocalContentColor.current
-        Canvas(Modifier.size(18.dp)) {
+        Canvas(Modifier.size(24.dp)) {
             drawCircle(color, style = Stroke(1.6.dp.toPx()))
             drawCircle(color, radius = size.minDimension * .28f, style = Stroke(1.6.dp.toPx()))
             drawCircle(color, radius = 1.6.dp.toPx())
