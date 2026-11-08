@@ -45,10 +45,12 @@ private val pendingProjectSaver = Saver<ProjectSummary?, ArrayList<String>>(
 fun RelayApp(vm: AppViewModel = viewModel()) {
     val app by vm.state.collectAsStateWithLifecycle()
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Box(Modifier.fillMaxSize().systemBarsPadding()) {
+        Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))) {
             val node = app.node
             if (node == null) {
-                LoginScreen(app.pairing || app.reconnecting, app.error, vm::pair, vm::setError)
+                Box(Modifier.fillMaxSize().navigationBarsPadding()) {
+                    LoginScreen(app.pairing || app.reconnecting, app.error, vm::pair, vm::setError)
+                }
             }
             else key(node) { ConnectedApp(node, app.error, vm::setError, app.pairing, vm::pair, vm::retryConnection, app.savedNodes, vm::selectNode, vm::settingsConnection, vm::setNodeConnectionMode) }
         }
@@ -262,7 +264,11 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             try { awaitCancellation() } finally { node.session.pause() }
         } else node.session.close()
     }
-    Column(Modifier.fillMaxSize().imePadding()) {
+    val showBottomNavigation = route in setOf("projects", "todos", "settings")
+    // NavigationBar draws behind the system gesture area and applies its own insets.
+    Column(Modifier.fillMaxSize()
+        .then(if (showBottomNavigation) Modifier else Modifier.navigationBarsPadding())
+        .imePadding()) {
         Box(Modifier.weight(1f)) {
             when (route) {
                 "settings" -> SettingsScreen(connection = node.connection, api = node.api,
@@ -599,7 +605,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                 }
             }
         }
-        if (route in setOf("projects", "todos", "settings")) NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
+        if (showBottomNavigation) NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
             NavigationBarItem(selected = route == "projects", onClick = { route = "projects"; setError(null); node.catalog.refreshProjects() },
                 icon = { Text("⌘") }, label = { Text("Codex") }, modifier = Modifier.testTag("nav_codex"))
             NavigationBarItem(selected = route == "todos", onClick = { route = "todos"; setError(null); node.todos.refresh(); node.catalog.refreshProjects() },

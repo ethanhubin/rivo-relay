@@ -1,5 +1,7 @@
 package dev.rivo.relay.ui.todos
 
+import dev.rivo.relay.ui.theme.listItemBackground
+
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
@@ -216,7 +218,7 @@ private fun TodoCard(item: Todo, busy: Boolean, onToggle: () -> Unit, onEdit: ()
         return
     }
     val cardAlpha by animateFloatAsState(if (item.completed && !selecting) .58f else 1f, tween(260), label = "todoCardAlpha")
-    Surface(shape = RoundedCornerShape(RivoRadius.Card), color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
+    Surface(shape = RoundedCornerShape(RivoRadius.Card), color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.listItemBackground,
         modifier = modifier.fillMaxWidth().alpha(cardAlpha).animateContentSize().testTag("todo_${item.id}")) {
         Column(Modifier.padding(vertical = RivoSpacing.Sm)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).combinedClickable(enabled = !busy,

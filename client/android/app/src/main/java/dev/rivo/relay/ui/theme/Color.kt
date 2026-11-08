@@ -28,3 +28,7 @@ val DayOutline = Color(0xFF777777)
 val DayOutlineSoft = Color(0xFFDDDDDD)
 val DayText = Color(0xFF111111)
 val DayTextMuted = Color(0xFF686868)
+
+// List rows stay quieter than search fields and navigation surfaces.
+val androidx.compose.material3.ColorScheme.listItemBackground: Color
+    get() = if (background == NightBackground) Color(0xFF242424) else surfaceContainerLow

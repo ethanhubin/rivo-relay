@@ -1,5 +1,7 @@
 package dev.rivo.relay.ui.sessions
 
+import dev.rivo.relay.ui.theme.listItemBackground
+
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
@@ -132,7 +134,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                 } else LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(bottom = 100.dp), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Xs)) {
                     items(shownPending, key = { "pending:${it.id}" }) { pending ->
                         Surface(onClick = { onResumePending(pending.id) }, shape = MaterialTheme.shapes.large,
-                            color = MaterialTheme.colorScheme.surfaceContainerLow,
+                            color = MaterialTheme.colorScheme.listItemBackground,
                             modifier = Modifier.fillMaxWidth().testTag("pending_conversation_${pending.id}")) {
                             Row(Modifier.padding(horizontal = RivoSpacing.Md, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text("◷", Modifier.size(28.dp), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleLarge)
@@ -151,8 +153,8 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                             onClick = { if (selectedIds.isNotEmpty()) toggle(thread.id) else if (!archived) onThread(thread) },
                             onLongClick = { toggle(thread.id) }, onLongClickLabel = "选择会话"), shape = MaterialTheme.shapes.large,
                             color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else if (thread.pinned)
-                                MaterialTheme.colorScheme.primary.copy(alpha = .08f).compositeOver(MaterialTheme.colorScheme.surfaceContainerLow)
-                                else MaterialTheme.colorScheme.surfaceContainerLow) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = .08f).compositeOver(MaterialTheme.colorScheme.listItemBackground)
+                                else MaterialTheme.colorScheme.listItemBackground) {
                             Row(Modifier.padding(horizontal = RivoSpacing.Md, vertical = RivoSpacing.Md), verticalAlignment = Alignment.CenterVertically) {
                                 Box(Modifier.size(28.dp).testTag("select_thread_${thread.id}"), contentAlignment = Alignment.Center) {
                                     when {
