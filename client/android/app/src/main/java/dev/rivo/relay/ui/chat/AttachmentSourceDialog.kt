@@ -30,80 +30,31 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 
 @Composable
-internal fun AttachmentSourceDialog(imageSlots: Int, fileSlots: Int, onDismiss: () -> Unit,
-    onImage: () -> Unit, onFile: () -> Unit, onVideo: () -> Unit, onWorkspace: () -> Unit) {
+internal fun AttachmentSourceMenu(expanded: Boolean, imageSlots: Int, fileSlots: Int, onDismiss: () -> Unit,
+    onCamera: () -> Unit, onImage: () -> Unit, onFile: () -> Unit, onVideo: () -> Unit,
+    onWorkspace: () -> Unit, onMedia: () -> Unit) {
     val hasMedia = LocalCodexMediaClient.current != null
-    var tab by rememberSaveable { mutableIntStateOf(0) }
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(Modifier.fillMaxSize().padding(horizontal = 24.dp), contentAlignment = Alignment.Center) {
-            Surface(Modifier.widthIn(max = 420.dp).fillMaxWidth().heightIn(max = 720.dp).testTag("attachment_dialog"),
-                shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
-                Column(Modifier.padding(20.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(20.dp)) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("添加附件", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                        IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp).testTag("attachment_cancel").semantics { contentDescription = "关闭添加附件" }) {
-                            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
-                                Box(Modifier.size(32.dp), contentAlignment = Alignment.Center) { AttachmentSourceIcon("close", Modifier.size(16.dp)) }
-                            }
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss,
+        modifier = Modifier.width(240.dp).testTag("attachment_dialog"),
+        shape = RoundedCornerShape(24.dp), containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
+        data class Option(val label: String, val icon: String, val tag: String, val enabled: Boolean, val action: () -> Unit)
+        listOf(
+            Option("拍照", "camera", "add_camera", imageSlots > 0, onCamera),
+            Option("照片", "image", "add_image", imageSlots > 0, onImage),
+            Option("视频", "video", "add_video", fileSlots > 0, onVideo),
+            Option("本地文件", "folder", "add_file", fileSlots > 0, onFile),
+            Option("工作区文件", "folder", "add_workspace_file", fileSlots > 0, onWorkspace),
+            Option("媒体库", "image", "attachment_tab_media", hasMedia && (imageSlots > 0 || fileSlots > 0), onMedia),
+        ).forEach { option ->
+            DropdownMenuItem(text = { Text(option.label) }, onClick = { onDismiss(); option.action() },
+                enabled = option.enabled, modifier = Modifier.testTag(option.tag),
+                leadingIcon = {
+                    Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                            AttachmentSourceIcon(option.icon, Modifier.size(22.dp))
                         }
                     }
-                    Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
-                        Row(Modifier.fillMaxWidth().padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            val tabs = listOf("本地" to "local", "节点" to "node") + if (hasMedia) listOf("媒体库" to "media") else emptyList()
-                            tabs.forEachIndexed { index, (label, tag) ->
-                                Surface(onClick = { tab = index }, modifier = Modifier.weight(1f).testTag("attachment_tab_$tag").semantics { role = Role.Tab; selected = tab == index },
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = if (tab == index) MaterialTheme.colorScheme.surfaceContainerLow else MaterialTheme.colorScheme.surfaceContainerHigh,
-                                    contentColor = if (tab == index) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) {
-                                    Box(Modifier.heightIn(min = 40.dp).padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
-                                        Text(label, style = MaterialTheme.typography.labelLarge)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if (tab == 0) {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            AttachmentSourceOption("image", "图片", "add_image", imageSlots > 0, Modifier.weight(1f), onImage)
-                            AttachmentSourceOption("video", "视频", "add_video", fileSlots > 0, Modifier.weight(1f), onVideo)
-                            AttachmentSourceOption("folder", "文件", "add_file", fileSlots > 0, Modifier.weight(1f), onFile)
-                        }
-                        Text(when {
-                            imageSlots <= 0 && fileSlots <= 0 -> "附件数量已达上限"
-                            imageSlots <= 0 -> "图片已达上限 · 文件 / 视频最大 1 GiB"
-                            fileSlots <= 0 -> "还可添加 $imageSlots 张图片 · 文件已达上限"
-                            else -> "图片可多选 · 文件 / 视频最大 1 GiB"
-                        }, Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
-                    } else if (tab == 2 && hasMedia) CodexMediaLibrary(imageSlots, fileSlots, onDismiss)
-                    else {
-                        Surface(onClick = onWorkspace, enabled = fileSlots > 0, modifier = Modifier.fillMaxWidth().testTag("add_workspace_file"),
-                            shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
-                            Row(Modifier.padding(18.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                AttachmentSourceIcon("folder", Modifier.size(24.dp))
-                                Text("工作区文件", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
-                                Text("›", style = MaterialTheme.typography.titleLarge)
-                            }
-                        }
-                        Text(if (fileSlots > 0) "引用当前节点中的文件" else "文件数量已达上限", Modifier.fillMaxWidth(),
-                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun AttachmentSourceOption(icon: String, title: String, tag: String, enabled: Boolean, modifier: Modifier, onClick: () -> Unit) {
-    Surface(onClick = onClick, enabled = enabled, modifier = modifier.testTag(tag), shape = RoundedCornerShape(18.dp),
-        color = androidx.compose.ui.graphics.Color.Transparent,
-        contentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else .38f)) {
-        Column(Modifier.padding(vertical = 6.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh, contentColor = LocalContentColor.current) {
-                Box(Modifier.size(62.dp, 58.dp), contentAlignment = Alignment.Center) { AttachmentSourceIcon(icon, Modifier.size(25.dp)) }
-            }
-            Text(title, style = MaterialTheme.typography.bodyMedium)
+                }, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp))
         }
     }
 }
@@ -117,6 +68,12 @@ private fun AttachmentSourceIcon(kind: String, modifier: Modifier) {
         val stroke = Stroke(1.7f * u, cap = StrokeCap.Round)
         fun point(x: Float, y: Float) = Offset(x * u, y * u)
         when (kind) {
+            "camera" -> {
+                drawRoundRect(color, point(2f, 6f), Size(20f * u, 15f * u), CornerRadius(3f * u), style = stroke)
+                drawCircle(color, 4f * u, point(12f, 13f), style = stroke)
+                val path = Path().apply { moveTo(7f*u, 6f*u); lineTo(9f*u, 3f*u); lineTo(15f*u, 3f*u); lineTo(17f*u, 6f*u) }
+                drawPath(path, color, style = stroke)
+            }
             "image" -> {
                 drawRoundRect(color, point(3f, 3f), Size(18f * u, 18f * u), CornerRadius(3f * u), style = stroke)
                 drawCircle(color, 1.5f * u, point(8f, 8f))

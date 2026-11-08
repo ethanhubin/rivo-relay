@@ -40,7 +40,7 @@ fun NewConversationDialog(project: ProjectSummary, readGit: suspend () -> JSONOb
             Text("工作区", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Box {
                 OutlinedButton(onClick = { workspaceMenu = true }, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp).testTag("new_conversation_workspace"), shape = androidx.compose.foundation.shape.RoundedCornerShape(13.dp)) {
-                    Text(if (worktree) "工作树" else "本地目录", Modifier.weight(1f)); Text("⌄")
+                    Text(if (worktree) "工作树" else "本地目录", Modifier.weight(1f)); dev.rivo.relay.ui.chat.SettingsRightArrow()
                 }
                 DropdownMenu(workspaceMenu && enabled, { workspaceMenu = false }) {
                     DropdownMenuItem(text = { Text("本地目录") }, onClick = { worktree = false; workspaceMenu = false })
@@ -56,7 +56,7 @@ fun NewConversationDialog(project: ProjectSummary, readGit: suspend () -> JSONOb
                 val ref = refs.firstOrNull { it.string("id") == selected }
                 Box {
                     OutlinedButton(onClick = { refMenu = true }, enabled = enabled && !loading, modifier = Modifier.fillMaxWidth().testTag("new_conversation_ref")) {
-                        Text(ref?.let { it.string("name") + " · " + it.string("commit").take(8) } ?: "选择来源", Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis); Text("⌄")
+                        Text(ref?.let { it.string("name") + " · " + it.string("commit").take(8) } ?: "选择来源", Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis); dev.rivo.relay.ui.chat.SettingsRightArrow()
                     }
                     DropdownMenu(refMenu && enabled, { refMenu = false }, modifier = Modifier.heightIn(max = 280.dp)) {
                         refs.forEach { option -> DropdownMenuItem(text = { Column { Text(option.string("name")); Text(option.string("commit").take(8), style = MaterialTheme.typography.labelSmall) } },
@@ -102,7 +102,7 @@ fun PendingWorkspaceSelector(project: ProjectSummary, readGit: suspend () -> JSO
             Text("工作区", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Box {
                 OutlinedButton(onClick = { workspaceMenu = true }, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp).testTag("new_conversation_workspace"), shape = androidx.compose.foundation.shape.RoundedCornerShape(13.dp)) {
-                    Text(if (worktree) "工作树" else "本地目录", Modifier.weight(1f)); Text("⌄")
+                    Text(if (worktree) "工作树" else "本地目录", Modifier.weight(1f)); dev.rivo.relay.ui.chat.SettingsRightArrow()
                 }
                 DropdownMenu(workspaceMenu && enabled, { workspaceMenu = false }) {
                     DropdownMenuItem(text = { Text("本地目录") }, onClick = { worktree = false; workspaceMenu = false })
@@ -118,7 +118,7 @@ fun PendingWorkspaceSelector(project: ProjectSummary, readGit: suspend () -> JSO
                 val ref = refs.firstOrNull { it.string("id") == selected }
                 Box {
                     OutlinedButton(onClick = { refMenu = true }, enabled = enabled && !loading, modifier = Modifier.fillMaxWidth().testTag("new_conversation_ref")) {
-                        Text(ref?.let { it.string("name") + " · " + it.string("commit").take(8) } ?: "选择来源", Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis); Text("⌄")
+                        Text(ref?.let { it.string("name") + " · " + it.string("commit").take(8) } ?: "选择来源", Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis); dev.rivo.relay.ui.chat.SettingsRightArrow()
                     }
                     DropdownMenu(refMenu && enabled, { refMenu = false }, modifier = Modifier.heightIn(max = 280.dp)) {
                         refs.forEach { option -> DropdownMenuItem(text = { Column { Text(option.string("name")); Text(option.string("commit").take(8), style = MaterialTheme.typography.labelSmall) } },

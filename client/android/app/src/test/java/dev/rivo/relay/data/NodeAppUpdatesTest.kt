@@ -4,6 +4,8 @@ import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.SocketPolicy
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.RecordedRequest
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
@@ -15,6 +17,46 @@ class NodeAppUpdatesTest {
     private val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     private fun manifest() = JSONObject().put("version", "0.2.13").put("versionCode", 25).put("sha256", hash)
         .put("size", bytes.size).put("apkPath", "/v1/app-updates/apks/$hash.apk").put("notes", "node update")
+    @Test fun interruptedDownloadResumesFromReceivedBytes() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val dir = Files.createTempDirectory("updates").toFile()
+        val ranges = mutableListOf<String?>()
+        try {
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    if (request.path == "/v1/app-updates/latest") return MockResponse().setBody(manifest().toString())
+                    val range = request.getHeader("Range")
+                    ranges.add(range)
+                    if (range == null) return MockResponse().setBody(okio.Buffer().write(bytes))
+                        .setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY)
+                    val start = range.removePrefix("bytes=").removeSuffix("-").toInt()
+                    return MockResponse().setResponseCode(206)
+                        .setHeader("Content-Range", "bytes $start-${bytes.size - 1}/${bytes.size}")
+                        .setBody(okio.Buffer().write(bytes.copyOfRange(start, bytes.size)))
+                }
+            }
+            val updates = NodeAppUpdates(server.url("/").toString().trimEnd('/'))
+            val release = updates.check("0.2.12")!!
+            val progress = mutableListOf<Long>()
+            assertArrayEquals(bytes, updates.download(release, dir) { done, _ -> progress.add(done) }.readBytes())
+            assertEquals(2, ranges.size)
+            assertTrue(ranges[1]!!.matches(Regex("bytes=[1-9][0-9]*-")))
+            assertTrue(progress.zipWithNext().all { (a, b) -> a <= b })
+        } finally { server.shutdown(); dir.deleteRecursively() }
+    }
+    @Test fun rejectsIncorrectResumeRange() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val dir = Files.createTempDirectory("updates").toFile()
+        try {
+            val updates = NodeAppUpdates(server.url("/").toString().trimEnd('/'))
+            server.enqueue(MockResponse().setBody(manifest().toString()))
+            val release = updates.check("0.2.12")!!
+            server.enqueue(MockResponse().setBody(okio.Buffer().write(bytes)).setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY))
+            server.enqueue(MockResponse().setResponseCode(206).setHeader("Content-Range", "bytes 0-1/${bytes.size}").setBody("xx"))
+            try { updates.download(release, dir); fail() } catch (_: java.io.IOException) { }
+            assertTrue(dir.listFiles()!!.isEmpty())
+        } finally { server.shutdown(); dir.deleteRecursively() }
+    }
     @Test fun interruptedDownloadRetriesAndVerifiesCompleteFile() = runBlocking {
         val server = MockWebServer(); server.start()
         val dir = Files.createTempDirectory("updates").toFile()

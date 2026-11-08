@@ -45,13 +45,15 @@ fun LoginScreen(busy: Boolean, error: String?, onPair: (String, String) -> Unit,
             Text("扫描电脑上节点生成的配对二维码", style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(32.dp))
-            Button(onClick = scan, enabled = !busy && !readingImage, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("scan_connect")) {
+            Button(onClick = scan, enabled = !busy && !readingImage, modifier = Modifier.fillMaxWidth(0.86f).heightIn(min = 52.dp).testTag("scan_connect")) {
                 if (busy) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("正在连接…") }
                 else Text("扫码连接")
             }
-            OutlinedButton(onClick = pickImage, enabled = !busy && !readingImage, modifier = Modifier.fillMaxWidth().testTag("photo_connect")) {
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(onClick = pickImage, enabled = !busy && !readingImage, modifier = Modifier.fillMaxWidth(0.86f).heightIn(min = 52.dp).testTag("photo_connect")) {
                 Text(if (readingImage) "正在识别…" else "从相册识别")
             }
+            Spacer(Modifier.height(12.dp))
             TextButton(onClick = { manual = true }, enabled = !busy && !readingImage, modifier = Modifier.testTag("manual_entry")) { Text("手动输入") }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 16.dp).testTag("login_error")) }
         }

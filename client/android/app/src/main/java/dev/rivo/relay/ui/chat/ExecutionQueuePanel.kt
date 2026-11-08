@@ -1,7 +1,6 @@
 package dev.rivo.relay.ui.chat
 
 import androidx.compose.animation.animateContentSize
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
@@ -36,13 +35,13 @@ fun ExecutionQueuePanel(threadId: String, tasks: List<QueueTask>, enabled: Boole
     val threshold = with(LocalDensity.current) { 28.dp.toPx() }
     LaunchedEffect(tasks) { dragging = null; offset = 0f; if (tasks.size <= 3) expanded = false }
     Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp).testTag("execution_queue"),
-        shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+        shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shadowElevation = 2.dp) {
         Column(Modifier.animateContentSize()) {
             Row(Modifier.fillMaxWidth().clickable(enabled = tasks.size > 3) { expanded = !expanded }.padding(10.dp).testTag("queue_expand"),
                 verticalAlignment = Alignment.CenterVertically) {
                 Text("执行队列", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
-                Text("${tasks.count { it.status == "waiting" }} 项等待" + if (tasks.size > 3) if (expanded) " ▴" else " ▾" else "", style = MaterialTheme.typography.labelMedium)
+                Text("${tasks.count { it.status == "waiting" }} 项等待", style = MaterialTheme.typography.labelMedium)
             }
             Column(Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()).padding(horizontal = 10.dp)) {
                 val visibleTasks = if (expanded) order else order.take(3)
@@ -69,7 +68,7 @@ fun ExecutionQueuePanel(threadId: String, tasks: List<QueueTask>, enabled: Boole
                                             order = order.toMutableList().apply { add(target, removeAt(index)) }; offset = 0f
                                         }
                                     })
-                            }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically,
+                            }.padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text(if (task.status == "running") "●" else "○", color = MaterialTheme.colorScheme.primary)
                             Column(Modifier.weight(1f)) {
@@ -88,7 +87,6 @@ fun ExecutionQueuePanel(threadId: String, tasks: List<QueueTask>, enabled: Boole
                         if (itemIndex < visibleTasks.lastIndex) HorizontalDivider(Modifier.padding(start = 24.dp), color = MaterialTheme.colorScheme.outlineVariant)
                     }
                 }
-                if (!expanded && tasks.size > 3) Text("另有 ${tasks.size - 3} 项", Modifier.padding(bottom = 8.dp), style = MaterialTheme.typography.labelSmall)
             }
         }
     }

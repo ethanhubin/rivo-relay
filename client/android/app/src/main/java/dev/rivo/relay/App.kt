@@ -556,7 +556,9 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             }
         }
         val cached = network != null && catalogCacheNoticeVisible(route, catalog, true)
-        if (displayError != null || submission.pending != null || submission.notice != null || cached) {
+        // A durable pending ID also exists during normal sending; only show recovery UI after it finishes.
+        val pendingRecovery = submission.pending.takeIf { !submission.busy }
+        if (displayError != null || pendingRecovery != null || submission.notice != null || cached) {
             Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).testTag("bottom_notice_panel"),
                 shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp), tonalElevation = 3.dp, shadowElevation = 4.dp,
                 color = MaterialTheme.colorScheme.surfaceContainerHigh) {
@@ -567,7 +569,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             TextButton(onClick = retryConnection, modifier = Modifier.testTag("retry_connection")) { Text("重连") }
                         }
                     }
-                    submission.pending?.let { pending ->
+                    pendingRecovery?.let { pending ->
                         Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                             Text("${node.connection.name}：正在确认“${pending.label}”是否送达，暂时无法提交新操作。", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                             TextButton(onClick = { endingPending = pending }, enabled = !submission.busy,

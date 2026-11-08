@@ -273,7 +273,8 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
                                 modifier = Modifier.testTag("todo_start_codex")) { Text("Codex") }
                             if (onOpenThread != null) TodoEditorButton(onClick = onOpenThread, enabled = !busy) { Text("会话") }
                             Spacer(Modifier.weight(1f).widthIn(min = 2.dp))
-                            TodoEditorButton(onClick = { onSave(normalizedTitle, notes, details()) }, enabled = hasContent && !busy, modifier = Modifier.testTag("save_todo")) {
+                            TodoEditorButton(onClick = { onSave(normalizedTitle, notes, details()) }, enabled = hasContent && !busy, modifier = Modifier.testTag("save_todo"),
+                                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp)) {
                                 Text(if (saving) "保存中…" else "完成", style = MaterialTheme.typography.labelLarge)
                             }
                         }
