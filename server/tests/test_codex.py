@@ -314,6 +314,32 @@ class NativeSemanticsTests(unittest.TestCase):
         self.assertEqual(3, len(sessions))
         self.assertEqual(len(sessions), service.list_projects()[0]["threadCount"])
 
+    def test_recent_lists_only_threads_without_a_visible_project(self):
+        native = FakeNative()
+        threads = [
+            {"id": "assigned", "projectId": "project", "cwd": "/workspace"},
+            {"id": "root", "projectId": None, "cwd": "/workspace"},
+            {"id": "worktree", "projectId": None, "cwd": "/worktree"},
+            {"id": "unlisted", "projectId": None, "cwd": "/other"},
+            {"id": "orphan", "projectId": "deleted", "cwd": "/old"},
+        ]
+        def request(method, params, **kwargs):
+            if method == "project/list":
+                return {"data": [{"id": "project", "roots": [{"path": "/workspace"}]}], "nextCursor": None}
+            if method == "thread/list":
+                return {"data": copy.deepcopy(threads), "nextCursor": None}
+            return {"goal": None} if method == "thread/goal/get" else {}
+        native.request = request
+        service = CodexService(connection=native)
+        with patch.object(service.projects.external_worktrees, "associations", return_value={"worktree": {"projectId": "project"}}):
+            recent = service.list_projects()[-1]
+            listed = service.list_sessions(recent["id"])
+        self.assertEqual("最近", recent["name"])
+        self.assertEqual(2, recent["threadCount"])
+        self.assertEqual({"unlisted", "orphan"}, {t["id"] for t in listed})
+        with self.assertRaises(CodexError):
+            service.create_session(recent["id"])
+
     def test_captured_native_history_preserves_ids_and_chronological_order(self):
         fixture = json.loads((Path(__file__).parent / "fixtures/native-0.159.0.json").read_text())
         native = FakeNative()

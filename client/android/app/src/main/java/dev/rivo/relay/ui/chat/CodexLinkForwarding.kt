@@ -43,7 +43,7 @@ internal fun CodexLinkDestinationDialog(link: CodexLinkAttachment, read: suspend
                 val response = read("/v1/projects")
                 coroutineContext.ensureActive()
                 projects = response.objects("projects")
-                projectId = projects.firstOrNull()?.string("id")
+                projectId = projects.firstOrNull { it.string("id") != "__rivo_recent__" }?.string("id")
             } else {
                 val response = read("/v1/threads?projectId=${encoded(projectId!!)}&archived=false")
                 coroutineContext.ensureActive()
@@ -57,7 +57,7 @@ internal fun CodexLinkDestinationDialog(link: CodexLinkAttachment, read: suspend
         text = { Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
             Text(link.name, style = MaterialTheme.typography.titleSmall)
             Text("确认后添加到输入框，点击发送才会提交。", style = MaterialTheme.typography.bodySmall)
-            projects.forEach { project -> Row(Modifier.fillMaxWidth().clickable { projectId = project.string("id") }) {
+            projects.filterNot { it.string("id") == "__rivo_recent__" }.forEach { project -> Row(Modifier.fillMaxWidth().clickable { projectId = project.string("id") }) {
                 RadioButton(selected = projectId == project.string("id"), onClick = { projectId = project.string("id") })
                 Text(project.string("name"), Modifier.padding(top = 12.dp))
             } }

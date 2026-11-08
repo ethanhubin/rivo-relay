@@ -25,7 +25,7 @@ from .host_probe import read_identity
 from .live_items import ITEM_EVENTS, TERMINAL, project_item, merge_item
 from .native_journal import NativeJournal
 from .interactions import Interactions
-from .projects import ProjectCatalog, pages, thread_pages
+from .projects import ProjectCatalog, pages, thread_pages, RECENT_PROJECT_ID, unlisted_threads
 from .files import read_file, read_directory, upload_attachment, download_file, upload_attachment_stream, stream_download
 from .developer import (project_directory, project_git, review_context, workspace_diff,
                         diff_summary, validate_review, Workspaces)
@@ -289,23 +289,32 @@ class CodexService:
 
     def list_sessions(self, project_id, archived=False):
         self.start()
-        project = self.projects.get(project_id)
-        roots = [r["path"] for r in project.get("roots", [])]
-        # Legacy Desktop worktree threads can lack projectId and use a cwd
-        # outside every project root. Verify Git membership on the native host.
-        threads = list(thread_pages(self.connection, {
-            "archived": archived, "modelProviders": [],
-            "sortKey": "updated_at", "sortDirection": "desc",
-        })) if roots else []
-        associations = self.projects.external_worktrees.associations(threads, [project])
-        by_id = {t["id"]: t for t in threads
-                 if t.get("projectId") == project_id or (not t.get('projectId') and
-                     (t.get('cwd') in roots or t['id'] in associations))}
-        for thread in thread_pages(self.connection, {
-            "projectId": project_id, "archived": archived, "modelProviders": [],
-            "sortKey": "updated_at", "sortDirection": "desc",
-        }):
-            by_id[thread["id"]] = thread
+        if project_id == RECENT_PROJECT_ID:
+            projects = list(pages(self.connection, "project/list"))
+            threads = thread_pages(self.connection, {
+                "archived": archived, "modelProviders": [],
+                "sortKey": "updated_at", "sortDirection": "desc",
+            })
+            associations = self.projects.external_worktrees.associations(
+                [t for t in threads if not t.get("projectId")], projects)
+            by_id = {t["id"]: t for t in unlisted_threads(threads, projects, associations)}
+        else:
+            project = self.projects.get(project_id)
+            roots = [r["path"] for r in project.get("roots", [])]
+            # Include legacy threads associated by root or Git worktree.
+            threads = list(thread_pages(self.connection, {
+                "archived": archived, "modelProviders": [],
+                "sortKey": "updated_at", "sortDirection": "desc",
+            })) if roots else []
+            associations = self.projects.external_worktrees.associations(threads, [project])
+            by_id = {t["id"]: t for t in threads
+                     if t.get("projectId") == project_id or (not t.get('projectId') and
+                         (t.get('cwd') in roots or t['id'] in associations))}
+            for thread in thread_pages(self.connection, {
+                "projectId": project_id, "archived": archived, "modelProviders": [],
+                "sortKey": "updated_at", "sortDirection": "desc",
+            }):
+                by_id[thread["id"]] = thread
         queues = self.execution_queue.by_thread() if hasattr(self, 'execution_queue') else {}
         managed = {}
         if self.workspaces:
@@ -319,7 +328,7 @@ class CodexService:
                  "preview": t.get("preview", ""), "status": statuses[t["id"]],
                  "pinned": str((t.get("section") or {}).get("name", "")).casefold() == "pinned",
                  "updatedAt": t.get("updatedAt"), "cwd": t.get("cwd"),
-                 "projectId": t.get("projectId") or project_id,
+                 "projectId": t.get("projectId") or (None if project_id == RECENT_PROJECT_ID else project_id),
                  "source": t.get('source'), "gitInfo": t.get('gitInfo'),
                  "externalWorkspace": associations.get(t['id']) if t['id'] not in managed else None,
                  "executionMode": 'worktree' if t['id'] in managed else 'local',
@@ -641,6 +650,8 @@ class CodexService:
         return {key: value for key, value in (('sandbox', sandbox), ('approvalPolicy', approval_policy)) if value is not None}
 
     def create_session(self, project_id, title="", worktree_ref=None, *, sandbox=None, approval_policy=None):
+        if project_id == RECENT_PROJECT_ID:
+            raise CodexError("请先选择项目再新建会话", code="invalid_request", http_status=400)
         permissions = self._permission_options(sandbox, approval_policy)
         self.start()
         project = self.projects.get(project_id)

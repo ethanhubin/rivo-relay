@@ -62,7 +62,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
     projectKey: String = projectName, initialCount: Int = 0,
     pendingConversations: List<PendingConversation> = emptyList(), canDiscardPending: Boolean = true,
     onResumePending: (String) -> Unit = {}, onDiscardPending: (String) -> Unit = {},
-    canManageThreads: Boolean = canCreate) {
+    canManageThreads: Boolean = canCreate, showCreate: Boolean = true) {
     val context = LocalContext.current
     var selectedIds by remember(projectKey, archived) { mutableStateOf(emptySet<String>()) }
     var search by rememberSaveable(projectKey) { mutableStateOf("") }
@@ -128,7 +128,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                 }
                 if (loading && shown.isEmpty() && shownPending.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(28.dp)) }
                 else if (shown.isEmpty() && shownPending.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                    Text(when { search.isNotBlank() -> "没有匹配的会话"; archived -> "没有已归档会话"; else -> "还没有 Codex 会话，点击右下角新建" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(when { search.isNotBlank() -> "没有匹配的会话"; archived -> "没有已归档会话"; !showCreate -> "暂无会话"; else -> "还没有 Codex 会话，点击右下角新建" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(bottom = 100.dp), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Xs)) {
                     items(shownPending, key = { "pending:${it.id}" }) { pending ->
                         Surface(onClick = { onResumePending(pending.id) }, shape = MaterialTheme.shapes.large,
@@ -194,7 +194,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
             }
         }
         // Surface supplies the same round FAB geometry while preserving the disabled-write contract.
-        Surface(onClick = onNew, enabled = canCreate, modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp).size(62.dp)
+        if (showCreate) Surface(onClick = onNew, enabled = canCreate, modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp).size(62.dp)
             .testTag("new_thread").semantics { contentDescription = "新建会话" }, shape = CircleShape,
             color = if (canCreate) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHighest,
             contentColor = if (canCreate) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, shadowElevation = 6.dp) {

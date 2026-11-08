@@ -281,9 +281,9 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     // A stalled request must not trap the user on this node; pending IDs are stored per node.
                     onSelectNode = selectNode,
                     onAddNode = { setError(null); addNode = true }, canAddNode = !submission.busy && !handoffLoading)
-                "sessions" -> SessionsScreen(catalog.selectedProject?.name ?: "会话", catalog.threads.filterNot { thread -> visiblePending.any { node.conversations.pendingThreadId(it.id) == thread.id } }, catalog.loading, writable && catalog.selectedProject != null,
+                "sessions" -> SessionsScreen(catalog.selectedProject?.name ?: "会话", catalog.threads.filterNot { thread -> visiblePending.any { node.conversations.pendingThreadId(it.id) == thread.id } }, catalog.loading, writable && catalog.selectedProject != null && catalog.selectedProject?.id != "__rivo_recent__",
                     ::back, { openChat(it.id, "sessions") }, { if (writable) node.catalog.state.value.selectedProject?.let { openPending(it) } }, { node.catalog.refreshThreads() },
-                    canManageThreads = threadsWritable,
+                    canManageThreads = threadsWritable, showCreate = catalog.selectedProject?.id != "__rivo_recent__",
                     onPin = { thread, pinned ->
                         if (node.catalog.state.value.threadsFresh) node.submissions.submit("/v1/threads/${encoded(thread.id)}/pin", JSONObject().put("pinned", pinned), if (pinned) "置顶会话" else "取消置顶") {
                             node.catalog.refreshThreads()
@@ -537,7 +537,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             if (route == "chat" && threadId == id) node.session.refresh()
                         }
                     })
-                "todos" -> TodosScreen(todos, catalog.projects, projectsWritable, node.catalog::threadsFor,
+                "todos" -> TodosScreen(todos, catalog.projects.filterNot { it.id == "__rivo_recent__" }, projectsWritable, node.catalog::threadsFor,
                     node.todos::save, node.todos::toggle, node.todos::delete,
                     onDispatch = dispatch@{ todo, projectId, selectedThread, accepted ->
                         if (!node.catalog.state.value.projectsFresh) return@dispatch
