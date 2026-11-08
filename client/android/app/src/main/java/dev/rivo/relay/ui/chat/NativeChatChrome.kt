@@ -14,6 +14,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -105,7 +107,6 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
     val snapshot = state.snapshot
     val context = LocalContext.current
     var menu by remember(state.id) { mutableStateOf(false) }
-    var usageOpen by remember { mutableStateOf(false) }
     val activeSettings = snapshot?.let { current -> current.turnSettings.firstOrNull { it.turnId == current.activeTurnId } }
     val model = activeSettings?.model ?: snapshot?.settings?.string("model").orEmpty()
     val effort = activeSettings?.effort ?: snapshot?.settings?.string("reasoningEffort").orEmpty()
@@ -145,14 +146,11 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
                     DropdownMenuItem(text = { Text("改动与代码审查") }, onClick = { menu = false; onReview() }, enabled = snapshot != null,
                         modifier = Modifier.testTag("open_codex_review"))
                     DropdownMenuItem(text = { Text("刷新会话") }, onClick = { menu = false; onRefresh() }, modifier = Modifier.testTag("refresh_conversation"))
-                    if (snapshot?.activeTurnId?.isNotBlank() == true) DropdownMenuItem(text = { Text("停止当前任务") },
-                        onClick = { menu = false; onStop() }, enabled = canStop, modifier = Modifier.testTag("header_stop_turn"))
                     if (onPin != null) DropdownMenuItem(text = { Text(if (pinned) "取消置顶" else "置顶") },
                         onClick = { menu = false; onPin(!pinned) }, enabled = canManage, modifier = Modifier.testTag("set_session_pinned"))
                     if (onArchive != null) DropdownMenuItem(text = { Text("归档") }, onClick = { menu = false; onArchive() },
                         enabled = canManage && snapshot != null && snapshot.activeTurnId.isBlank() && snapshot.requests.isEmpty() && snapshot.queue.isEmpty(),
                         modifier = Modifier.testTag("archive_session"))
-                    if (usage != null) DropdownMenuItem(text = { Text("Codex 用量") }, onClick = { menu = false; usageOpen = true }, modifier = Modifier.testTag("chat_usage_details"))
                     HorizontalDivider()
                     DropdownMenuItem(text = { Text("复制会话 ID") }, enabled = state.id != null, modifier = Modifier.testTag("copy_session_id"),
                         onClick = { menu = false; state.id?.let { id -> context.getSystemService(ClipboardManager::class.java)
@@ -162,15 +160,7 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
         }
         usage?.weeklyWindow?.let { CodexQuotaProgressBar(it, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(2.dp).testTag("codex_subscription_usage")) }
     }
-    if (usageOpen) AlertDialog(onDismissRequest = { usageOpen = false }, title = { Text("Codex 用量") }, text = {
-        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            usage?.limits.orEmpty().forEach { limit -> Text(limit.name, style = MaterialTheme.typography.titleSmall)
-                listOfNotNull(limit.primary, limit.secondary).forEach { window ->
-                    Text("${usageWindowLabel(window.windowMinutes)}剩余 ${window.remainingPercent}%")
-                    LinearProgressIndicator(progress = { window.remainingPercent / 100f }, modifier = Modifier.fillMaxWidth())
-                } }
-        }
-    }, confirmButton = { TextButton(onClick = { usageOpen = false }) { Text("完成") } })
+
 }
 
 /** The native node supplies model capabilities; draft selections affect only the next submitted task. */
@@ -238,14 +228,53 @@ internal fun NativeComposerSettings(settings: JSONObject?, models: List<JSONObje
             TextButton(onClick = { onSaveDefaults(defaults) },
                 enabled = enabled && unavailable == null && !isDefault, modifier = Modifier.testTag("codex_set_default")) { Text(if (isDefault && unavailable == null) "已是默认" else "设为新会话默认") }
             unavailable?.let { Text(it, style = MaterialTheme.typography.labelSmall, modifier = Modifier.testTag("codex_default_unavailable")) }
-            Text("默认设置仅用于此节点的新会话。", style = MaterialTheme.typography.labelSmall)
         }
         if (selectedMode != null) TextButton(onClick = onInheritMode, enabled = enabled, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("inherit_task_mode")) { Text("恢复继承会话模式") }
-        Text(if (savesToSession) "选择会保存到当前会话；具体生效轮次由 Codex 决定。" else "选择用于下一项任务；当前执行中的任务保持原设置。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        settings?.let {
-            HorizontalDivider()
-            Text(nativePermissionSummary(it), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            it.string("cwd").takeIf(String::isNotBlank)?.let { path -> SelectionContainer { Text(path, style = MaterialTheme.typography.labelSmall, maxLines = 3, overflow = TextOverflow.Ellipsis) } }
+
+    }
+}
+
+@Composable
+internal fun NewSessionSettings(models: List<JSONObject>, model: String?, effort: String?,
+    sandbox: String?, approval: String?, enabled: Boolean, permissionsEditable: Boolean,
+    onModel: (String?) -> Unit, onEffort: (String?) -> Unit,
+    onSandbox: (String?) -> Unit, onApproval: (String?) -> Unit, workspace: (@Composable () -> Unit)? = null) {
+    val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    val capability = models.firstOrNull { it.string("model").ifBlank { it.string("id") } == model }
+        ?: if (model == null) models.firstOrNull { it.optBoolean("isDefault") } else null
+    val efforts = capability?.objects("supportedReasoningEfforts").orEmpty()
+        .map { it.string("reasoningEffort") }.filter(String::isNotBlank)
+    Column(Modifier.fillMaxWidth().heightIn(max = if (keyboardVisible) 148.dp else 340.dp)
+        .verticalScroll(rememberScrollState()).testTag("new_session_settings"),
+        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        workspace?.invoke()
+        Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("会话设置", style = MaterialTheme.typography.titleSmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.weight(1f)) {
+                    SettingsSelector("模型", model ?: "沿用节点默认",
+                        listOf(null to "沿用节点默认") + models.map {
+                            it.string("model").ifBlank { it.string("id") } to it.string("displayName").ifBlank { it.string("model").ifBlank { it.string("id") } }
+                        }, enabled, "new_session_model", onModel)
+                }
+                Column(Modifier.weight(1f)) {
+                    SettingsSelector("思考强度", effort ?: "沿用节点默认",
+                        listOf(null to "沿用节点默认") + efforts.map { it to it },
+                        enabled, "new_session_effort", onEffort)
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.weight(1f)) {
+                    SettingsSelector("文件访问权限", sandboxSettingLabel(null, true, sandbox),
+                        listOf(null to "沿用节点默认") + sandboxSettingOptions,
+                        enabled && permissionsEditable, "new_session_sandbox", onSandbox)
+                }
+                Column(Modifier.weight(1f)) {
+                    SettingsSelector("审批策略", approvalSettingLabel(null, true, approval),
+                        listOf(null to "沿用节点默认") + approvalSettingOptions,
+                        enabled && permissionsEditable, "new_session_approval", onApproval)
+                }
+            }
         }
     }
 }
@@ -253,9 +282,10 @@ internal fun NativeComposerSettings(settings: JSONObject?, models: List<JSONObje
 @Composable
 private fun SettingsSelector(title: String, selected: String, options: List<Pair<String?, String>>, enabled: Boolean, tag: String, onSelect: (String?) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
-    Text(title, style = MaterialTheme.typography.labelMedium)
+    Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Spacer(Modifier.height(6.dp))
     Box {
-        OutlinedButton(onClick = { expanded = true }, enabled = enabled, modifier = Modifier.fillMaxWidth().testTag(tag), contentPadding = PaddingValues(horizontal = 10.dp)) {
+        OutlinedButton(onClick = { expanded = true }, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp).testTag(tag), shape = RoundedCornerShape(13.dp), contentPadding = PaddingValues(horizontal = 10.dp)) {
             Text(selected, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis); Text("⌄")
         }
         DropdownMenu(expanded, { expanded = false }) { options.forEach { (id, name) ->

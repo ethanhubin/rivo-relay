@@ -71,7 +71,7 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
     val pinRanks = remember(pinnedProjectIds) { pinnedProjectIds.withIndex().associate { it.value to it.index } }
     val orderedProjects = remember(projects, pinRanks) { projects.sortedBy { pinRanks[it.id] ?: Int.MAX_VALUE } }
     LazyColumn(Modifier.fillMaxSize().testTag("projects_page"), contentPadding = PaddingValues(horizontal = RivoSpacing.Page),
-        verticalArrangement = Arrangement.spacedBy(RivoSpacing.Sm, Alignment.CenterVertically)) {
+        verticalArrangement = Arrangement.spacedBy(RivoSpacing.Sm, Alignment.Top)) {
         item {
             Column(Modifier.fillMaxWidth().padding(top = RivoSpacing.Md), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Xs)) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically,

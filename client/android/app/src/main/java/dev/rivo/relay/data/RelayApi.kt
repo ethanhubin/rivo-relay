@@ -117,6 +117,10 @@ class RelayApi(private val base: String, private val token: String = "", private
         })
     } }
     /** Stream through OkHttp; node credentials stay on this authenticated endpoint. */
+    /** Paths belong to the selected Relay node, never the phone filesystem. */
+    suspend fun readFile(path: String): JSONObject =
+        call("/v1/files?path=" + java.net.URLEncoder.encode(path, "UTF-8"))
+
     suspend fun uploadFile(threadId: String, name: String, file: java.io.File): JSONObject =
         uploadAttachment("/v1/threads/${encoded(threadId)}/attachments", name, file)
     suspend fun uploadProjectFile(projectId: String, name: String, file: java.io.File): JSONObject =

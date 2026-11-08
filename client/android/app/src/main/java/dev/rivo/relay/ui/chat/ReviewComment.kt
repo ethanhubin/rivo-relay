@@ -12,6 +12,7 @@ internal data class ReviewComment(
 internal sealed interface ReviewMessagePart {
     data class Text(val value: String) : ReviewMessagePart
     data class Finding(val comment: ReviewComment) : ReviewMessagePart
+    data class Visualization(val path: String) : ReviewMessagePart
 }
 
 /** Parse a complete directive as data. Unknown/malformed directives remain ordinary text. */
@@ -68,15 +69,46 @@ internal fun parseReviewComment(line: String): ReviewComment? {
 internal fun reviewMessageParts(markdown: String): List<ReviewMessagePart> {
     val parts = mutableListOf<ReviewMessagePart>()
     val text = mutableListOf<String>()
-    var fence: String? = null
+    var fence: Char? = null
+    var fenceLength = 0
     fun flush() { if (text.isNotEmpty()) { parts += ReviewMessagePart.Text(text.joinToString("\n")); text.clear() } }
     markdown.lines().forEach { line ->
         val trimmed = line.trimStart()
-        val marker = when { trimmed.startsWith("```") -> "```"; trimmed.startsWith("~~~") -> "~~~"; else -> null }
-        if (marker != null) { if (fence == null) fence = marker else if (fence == marker) fence = null }
-        val comment = if (fence != null) null else parseReviewComment(line)
-        if (comment == null) text += line else { flush(); parts += ReviewMessagePart.Finding(comment) }
+        val marker = trimmed.firstOrNull()?.takeIf { it == '`' || it == '~' }
+        val markerLength = if (marker != null) trimmed.takeWhile { it == marker }.length else 0
+        if (markerLength >= 3) {
+            if (fence == null) { fence = marker; fenceLength = markerLength }
+            else if (fence == marker && markerLength >= fenceLength && trimmed.drop(markerLength).isBlank()) fence = null
+            text += line
+        } else {
+            val comment = if (fence == null) parseReviewComment(line) else null
+            val visualization = if (fence == null) parseVisualizationPath(line) else null
+            when {
+                comment != null -> { flush(); parts += ReviewMessagePart.Finding(comment) }
+                visualization != null -> { flush(); parts += ReviewMessagePart.Visualization(visualization) }
+                else -> text += line
+            }
+        }
     }
     flush()
     return parts
+}
+
+/** Native visualize attachments reference local HTML; incomplete/unknown data stays visible. */
+internal fun parseVisualizationPath(line: String): String? {
+    val source = line.trim()
+    val prefix = "visualize"
+    if (!source.startsWith(prefix) || !source.endsWith("")) return null
+    val payload = source.removePrefix(prefix).removeSuffix("")
+    return runCatching {
+        val tokenizer = org.json.JSONTokener(payload)
+        val value = tokenizer.nextValue() as? org.json.JSONObject ?: return null
+        if (tokenizer.nextClean() != '\u0000') return null
+        val path = value.opt("path") as? String ?: return null
+        path.takeIf {
+            it.isNotBlank() && it.none(Char::isISOControl) &&
+                !Regex("^[A-Za-z][A-Za-z0-9+.-]*:").containsMatchIn(it) &&
+                (it.endsWith(".html", true) || it.endsWith(".htm", true))
+        }
+    }.getOrNull()
 }

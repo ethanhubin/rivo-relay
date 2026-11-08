@@ -37,9 +37,9 @@ fun NewConversationDialog(project: ProjectSummary, readGit: suspend () -> JSONOb
             Text(project.name, style = MaterialTheme.typography.titleMedium)
             Text(project.path, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             submissionError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("new_conversation_error")) }
-            Text("工作区", style = MaterialTheme.typography.labelLarge)
+            Text("工作区", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Box {
-                OutlinedButton(onClick = { workspaceMenu = true }, enabled = enabled, modifier = Modifier.fillMaxWidth().testTag("new_conversation_workspace")) {
+                OutlinedButton(onClick = { workspaceMenu = true }, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp).testTag("new_conversation_workspace"), shape = androidx.compose.foundation.shape.RoundedCornerShape(13.dp)) {
                     Text(if (worktree) "工作树" else "本地目录", Modifier.weight(1f)); Text("⌄")
                 }
                 DropdownMenu(workspaceMenu, { workspaceMenu = false }) {
@@ -99,9 +99,9 @@ fun PendingWorkspaceSelector(project: ProjectSummary, readGit: suspend () -> JSO
         onSelection(selected.takeIf { worktree }, !worktree || (!loading && error == null && selected != null))
     }
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("工作区", style = MaterialTheme.typography.labelLarge)
+            Text("工作区", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Box {
-                OutlinedButton(onClick = { workspaceMenu = true }, enabled = enabled, modifier = Modifier.fillMaxWidth().testTag("new_conversation_workspace")) {
+                OutlinedButton(onClick = { workspaceMenu = true }, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp).testTag("new_conversation_workspace"), shape = androidx.compose.foundation.shape.RoundedCornerShape(13.dp)) {
                     Text(if (worktree) "工作树" else "本地目录", Modifier.weight(1f)); Text("⌄")
                 }
                 DropdownMenu(workspaceMenu, { workspaceMenu = false }) {

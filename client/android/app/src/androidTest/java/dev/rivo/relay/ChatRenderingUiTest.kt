@@ -116,7 +116,7 @@ class ChatRenderingUiTest {
         compose.runOnIdle { state.value = state.value.copy(snapshot = state.value.snapshot!!.copy(
             readOnly = true, writerOwner = "external", control = JSONObject().put("state", "external").put("canOperate", false).put("action", "takeover"))) }
         compose.onNodeWithText("保留草稿").assertIsDisplayed()
-        for (tag in listOf("message_input", "add_attachment", "composer_settings", "codex_task_mode", "send_message"))
+        for (tag in listOf("message_input", "add_attachment", "codex_task_mode", "send_message"))
             compose.onNodeWithTag(tag).assertIsNotEnabled()
         compose.runOnIdle { state.value = state.value.copy(snapshot = state.value.snapshot!!.copy(
             readOnly = false, control = JSONObject().put("state", "writable").put("canOperate", true))) }
@@ -157,11 +157,11 @@ class ChatRenderingUiTest {
         compose.onNodeWithText("已有历史仍可阅读").assertIsDisplayed()
         compose.onNodeWithTag("message_input").assertIsNotEnabled()
         compose.onNodeWithTag("add_attachment").assertIsNotEnabled()
-        compose.onNodeWithTag("composer_settings").assertIsNotEnabled()
+        compose.onNodeWithTag("composer_settings").assertDoesNotExist()
         compose.onNodeWithTag("codex_task_mode").assertIsNotEnabled()
         compose.onNodeWithTag("stop_turn").assertIsNotEnabled()
         compose.onNodeWithTag("conversation_more_button").performClick()
-        compose.onNodeWithTag("header_stop_turn").assertIsNotEnabled()
+        compose.onNodeWithTag("header_stop_turn").assertDoesNotExist()
     }
 
 }

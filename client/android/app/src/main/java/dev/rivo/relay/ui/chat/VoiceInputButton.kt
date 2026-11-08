@@ -1,6 +1,5 @@
 package dev.rivo.relay.ui.chat
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -38,11 +37,11 @@ internal fun VoiceInputButton(recording: Boolean, transcribing: Boolean, error: 
         error != null -> "语音转写失败，点击重试"
         else -> "开始语音输入"
     }
-    OutlinedButton(onClick = onToggle, enabled = available || recording || transcribing,
+    TextButton(onClick = onToggle, enabled = available || recording || transcribing,
         modifier = Modifier.size(44.dp).focusProperties { canFocus = false }.testTag("voice_input_button")
             .semantics { contentDescription = description }, shape = RoundedCornerShape(22.dp),
-        contentPadding = PaddingValues(0.dp), border = BorderStroke(1.dp, color.copy(alpha = .48f)),
-        colors = ButtonDefaults.outlinedButtonColors(containerColor = container, contentColor = color,
+        contentPadding = PaddingValues(0.dp),
+        colors = ButtonDefaults.textButtonColors(containerColor = container, contentColor = color,
             disabledContentColor = color, disabledContainerColor = container)) {
         Canvas(Modifier.size(20.dp)) {
             val stroke = 2.dp.toPx()

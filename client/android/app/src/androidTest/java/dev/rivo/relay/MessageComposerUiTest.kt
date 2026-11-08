@@ -95,7 +95,7 @@ class MessageComposerUiTest {
         compose.onNodeWithTag("add_attachment").performClick()
         compose.onNodeWithTag("attachment_tab_node").performClick()
         compose.onNodeWithTag("add_workspace_file").assertIsDisplayed().performClick()
-        compose.onNodeWithTag("composer_settings").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("composer_settings").assertDoesNotExist()
         compose.onNodeWithTag("codex_task_mode").assertIsDisplayed().performClick()
         compose.onNodeWithText("讨论模式").assertIsDisplayed()
         compose.onNodeWithTag("stop_turn").assertDoesNotExist()
@@ -104,7 +104,7 @@ class MessageComposerUiTest {
         compose.onNodeWithTag("send_message").assertDoesNotExist()
         compose.onNodeWithTag("stop_turn").assertIsDisplayed().performClick()
         compose.runOnIdle {
-            assertEquals(listOf("image", "file", "video", "workspace", "settings", "send", "stop"), calls)
+            assertEquals(listOf("image", "file", "video", "workspace", "send", "stop"), calls)
             enabled = false
         }
         compose.onNodeWithTag("message_input").assertIsNotEnabled()

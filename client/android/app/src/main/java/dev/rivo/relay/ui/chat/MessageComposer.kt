@@ -39,7 +39,6 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -50,8 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.window.Dialog
 import dev.rivo.relay.data.string
 import dev.rivo.relay.data.SpeechCapability
 import dev.rivo.relay.data.SpeechRepository
@@ -285,33 +283,33 @@ fun MessageComposer(
             ) {
                 Column {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.align(Alignment.Top).padding(start = 8.dp, top = 5.dp)) {
-                        VoiceInputButton(recording, voice.transcribing, voice.error,
-                            capability.available && controller != null && enabled && !preparing,
-                            capability.reason, amplitude, toggleVoice)
-                    }
-                    BasicTextField(
-                        value = inputValue,
-                        onValueChange = { if (it.text != inputValue.text) cancelVoice(); inputValue = it; onTextChange(it.text) },
-                        enabled = enabled,
-                        modifier = Modifier.weight(1f).pasteImageAttachments(context, enabled && !preparing, onPasteImages)
-                            .focusRequester(focusRequester).heightIn(min = 52.dp)
-                            .padding(horizontal = 16.dp, vertical = 14.dp).testTag("message_input"),
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
-                        cursorBrush = SolidColor(MaterialTheme.colorScheme.onSurface),
-                        minLines = 1,
-                        maxLines = 3,
-                        decorationBox = { inner ->
-                            Box {
-                                if (text.isEmpty()) Text(
-                                    when { isRunning -> "输入下一项任务或实时引导"; discussionMode -> "输入想讨论的方案或问题"; else -> "描述要实现或修改的功能" },
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                inner()
-                            }
-                        },
-                    )
+                        BasicTextField(
+                            value = inputValue,
+                            onValueChange = { if (it.text != inputValue.text) cancelVoice(); inputValue = it; onTextChange(it.text) },
+                            enabled = enabled,
+                            modifier = Modifier.weight(1f).pasteImageAttachments(context, enabled && !preparing, onPasteImages)
+                                .focusRequester(focusRequester).heightIn(min = 52.dp)
+                                .padding(horizontal = 16.dp, vertical = 14.dp).testTag("message_input"),
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.onSurface),
+                            minLines = 3,
+                            maxLines = 3,
+                            decorationBox = { inner ->
+                                Box {
+                                    if (text.isEmpty()) Text(
+                                        when { isRunning -> "输入下一项任务或实时引导"; discussionMode -> "输入想讨论的方案或问题"; else -> "描述要实现或修改的功能" },
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    inner()
+                                }
+                            },
+                        )
+                        Box(Modifier.align(Alignment.Top).padding(end = 8.dp, top = 8.dp)) {
+                            VoiceInputButton(recording, voice.transcribing, voice.error,
+                                capability.available && controller != null && enabled && !preparing,
+                                capability.reason, amplitude, toggleVoice)
+                        }
                     }
                     if (preparing) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp))
                     else HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -333,19 +331,12 @@ fun MessageComposer(
                         }
                         goalControl?.invoke()
                         Spacer(Modifier.weight(1f))
-                        Box {
-                            ComposerToolButton(onSettings, enabled, "运行设置", "composer_settings") {
-                                Text("⚙", style = MaterialTheme.typography.titleMedium)
-                            }
-                            val gap = with(LocalDensity.current) { 8.dp.roundToPx() }
-                            if (enabled && settingsExpanded && settingsContent != null) Popup(
-                                popupPositionProvider = remember(gap) { ComposerSettingsPositionProvider(gap) }, onDismissRequest = onDismissSettings,
-                                properties = PopupProperties(focusable = false, dismissOnBackPress = true, dismissOnClickOutside = true)) {
-                                Surface(Modifier.widthIn(min = 240.dp, max = 280.dp).heightIn(max = 440.dp).testTag("composer_settings_panel"),
-                                    shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), shadowElevation = 10.dp, tonalElevation = 4.dp) { settingsContent() }
-                            }
+                        if (enabled && settingsExpanded && settingsContent != null) Dialog(onDismissRequest = onDismissSettings) {
+                            Surface(Modifier.fillMaxWidth().heightIn(max = 560.dp).testTag("composer_settings_panel"),
+                                shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                tonalElevation = 4.dp) { settingsContent() }
                         }
+
                         if (isRunning && text.isBlank() && images.isEmpty() && files.isEmpty() && !voice.transcribing) OutlinedButton(
                             onClick = onStop, enabled = canStop,
                             modifier = Modifier.width(80.dp).height(44.dp).testTag("stop_turn"), shape = RoundedCornerShape(22.dp),
@@ -385,7 +376,7 @@ private fun ComposerToolButton(
     tag: String,
     content: @Composable RowScope.() -> Unit,
 ) {
-    OutlinedButton(onClick, enabled = enabled,
+    TextButton(onClick, enabled = enabled,
         modifier = Modifier.size(44.dp).focusProperties { canFocus = false }.semantics { contentDescription = description }.testTag(tag),
         shape = RoundedCornerShape(22.dp), contentPadding = PaddingValues(0.dp), content = content)
 }

@@ -50,6 +50,15 @@ fun MessageContent(
                     is ChatMarkdownBlock.Table -> ChatMarkdownTable(block, "message_$partIndex", blockIndex, onCopyText, onQuoteText, openRegularLink, openImage)
                 } } }
             }
+            is ReviewMessagePart.Visualization -> {
+                val path = nativeFilePath(part.path, cwd)
+                OutlinedCard(onClick = { path?.let(onFile) }, enabled = path != null, modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("可视化 · ${part.path.substringAfterLast('/')}", style = MaterialTheme.typography.titleSmall)
+                        Text("打开 HTML 预览", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
             is ReviewMessagePart.Finding -> ReviewFindingCard(part.comment, cwd, onFile, onQuoteText, onCopyText, openRegularLink, openImage)
         } } }
     }

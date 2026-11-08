@@ -9,6 +9,7 @@ import androidx.compose.ui.input.nestedscroll.*
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
@@ -300,7 +301,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         draft = appendQuoteToDraft(draft, text); inputFocusRequest++
     }) else null
     val saveFile: (String) -> Unit = { fileAction = FileAction.SAVE; filePath = it }
-    fun openSettings() { if (inputLocked) return; settingsOpen = !settingsOpen; if (settingsOpen) onLoadModels() }
+    fun openSettings() { if (inputLocked) return; settingsOpen = !settingsOpen; if (settingsOpen) { focus.clearFocus(); keyboard?.hide(); onLoadModels() } }
     val mediaFavorite: (suspend (String, Boolean?) -> dev.rivo.relay.data.MediaFavoriteResult)? = mediaClient?.let { client ->
         { source, desired -> client.favorite(source, desired) }
     }
@@ -333,7 +334,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     Column(Modifier.fillMaxSize().imePadding().testTag("chat_page")) {
         if (pendingTitle != null) Row(Modifier.fillMaxWidth().height(64.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack, modifier = Modifier.testTag("back_sessions")) { Text("‹") }
-            Column { Text("新会话", style = MaterialTheme.typography.titleLarge); Text(pendingTitle, style = MaterialTheme.typography.bodySmall) }
+            Column(Modifier.clickable(onClick = ::openSettings).testTag("conversation_status")) { Text("新会话", style = MaterialTheme.typography.titleLarge); Text(pendingTitle, style = MaterialTheme.typography.bodySmall) }
         } else NativeChatHeader(state, usage, onBack, ::openSettings, onRefresh, { developerOpen = true }, { stopConfirm = true },
             !busy && !blocked && !state.stale && canOperate, pinned, canManage, onPin, onArchive)
         if (pendingTitle == null) NativeWriterStatus(state, nodeName, writerBusy || busy || blocked, onWriterAction, takeoverBlockedReason, onRefresh)
@@ -443,7 +444,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             containerColor = MaterialTheme.colorScheme.secondaryContainer
         ) { Text("↓", style = MaterialTheme.typography.titleLarge) }
         }
-        pendingWorkspace?.invoke()
+        if (pendingTitle == null) pendingWorkspace?.invoke()
         if (snapshot?.requests?.isNotEmpty() == true) Column(Modifier.fillMaxWidth().heightIn(max = 320.dp)
             .verticalScroll(rememberScrollState()).padding(horizontal = 12.dp).testTag("native_requests_panel")) {
             snapshot.requests.forEach { request -> key(request.key) {
@@ -500,6 +501,19 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             onEdit = ::editQueuedTask, onWithdraw = { removingQueue = it },
             onSteer = { task -> onQueue(JSONObject().put("operation", "steer").put("itemId", task.id).put("revision", task.revision).put("expectedTurnId", snapshot.activeTurnId), {}) },
             onReorder = { ids, expected -> onQueue(JSONObject().put("operation", "reorder").put("ids", JSONArray(ids)).put("expectedIds", JSONArray(expected)), {}) })
+        if (pendingTitle != null) {
+            LaunchedEffect(state.id) { onLoadModels() }
+            NewSessionSettings(models, selectedModel, selectedEffort, selectedSandbox, selectedApproval,
+                enabled = !pendingReceiptUnresolved && !pendingFirstTurnSent && !busy && !blocked && !state.stale && pendingReady && draftLoaded,
+                permissionsEditable = pendingPermissionsEditable,
+                onModel = { modelId ->
+                    selectedModel = modelId
+                    val capability = models.firstOrNull { it.string("model").ifBlank { it.string("id") } == modelId }
+                    selectedEffort = reasoningEffortForModel(capability, selectedEffort)
+                }, onEffort = { selectedEffort = it },
+                onSandbox = { selectedSandbox = it ?: "inherit" },
+                onApproval = { selectedApproval = it ?: "inherit" }, workspace = pendingWorkspace)
+        }
         MessageComposer(
             text = draft, onTextChange = { draft = it }, images = images,
             onEditImage = { focus.clearFocus(); keyboard?.hide(); editingImage = it },

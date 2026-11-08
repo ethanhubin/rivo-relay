@@ -77,7 +77,7 @@ class CodexLatestParityUiTest {
         compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize().systemBarsPadding()) { ChatScreen(SessionState(id = "latest", snapshot = known), false, false, models, {},
             onSend = { _, _, _, _ -> }, onStop = {}, onRespond = { _, _ -> }, onRefresh = {}, onLoadModels = {}, onEarlier = {}, readFile = { JSONObject() },
             onSettingsChange = { edits += it }, onSaveDefaults = { defaults = it }, modelCatalogNotice = "当前使用最近可用选项") } } }
-        compose.onNodeWithTag("composer_settings").performClick()
+        compose.onNodeWithTag("conversation_status").performClick()
         compose.onNodeWithTag("composer_model").performClick()
         compose.onNodeWithTag("composer_model_second").performClick()
         compose.runOnIdle { assertEquals("high", edits.last().getString("effort")) }

@@ -56,7 +56,7 @@ class ChatInteractionParityUiTest {
         compose.onNodeWithTag("codex_task_mode").performClick()
         compose.onNodeWithText("讨论模式").assertIsDisplayed()
         compose.onNodeWithText("输入想讨论的方案或问题").assertIsDisplayed()
-        compose.onNodeWithTag("composer_settings").performClick()
+        compose.onNodeWithTag("conversation_status").performClick()
         compose.onNodeWithTag("composer_settings_panel").assertIsDisplayed()
         compose.onNodeWithTag("composer_model").performClick()
         compose.onNodeWithTag("composer_model_model-b").performClick()
@@ -64,7 +64,7 @@ class ChatInteractionParityUiTest {
         compose.onNodeWithTag("composer_effort_medium").performClick()
         evidence("chat-settings-popup")
         // Compose's node gesture injection targets its owner directly. Use WindowManager dispatch
-        // so the separate non-focusable Popup window receives ACTION_OUTSIDE as a real tap would.
+        // so the modal dialog receives the outside tap as a real touch would.
         val titleCenter = compose.onNodeWithTag("conversation_title").fetchSemanticsNode().boundsInWindow.center
         val windowOrigin = IntArray(2)
         compose.runOnIdle { compose.activity.window.decorView.getLocationOnScreen(windowOrigin) }

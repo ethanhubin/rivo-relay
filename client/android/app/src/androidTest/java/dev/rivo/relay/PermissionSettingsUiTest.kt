@@ -28,17 +28,18 @@ class PermissionSettingsUiTest {
                 onConfiguredSend = { _, _, _, _, _, permissions, _ -> submitted = permissions },
                 onSaveDefaults = { defaults = it })
         } } }
-        compose.onNodeWithTag("composer_settings").performClick()
-        compose.onNodeWithTag("composer_sandbox").performScrollTo().performClick()
-        compose.onNodeWithTag("composer_sandbox_workspace-write").performClick()
-        compose.onNodeWithTag("composer_approval").performScrollTo().performClick()
-        compose.onNodeWithTag("composer_approval_on-request").performClick()
+        compose.onNodeWithTag("new_session_settings").assertExists()
+        compose.onNodeWithTag("new_session_sandbox").performScrollTo().performClick()
+        compose.onNodeWithTag("new_session_sandbox_workspace-write").performClick()
+        compose.onNodeWithTag("new_session_approval").performScrollTo().performClick()
+        compose.onNodeWithTag("new_session_approval_on-request").performClick()
+        compose.onNodeWithTag("conversation_status").performClick()
         compose.onNodeWithTag("codex_set_default").performScrollTo().performClick()
         compose.runOnIdle {
             assertEquals("workspace-write", defaults!!.string("sandbox"))
             assertEquals("on-request", defaults!!.string("approvalPolicy"))
         }
-        compose.onNodeWithTag("composer_settings").performClick()
+        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
         compose.onNodeWithTag("message_input").performTextInput("检查项目")
         compose.onNodeWithTag("send_message").performClick()
         compose.runOnIdle {

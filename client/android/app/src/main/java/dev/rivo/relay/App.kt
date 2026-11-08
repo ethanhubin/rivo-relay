@@ -308,7 +308,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     ChatScreen(SessionState(id = draftKey, pendingMessages = pendingMessages, overlayRevision = session.overlayRevision), submission.busy, submission.pending != null || network == null || handoffLoading, catalog.models,
                         onBack = ::back, onSend = { _, _, _, _ -> }, onStop = {}, onRespond = { _, _ -> },
                         onRefresh = {}, onLoadModels = node.catalog::loadModels, onEarlier = {},
-                        readFile = { path -> node.api.call("/v1/files?path=" + encoded(path)) },
+                        readFile = { path -> node.api.readFile(path) },
                         pendingTitle = project.name, pendingReady = pendingReady,
                         pendingGoalApplied = node.conversations.pendingAppliedGoal(localId) != null,
                         pendingFirstTurnSent = node.conversations.pendingGoalContinuation(localId) != null,
@@ -477,7 +477,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             node.submissions.submit("/v1/requests/respond", JSONObject().put("key", request.key).put("response", response), "回答 Codex") { node.session.refresh() }
                         }
                     }, onRefresh = node.session::refresh, onLoadModels = { node.catalog.loadModels() }, onEarlier = node.session::loadEarlier,
-                    readFile = { path -> node.api.call("/v1/files?path=" + encoded(path)) },
+                    readFile = { path -> node.api.readFile(path) },
                     readDirectory = { path -> node.api.call("/v1/directories?path=" + encoded(path)) },
                     uploadFile = { id, name, file -> node.api.uploadFile(id, name, file) },
                     downloadFile = { path, output, progress -> node.api.downloadFile(path, output, progress) },
