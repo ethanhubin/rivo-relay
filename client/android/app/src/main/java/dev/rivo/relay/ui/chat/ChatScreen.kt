@@ -194,8 +194,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             selectedSandbox = saved.sandbox; selectedApproval = saved.approvalPolicy
         }
         if (pendingTitle != null) {
-            selectedSandbox = selectedSandbox ?: defaultSettings?.string("sandbox")?.takeIf(String::isNotBlank) ?: "inherit"
-            selectedApproval = selectedApproval ?: defaultSettings?.string("approvalPolicy")?.takeIf(String::isNotBlank) ?: "inherit"
+            selectedSandbox = selectedSandbox ?: "inherit"
+            selectedApproval = selectedApproval ?: "inherit"
             selectedModel = selectedModel ?: defaultSettings?.string("model")?.takeIf(String::isNotBlank)
             selectedEffort = selectedEffort ?: defaultSettings?.string("effort")?.takeIf(String::isNotBlank)
             selectedServiceTier = selectedServiceTier ?: defaultSettings?.string("serviceTier")?.takeIf(String::isNotBlank)
@@ -499,6 +499,12 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 ChatTimelineSummaryRow {
                     ShimmeringStageText("正在处理…", Modifier.testTag("execution_stage_shimmer"))
                 }
+            }
+            val completionLabel = snapshot?.takeIf { !state.stale && !state.loading && state.readError == null &&
+                !submissionInFlight && state.pendingMessages.isEmpty() }?.let(::sessionCompletionLabel)
+            if (completionLabel != null) item(key = "session_completion") {
+                Text(completionLabel, Modifier.fillMaxWidth().testTag("session_completion"),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             item(key = "relay_latest_anchor") { Spacer(Modifier.fillMaxWidth().height(1.dp).testTag("latest_message_anchor")) }
         }

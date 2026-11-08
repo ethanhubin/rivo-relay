@@ -157,7 +157,16 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             catalog.selectedProject?.id?.let { node.notifications.updatePinned(it, pinnedThreads) }
         }
     }
-    val displayError = error ?: if (route == "chat" && session.id == threadId) session.readError ?: session.historyError else null
+    val currentError = error ?: if (route == "chat" && session.id == threadId) session.readError ?: session.historyError else null
+    val transientError = currentError?.takeIf { it == "记录不存在" }
+    var transientErrorVisible by remember(node, route, threadId, currentError) { mutableStateOf(true) }
+    LaunchedEffect(node, route, threadId, currentError) {
+        if (transientError != null) {
+            kotlinx.coroutines.delay(3000)
+            transientErrorVisible = false
+        }
+    }
+    val displayError = currentError?.takeUnless { it == transientError }
     LaunchedEffect(route, threadId) { handoffPrompt = null }
     LaunchedEffect(node, network) {
         if (network != null) node.reconcilePendingReceipts()
@@ -561,6 +570,18 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     onSaveDetails = node.todos::saveDetails, onUpdateDetails = node.todos::updateDetails,
                     onSynchronize = node.todos::synchronizeNow, onDiscardLocal = node.todos::discardLocalChanges,
                     readDirectory = { path -> node.api.call("/v1/directories?path=" + encoded(path)) }, onOpenAttachment = { todoAttachment = it })
+            }
+        }
+        if (transientError != null && transientErrorVisible) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).testTag("transient_error_notice"),
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.inverseSurface
+            ) {
+                Text("${node.connection.name}：$transientError",
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    color = MaterialTheme.colorScheme.inverseOnSurface,
+                    style = MaterialTheme.typography.bodySmall)
             }
         }
         val cached = network != null && catalogCacheNoticeVisible(route, catalog, true)

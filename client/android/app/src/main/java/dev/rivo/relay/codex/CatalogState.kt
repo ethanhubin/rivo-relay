@@ -248,8 +248,16 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
         mutable.update { it.copy(unreadThreadIds = unread(it.threads)) }
     }
 
-    suspend fun threadsFor(projectId: String): List<ThreadSummary> =
-        api.call(threadsPath(projectId, false)).objects("threads").map(::threadSummary)
+    suspend fun threadsFor(projectId: String): List<ThreadSummary> {
+        val current = mutable.value
+        if (current.selectedProject?.id == projectId && !current.archived && (current.threads.isNotEmpty() || current.threadsFresh))
+            return current.threads
+        val key = "threads:$projectId:false"
+        store?.loadCatalog(key)?.let { return it.objects("threads").map(::threadSummary) }
+        val response = api.call(threadsPath(projectId, false))
+        store?.saveCatalog(key, response)
+        return response.objects("threads").map(::threadSummary)
+    }
 
     fun refreshUsage(force: Boolean = false): Job? {
         usageJob?.takeUnless { it.isCompleted }?.let { return it }

@@ -183,6 +183,10 @@ class TodoStore:
                             (next_id, updates.get("title", row["title"]), updates.get("notes", row["notes"]),
                              json.dumps(next_details, ensure_ascii=False, sort_keys=True), now, now),
                         )
+            # Any actual user edit invalidates old agent authority, even if later
+            # reverted. Internal completion consumes its credential atomically.
+            if any(row[key] != value for key, value in updates.items()):
+                connection.execute("UPDATE todo_completion SET used=-1 WHERE todo_id=?", (todo_id,))
             updates["updated_at"] = now
             columns = ", ".join(f"{name}=?" for name in updates)  # Fixed field names above.
             connection.execute(f"UPDATE todos SET {columns} WHERE id=?", (*updates.values(), todo_id))
@@ -208,5 +212,6 @@ class TodoStore:
 
     def delete(self, todo_id: str) -> None:
         with self.db.transaction() as connection:
+            connection.execute("DELETE FROM todo_completion WHERE todo_id=?", (todo_id,))
             if connection.execute("DELETE FROM todos WHERE id=?", (todo_id,)).rowcount != 1:
                 raise TodoNotFoundError(todo_id)

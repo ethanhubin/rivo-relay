@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import threading
+import shlex
+from .todo_completion import TodoCompletion
 
 from .config import Config
 from .queue import ExecutionQueue
@@ -39,6 +41,7 @@ class RelayApp:
         self.pairing = PairingStore(self.db)
         self.submissions = SubmissionStore(self.db)
         self.todos = TodoStore(self.db)
+        self.todo_completion = TodoCompletion(self.db, self.todos, self.events)
         self.queue = ExecutionQueue(self.db, self.codex, self.events)
         self.download_links = {}
         self.download_lock = threading.Lock()
@@ -139,6 +142,19 @@ class RelayApp:
             subtasks = details.get('subtasks', [])
             if subtasks:
                 text += '\n\n事项：\n' + '\n'.join(('[x] ' if item['completed'] else '[ ] ') + item['title'] for item in subtasks)
+            credential = self.todo_completion.issue({**todo, "thread_id": thread_id})
+            host = f"[{self.config.host}]" if ":" in self.config.host else self.config.host
+            base = (f"http://{host}:{self.config.port}" if not self.config.cert
+                    else self.config.public_url.rstrip("/"))
+            command = ("curl --fail --silent --show-error --connect-timeout 10 --max-time 30 -X POST "
+                       + shlex.quote(base + "/v1/todo-completion")
+                       + " -H " + shlex.quote("Authorization: Bearer " + credential)
+                       + " -H 'Content-Type: application/json' --data '{}'")
+            text += ("\n\n来源：Rivo 待办（ID：" + todo_id + "）。"
+                     "仅当已验证待办目标全部实现且没有剩余事项，或用户明确确认此待办完成后，"
+                     "才执行以下命令回写完成状态。部分完成、失败、无法验证或仍需用户操作时不得标记完成。"
+                     "不要仅因本轮回复结束就标记完成。接口失败时说明原因，不要声称已同步。"
+                     "凭证仅用于此待办，请勿在回复中展示。\n" + command)
             attachments = details.get('attachments', []) + payload.get('uploadedAttachments', [])
             if attachments:
                 inputs = [{'type': 'text', 'text': text, 'text_elements': []}] + [{'type': 'mention', 'name': item['name'], 'path': item['path']} for item in attachments]

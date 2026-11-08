@@ -15,7 +15,7 @@ from typing import Iterator
 import uuid
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 _V1_TABLES = {"pairing_codes", "connections", "submissions", "todos"}
 _V2_TABLES = _V1_TABLES | {"queued_tasks"}
 _TABLES = _V2_TABLES | {"native_observations", "workspaces"}
@@ -131,8 +131,14 @@ class Database:
                 elif current == 3 and tables == _TABLES:
                     connection.execute("ALTER TABLE todos ADD COLUMN extra_json TEXT NOT NULL DEFAULT '{}'")
                     connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-                elif current != SCHEMA_VERSION or tables != _TABLES:
+                elif current == 4 and tables == _TABLES:
+                    connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                elif current != SCHEMA_VERSION or tables != _TABLES | {"todo_completion"}:
                     raise RuntimeError("Not a compatible Rivo Relay database; existing data was not migrated")
+                connection.execute("""CREATE TABLE IF NOT EXISTS todo_completion (
+                    token_hash TEXT PRIMARY KEY, todo_id TEXT NOT NULL,
+                    thread_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
+                    used INTEGER NOT NULL DEFAULT 0)""")
                 # Additive indexes are compatible with the existing schema and
                 # old services; keep durable claims and completed queue records.
                 for statement in (

@@ -35,6 +35,7 @@ import dev.rivo.relay.codex.ControlState
 import dev.rivo.relay.data.*
 import dev.rivo.relay.ui.common.ConnectionStatusDot
 import dev.rivo.relay.ui.common.CodexQuotaProgressBar
+import dev.rivo.relay.ui.theme.NightBackground
 import org.json.JSONObject
 
 @Composable
@@ -165,9 +166,6 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
                 DropdownMenu(menu, { menu = false }, modifier = Modifier.width(248.dp),
                     shape = RoundedCornerShape(28.dp), containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
                     tonalElevation = 0.dp, shadowElevation = 12.dp) {
-                    Text(snapshot?.name ?: "会话", Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
-                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis)
                     ConversationMenuItem(icon = "review", text = { Text("改动与代码审查") }, onClick = { menu = false; onReview() }, enabled = snapshot != null,
                         modifier = Modifier.testTag("open_codex_review"))
                     ConversationMenuItem(icon = "refresh", text = { Text("刷新会话") }, onClick = { menu = false; onRefresh() }, modifier = Modifier.testTag("refresh_conversation"))
@@ -206,17 +204,17 @@ internal fun NativeComposerSettings(settings: JSONObject?, models: List<JSONObje
             val id = model.string("model").ifBlank { model.string("id") }
             id to model.string("displayName").ifBlank { id }
         }
-        val inheritModel = inheritedSettingLabel(settings, "model", "模型", newSession)
-        val inheritEffort = inheritedSettingLabel(settings, "reasoningEffort", "思考强度", newSession)
-        SettingsSelector("模型", selectedModel ?: inheritModel, listOf(null to inheritModel) + modelOptions,
-            enabled, "composer_model", onModel)
-        val effectiveModel = selectedModel ?: settings?.string("model")
-        val effectiveEffort = selectedEffort ?: settings?.string("reasoningEffort")
+        val effectiveModel = selectedModel ?: settings?.string("model")?.takeIf(String::isNotBlank)
+            ?: models.firstOrNull { it.optBoolean("isDefault") }?.let { it.string("model").ifBlank { it.string("id") } }
         val capability = models.firstOrNull { it.string("model").ifBlank { it.string("id") } == effectiveModel }
+        val effectiveEffort = selectedEffort ?: settings?.string("reasoningEffort")?.takeIf(String::isNotBlank)
+            ?: reasoningEffortForModel(capability, null)
+        SettingsSelector("模型", modelOptions.firstOrNull { it.first == effectiveModel }?.second ?: effectiveModel ?: "正在读取默认模型",
+            modelOptions, enabled, "composer_model", onModel)
         val efforts = capability?.objects("supportedReasoningEfforts").orEmpty().map { it.string("reasoningEffort") }.filter(String::isNotBlank)
-        if (efforts.isNotEmpty()) SettingsSelector("思考强度", selectedEffort ?: inheritEffort, listOf(null to inheritEffort) + efforts.map { it to it },
+        if (efforts.isNotEmpty()) SettingsSelector("思考强度", effectiveEffort ?: "正在读取默认强度", efforts.map { it to it },
             enabled, "composer_effort", onEffort)
-        if (efforts.isEmpty()) Text(selectedEffort?.let { "思考强度 · $it" } ?: inheritEffort,
+        if (efforts.isEmpty()) Text(effectiveEffort?.let { "思考强度 · $it" } ?: "正在读取默认强度",
             style = MaterialTheme.typography.labelSmall, modifier = Modifier.testTag("composer_effort_status"))
         if (models.isEmpty()) Text("暂未取得可用模型，可继续沿用当前设置。", style = MaterialTheme.typography.labelSmall)
         catalogNotice?.let { Text(it, Modifier.testTag("model_catalog_notice"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -236,15 +234,11 @@ internal fun NativeComposerSettings(settings: JSONObject?, models: List<JSONObje
         val approvalOptions = approvalSettingOptions
         val currentSandbox = nativeSandboxChoice(settings)
         val effectiveSandbox = if (newSession) sandboxChoice?.takeUnless { it == "inherit" } else currentSandbox
-        val effectiveApproval = if (newSession) approvalChoice?.takeUnless { it == "inherit" } else (settings?.opt("approvalPolicy") as? String)
+        val effectiveApproval = if (newSession) approvalChoice?.takeUnless { it == "inherit" } else permissionPreset(settings)
         val inPlan = (selectedMode ?: settings?.optJSONObject("collaborationMode")?.string("mode")) == "plan"
         if (newSession || savesToSession) {
-            SettingsSelector("文件访问权限", sandboxSettingLabel(settings, newSession, sandboxChoice),
-                (if (newSession) listOf(null to "沿用节点默认") else emptyList()) + sandboxOptions,
-                enabled && permissionsEditable && (newSession || !inPlan), "composer_sandbox", onSandbox)
-            SettingsSelector("审批策略", approvalSettingLabel(settings, newSession, approvalChoice),
-                (if (newSession) listOf(null to "沿用节点默认") else emptyList()) + approvalOptions,
-                enabled && permissionsEditable, "composer_approval", onApproval)
+            SettingsSelector("权限模式", approvalSettingLabel(settings, newSession, approvalChoice),
+                approvalOptions, enabled && permissionsEditable && (newSession || !inPlan), "composer_approval", onApproval)
             if (!permissionsEditable) Text("会话已创建，发送完成后可在会话设置中修改权限。", style = MaterialTheme.typography.labelSmall)
             if (inPlan) Text("讨论模式使用只读权限；退出后恢复所选权限。", style = MaterialTheme.typography.labelSmall)
         }
@@ -279,22 +273,20 @@ internal fun NewSessionSettings(models: List<JSONObject>, model: String?, effort
         workspace?.invoke()
         Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("会话设置", style = MaterialTheme.typography.titleSmall)
-            Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
+            Surface(shape = RoundedCornerShape(24.dp), color = if (MaterialTheme.colorScheme.background == NightBackground)
+                MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.surfaceContainerLow) {
                 Column {
-                    SettingsPanelRow("模型", model ?: "沿用节点默认",
-                        listOf(null to "沿用节点默认") + models.map {
+                    SettingsPanelRow("模型", model ?: capability?.string("displayName")?.takeIf(String::isNotBlank)
+                        ?: capability?.string("model")?.takeIf(String::isNotBlank) ?: "正在读取默认模型",
+                        models.map {
                             it.string("model").ifBlank { it.string("id") } to it.string("displayName").ifBlank { it.string("model").ifBlank { it.string("id") } }
                         }, enabled, "new_session_model", onModel)
                     HorizontalDivider(Modifier.padding(horizontal = 16.dp))
-                    SettingsPanelRow("思考强度", effort ?: "沿用节点默认",
-                        listOf(null to "沿用节点默认") + efforts.map { it to it }, enabled, "new_session_effort", onEffort)
+                    SettingsPanelRow("思考强度", effort ?: reasoningEffortForModel(capability, null) ?: "正在读取默认强度",
+                        efforts.map { it to it }, enabled, "new_session_effort", onEffort)
                     HorizontalDivider(Modifier.padding(horizontal = 16.dp))
-                    SettingsPanelRow("文件访问权限", sandboxSettingLabel(null, true, sandbox),
-                        listOf(null to "沿用节点默认") + sandboxSettingOptions,
-                        enabled && permissionsEditable, "new_session_sandbox", onSandbox)
-                    HorizontalDivider(Modifier.padding(horizontal = 16.dp))
-                    SettingsPanelRow("审批策略", approvalSettingLabel(null, true, approval),
-                        listOf(null to "沿用节点默认") + approvalSettingOptions,
+                    SettingsPanelRow("权限模式", approvalSettingLabel(null, true, approval),
+                        approvalSettingOptions,
                         enabled && permissionsEditable, "new_session_approval", onApproval)
                 }
             }

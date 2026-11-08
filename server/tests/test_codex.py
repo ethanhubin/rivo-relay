@@ -49,6 +49,34 @@ class FakeNative:
 
 
 class NativeSemanticsTests(unittest.TestCase):
+    def test_permission_presets_and_project_inheritance(self):
+        self.assertEqual({}, CodexService._permission_options(None, None))
+        for name, sandbox, policy, reviewer in (
+            ('request', 'workspace-write', 'on-request', 'user'),
+            ('auto', 'workspace-write', 'on-request', 'auto_review'),
+            ('full', 'danger-full-access', 'never', 'user'),
+        ):
+            self.assertEqual({'sandbox': sandbox, 'approvalPolicy': policy, 'approvalsReviewer': reviewer},
+                CodexService._permission_options('read-only', 'preset-' + name))
+
+    def test_permission_preset_reaches_native_update_as_one_change(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        service.update_settings('thread', approval_policy='preset-auto')
+        params = next(params for method, params in native.calls if method == 'thread/settings/update')
+        self.assertEqual('on-request', params['approvalPolicy'])
+        self.assertEqual('auto_review', params['approvalsReviewer'])
+        self.assertEqual({'type': 'workspaceWrite', 'networkAccess': False}, params['sandboxPolicy'])
+
+    def test_project_permissions_are_not_overridden_on_creation(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        with patch.object(service.projects, 'get', return_value={'roots': [{'path': '/project'}]}):
+            service.create_session('project')
+        params = next(params for method, params in native.calls if method == 'thread/start')
+        self.assertEqual('/project', params['cwd'])
+        self.assertFalse({'sandbox', 'approvalPolicy', 'approvalsReviewer', 'config'} & params.keys())
+
     def test_goal_snapshot_reads_native_state_and_clear_without_resume_loop(self):
         native = FakeNative()
         original = native.request

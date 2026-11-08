@@ -643,6 +643,14 @@ class CodexService:
 
     @staticmethod
     def _permission_options(sandbox, approval_policy):
+        presets = {
+            'preset-request': ('workspace-write', 'on-request', 'user'),
+            'preset-auto': ('workspace-write', 'on-request', 'auto_review'),
+            'preset-full': ('danger-full-access', 'never', 'user'),
+        }
+        if approval_policy in presets:
+            mode, policy, reviewer = presets[approval_policy]
+            return {'sandbox': mode, 'approvalPolicy': policy, 'approvalsReviewer': reviewer}
         if sandbox is not None and sandbox not in ('read-only', 'workspace-write', 'danger-full-access'):
             raise CodexError('文件访问权限无效', code='invalid_settings', http_status=400)
         if approval_policy is not None and approval_policy not in ('on-request', 'untrusted', 'never', 'on-failure'):
@@ -1366,6 +1374,7 @@ class CodexService:
 
     def update_settings(self, thread_id, *, model=None, effort=None, service_tier=None, sandbox=None, approval_policy=None):
         permissions = self._permission_options(sandbox, approval_policy)
+        sandbox = permissions.get('sandbox')
         self.start()
         self._assert_workspace(thread_id)
         params = {"threadId": thread_id}
@@ -1381,6 +1390,8 @@ class CodexService:
             self._resume(thread_id)
             if 'approvalPolicy' in permissions:
                 params['approvalPolicy'] = permissions['approvalPolicy']
+            if 'approvalsReviewer' in permissions:
+                params['approvalsReviewer'] = permissions['approvalsReviewer']
             if sandbox is not None:
                 current = self._settings.get(thread_id, {})
                 if (current.get('collaborationMode') or {}).get('mode') == 'plan':
@@ -1388,7 +1399,7 @@ class CodexService:
                 types = {'read-only': 'readOnly', 'workspace-write': 'workspaceWrite', 'danger-full-access': 'dangerFullAccess'}
                 params['sandboxPolicy'] = {'type': types[sandbox]}
                 if sandbox != 'danger-full-access':
-                    params['sandboxPolicy']['networkAccess'] = (current.get('sandbox') or {}).get('networkAccess') is True
+                    params['sandboxPolicy']['networkAccess'] = False if approval_policy and approval_policy.startswith('preset-') else (current.get('sandbox') or {}).get('networkAccess') is True
             response = self.connection.request("thread/settings/update", params)
             if sandbox is not None:
                 self._forget_observation(thread_id, 'modeBaseline')
