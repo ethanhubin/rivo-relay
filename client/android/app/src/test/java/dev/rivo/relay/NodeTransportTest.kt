@@ -107,6 +107,17 @@ class NodeTransportTest {
             .newCall(Request.Builder().url("$base/v1/node").build()).execute() }
         assertTrue(observer.status.value.failed)
         assertEquals("", observer.status.value.endpoint)
+        assertNull(observer.status.value.latencyMs)
+    }
+    @Test fun connectionLatencyIncludesResponseWait() {
+        MockWebServer().use { server ->
+            val base = server.url("/").toString().trimEnd('/')
+            val observer = ConnectionStatusObserver(null, base)
+            server.enqueue(MockResponse().setHeadersDelay(100, java.util.concurrent.TimeUnit.MILLISECONDS))
+            OkHttpClient.Builder().addInterceptor(observer).build()
+                .newCall(Request.Builder().url("$base/v1/node").build()).execute().close()
+            assertTrue(observer.status.value.latencyMs!! >= 100)
+        }
     }
     @Test fun legacyConnectionReportsAuthorizationFailure() {
         MockWebServer().use { server ->

@@ -32,6 +32,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
@@ -41,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import dev.rivo.relay.ui.common.PinIcon
 import dev.rivo.relay.ui.theme.*
 import dev.rivo.relay.data.CodexUsage
+import dev.rivo.relay.R
 import dev.rivo.relay.ui.common.CodexQuotaProgressBar
 import kotlin.math.abs
 import kotlin.math.min
@@ -72,10 +74,15 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
         verticalArrangement = Arrangement.spacedBy(RivoSpacing.Sm, Alignment.CenterVertically)) {
         item {
             Column(Modifier.fillMaxWidth().padding(top = RivoSpacing.Md), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Xs)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Codex 项目", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Box {
-                        TextButton(onClick = { nodeMenuOpen = true }, modifier = Modifier.widthIn(max = 180.dp).testTag("node_settings")) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Box(Modifier.weight(1f)) {
+                        TextButton(onClick = { nodeMenuOpen = true },
+                            contentPadding = PaddingValues(vertical = 12.dp),
+                            modifier = Modifier.heightIn(min = 56.dp).testTag("node_settings")) {
+                            Icon(painterResource(R.drawable.ic_openai), contentDescription = "Codex",
+                                modifier = Modifier.size(24.dp))
+                            Spacer(Modifier.width(10.dp))
                             val statusColor = when (nodeConnected) {
                                 true -> Color(0xFF2E9B59)
                                 false -> MaterialTheme.colorScheme.error
@@ -86,12 +93,12 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                                 false -> "节点服务连接失败"
                                 null -> "正在连接节点服务"
                             }
+                            Text(nodeName, Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+                            Spacer(Modifier.width(8.dp))
                             Canvas(Modifier.size(7.dp).testTag("node_connection_status")
                                 .semantics { contentDescription = statusLabel }) {
                                 drawCircle(statusColor)
                             }
-                            Spacer(Modifier.width(6.dp))
-                            Text(nodeName, Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge)
                             Text(" ▾", style = MaterialTheme.typography.labelLarge)
                         }
                         DropdownMenu(expanded = nodeMenuOpen, onDismissRequest = { nodeMenuOpen = false },
@@ -103,14 +110,10 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                                     onClick = { nodeMenuOpen = false; if (!selected) onSelectNode(saved.base) },
                                     modifier = Modifier.testTag("switch_node_${saved.base}"))
                             }
-                            HorizontalDivider()
-                            DropdownMenuItem(text = { Text("添加节点") }, enabled = canAddNode, onClick = { nodeMenuOpen = false; onAddNode() },
-                                modifier = Modifier.testTag("add_node"))
-                            DropdownMenuItem(text = { Text("节点详情") }, onClick = { nodeMenuOpen = false; onConnection() },
-                                modifier = Modifier.testTag("node_details"))
                         }
                     }
-                    if (onAdd != null) Surface(onClick = onAdd, enabled = canAdd, modifier = Modifier.size(34.dp).testTag("add_project"),
+                    if (onAdd != null) Surface(onClick = onAdd, enabled = canAdd, modifier = Modifier.size(48.dp).testTag("add_project")
+                        .semantics { contentDescription = "新建项目" },
                         shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.primaryContainer) {
                         Box(contentAlignment = Alignment.Center) { Text("+", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onPrimaryContainer) }
                     }

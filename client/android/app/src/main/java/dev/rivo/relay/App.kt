@@ -257,7 +257,9 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     Column(Modifier.fillMaxSize().imePadding()) {
         Box(Modifier.weight(1f)) {
             when (route) {
-                "settings" -> SettingsScreen(connection = node.connection, api = node.api, setConnectionMode = setConnectionMode)
+                "settings" -> SettingsScreen(connection = node.connection, api = node.api, setConnectionMode = setConnectionMode,
+                    savedNodes = savedNodes, onSelectNode = selectNode,
+                    onAddNode = disconnect, canAddNode = !submission.busy && !handoffLoading)
                 "projects" -> ProjectsScreen(catalog.projects, node.connection.name, catalog.loading, { project -> node.catalog.project(project); route = "sessions"; setError(null) },
                     { route = "settings"; setError(null) }, { node.catalog.refreshProjects() }, { if (node.catalog.state.value.projectsFresh) addProject = true },
                     usage = catalog.usage, usageLoading = catalog.usageLoading, usageError = catalog.usageError,

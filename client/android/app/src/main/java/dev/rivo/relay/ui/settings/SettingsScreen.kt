@@ -31,6 +31,10 @@ fun SettingsScreen(
     connection: dev.rivo.relay.connection.NodeConnection? = null,
     api: dev.rivo.relay.data.RelayApi? = null,
     setConnectionMode: (dev.rivo.relay.connection.ConnectionMode) -> Unit = {},
+    savedNodes: List<dev.rivo.relay.connection.SavedNode> = emptyList(),
+    onSelectNode: (String) -> Unit = {},
+    onAddNode: () -> Unit = {},
+    canAddNode: Boolean = true,
     checkUpdate: (suspend () -> AppRelease?)? = null,
     downloadAndInstall: (suspend (AppRelease) -> Unit)? = null,
     updates: UpdateViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
@@ -77,7 +81,7 @@ fun SettingsScreen(
             }
         }
 
-        connection?.let { ConnectionSettings(it, api, setConnectionMode) }
+        connection?.let { ConnectionSettings(it, api, setConnectionMode, savedNodes, onSelectNode, onAddNode, canAddNode) }
         PinnedCompletionSettings()
 
         Card(Modifier.fillMaxWidth()) {
