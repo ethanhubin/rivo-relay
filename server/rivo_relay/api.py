@@ -258,6 +258,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_media(self, value):
         stream, mime, etag = value
+        if self.headers.get('If-Match') not in (None, etag):
+            stream.close()
+            raise ApiError(412, 'media_changed', '图片已变化，请重新加载')
         with stream:
             size = os.fstat(stream.fileno()).st_size
             effective_range = self.headers.get('Range') if self.headers.get('If-Range') in (None, etag) else None
@@ -390,6 +393,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {"todo": {"id": todo["id"], "completed": todo["completed"]}})
                 return
             token, connection = self.authenticate()
+            if self.command == 'GET' and path == ['v1', 'media', 'versions']:
+                source = required({'source': query.get('source', [None])[0]}, 'source', 8192)
+                parts = source.strip('/').split('/')
+                stored = len(parts) == 5 and parts[:3] in (['v1', 'media', 'library'], ['v1', 'media', 'generated']) and parts[4] in ('content', 'thumbnail')
+                versions = {}
+                for thumbnail, name in ((False, 'original'), (True, 'thumbnail')):
+                    stream, _, etag = (self.app.media.open_stored(parts[3], thumbnail=thumbnail) if stored
+                        else self.app.media.open_source(source, thumbnail=thumbnail))
+                    stream.close()
+                    versions[name] = etag
+                self.send_json(200, versions)
+                return
             if self.command == 'GET' and path in (['v1', 'media', 'content'], ['v1', 'media', 'thumbnail']):
                 source = required({'source': query.get('source', [None])[0]}, 'source', 8192)
                 self.send_media(self.app.media.open_source(source, thumbnail=path[-1] == 'thumbnail'))

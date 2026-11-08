@@ -80,6 +80,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val mediaClient = remember(mediaApi, state.id) { mediaApi?.let { dev.rivo.relay.data.CodexMediaClient(it, state.id.orEmpty(), mediaContext) } }
     DisposableEffect(mediaClient) { onDispose { mediaClient?.close() } }
     val snapshot = state.snapshot
+    androidx.compose.runtime.SideEffect { mediaClient?.updateRevision(state.mediaValidationEpoch) }
     var mediaAssets by remember(mediaClient) { mutableStateOf(emptyList<JSONObject>()) }
     val generated = remember(snapshot?.messages) { generatedMediaRequests(snapshot?.messages.orEmpty()) }
     val mediaIndex = remember(mediaAssets) { nativeMediaIndex(mediaAssets) }
@@ -278,8 +279,15 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     }
     val list = key(state.id) { rememberLazyListState() }
     var followLatest by remember(state.id) { mutableStateOf(true) }
-    val timeline = remember(snapshot?.messages, snapshot?.turnSettings, state.pendingMessages, snapshot?.activeTurnId, state.stale, pendingTitle) {
-        nativeTimelineRows(projectedSessionMessages(snapshot, if (pendingTitle == null) state.pendingMessages else emptyList()), snapshot?.activeTurnId?.takeUnless { state.stale }, snapshot?.turnSettings.orEmpty())
+    val timelineCache = remember(state.id) { NativeTimelineCache() }
+    val timeline = remember(state.id, snapshot?.messages, snapshot?.turnSettings, state.pendingMessages, snapshot?.activeTurnId, state.stale, pendingTitle) {
+        timelineCache.project(projectedSessionMessages(snapshot, if (pendingTitle == null) state.pendingMessages else emptyList()), snapshot?.activeTurnId?.takeUnless { state.stale }, snapshot?.turnSettings.orEmpty())
+    }
+    // Preserve lastOrNull semantics, including review replies and empty turn IDs.
+    val lastReplyIds = remember(snapshot?.messages) {
+        snapshot?.messages.orEmpty()
+            .filter { it.type in setOf("agentMessage", "agent_message", "exitedReviewMode") }
+            .associate { it.turnId to it.id }
     }
     var historyAnchor by remember(state.id) { mutableStateOf<HistoryScrollAnchor?>(null) }
     // The paging button can be the first visible item. Anchor a timeline row
@@ -383,7 +391,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             if (!state.loading && snapshot != null && timeline.isEmpty()) item {
                 Text("继续这个项目中的工作", Modifier.padding(vertical = 24.dp), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            itemsIndexed(timeline, key = { _, row -> row.key }) { index, row ->
+            itemsIndexed(timeline, key = { _, row -> row.key }, contentType = { _, row ->
+                when (row) { is NativeTimelineRow.Message -> row.message.type; is NativeTimelineRow.Activities -> "activity_group"; is NativeTimelineRow.Notice -> "turn_notice" }
+            }) { index, row ->
                 val modelChange = modelChangeRows[row.key]
                 val consecutiveActivities = row is NativeTimelineRow.Activities &&
                     timeline.getOrNull(index - 1) is NativeTimelineRow.Activities && modelChange == null
@@ -438,19 +448,17 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                                     style = MaterialTheme.typography.labelSmall, modifier = Modifier.testTag("message_delivery_$delivery"))
                             }
                     } else if (assistant) {
-                        val isLastReply = snapshot?.messages?.lastOrNull {
-                            it.turnId == message.turnId && it.type in setOf("agentMessage", "agent_message", "exitedReviewMode")
-                        }?.id == message.id
+                        val isLastReply = lastReplyIds[message.turnId] == message.id
                         val timing = nativeMessageTiming(message, snapshot?.turnSettings?.firstOrNull { it.turnId == message.turnId }, isLastReply)
                         timing.elapsedSeconds?.let { seconds ->
                             Text("已思考 ${formatNativeThinkingDuration(seconds)}", style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("message_thinking_time"))
                         }
-                        MessageContent(message.text, cwd, onQuoteText = quoteText, onSaveFile = saveFile, inlineImage = { source ->
+                        MessageContent(message.text, cwd, cacheBlocks = !(snapshot?.isOngoing == true && message.turnId == snapshot.activeTurnId), onQuoteText = quoteText, onSaveFile = saveFile, inlineImage = { source ->
                                 val target = if (isHttpWebLink(source)) source else nativeFilePath(source, cwd)
                                 target?.let { NativeImage(it, readFile, downloadFile = downloadFile) }
                             }, onFile = ::openFile)
-                        if (snapshot?.messages?.lastOrNull { it.turnId == message.turnId && it.type in setOf("agentMessage", "agent_message", "exitedReviewMode") }?.id == message.id) {
+                        if (isLastReply && snapshot != null) {
                             ChangeSummary(snapshot.changes.firstOrNull { it.string("turnId") == message.turnId }) { developerOpen = true }
                             ReviewDiagnostic(snapshot.reviewDiagnostics.lastOrNull { it.string("turnId") == message.turnId })
                         }

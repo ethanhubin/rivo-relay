@@ -3,22 +3,39 @@ package dev.rivo.relay.data
 import android.content.Context
 import coil.ImageLoader
 import coil.request.ImageRequest
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import coil.request.CachePolicy
 import java.io.File
 import java.security.MessageDigest
 import org.json.JSONObject
 
 /** Media requests always terminate at the selected authenticated node, including public origins. */
 class CodexMediaClient(val api: RelayApi, val threadId: String, context: Context) {
-    val imageLoader = ImageLoader.Builder(context.applicationContext).okHttpClient(api.mediaTransport())
-        .memoryCache { coil.memory.MemoryCache.Builder(context.applicationContext).maxSizeBytes(32 * 1024 * 1024).build() }.build()
+    val imageLoader = api.images(context)
+    var revision by androidx.compose.runtime.mutableStateOf(0L)
+        private set
+    fun updateRevision(value: Long) { revision = value }
+    private val versions = androidx.compose.runtime.mutableStateMapOf<String, JSONObject>()
+    private val checks = MediaCheckOrder()
+    suspend fun verify(source: String) {
+        if (source.startsWith("data:") || source.startsWith("content:") || source.startsWith("file:")) return
+        val check = checks.begin(source)
+        val result = api.call("/v1/media/versions?source=${encoded(source)}")
+        if (checks.isLatest(source, check)) versions[source] = result
+    }
+    fun hasVersion(source: String): Boolean = versions.containsKey(source)
     fun imageRequest(context: Context, source: String, thumbnail: Boolean): ImageRequest.Builder {
-        api.sentImages.get(source)?.let { return ImageRequest.Builder(context).data(it) }
         if (source.startsWith("data:") || source.startsWith("content:") || source.startsWith("file:"))
             return ImageRequest.Builder(context).data(source)
         val req = api.mediaRequest(source, thumbnail)
         val key = MessageDigest.getInstance("SHA-256").digest((req.url.toString() + "\u0000" + req.header("Authorization")).toByteArray())
             .joinToString("") { "%02x".format(it) }
-        return ImageRequest.Builder(context).data(req.url.toString()).headers(req.headers).memoryCacheKey(key).diskCacheKey(key)
+        val version = versions[source]?.string(if (thumbnail) "thumbnail" else "original")
+        return ImageRequest.Builder(context).data(req.url.toString()).headers(req.headers)
+            .apply { if (!version.isNullOrBlank()) addHeader("If-Match", version) }
+            .memoryCacheKey(key + ":" + version.orEmpty()).diskCacheKey(key + ":" + version.orEmpty())
+            .memoryCachePolicy(if (version.isNullOrBlank()) CachePolicy.DISABLED else CachePolicy.ENABLED)
     }
     suspend fun lookup(source: String): JSONObject? {
         val id = Regex("^/v1/media/(?:library|generated)/([a-f0-9]{64})/(?:content|thumbnail)$").matchEntire(source)?.groupValues?.get(1)
@@ -37,7 +54,7 @@ class CodexMediaClient(val api: RelayApi, val threadId: String, context: Context
         return MediaGenerationInfo(info.string("prompt").ifBlank { info.string("revisedPrompt").ifBlank { info.string("revised_prompt") } }, info.string("negativePrompt"), "Codex", parameters)
     }
     suspend fun cached(context: Context, source: String, progress: (Long, Long) -> Unit = { _, _ -> }): File = api.cachedMedia(context.cacheDir, source, progress)
-    fun close() = imageLoader.shutdown()
+    fun close() = Unit // Loader belongs to the node API, not a chat composition.
 }
 data class MediaGenerationInfo(val prompt: String, val negativePrompt: String = "", val source: String, val parameters: Map<String, String> = emptyMap())
 data class MediaPromptResult(val prompt: String, val source: String = "reverse")

@@ -215,6 +215,11 @@ class RelayApi(private val base: String, private val token: String = "", private
             request("/v1/files/download?path=" + encoded(path)), progress)
     }
 
+    private var sharedImages: coil.ImageLoader? = null
+    @Synchronized internal fun images(context: android.content.Context): coil.ImageLoader = sharedImages ?: coil.ImageLoader.Builder(context.applicationContext)
+        .callFactory { okhttp3.Call.Factory { request -> mediaReader.newCall(request) } }
+        .memoryCache { coil.memory.MemoryCache.Builder(context.applicationContext).maxSizeBytes(32 * 1024 * 1024).build() }
+        .build().also { sharedImages = it }
     internal fun mediaTransport(): OkHttpClient = mediaReader
     internal fun mediaRequest(source: String, thumbnail: Boolean = false): Request {
         val path = if (source.startsWith("/v1/media/")) {

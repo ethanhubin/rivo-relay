@@ -114,10 +114,18 @@ internal fun NativeImage(source: String, readFile: suspend (String) -> JSONObjec
     val mediaSources = mediaAssetsBySource()
     val forwardSource = if (source.startsWith("/v1/media/") || source.startsWith("data:")) mediaSources[source]?.string("source")?.takeIf(String::isNotBlank) else source
     val previewEdge = (maxOf(windowSize.width, windowSize.height) / 2).coerceIn(1, 1536)
-    LaunchedEffect(source, previewEdge, mediaClient, attempt) {
+    LaunchedEffect(source, previewEdge, mediaClient, mediaClient?.revision, attempt) {
         error = null
         try {
             bitmap = if (mediaClient != null && !source.startsWith("data:")) {
+                if (bitmap == null && mediaClient.hasVersion(source)) {
+                    val cached = mediaClient.imageLoader.execute(mediaClient.imageRequest(context, source, true)
+                        .size(previewEdge).allowHardware(false)
+                        .diskCachePolicy(coil.request.CachePolicy.DISABLED)
+                        .networkCachePolicy(coil.request.CachePolicy.DISABLED).build())
+                    bitmap = (cached.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap?.asImageBitmap()
+                }
+                mediaClient.verify(source)
                 val request = mediaClient.imageRequest(context, source, true).size(previewEdge).allowHardware(false).build()
                 val result = mediaClient.imageLoader.execute(request)
                 (result.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap?.asImageBitmap()
@@ -126,7 +134,7 @@ internal fun NativeImage(source: String, readFile: suspend (String) -> JSONObjec
             else previewBitmap(imageBytes(source, readFile))
             if (bitmap == null) error = "此图片格式暂不支持预览"
         }
-        catch (e: Exception) { if (e is CancellationException) throw e; error = e.message ?: "图片暂时无法读取" }
+        catch (e: Exception) { if (e is CancellationException) throw e; bitmap = null; error = e.message ?: "图片暂时无法读取" }
     }
     when {
         bitmap != null -> Box(if (compact) modifier.size(76.dp, 88.dp)

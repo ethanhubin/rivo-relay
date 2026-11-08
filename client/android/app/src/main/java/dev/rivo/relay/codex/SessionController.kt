@@ -11,7 +11,7 @@ data class SessionState(val id: String? = null, val snapshot: SessionSnapshot? =
     val historyCursor: String? = null, val loadingEarlier: Boolean = false, val earlierLoaded: Boolean = false,
     val readError: String? = null, val historyError: String? = null,
     val pendingMessages: List<PendingNativeMessage> = emptyList(), val overlayRevision: Long = 0L,
-    val controlNotice: String? = null, val lastConfirmedControl: SessionControl? = null)
+    val controlNotice: String? = null, val lastConfirmedControl: SessionControl? = null, val mediaValidationEpoch: Long = 0)
 
 /** One active thread owns reads and subscription; switch cancels both and rejects late snapshots. */
 class SessionController(private val api: RelayApi, private val scope: CoroutineScope,
@@ -91,6 +91,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
             var cachedHistoryEpoch = historyEpoch
             var eventCursor: String? = null
             val pendingDeltas = mutableListOf<org.json.JSONObject>()
+            val deltaSignals = Channel<Unit>(Channel.CONFLATED)
             val deltaLock = Mutex()
             var indexedMessages: List<NativeMessage>? = null
             var messageIndex: NativeMessageIndex? = null
@@ -117,7 +118,14 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                 mutable.update { it.copy(snapshot = updated) }
             }
             // Match QiGuang's 150 ms live presentation cadence; terminal events flush immediately.
-            launch { while (isActive) { delay(150); flushDeltas() } }
+            launch {
+                for (signal in deltaSignals) {
+                    delay(150)
+                    // Drain before projection; arrivals during projection retain their next wakeup.
+                    deltaSignals.tryReceive()
+                    flushDeltas()
+                }
+            }
             // Subscribe before first snapshot. Buffered notifications coalesce into another authoritative read.
             launch {
                 while (isActive) {
@@ -141,6 +149,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                             if (event.type == "native" && params?.has("relayOffset") == true &&
                                 supportsLiveDelta(method)) {
                                 pendingDeltas += event.payload
+                                deltaSignals.trySend(Unit)
                                 if (pendingDeltas.size >= 128) flushDeltas()
                                 return@collect
                             }
@@ -241,7 +250,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                         cachedHistoryEpoch = historyEpoch
                         reconcilePending(id, snapshot)
                         mutable.update { current ->
-                            current.copy(snapshot = projected, loading = false, stale = false, readError = null, controlNotice = null,
+                            current.copy(snapshot = projected, mediaValidationEpoch = current.mediaValidationEpoch + 1, loading = false, stale = false, readError = null, controlNotice = null,
                                 earlierLoaded = if (revisionChanged) false else current.earlierLoaded,
                                 loadingEarlier = if (revisionChanged) false else current.loadingEarlier,
                                 historyError = if (revisionChanged) null else current.historyError,

@@ -993,12 +993,11 @@ private fun FullScreenGalleryPage(
     ViewerContentScale(screenWidthPx, screenHeightPx)
   }
   val originalImageRequest =
-    remember(context, item.original, mediaClient, screenWidthPx, screenHeightPx) {
+    run {
       (mediaClient?.imageRequest(context, item.original, false) ?: ImageRequest.Builder(context).data(item.original))
         .size((screenWidthPx * 2).toInt().coerceIn(1, 4096), (screenHeightPx * 2).toInt().coerceIn(1, 4096))
         .scale(coil.size.Scale.FIT)
         .precision(coil.size.Precision.INEXACT)
-        .memoryCachePolicy(CachePolicy.ENABLED)
         .diskCachePolicy(CachePolicy.ENABLED)
         .networkCachePolicy(CachePolicy.ENABLED)
         .crossfade(false)
@@ -1009,6 +1008,11 @@ private fun FullScreenGalleryPage(
     mutableStateOf(item.original == item.preview && mediaClient == null)
   }
   var originalFailed by remember(item.original, mediaClient) { mutableStateOf(false) }
+  LaunchedEffect(item.original, mediaClient, mediaClient?.revision, retryVersion) {
+    try { mediaClient?.verify(item.original) }
+    catch (e: kotlinx.coroutines.CancellationException) { throw e }
+    catch (_: Exception) { originalFailed = true }
+  }
   val reportImageSize: (AsyncImagePainter.State.Success) -> Unit = { state ->
     val drawable = state.result.drawable
     if (drawable.intrinsicWidth > 0 && drawable.intrinsicHeight > 0) {

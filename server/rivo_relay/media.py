@@ -1,6 +1,6 @@
 """Codex media transport and durable, identity-bound generated-image provenance.
 
-Adapted from QiGuang's media proxy, max-1536 WebP profile and image ingest.
+Adapted from QiGuang's media proxy, bounded WebP profile and image ingest.
 Native paths are always read by the connected daemon. Relay-owned copies are
 never passed to that daemon as though they were native paths.
 """
@@ -32,7 +32,7 @@ from .operation_gates import ThreadGates
 IMAGE_LIMIT = 64 * 1024 * 1024
 PROXY_IMAGE_LIMIT = 40 * 1024 * 1024
 MEDIA_LIMIT = 1024 * 1024 * 1024
-THUMBNAIL_PROFILE = 'max-1536-webp-q82-v2'
+THUMBNAIL_PROFILE = 'max-512-webp-q78-v3'
 _FORMATS = {'PNG': ('image/png', '.png'), 'JPEG': ('image/jpeg', '.jpg'),
             'WEBP': ('image/webp', '.webp'), 'GIF': ('image/gif', '.gif'), 'AVIF': ('image/avif', '.avif')}
 
@@ -357,9 +357,9 @@ class MediaService:
                         with Image.open(original) as opened:
                             if opened.width * opened.height > 80_000_000: raise ValueError('pixel limit')
                             image = ImageOps.exif_transpose(opened)
-                            image.thumbnail((1536, 1536), Image.Resampling.LANCZOS)
+                            image.thumbnail((512, 512), Image.Resampling.LANCZOS)
                             if image.mode not in ('RGB', 'RGBA'): image = image.convert('RGBA' if 'transparency' in image.info else 'RGB')
-                            image.save(temporary, format='WEBP', quality=82, method=4)
+                            image.save(temporary, format='WEBP', quality=78, method=4)
                         with temporary.open('rb') as stream: os.fsync(stream.fileno())
                         with self._cache_lock: os.replace(temporary, target)
                 except (OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning) as error:

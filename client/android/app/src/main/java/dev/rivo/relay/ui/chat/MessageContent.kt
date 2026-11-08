@@ -18,6 +18,7 @@ fun MessageContent(
     onQuoteText: ((String) -> Unit)? = null,
     onSaveFile: ((String) -> Unit)? = null,
     inlineImage: (@Composable (String) -> Unit)? = null,
+    cacheBlocks: Boolean = true,
     onFile: (String) -> Unit = {},
 ) {
     val clipboard = LocalClipboardManager.current
@@ -38,7 +39,7 @@ fun MessageContent(
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         parts.forEachIndexed { partIndex, part -> key(partIndex) { when (part) {
             is ReviewMessagePart.Text -> {
-                val blocks = remember(part.value) { parseChatMarkdownBlocks(part.value) }
+                val blocks = remember(part.value, cacheBlocks) { parseChatMarkdownBlocks(part.value, retain = cacheBlocks) }
                 blocks.forEachIndexed { blockIndex, block -> key(blockIndex) { when (block) {
                     is ChatMarkdownBlock.Text -> {
                         val parsed = rememberParsedChatMarkdown(block.markdown)

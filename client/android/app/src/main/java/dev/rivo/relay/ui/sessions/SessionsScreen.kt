@@ -73,14 +73,21 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
         listOfNotNull(draft.pendingGoal?.let { "目标：" + JSONObject(it).string("objective") }, draft.images.takeIf { it.isNotEmpty() }?.let { "${it.size} 张图片" },
             draft.files.takeIf { it.isNotEmpty() }?.let { "${it.size} 个附件" }).joinToString(" · ").ifBlank { "继续编辑草稿" }
     } }
-    val shownPending = pendingConversations.filter { !archived && (search.isBlank() ||
-        pendingPreview(it).contains(search.trim(), true) || "待发送".contains(search.trim(), true)) }
-    val shown = threads.sortedWith(compareByDescending<ThreadSummary> { it.pinned }
-        .thenByDescending { threadIsActive(it) }.thenByDescending { if (threadIsActive(it)) 0 else it.updatedAt })
-        .filter { search.isBlank() || it.name.contains(search.trim(), true) || it.preview.contains(search.trim(), true) }
-    val visibleIds = shown.map { it.id }.toSet()
+    val query = search.trim()
+    val shownPending = remember(pendingConversations, archived, query) {
+        pendingConversations.filter { !archived && (query.isBlank() ||
+            pendingPreview(it).contains(query, true) || "待发送".contains(query, true)) }
+    }
+    val ordered = remember(threads) {
+        threads.sortedWith(compareByDescending<ThreadSummary> { it.pinned }
+            .thenByDescending { threadIsActive(it) }.thenByDescending { if (threadIsActive(it)) 0 else it.updatedAt })
+    }
+    val shown = remember(ordered, query) {
+        if (query.isBlank()) ordered else ordered.filter { it.name.contains(query, true) || it.preview.contains(query, true) }
+    }
+    val visibleIds = remember(shown) { shown.map { it.id }.toSet() }
     LaunchedEffect(visibleIds) { selectedIds = selectedIds.intersect(visibleIds) }
-    val selected = shown.filter { it.id in selectedIds }
+    val selected = remember(shown, selectedIds) { shown.filter { it.id in selectedIds } }
     BackHandler(selectedIds.isNotEmpty()) { selectedIds = emptySet() }
     fun toggle(id: String) { selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id }
     Box(Modifier.fillMaxSize().testTag("sessions_page")) {
@@ -132,7 +139,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                 else if (shown.isEmpty() && shownPending.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                     Text(when { search.isNotBlank() -> "没有匹配的会话"; archived -> "没有已归档会话"; !showCreate -> "暂无会话"; else -> "还没有 Codex 会话，点击右下角新建" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(bottom = 100.dp), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Xs)) {
-                    items(shownPending, key = { "pending:${it.id}" }) { pending ->
+                    items(shownPending, key = { "pending:${it.id}" }, contentType = { "pending" }) { pending ->
                         Surface(onClick = { onResumePending(pending.id) }, shape = MaterialTheme.shapes.large,
                             color = MaterialTheme.colorScheme.listItemBackground,
                             modifier = Modifier.fillMaxWidth().testTag("pending_conversation_${pending.id}")) {
@@ -147,7 +154,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                             }
                         }
                     }
-                    items(shown, key = { it.id }) { thread ->
+                    items(shown, key = { it.id }, contentType = { "session" }) { thread ->
                         val isSelected = thread.id in selectedIds
                         Surface(Modifier.fillMaxWidth().testTag("thread_${thread.id}").combinedClickable(
                             onClick = { if (selectedIds.isNotEmpty()) toggle(thread.id) else if (!archived) onThread(thread) },

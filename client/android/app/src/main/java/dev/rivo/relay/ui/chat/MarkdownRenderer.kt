@@ -58,7 +58,29 @@ internal sealed interface ChatMarkdownBlock {
 internal enum class MarkdownTableAlignment { START, CENTER, END }
 
 /** Splits chat Markdown into independently rendered blocks while leaving non-table messages intact. */
-internal fun parseChatMarkdownBlocks(markdown: String): List<ChatMarkdownBlock> {
+internal class MarkdownBlockCache(private val maxChars: Int = 512 * 1024, private val maxEntries: Int = 128) {
+  private val entries = LinkedHashMap<String, List<ChatMarkdownBlock>>(16, .75f, true)
+  private var chars = 0
+  @Synchronized fun get(markdown: String, retain: Boolean = true): List<ChatMarkdownBlock> {
+    if (!retain) return splitChatMarkdownBlocks(markdown)
+    entries[markdown]?.let { return it }
+    val result = splitChatMarkdownBlocks(markdown)
+    if (markdown.length > maxChars) return result
+    entries[markdown] = result
+    chars += markdown.length
+    while (chars > maxChars || entries.size > maxEntries) {
+      val iterator = entries.entries.iterator()
+      chars -= iterator.next().key.length
+      iterator.remove()
+    }
+    return result
+  }
+}
+
+private val markdownBlocks = MarkdownBlockCache()
+internal fun parseChatMarkdownBlocks(markdown: String, retain: Boolean = true): List<ChatMarkdownBlock> = markdownBlocks.get(markdown, retain)
+
+internal fun splitChatMarkdownBlocks(markdown: String): List<ChatMarkdownBlock> {
   val normalized = markdown.replace("\r\n", "\n").replace('\r', '\n')
   val lines = normalized.split('\n')
   val blocks = mutableListOf<ChatMarkdownBlock>()
