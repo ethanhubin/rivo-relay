@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -39,8 +40,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.rivo.relay.ui.common.ConnectionStatusDot
 import dev.rivo.relay.ui.common.PinIcon
 import dev.rivo.relay.ui.theme.*
+import dev.rivo.relay.data.quotaResetCountdown
 import dev.rivo.relay.data.CodexUsage
 import dev.rivo.relay.R
 import dev.rivo.relay.ui.common.CodexQuotaProgressBar
@@ -80,25 +83,12 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                         TextButton(onClick = { nodeMenuOpen = true },
                             contentPadding = PaddingValues(vertical = 12.dp),
                             modifier = Modifier.heightIn(min = 56.dp).testTag("node_settings")) {
+                            ConnectionStatusDot(nodeConnected, Modifier.testTag("node_connection_status"))
+                            Spacer(Modifier.width(8.dp))
                             Icon(painterResource(R.drawable.ic_openai), contentDescription = "Codex",
                                 modifier = Modifier.size(24.dp))
                             Spacer(Modifier.width(10.dp))
-                            val statusColor = when (nodeConnected) {
-                                true -> Color(0xFF2E9B59)
-                                false -> MaterialTheme.colorScheme.error
-                                null -> Color(0xFFD49A24)
-                            }
-                            val statusLabel = when (nodeConnected) {
-                                true -> "节点服务已连接"
-                                false -> "节点服务连接失败"
-                                null -> "正在连接节点服务"
-                            }
                             Text(nodeName, Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
-                            Spacer(Modifier.width(8.dp))
-                            Canvas(Modifier.size(7.dp).testTag("node_connection_status")
-                                .semantics { contentDescription = statusLabel }) {
-                                drawCircle(statusColor)
-                            }
                             Text(" ▾", style = MaterialTheme.typography.labelLarge)
                         }
                         DropdownMenu(expanded = nodeMenuOpen, onDismissRequest = { nodeMenuOpen = false },
@@ -119,7 +109,15 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                     }
                 }
                 usage?.weeklyWindow?.let { window ->
-                    Text("周额度 ${window.remainingPercent}%", Modifier.testTag("project_weekly_usage"), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    var nowSeconds by remember(window.resetsAt) { mutableStateOf(System.currentTimeMillis() / 1000) }
+                    LaunchedEffect(window.resetsAt) {
+                        if (window.resetsAt != null) while (true) {
+                            nowSeconds = System.currentTimeMillis() / 1000
+                            kotlinx.coroutines.delay(60_000)
+                        }
+                    }
+                    val reset = quotaResetCountdown(window.resetsAt, nowSeconds)
+                    Text("周额度 ${window.remainingPercent}%" + (reset?.let { " · $it" } ?: ""), Modifier.testTag("project_weekly_usage"), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     CodexQuotaProgressBar(window, Modifier.fillMaxWidth().height(2.dp).testTag("project_usage_bar"))
                 }
             }

@@ -15,6 +15,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.connection.*
 import dev.rivo.relay.data.RelayApi
+import dev.rivo.relay.ui.common.ConnectionStatusDot
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
@@ -74,6 +75,7 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
             if (routes?.relay.isNullOrBlank()) Text("此节点尚未配置 VPS，请扫描该桌面节点新生成的双通道二维码。", style = MaterialTheme.typography.bodySmall)
             HorizontalDivider()
             val statusLabel = when {
+                checking -> "正在检测连接…"
                 status.checkedAt == 0L -> "尚未检测"
                 status.failed -> "连接失败，当前路径未确认"
                 status.httpCode == 401 -> "授权已失效，请重新配对"
@@ -82,12 +84,21 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
             }
             val routeLabel = if (status.endpoint.isBlank()) null
                 else if (routes != null && status.endpoint == routes.relay) "VPS 中转" else "Tailscale 直连"
-            Text(
-                listOfNotNull(statusLabel, routeLabel, status.latencyMs?.let { "Ping ${it} ms" }).joinToString(" · "),
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ConnectionStatusDot(when {
+                    checking -> null
+                    api == null -> false
+                    status.checkedAt == 0L -> null
+                    else -> !status.failed && status.httpCode in 200..299
+                }, Modifier.testTag("settings_connection_status"))
+                Text(
+                    listOfNotNull(statusLabel, routeLabel, status.latencyMs?.let { "Ping ${it} ms" }).joinToString(" · "),
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             OutlinedButton(enabled = api != null && !checking, onClick = {
                 scope.launch {
                     checking = true

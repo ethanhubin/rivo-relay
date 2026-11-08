@@ -50,3 +50,16 @@ fun usageWindowLabel(minutes: Long?): String = when {
     minutes % 60 == 0L -> "${minutes / 60} 小时额度"
     else -> "$minutes 分钟额度"
 }
+
+/** Reset timestamps are Unix seconds; expired data must not promise a fresh quota. */
+fun quotaResetCountdown(resetsAt: Long?, nowSeconds: Long): String? {
+    val remaining = (resetsAt ?: return null) - nowSeconds
+    if (remaining <= 0) return "等待重置更新"
+    val days = remaining / 86400
+    val hours = remaining % 86400 / 3600
+    return when {
+        days > 0 -> "$days 天 $hours 小时后重置"
+        hours > 0 -> "$hours 小时后重置"
+        else -> "不足 1 小时后重置"
+    }
+}

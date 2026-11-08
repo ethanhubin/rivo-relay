@@ -8,6 +8,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import dev.rivo.relay.codex.SessionState
 import dev.rivo.relay.codex.control
 import dev.rivo.relay.data.sessionSnapshot
+import dev.rivo.relay.ui.chat.NativeChatHeader
 import dev.rivo.relay.ui.chat.NativeWriterStatus
 import dev.rivo.relay.ui.theme.RivoTheme
 import org.json.JSONObject
@@ -17,6 +18,35 @@ import org.junit.Test
 
 class TakeoverUiTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
+    @Test fun releaseMenuTracksAvailabilityAndDispatchesExistingAction() {
+        val ready = SessionState(id = "t", snapshot = sessionSnapshot(JSONObject()
+            .put("thread", JSONObject().put("id", "t")).put("writerOwner", "relay")))
+        val state = mutableStateOf(ready)
+        val busy = mutableStateOf(false)
+        val blocked = mutableStateOf<String?>(null)
+        var action = ""
+        compose.setContent { RivoTheme { Surface {
+            NativeChatHeader(state.value, null, {}, {}, {}, {}, {}, false, false, false, null, null,
+                onWriterAction = { action = it }, writerBusy = busy.value, writerBlockedReason = blocked.value)
+        } } }
+        compose.onNodeWithTag("conversation_more_button").performClick()
+        compose.onNodeWithTag("release_session_permission").assertIsEnabled()
+        compose.runOnIdle { busy.value = true }
+        compose.onNodeWithTag("release_session_permission").assertIsNotEnabled()
+        compose.runOnIdle { busy.value = false; blocked.value = "等待核对" }
+        compose.onNodeWithTag("release_session_permission").assertIsNotEnabled()
+        compose.runOnIdle { blocked.value = null; state.value = ready.copy(stale = true) }
+        compose.onNodeWithTag("release_session_permission").assertIsNotEnabled()
+        compose.runOnIdle { state.value = ready.copy(snapshot = sessionSnapshot(JSONObject()
+            .put("thread", JSONObject().put("id", "t")).put("writerOwner", "relay")
+            .put("nativeRuntime", JSONObject().put("releaseAvailable", false)))) }
+        compose.onNodeWithTag("release_session_permission").assertIsNotEnabled()
+        compose.runOnIdle { state.value = ready }
+        compose.onNodeWithTag("release_session_permission").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals("release", action) }
+        compose.onNodeWithTag("release_session_permission").assertDoesNotExist()
+    }
+
     @Test fun takeoverRequiresFreshExternalOwnership() {
         val reason = mutableStateOf<String?>("网络不可用，请恢复节点连接后接管")
         val snapshot = sessionSnapshot(JSONObject().put("thread", JSONObject().put("id", "t"))

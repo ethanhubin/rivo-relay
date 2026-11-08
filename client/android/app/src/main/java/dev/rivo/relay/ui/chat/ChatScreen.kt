@@ -31,6 +31,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.codex.SessionState
 import dev.rivo.relay.codex.control
+import dev.rivo.relay.codex.showTakeover
 import dev.rivo.relay.codex.canCompose
 import dev.rivo.relay.data.*
 import org.json.JSONObject
@@ -370,8 +371,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             TextButton(onClick = onBack, modifier = Modifier.testTag("back_sessions")) { Text("‹") }
             Column(Modifier.clickable(onClick = ::openSettings).testTag("conversation_status")) { Text("新会话", style = MaterialTheme.typography.titleLarge); Text(pendingTitle, style = MaterialTheme.typography.bodySmall) }
         } else NativeChatHeader(state, usage, onBack, ::openSettings, onRefresh, { developerOpen = true }, { stopConfirm = true },
-            !busy && !blocked && !state.stale && canOperate, pinned, canManage, onPin, onArchive)
-        if (pendingTitle == null) NativeWriterStatus(state, nodeName, writerBusy || busy || blocked, onWriterAction, takeoverBlockedReason, onRefresh)
+            !busy && !blocked && !state.stale && canOperate, pinned, canManage, onPin, onArchive,
+            onWriterAction, writerBusy || busy || blocked, takeoverBlockedReason)
+        if (pendingTitle == null && state.showTakeover()) NativeWriterStatus(state, nodeName, writerBusy || busy || blocked, onWriterAction, takeoverBlockedReason, onRefresh)
         if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         var bottomOverlayHeight by remember { mutableIntStateOf(0) }
         val bottomOverlayPadding = with(LocalDensity.current) { bottomOverlayHeight.toDp() }

@@ -3,11 +3,9 @@ package dev.rivo.relay.ui.chat
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.widget.Toast
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -31,6 +29,7 @@ import dev.rivo.relay.codex.showTakeover
 import dev.rivo.relay.codex.takeoverControl
 import dev.rivo.relay.codex.ControlState
 import dev.rivo.relay.data.*
+import dev.rivo.relay.ui.common.ConnectionStatusDot
 import dev.rivo.relay.ui.common.CodexQuotaProgressBar
 import org.json.JSONObject
 
@@ -103,7 +102,8 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
 @Composable
 internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: () -> Unit, onSettings: () -> Unit,
     onRefresh: () -> Unit, onReview: () -> Unit, onStop: () -> Unit, canStop: Boolean,
-    pinned: Boolean, canManage: Boolean, onPin: ((Boolean) -> Unit)?, onArchive: (() -> Unit)?) {
+    pinned: Boolean, canManage: Boolean, onPin: ((Boolean) -> Unit)?, onArchive: (() -> Unit)?,
+    onWriterAction: ((String) -> Unit)? = null, writerBusy: Boolean = false, writerBlockedReason: String? = null) {
     val snapshot = state.snapshot
     val context = LocalContext.current
     var menu by remember(state.id) { mutableStateOf(false) }
@@ -130,8 +130,12 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
                     maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 Row(Modifier.fillMaxWidth().clickable(onClick = onSettings).testTag("conversation_status"), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Box(Modifier.size(6.dp).background(when { state.stale && !state.loading -> MaterialTheme.colorScheme.error
-                        state.loading -> MaterialTheme.colorScheme.outline; else -> MaterialTheme.colorScheme.primary }, CircleShape))
+                    ConnectionStatusDot(when {
+                        state.loading -> null
+                        state.stale || state.readError != null -> false
+                        snapshot == null -> null
+                        else -> true
+                    }, Modifier.testTag("conversation_connection_status"))
                     Text(listOfNotNull(configuration, status).joinToString(" · "), Modifier.weight(1f, fill = false).testTag("conversation_configuration"),
                         style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -151,6 +155,11 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
                     if (onArchive != null) DropdownMenuItem(text = { Text("归档") }, onClick = { menu = false; onArchive() },
                         enabled = canManage && snapshot != null && snapshot.activeTurnId.isBlank() && snapshot.requests.isEmpty() && snapshot.queue.isEmpty(),
                         modifier = Modifier.testTag("archive_session"))
+                    DropdownMenuItem(text = { Text("释放权限") },
+                        onClick = { menu = false; onWriterAction?.invoke("release") },
+                        enabled = state.showRelease() && onWriterAction != null && !writerBusy && writerBlockedReason == null &&
+                            releaseUnavailableReason(snapshot?.nativeRuntime) == null,
+                        modifier = Modifier.testTag("release_session_permission"))
                     HorizontalDivider()
                     DropdownMenuItem(text = { Text("复制会话 ID") }, enabled = state.id != null, modifier = Modifier.testTag("copy_session_id"),
                         onClick = { menu = false; state.id?.let { id -> context.getSystemService(ClipboardManager::class.java)

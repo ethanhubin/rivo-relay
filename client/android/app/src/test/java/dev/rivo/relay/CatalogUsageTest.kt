@@ -35,6 +35,17 @@ class CatalogUsageTest {
         assertEquals(1f, quotaTimeRemaining(window, 0)!!, 0.001f)
     }
 
+    @Test fun resetCountdownHandlesDayHourBoundariesAndMissingOrExpiredData() {
+        val now = 1000L
+        assertEquals("2 天 2 小时后重置", quotaResetCountdown(now + 50 * 3600, now))
+        assertEquals("1 天 0 小时后重置", quotaResetCountdown(now + 24 * 3600, now))
+        assertEquals("23 小时后重置", quotaResetCountdown(now + 24 * 3600 - 1, now))
+        assertEquals("不足 1 小时后重置", quotaResetCountdown(now + 3599, now))
+        assertEquals("等待重置更新", quotaResetCountdown(now, now))
+        assertEquals("等待重置更新", quotaResetCountdown(now - 1, now))
+        assertNull(quotaResetCountdown(null, now))
+    }
+
     @Test fun projectFolderCreationAcceptsOneNameAndRejectsTraversal() {
         assertTrue(validProjectFolderName("我的项目"))
         assertTrue(validProjectFolderName("Relay Test"))
