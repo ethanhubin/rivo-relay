@@ -181,7 +181,7 @@ class NativeConnection:
                     if target:
                         target.put_nowait(message)
                 elif "method" in message:
-                    self._events.put_nowait({**message, "connectionId": generation})
+                    self._receive_event({**message, "connectionId": generation})
         except Exception:
             pass
         finally:
@@ -202,6 +202,9 @@ class NativeConnection:
             finally:
                 self._events.put_disconnect({"method": "relay/nativeDisconnected", "params": {},
                                              "connectionId": generation})
+
+    def _receive_event(self, event):
+        self._events.put_nowait(event)
 
     def _dispatch(self):
         while not self._dispatch_stop.is_set():

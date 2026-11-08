@@ -29,6 +29,9 @@ def main():
     parser.add_argument('--attach', action='store_true', help='Connect an already-running local Relay')
     parser.add_argument('--pair-only', action='store_true', help='Generate a fresh QR for an already configured/running node')
     parser.add_argument('--configure', action='store_true', help='Replace the saved access credential interactively')
+    parser.add_argument('--codex-runtime', choices=['auto', 'desktop', 'app_server', 'stdio'], default=None)
+    parser.add_argument('--codex-executable', type=Path)
+    parser.add_argument('--codex-home', type=Path)
     parser.add_argument('--no-pair', action='store_true', help='Background reconnect without creating a new pairing code')
     args = parser.parse_args()
     os.umask(0o077)
@@ -93,6 +96,10 @@ async def node(args):
         stored.update(gateway=base, key=credential)
     if mode == 'direct' and not direct:
         raise ValueError('Direct mode requires a Tailscale URL')
+    for key in ('codex_runtime', 'codex_executable', 'codex_home'):
+        value = getattr(args, key, None)
+        if value is not None:
+            stored[key] = str(value)
     stored.update(mode=mode, direct=direct or '', updates=args.update_source or stored.get('updates', False))
     save_private(path, stored)
     relay = base + '/relay/' + key['slot'] if key else ''
@@ -101,6 +108,7 @@ async def node(args):
     config.prepare()
     child = None
     connector_task = None
+    previous_signals = {}
     try:
         import aiohttp
         async with aiohttp.ClientSession() as session:
@@ -116,8 +124,16 @@ async def node(args):
         if args.pair_only and not args.attach:
             raise RuntimeError('Start the node before generating a new pairing QR')
         if not args.attach:
-            child = subprocess.Popen([sys.executable, '-m', 'rivo_relay', 'serve', '--workspace', str(workspace),
-                                      '--host', '127.0.0.1', '--port', str(args.local_port), '--url', public])
+            command = [sys.executable, '-m', 'rivo_relay', 'serve', '--workspace', str(workspace),
+                       '--host', '127.0.0.1', '--port', str(args.local_port), '--url', public]
+            for key in ('codex_runtime', 'codex_executable', 'codex_home'):
+                if stored.get(key):
+                    command.extend(['--' + key.replace('_', '-'), stored[key]])
+            if os.name == 'nt':
+                from ..codex.windows_process import spawn_owned
+                child = spawn_owned(command)
+            else:
+                child = subprocess.Popen(command)
         # Ensure the local service exists before advertising a usable QR.
         import aiohttp
         async with aiohttp.ClientSession() as session:
@@ -164,7 +180,11 @@ async def node(args):
             return
         stop = asyncio.Event()
         for sig in (signal.SIGTERM, signal.SIGINT):
-            asyncio.get_running_loop().add_signal_handler(sig, stop.set)
+            loop = asyncio.get_running_loop()
+            if os.name == 'nt':
+                previous_signals[sig] = signal.signal(sig, lambda *_: loop.call_soon_threadsafe(stop.set))
+            else:
+                loop.add_signal_handler(sig, stop.set)
         while not stop.is_set():
             if child and child.poll() is not None:
                 raise RuntimeError('Local Relay exited')
@@ -173,10 +193,18 @@ async def node(args):
             except TimeoutError:
                 pass
     finally:
+        for sig, previous in previous_signals.items():
+            signal.signal(sig, previous)
         if connector_task:
             connector_task.cancel()
             await asyncio.gather(connector_task, return_exceptions=True)
-        if child and child.poll() is None:
+        if child and getattr(child, '_rivo_job', None):
+            try:
+                await asyncio.to_thread(child._rivo_job.terminate)
+                await asyncio.to_thread(child.wait, 10)
+            finally:
+                child._rivo_job.close()
+        elif child and child.poll() is None:
             child.terminate()
             await asyncio.to_thread(child.wait, 10)
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
 import os
+import re
 from pathlib import Path
 import signal
 import select
@@ -27,9 +28,12 @@ class _ProcessSocket:
         self.process = process
         self._close_lock = threading.Lock()
         self._finished = False
-        os.set_blocking(process.stdin.fileno(), False)
+        if os.name != 'nt':
+            os.set_blocking(process.stdin.fileno(), False)
 
     def send(self, raw):
+        if os.name == 'nt':
+            return self._send_windows(raw)
         data = memoryview((raw + '\n').encode('utf-8'))
         deadline = time.monotonic() + 30
         fd = self.process.stdin.fileno()
@@ -50,6 +54,33 @@ class _ProcessSocket:
             self.close()
             raise
 
+    def _send_windows(self, raw):
+        # select() accepts sockets only on Windows. A bounded writer thread is
+        # cancelled by closing its owned job when a pipe stops consuming input.
+        done = threading.Event()
+        errors = []
+        def write():
+            try:
+                data = memoryview((raw + '\n').encode('utf-8'))
+                while data:
+                    size = os.write(self.process.stdin.fileno(), data)
+                    if not size:
+                        raise BrokenPipeError('writer input closed')
+                    data = data[size:]
+            except Exception as error:
+                errors.append(error)
+            finally:
+                done.set()
+        worker = threading.Thread(target=write, daemon=True, name='rivo-windows-pipe-write')
+        worker.start()
+        if not done.wait(30):
+            self.close()
+            worker.join(timeout=3)
+            raise TimeoutError('writer input stalled')
+        if errors:
+            self.close()
+            raise errors[0]
+
     def __iter__(self):
         limit = 32 * 1024 * 1024
         try:
@@ -68,6 +99,16 @@ class _ProcessSocket:
             if self._finished:
                 return
             p = self.process
+            if os.name == 'nt':
+                job = getattr(p, '_rivo_job', None)
+                if job is None:
+                    raise CodexError('Windows writer 缺少进程组身份，拒绝按 PID 清理')
+                job.terminate()
+                p.wait(timeout=5)
+                p.stdin.close()
+                job.close()
+                self._finished = True
+                return
             try:
                 p.stdin.close()
             except (OSError, ValueError):
@@ -110,6 +151,8 @@ class OwnedWriter(NativeConnection):
         self.socket_path = None
         self.process = None
         self._identity = None
+        from .host_commands import NativeProcessCommands
+        self._commands = NativeProcessCommands(self)
 
     def start(self):
         with self._start_lock:
@@ -123,11 +166,28 @@ class OwnedWriter(NativeConnection):
                        'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
                        'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy')
             env = {key: os.environ[key] for key in allowed if key in os.environ}
+            if os.name == 'nt':
+                allowed_windows = {'systemroot', 'windir', 'comspec', 'pathext', 'userprofile',
+                                   'appdata', 'localappdata', 'temp', 'tmp', 'programdata',
+                                   'programfiles', 'programfiles(x86)', 'systemdrive', 'path'}
+                env.update({key: value for key, value in os.environ.items() if key.lower() in allowed_windows})
             env['CODEX_HOME'] = str(self.codex_home)
+            if os.name == 'nt' and self.descriptor.get('windowsSandboxPackageFamily'):
+                env['CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY'] = self.descriptor['windowsSandboxPackageFamily']
             try:
-                self.process = subprocess.Popen([self.descriptor['executable'], 'app-server', '--stdio'],
+                spawn = subprocess.Popen
+                options = {'start_new_session': True}
+                if os.name == 'nt':
+                    from .windows_process import spawn_owned
+                    spawn, options = spawn_owned, {}
+                command = [self.descriptor['executable'], 'app-server', '--stdio']
+                if os.name == 'nt' and self.descriptor.get('windowsSandboxPackageFamily'):
+                    # Match Desktop's Windows sandbox feature configuration.
+                    # This does not guarantee Session 0 runner compatibility.
+                    command += ['--enable', 'windows_sandbox_service']
+                self.process = spawn(command,
                     cwd=str(self.codex_home), env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace', start_new_session=True)
+                    stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace', **options)
                 self._identity = WriterProcesses(self.codex_home).identity(self.process.pid)
                 self._socket = _ProcessSocket(self.process)
                 self.generation = uuid.uuid4().hex
@@ -139,8 +199,11 @@ class OwnedWriter(NativeConnection):
                     'clientInfo': {'name': 'Codex Desktop', 'title': 'Codex Desktop', 'version': '1'},
                     'capabilities': {'experimentalApi': True}}, timeout=15)
                 self.notify('initialized')
+                if os.name == 'nt' and self.descriptor.get('windowsSandboxPackageFamily'):
+                    self.request('experimentalFeature/enablement/set', {'enablement': {'windows_sandbox_service': True}}, timeout=10)
                 self._process = self.request('server/diagnostics', {}, timeout=5).get('process', {})
-                if int(self._process.get('id', 0)) != self.process.pid or not self._identity:
+                if (int(self._process.get('id', 0)) != self.process.pid or not self._identity
+                        or Path(self._identity['executable']).resolve() != Path(self.descriptor['executable']).resolve()):
                     raise CodexError('会话 writer 身份无法核对', code='native_host_unverified')
                 self._ready = True
                 return self.status()
@@ -150,10 +213,32 @@ class OwnedWriter(NativeConnection):
                 super().close()
                 raise
 
+    def _receive_event(self, event):
+        if not self._commands.event(event):
+            super()._receive_event(event)
+
+    def host_command(self, params, *, timeout=None):
+        if os.name != 'nt':
+            raise CodexError('此节点未启用本机进程接口')
+        command = params.get('command', [])
+        if command[:1] == ['python3']:
+            interpreter = Path(sys.executable).with_name('python.exe')
+            params = {**params, 'command': [str(interpreter), *command[1:]]}
+        return self._commands.run(params, timeout)
+
+    def request(self, method, params=None, *, timeout=None):
+        if os.name == 'nt' and method == 'command/exec' and (params or {}).get('command', [])[:1] == ['python3']:
+            # Internal helpers use the interpreter that hosts this local Relay,
+            # never a Windows Store alias or a different machine's Python path.
+            params = {**params, 'command': [sys.executable, *params['command'][1:]]}
+        return super().request(method, params, timeout=timeout)
+
     def status(self):
         result = super().status()
         result.update(runtime='relay-session-writer', desktopShared=False, desktopVerification='not_shared',
                       transport='stdio', ownedWriter=True)
+        if os.name == 'nt':
+            result['hostCommands'] = 'native-process'
         return result
 
     def native_host_info(self):
@@ -161,8 +246,65 @@ class OwnedWriter(NativeConnection):
                 or WriterProcesses(self.codex_home).identity(self.process.pid) != self._identity):
             raise CodexError('会话 writer 身份已变化', code='native_host_unverified', http_status=409)
         return {**self.descriptor, 'pid': self.process.pid, 'processStart': self._identity['start'],
-                'generation': self.generation, 'identityMethod': 'relay-owned-child', 'processStartMethod': 'ps-lstart',
+                'generation': self.generation, 'identityMethod': 'relay-owned-child', 'processStartMethod': 'windows-filetime' if os.name == 'nt' else 'ps-lstart',
                 'platform': sys.platform, 'hostName': socket.gethostname()}
+
+
+class StdioMetadata:
+    """Explicit local metadata process; no fallback from an existing daemon.
+
+    A fresh metadata child may reconnect; session writers keep their own pins.
+    """
+    def __init__(self, executable, codex_home):
+        if not executable or not Path(executable).is_absolute() or not Path(executable).is_file():
+            raise ValueError('stdio mode requires an absolute Codex executable')
+        if os.name == 'nt' and not re.fullmatch(r'codex(?:-x86_64-pc-windows-msvc)?\.exe', Path(executable).name, re.IGNORECASE):
+            raise ValueError('Windows stdio mode requires codex.exe, not a shell wrapper')
+        self.codex_home = Path(codex_home or os.environ.get('CODEX_HOME', '~/.codex')).expanduser().resolve()
+        if not self.codex_home.is_dir():
+            raise ValueError('CODEX_HOME must already exist; log in to Codex first')
+        self.socket_path = None
+        self.on_event = lambda _: None
+        self._descriptor = {'executable': str(Path(executable).resolve()), 'codexHome': str(self.codex_home)}
+        if os.name == 'nt':
+            from .windows_process import desktop_package_family
+            family = desktop_package_family(executable)
+            if family:
+                self._descriptor['windowsSandboxPackageFamily'] = family
+        self._writer = self._create()
+        self._closed = False
+
+    def _create(self):
+        return OwnedWriter(self._descriptor, lambda event: self.on_event(event))
+
+    @property
+    def generation(self):
+        return self._writer.generation
+
+    def start(self):
+        if self._closed:
+            raise CodexError('原生连接已关闭')
+        if self._writer.process is not None and not self._writer.status().get('connected'):
+            self._writer.close()
+            self._writer = self._create()
+        return self._writer.start()
+
+    def status(self):
+        result = self._writer.status()
+        return {**result, 'runtime': 'relay-stdio-metadata', 'ownedWriter': False}
+
+    def native_host_info(self):
+        return self._writer.native_host_info()
+
+    def request(self, *args, **kwargs):
+        return self._writer.request(*args, **kwargs)
+
+    def respond(self, *args, **kwargs):
+        return self._writer.respond(*args, **kwargs)
+
+    def close(self):
+        self._closed = True
+        self._writer.close()
 
 
 class SessionWriters:
@@ -233,7 +375,8 @@ class SessionWriters:
                 return 'relay'
             from .host_probe import local_native_host_info
             try:
-                descriptor = local_native_host_info(self.metadata)
+                descriptor = (self.metadata.native_host_info() if isinstance(self.metadata, StdioMetadata)
+                              else local_native_host_info(self.metadata))
                 return 'external' if WriterProcesses(descriptor['codexHome']).busy(thread_id) else 'none'
             except (CodexError, OSError, subprocess.SubprocessError):
                 # Forwarded/temporarily unverifiable hosts remain readable.
@@ -260,7 +403,8 @@ class SessionWriters:
         self._ensure_metadata()
         # The local socket proof is mandatory even if a remote probe succeeded.
         from .host_probe import local_native_host_info
-        descriptor = local_native_host_info(self.metadata)
+        descriptor = (self.metadata.native_host_info() if isinstance(self.metadata, StdioMetadata)
+                              else local_native_host_info(self.metadata))
         if Path(descriptor['codexHome']).resolve() != self.codex_home.resolve():
             raise CodexError('所选运行时的 CODEX_HOME 不一致', code='native_host_unverified')
         writer = self.factory(descriptor, lambda event: None)

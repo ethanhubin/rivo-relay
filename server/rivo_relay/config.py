@@ -30,9 +30,15 @@ class Config:
     codex_runtime: str = 'auto'
     desktop_bridge_dir: Path | None = None
 
+    codex_executable: Path | None = None
+
     def validate(self) -> None:
-        if self.codex_runtime not in {'auto', 'desktop', 'app_server'}:
-            raise ValueError('codex_runtime must be auto, desktop or app_server')
+        if self.codex_runtime not in {'auto', 'desktop', 'app_server', 'stdio'}:
+            raise ValueError('codex_runtime must be auto, desktop, app_server or stdio')
+        if self.codex_runtime == 'stdio' and (not self.codex_executable or not self.codex_executable.is_absolute() or not self.codex_executable.is_file()):
+            raise ValueError('stdio mode requires an absolute --codex-executable path')
+        if self.codex_executable and self.codex_runtime != 'stdio':
+            raise ValueError('--codex-executable requires --codex-runtime stdio')
         if not 1 <= self.port <= 65535:
             raise ValueError("port must be between 1 and 65535")
         if bool(self.cert) != bool(self.key):

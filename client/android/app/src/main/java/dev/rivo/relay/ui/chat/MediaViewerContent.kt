@@ -1034,7 +1034,7 @@ private fun FullScreenGalleryPage(
         .memoryCachePolicy(CachePolicy.ENABLED)
         .diskCachePolicy(CachePolicy.ENABLED)
         .networkCachePolicy(CachePolicy.ENABLED)
-        .crossfade(180)
+        .crossfade(false)
         .build()
     }
   var retryVersion by remember(item.original, mediaClient) { mutableIntStateOf(0) }
@@ -1059,10 +1059,9 @@ private fun FullScreenGalleryPage(
         contentScale = contentScale,
       )
     }
-    if ((item.original != item.preview || mediaClient != null)) {
-      // Keep the preview underneath the original while Coil performs its crossfade. onSuccess is
-      // delivered when the transition starts, so removing the preview there exposes the dialog's
-      // black background for a frame before the original becomes opaque.
+    if (!originalLoaded && (item.original != item.preview || mediaClient != null)) {
+      // Replace the preview atomically: keeping it behind a smaller or transparent
+      // original exposes a second image. The original deliberately has no crossfade.
       AsyncImage(
         imageLoader = mediaClient?.imageLoader ?: context.imageLoader,
         model = mediaClient?.imageRequest(context, item.preview, true)?.build() ?: item.preview,

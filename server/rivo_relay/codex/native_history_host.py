@@ -31,32 +31,39 @@ def _inside(path, root):
 
 def verify_runtime(info):
     pid = info.get('pid')
-    if type(pid) is not int or pid <= 1 or info.get('processStartMethod') != 'ps-lstart':
+    method = 'windows-filetime' if os.name == 'nt' else 'ps-lstart'
+    if type(pid) is not int or pid <= 1 or info.get('processStartMethod') != method:
         raise NativeHistoryReprojectionError('无法核实实际节点的 Codex 运行时身份')
-    result = subprocess.run(['ps', '-p', str(pid), '-o', 'lstart='],
-                            capture_output=True, text=True, timeout=5, check=False)
-    expected_start = str(info.get('processStart') or '')
-    if result.returncode or not expected_start or result.stdout.strip() != expected_start:
-        raise NativeHistoryReprojectionError('原生运行时已更换，历史操作已取消')
-    if sys.platform.startswith('linux'):
-        executable = os.path.realpath(f'/proc/{pid}/exe')
-    elif sys.platform == 'darwin':
-        # ps comm may be only argv[0] ("codex") for a PATH-launched daemon.
-        # Resolve the running image through the kernel, as WriterProcesses does;
-        # resolving that short name against this helper's cwd invents a path.
-        import ctypes
-        buffer = ctypes.create_string_buffer(4096)
-        size = ctypes.CDLL('/usr/lib/libproc.dylib').proc_pidpath(pid, buffer, len(buffer))
-        if size <= 0 or size >= len(buffer):
-            raise NativeHistoryReprojectionError('无法核实原生运行时可执行文件')
-        executable = os.fsdecode(buffer.value)
+    if os.name == 'nt':
+        identity = locks.windows_identity(pid)
+        if not identity or identity['start'] != info.get('processStart'):
+            raise NativeHistoryReprojectionError('原生运行时已更换，历史操作已取消')
+        executable = identity['executable']
     else:
-        executable = subprocess.check_output(['ps', '-ww', '-p', str(pid), '-o', 'comm='], text=True, timeout=5).strip()
+        result = subprocess.run(['ps', '-p', str(pid), '-o', 'lstart='],
+                                capture_output=True, text=True, timeout=5, check=False)
+        expected_start = str(info.get('processStart') or '')
+        if result.returncode or not expected_start or result.stdout.strip() != expected_start:
+            raise NativeHistoryReprojectionError('原生运行时已更换，历史操作已取消')
+        if sys.platform.startswith('linux'):
+            executable = os.path.realpath(f'/proc/{pid}/exe')
+        elif sys.platform == 'darwin':
+            # ps comm may be only argv[0] ("codex") for a PATH-launched daemon.
+            # Resolve the running image through the kernel, as WriterProcesses does;
+            # resolving that short name against this helper's cwd invents a path.
+            import ctypes
+            buffer = ctypes.create_string_buffer(4096)
+            size = ctypes.CDLL('/usr/lib/libproc.dylib').proc_pidpath(pid, buffer, len(buffer))
+            if size <= 0 or size >= len(buffer):
+                raise NativeHistoryReprojectionError('无法核实原生运行时可执行文件')
+            executable = os.fsdecode(buffer.value)
+        else:
+            executable = subprocess.check_output(['ps', '-ww', '-p', str(pid), '-o', 'comm='], text=True, timeout=5).strip()
     if not Path(executable).is_absolute():
         raise NativeHistoryReprojectionError('无法核实原生运行时可执行文件')
     if Path(executable).resolve() != Path(str(info.get('executable') or '')).resolve():
         raise NativeHistoryReprojectionError('原生运行时可执行文件已变化')
-    if Path(executable).name.casefold() not in ('codex', 'codex.exe'):
+    if not re.fullmatch(r'codex(?:-x86_64-pc-windows-msvc)?(?:\.exe)?', Path(executable).name.casefold()):
         raise NativeHistoryReprojectionError('历史重建只能使用已核实的 Codex 可执行文件')
     home = Path(str(info.get('codexHome') or ''))
     if not home.is_absolute() or not home.is_dir():
@@ -135,6 +142,16 @@ def _fingerprint(stat):
     return [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
 
 
+def _path_stat(path):
+    # Windows Python 3.12 stat(path) reports creation time as ctime, whereas
+    # fstat reports change time. Use handle metadata consistently, preserving
+    # detection of same-size rewrites with restored mtime.
+    if os.name == 'nt':
+        with path.open('rb') as stream:
+            return os.fstat(stream.fileno())
+    return path.stat()
+
+
 def _prefix_digest(stream, length):
     """Validate every old byte before trusting cached lifecycle state.
 
@@ -158,7 +175,7 @@ def inspect_journal(home, thread_id, known=None):
     if storage is None:
         return {'available': False, 'journal': None, 'writerBusy': writer_busy(home, thread_id)}
     path, history_mode, cwd = storage
-    before = path.stat()
+    before = _path_stat(path)
     if before.st_size > MAX_ROLLOUT_BYTES:
         raise NativeHistoryReprojectionError('Codex 历史超过本次安全检查大小限制')
     fingerprint = _fingerprint(before)
@@ -233,7 +250,7 @@ def inspect_journal(home, thread_id, known=None):
             elif kind in ('task_complete', 'turn_aborted') and latest and turn_id == latest['turnId']:
                 latest['status'] = ('interrupted' if kind == 'turn_aborted' else
                                     'failed' if payload.get('error') is not None else 'completed')
-    after = path.stat()
+    after = _path_stat(path)
     if not record_count:
         raise NativeHistoryReprojectionError('Codex 原生历史缺少 session_meta')
     changed = fingerprint != _fingerprint(after)

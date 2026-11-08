@@ -14,6 +14,7 @@ import ntpath
 import posixpath
 
 from .connection import CodexError
+from .host_commands import node_command
 
 MAX_FILE_BYTES = 4 * 1024 * 1024
 MAX_TRANSFER_BYTES = 1024 * 1024 * 1024
@@ -55,7 +56,7 @@ def read_file(connection, path, *, max_bytes=MAX_FILE_BYTES):
 
 
 def _command(connection, command, cwd, cap=6 * 1024 * 1024):
-    result = connection.request('command/exec', {'command': command, 'cwd': cwd,
+    result = node_command(connection, {'command': command, 'cwd': cwd,
         'timeoutMs': 120000, 'outputBytesCap': cap}, timeout=130)
     if result.get('exitCode') != 0:
         raise CodexError('节点无法读取文件，请检查文件及权限', code='file_read_failed', http_status=409)
@@ -201,7 +202,7 @@ def _upload_attachment_stream(connection, cwd, name, stream, size, *, directory_
                 command = ['powershell.exe', '-NoProfile', '-NonInteractive', '-File', script, target, *chunks]
             else:
                 command = ['/bin/sh', '-c', 'set -eu; set -C; out=$1; shift; cat "$@" > "$out"', 'rivo-assemble', target, *chunks]
-            result = connection.request('command/exec', {'command': command, 'cwd': cwd,
+            result = node_command(connection, {'command': command, 'cwd': cwd,
                 'timeoutMs': 120000, 'outputBytesCap': 1024}, timeout=130)
             if result.get('exitCode') != 0:
                 raise CodexError('节点未能合并文件，请检查工作区写入权限', code='attachment_assembly_failed', http_status=409)

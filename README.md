@@ -6,7 +6,7 @@ Rivo Relay 是一个自托管的 **Codex 移动工作台**，让你在 Android �
 
 2026-11-07 开发代码已对照 QiGuang-Next 最新本地发布版 `1642fc8` 更新 Codex 会话、队列恢复、模型设置、原生交互与文件差异。具体迁移内容、协议适配和未迁入部分见 [Codex 最新对照](docs/qiguang-codex-sync.md)，测试与部署边界见 [验证记录](docs/validation.md)。
 
-当前 Android 测试版为 **0.2.45 / code 57**，默认通过主节点 Tailscale HTTP 更新。安装首次引导版后，在“设置 → 检查更新”下载并安装；需要连接 Tailscale。[更新清单](http://100.124.150.1:18767/v1/app-updates/latest)。GitHub Release 仅在明确要求时发布，普通发布不推送远端。详见 [发布流程](docs/node-updates.md)。
+当前 Android 测试版为 **0.2.55 / code 67**，默认通过主节点 Tailscale HTTP 更新。安装首次引导版后，在“设置 → 检查更新”下载并安装；需要连接 Tailscale。[更新清单](http://100.124.150.1:18767/v1/app-updates/latest)。GitHub Release 仅在明确要求时发布，普通发布不推送远端。详见 [发布流程](docs/node-updates.md)。
 
 ## 可以做什么
 
@@ -161,3 +161,24 @@ PYTHONPATH=server .venv/bin/python scripts/reauthorize-codex.py
 ## VPS 中转与双通道
 
 新增无需域名的自建 VPS 中转，支持与 Tailscale 直连共用同一个节点及授权。桌面运行 `./scripts/start-node.sh`，首次填写 VPS IP 和节点授权密钥后生成二维码；Android 提供自动、仅直连、仅 VPS 模式。部署、密钥管理及更新源配置见 [VPS 双通道说明](docs/vps-gateway.md)。
+
+
+### Windows 后台节点（预览）
+
+Windows 使用显式 `stdio` 运行时，每个会话独立 writer。支持 Windows 文件锁、进程树回收、Unicode 路径、文件传输和 Git 工作树。当前实体机使用官方 npm Codex CLI 0.167.0，**完全访问模式的真实读写、测试及 Git 编码流程已通过**；受限 workspace-write 沙箱在非交互 Session 0 中仍失败，详见[Windows 验证记录](docs/validation-windows-2026-11-08.md)。不支持强制接管外部 Windows writer；自身会话可释放和恢复。
+
+先安装 Python 3.11+、Git 和已登录的 Codex，明确指定兼容的 `codex.exe`：
+
+```powershell
+.\scripts\start-node.ps1 -CodexExecutable 'C:\实际安装路径\codex.exe' -PublicUrl 'https://节点地址'
+```
+
+安装脚本注册 `Rivo Relay` 隐藏计划任务，使用 S4U 非交互 Session 0 和 `pythonw.exe`，开机启动，pythonw 守护层在 worker 异常退出后清理进程树并重启（2 秒间隔，一分钟内最多三次失败），无控制台或 Desktop 窗口。它不是 SCM Windows Service。仅监听 `127.0.0.1:18765`，外部入口需配置 Tailscale Serve 或受信任的 HTTPS 代理。日志在 `workspace\windows-node\node.log`。已有任务需确认空闲后显式传入 `-Replace`。
+
+```powershell
+Get-ScheduledTask -TaskName 'Rivo Relay'
+Stop-ScheduledTask -TaskName 'Rivo Relay'
+Start-ScheduledTask -TaskName 'Rivo Relay'
+```
+
+运行时必须显式选择 `--codex-runtime stdio --codex-executable <绝对路径>`，不会从其他连接失败后自动降级。节点文件和 Git 功能通过原生 host process API 执行；模型命令仍受 Codex 会话沙箱约束，不因后台模式放宽权限。

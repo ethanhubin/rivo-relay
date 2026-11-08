@@ -72,6 +72,7 @@ class CodexMediaInteractionUiTest {
             compose.waitUntil(10_000) { compose.onAllNodesWithTag("fullscreen_original_error").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithTag("fullscreen_original_error").performClick()
             compose.waitUntil(10_000) { compose.onAllNodesWithTag("fullscreen_original_loaded").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithTag("fullscreen_thumbnail").assertDoesNotExist()
             assertEquals(2, originals.get())
         } finally { client.close(); server.shutdown() }
     }
@@ -125,6 +126,7 @@ class CodexMediaInteractionUiTest {
                 CodexImageGallery("/v1/media/library/$id/content", onSave = {}, onShare = {}, onDismiss = {})
             } } }
             compose.waitUntil(10_000) { compose.onAllNodesWithTag("fullscreen_original_loaded").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithTag("fullscreen_thumbnail").assertDoesNotExist()
             compose.onNodeWithTag("fullscreen_more").performClick()
             compose.waitUntil(5_000) { compose.onAllNodesWithTag("fullscreen_info").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithTag("fullscreen_info").performClick()

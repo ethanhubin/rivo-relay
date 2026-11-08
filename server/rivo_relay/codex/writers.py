@@ -5,7 +5,7 @@ identity and revalidated before signalling. Unrelated processes are never killed
 """
 from __future__ import annotations
 
-import fcntl
+from . import native_history_support as fcntl
 import os
 from pathlib import Path
 import re
@@ -43,7 +43,7 @@ class WriterProcesses:
     def busy(self, thread_id):
         path = self.path(thread_id)
         try:
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
         except FileNotFoundError:
             return False
         try:
@@ -64,6 +64,8 @@ class WriterProcesses:
         return result.stdout
 
     def identity(self, pid):
+        if os.name == 'nt':
+            return fcntl.windows_identity(pid)
         start = self.run(['ps', '-p', str(pid), '-o', 'lstart=']).strip()
         command = self.run(['ps', '-ww', '-p', str(pid), '-o', 'args=']).strip()
         executable = self.run(['ps', '-ww', '-p', str(pid), '-o', 'comm=']).strip()
@@ -99,6 +101,8 @@ class WriterProcesses:
         return [identity for identity in identities if identity is not None]
 
     def snapshot(self, thread_id):
+        if os.name == 'nt':
+            raise conflict('Windows 外部 writer 请在其所属客户端释放；Relay 自有会话支持释放与恢复', 'handoff_external_unsupported')
         if not self.busy(thread_id):
             return {'threadId': thread_id, 'holders': []}
         output = self.run(['lsof', '-t', '--', str(self.path(thread_id))])
@@ -228,6 +232,8 @@ class WriterProcesses:
             raise conflict('此节点可能通过远程转发连接，不能在本机结束持锁进程')
 
     def verify_native_host(self, descriptor, runtime_id, socket_path):
+        if os.name == 'nt':
+            raise conflict('Windows 外部 writer 请在其所属客户端释放', 'handoff_external_unsupported')
         # Matching PID numbers or home paths alone do not establish locality.
         # Require the remote attestation, exact local process identity, and
         # selected socket ownership before examining/terminating local holders.

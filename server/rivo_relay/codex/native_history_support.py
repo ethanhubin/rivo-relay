@@ -22,24 +22,59 @@ LOCK_EX, LOCK_UN, LOCK_NB = 1, 2, 4
 
 
 def flock(fd, operation):
+    fd = fd if isinstance(fd, int) else fd.fileno()
     if _fcntl is not None:
         translated = sum(value for bit, value in ((LOCK_EX, _fcntl.LOCK_EX),
                          (LOCK_UN, _fcntl.LOCK_UN), (LOCK_NB, _fcntl.LOCK_NB)) if operation & bit)
         _fcntl.flock(fd, translated)
         return
+    import ctypes
     import msvcrt
-    position = os.lseek(fd, 0, os.SEEK_CUR)
-    os.lseek(fd, 0, os.SEEK_SET)
+    from ctypes import wintypes
+    class Overlapped(ctypes.Structure):
+        _fields_ = [('Internal', ctypes.c_size_t), ('InternalHigh', ctypes.c_size_t),
+                    ('Offset', wintypes.DWORD), ('OffsetHigh', wintypes.DWORD), ('hEvent', wintypes.HANDLE)]
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    handle = wintypes.HANDLE(msvcrt.get_osfhandle(fd))
+    overlap = Overlapped()
+    if operation & LOCK_UN:
+        ok = kernel.UnlockFileEx(handle, 0, 0xffffffff, 0xffffffff, ctypes.byref(overlap))
+    else:
+        flags = 2 | (1 if operation & LOCK_NB else 0)
+        ok = kernel.LockFileEx(handle, flags, 0, 0xffffffff, 0xffffffff, ctypes.byref(overlap))
+    if not ok:
+        error = ctypes.get_last_error()
+        if error == 33 and operation & LOCK_NB:
+            raise BlockingIOError(error, 'File is locked')
+        raise ctypes.WinError(error)
+
+
+def windows_identity(pid):
+    """Kernel creation time and image path; no PID-only identity or shell parsing."""
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    handle = kernel.OpenProcess(0x1000, False, pid)
+    if not handle:
+        if ctypes.get_last_error() == 87:
+            return None
+        raise ctypes.WinError(ctypes.get_last_error())
+    handle = wintypes.HANDLE(handle)
     try:
-        mode = msvcrt.LK_UNLCK if operation & LOCK_UN else msvcrt.LK_NBLCK if operation & LOCK_NB else msvcrt.LK_LOCK
-        try:
-            msvcrt.locking(fd, mode, 1)
-        except OSError as error:
-            if operation & LOCK_NB:
-                raise BlockingIOError(error.errno, str(error)) from error
-            raise
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not kernel.GetProcessTimes(handle, *(ctypes.byref(value) for value in times)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if times[1].dwHighDateTime or times[1].dwLowDateTime:
+            return None
+        path = ctypes.create_unicode_buffer(32768)
+        size = wintypes.DWORD(len(path))
+        if not kernel.QueryFullProcessImageNameW(handle, 0, path, ctypes.byref(size)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        start = str((times[0].dwHighDateTime << 32) | times[0].dwLowDateTime)
+        return {'pid': pid, 'start': start, 'executable': path.value, 'command': path.value}
     finally:
-        os.lseek(fd, position, os.SEEK_SET)
+        kernel.CloseHandle(handle)
 
 
 def background_process_options():

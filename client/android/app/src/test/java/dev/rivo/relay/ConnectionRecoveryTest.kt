@@ -11,6 +11,54 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ConnectionRecoveryTest {
+    @Test fun savingWaitsForProbeThenDownloadsExactlyOnce() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val releaseProbe = CompletableDeferred<Unit>()
+        try {
+            val api = RelayApi(server.url("/").toString())
+            val recovery = ConnectionRecovery(scope,
+                { releaseProbe.await(); api.call("/v1/node", reconnectProbe = true) },
+                { api.resetTransport() }, {}, {})
+            api.recovery = recovery
+            recovery.reconnect(manual = true)
+            val output = java.io.ByteArrayOutputStream()
+            val save = async { api.downloadFile("/fixture/qr.png", output) { _, _ -> } }
+            delay(50)
+            assertFalse(save.isCompleted)
+            assertEquals(0, server.requestCount)
+            server.enqueue(MockResponse().setBody("{}"))
+            server.enqueue(MockResponse().setBody("original-image"))
+            releaseProbe.complete(Unit)
+            withTimeout(3000) { save.await() }
+            assertEquals("/v1/node", server.takeRequest().path)
+            assertTrue(server.takeRequest().path!!.startsWith("/v1/files/download?"))
+            assertEquals(2, server.requestCount)
+            assertEquals("original-image", output.toString("UTF-8"))
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun downloadWaitsForForegroundRecoveryAndExplicitRetryCanRecover() = runTest {
+        var available = true
+        var attempts = 0
+        val recovery = ConnectionRecovery(this, { attempts++; delay(20); if (!available) throw IOException("offline") }, {}, {}, {}, backoffMillis = 1)
+        recovery.reconnect(manual = true)
+        val download = async { recovery.awaitDownloadConnection() }
+        runCurrent()
+        assertFalse(download.isCompleted)
+        advanceUntilIdle()
+        download.await()
+        assertEquals(1, attempts)
+        available = false
+        recovery.reconnect(manual = true)
+        advanceUntilIdle()
+        assertEquals(RecoveryState.DISCONNECTED, recovery.state.value)
+        available = true
+        recovery.awaitDownloadConnection()
+        assertEquals(RecoveryState.CONNECTED, recovery.state.value)
+        assertEquals(5, attempts)
+    }
+
     @Test fun retriesAreBoundedAndForegroundOrManualCanStartAnotherRound() = runTest {
         var attempts = 0
         var available = false

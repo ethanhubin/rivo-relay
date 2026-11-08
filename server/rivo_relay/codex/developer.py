@@ -7,19 +7,21 @@ from __future__ import annotations
 import hashlib
 import json
 import posixpath
+import ntpath
 import re
 import time
 import uuid
 
 from .connection import CodexError
-from .files import native_path, read_directory
+from .host_commands import node_command
+from .files import native_path, read_directory, _powershell
 from .diff_projection import structured_diff
 
 CAP = 2 * 1024 * 1024
 
 
 def command(connection, argv, cwd=None, *, allowed=(0,), cap=CAP):
-    result = connection.request('command/exec', {'command': argv, 'cwd': cwd,
+    result = node_command(connection, {'command': argv, 'cwd': cwd,
         'timeoutMs': 120000, 'outputBytesCap': cap}, timeout=130)
     if result.get('exitCode') not in allowed:
         raise CodexError((result.get('stderr') or '节点命令未完成')[:1000],
@@ -41,9 +43,13 @@ def diff_summary(patch):
 
 def project_directory(connection, path=None):
     if not path:
-        path = command(connection, ['pwd'], cap=32768).strip()
+        windows = str(connection.status().get('platform', '')).lower() in {'windows', 'win32'}
+        path = command(connection, _powershell('[Console]::OutputEncoding=[Text.Encoding]::UTF8; (Get-Location).Path') if windows else ['pwd'], cap=32768).strip()
     result = read_directory(connection, native_path(path))
-    result['parentPath'] = posixpath.dirname(path.rstrip('/')) or '/'
+    paths = ntpath if ntpath.splitdrive(path)[0] else posixpath
+    result['parentPath'] = paths.dirname(path.rstrip('/\\')) or '/'
+    if paths is ntpath and not ntpath.isabs(result['parentPath']):
+        result['parentPath'] = ntpath.splitdrive(path)[0] + '\\'
     return result
 
 
@@ -152,7 +158,8 @@ def worktree_presence(connection, source, path):
         raise CodexError('无法核对工作树目录状态', code='native_protocol') from error
     if not isinstance(metadata, dict) or not isinstance(metadata.get('path'), str) or not isinstance(metadata.get('exists'), bool):
         raise CodexError('无法核对工作树目录状态', code='native_protocol')
-    registered = metadata['path'] in [field[9:] for field in listing.split('\0') if field.startswith('worktree ')]
+    paths = ntpath if ntpath.splitdrive(path)[0] else posixpath
+    registered = paths.normcase(paths.normpath(metadata['path'])) in [paths.normcase(paths.normpath(field[9:])) for field in listing.split('\0') if field.startswith('worktree ')]
     return registered, metadata['exists']
 
 
@@ -173,8 +180,9 @@ class Workspaces:
         if not any(r['id'] == ref for r in info['refs']):
             raise CodexError('来源版本已变化，请重新选择', code='invalid_worktree_ref', http_status=409)
         identity = uuid.uuid4().hex
-        parent = posixpath.join(posixpath.dirname(source.rstrip('/')), '.rivo-worktrees')
-        path = posixpath.join(parent, identity)
+        paths = ntpath if ntpath.splitdrive(source)[0] else posixpath
+        parent = paths.join(paths.dirname(source.rstrip('/\\')), '.rivo-worktrees')
+        path = paths.join(parent, identity)
         self.service.connection.request('fs/createDirectory', {'path': parent, 'recursive': True})
         with self.db.transaction() as c:
             c.execute('INSERT INTO workspaces VALUES(?,?,NULL,?,?,?,?,NULL,?)',

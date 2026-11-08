@@ -79,7 +79,7 @@ def missing_workspace(error):
 
 class CodexService:
     def __init__(self, socket_path=None, on_event=None, codex_home=None, *, connection=None,
-                 runtime_mode='app_server', desktop_bridge_dir=None):
+                 runtime_mode='app_server', desktop_bridge_dir=None, codex_executable=None):
         self.on_event = on_event or (lambda event: None)
         self._lock = threading.RLock()
         self._gates = ThreadGates()
@@ -104,7 +104,7 @@ class CodexService:
         if connection is None:
             from .runtime import RuntimeConnection
             connection = RuntimeConnection(socket_path, self._event, codex_home,
-                                           mode=runtime_mode, bridge_directory=desktop_bridge_dir)
+                                           mode=runtime_mode, bridge_directory=desktop_bridge_dir, codex_executable=codex_executable)
         self.connection = connection or NativeConnection(socket_path, self._event, codex_home)
         if connection is not None:
             connection.on_event = self._event
@@ -211,8 +211,8 @@ class CodexService:
         if not status.get('connected'):
             reason = '原生运行时尚未连接，不能执行进程级交接'
         elif status.get('ownedWriter'):
-            available = True
-            reason = ''
+            available = status.get('platform') not in ('windows', 'win32')
+            reason = '' if available else 'Windows 自有会话支持停止、释放与恢复；不支持强制接管外部 writer'
         elif status.get('runtime') == 'desktop' or status.get('desktopShared') is True:
             reason = '共享 Desktop 不支持进程级接管；当前会话可以正常停止或释放订阅'
         else:
@@ -276,10 +276,10 @@ class CodexService:
         if not isinstance(trust_confirmed, bool):
             raise CodexError('文件夹信任确认必须是布尔值', code='invalid_request', http_status=400)
         if folder_name is not None:
-            import posixpath
+            import posixpath, ntpath
             if not isinstance(folder_name, str) or not folder_name.strip() or folder_name in ('.', '..') or any(c in folder_name for c in '/\\\0'):
                 raise CodexError('目录名称无效', code='invalid_path', http_status=400)
-            path = posixpath.join(path, folder_name)
+            path = (ntpath if ntpath.splitdrive(path)[0] else posixpath).join(path, folder_name)
             self.connection.request('fs/createDirectory', {'path': path, 'recursive': False})
         project = self.projects.add(path, name=name, idempotency_key=idempotency_key, trust_confirmed=trust_confirmed)
         return {"projectId": project["id"]}

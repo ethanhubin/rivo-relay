@@ -4,6 +4,7 @@ import java.io.IOException
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 
 enum class RecoveryState { CONNECTED, CONNECTING, DISCONNECTED }
 class ConnectionPausedException : IOException("节点已断开，请在设置中重连")
@@ -50,6 +51,13 @@ class ConnectionRecovery(private val scope: CoroutineScope, private val probe: s
                 if (mutable.value == RecoveryState.CONNECTING) mutable.value = RecoveryState.DISCONNECTED
             }
         }
+    }
+
+    /** An explicit download/retry may recover its read, but never replay a mutation. */
+    suspend fun awaitDownloadConnection() {
+        if (state.value == RecoveryState.DISCONNECTED) reconnect(manual = true)
+        if (state.first { it != RecoveryState.CONNECTING } != RecoveryState.CONNECTED)
+            throw ConnectionPausedException()
     }
 
     fun failed(error: Throwable) {

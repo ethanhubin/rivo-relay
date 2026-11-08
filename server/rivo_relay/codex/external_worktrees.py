@@ -4,6 +4,7 @@ import threading
 import time
 
 from .connection import CodexError
+from .host_commands import node_command
 
 
 _DISCOVER = r'''
@@ -59,7 +60,7 @@ class ExternalWorktrees:
                 result = self._cache[2]
             else:
                 try:
-                    response = self.connection.request('command/exec', {'command': ['python3', '-c', _DISCOVER, key[1]],
+                    response = node_command(self.connection, {'command': ['python3', '-c', _DISCOVER, key[1]],
                         'timeoutMs': 30000, 'outputBytesCap': 1024 * 1024}, timeout=35)
                     result = json.loads(response.get('stdout', '')) if response.get('exitCode') == 0 else {}
                     if not isinstance(result, dict) or not isinstance(result.get('matches'), dict) or not isinstance(result.get('missing'), list):

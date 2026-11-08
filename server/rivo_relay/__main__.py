@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 
 import argparse
-import fcntl
+from .codex import native_history_support as fcntl
 import json
 import os
 import signal
@@ -34,9 +34,10 @@ def parser():
             sub.add_argument("--key", type=Path)
             sub.add_argument("--native-socket", type=Path)
             sub.add_argument("--codex-home", type=Path, default=Path.home() / ".codex")
-            sub.add_argument('--codex-runtime', choices=('auto', 'desktop', 'app_server'),
+            sub.add_argument('--codex-runtime', choices=('auto', 'desktop', 'app_server', 'stdio'),
                              default=os.environ.get('RIVO_CODEX_RUNTIME', 'auto'))
             sub.add_argument('--desktop-bridge-dir', type=Path)
+            sub.add_argument('--codex-executable', type=Path, help='Explicit local Codex executable for stdio mode')
         if name == "pair":
             sub.add_argument("--url", required=True)
             sub.add_argument("--ttl", type=int, default=300)
@@ -58,7 +59,8 @@ def main(argv=None):
         cert=getattr(args, "cert", None), key=getattr(args, "key", None),
         codex_home=getattr(args, "codex_home", Path.home() / ".codex"),
         codex_runtime=getattr(args, 'codex_runtime', 'auto'),
-        desktop_bridge_dir=getattr(args, 'desktop_bridge_dir', None))
+        desktop_bridge_dir=getattr(args, 'desktop_bridge_dir', None),
+        codex_executable=getattr(args, 'codex_executable', None))
     try:
         config.prepare()
         if args.command == "serve":
@@ -118,7 +120,7 @@ def serve(config: Config, native_socket: Path | None):
             raise ValueError("A Relay service already owns this workspace")
         bus = EventBus()
         native = CodexService(socket_path=native_socket, codex_home=config.codex_home, on_event=bus.publish,
-                              runtime_mode=config.codex_runtime, desktop_bridge_dir=config.desktop_bridge_dir)
+                              runtime_mode=config.codex_runtime, desktop_bridge_dir=config.desktop_bridge_dir, codex_executable=config.codex_executable)
         app = RelayApp(config, native, bus)
         server = None
         try:

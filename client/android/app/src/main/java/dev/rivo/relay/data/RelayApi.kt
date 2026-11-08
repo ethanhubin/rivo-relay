@@ -160,7 +160,21 @@ class RelayApi(private val base: String, private val token: String = "", private
         })
     }
 
-    suspend fun downloadFile(path: String, output: java.io.OutputStream, progress: (Long, Long) -> Unit): Unit = suspendCancellableCoroutine { continuation ->
+    private suspend fun <T> downloadRead(read: suspend () -> T): T {
+        recovery?.awaitDownloadConnection()
+        return try { read() } catch (paused: ConnectionPausedException) {
+            // Foreground recovery can start between the preflight and dispatch.
+            // This exception is thrown before sending; retry only this explicit read.
+            recovery?.awaitDownloadConnection()
+            read()
+        }
+    }
+
+    suspend fun downloadFile(path: String, output: java.io.OutputStream, progress: (Long, Long) -> Unit) {
+        downloadRead { downloadFileConnected(path, output, progress) }
+    }
+
+    private suspend fun downloadFileConnected(path: String, output: java.io.OutputStream, progress: (Long, Long) -> Unit): Unit = suspendCancellableCoroutine { continuation ->
         val call = transfers
             .newCall(request("/v1/files/download?path=" + encoded(path)))
         continuation.invokeOnCancellation { call.cancel() }
@@ -195,10 +209,11 @@ class RelayApi(private val base: String, private val token: String = "", private
         })
     }
 
-    suspend fun cachedFile(cacheDirectory: java.io.File, path: String, progress: (Long, Long) -> Unit): java.io.File =
+    suspend fun cachedFile(cacheDirectory: java.io.File, path: String, progress: (Long, Long) -> Unit): java.io.File = downloadRead {
         ResumableDownload.get(java.io.File(cacheDirectory, "downloads"), "$base\u0000$token", path,
             transfers,
             request("/v1/files/download?path=" + encoded(path)), progress)
+    }
 
     internal fun mediaTransport(): OkHttpClient = mediaReader
     internal fun mediaRequest(source: String, thumbnail: Boolean = false): Request {
@@ -208,10 +223,11 @@ class RelayApi(private val base: String, private val token: String = "", private
         } else "/v1/media/${if (thumbnail) "thumbnail" else "content"}?source=${encoded(source)}"
         return request(path)
     }
-    suspend fun cachedMedia(cacheDirectory: java.io.File, source: String, progress: (Long, Long) -> Unit): java.io.File =
+    suspend fun cachedMedia(cacheDirectory: java.io.File, source: String, progress: (Long, Long) -> Unit): java.io.File = downloadRead {
         ResumableDownload.get(java.io.File(cacheDirectory, "downloads"), "$base\u0000$token", "media:$source",
             transfers,
             mediaRequest(source), progress)
+    }
 
     /** PCM chunks are writes: cancellation propagates and the transport never retries. */
     suspend fun speechChunk(streamId: String, pcm: ByteArray): JSONObject = suspendCancellableCoroutine { continuation ->

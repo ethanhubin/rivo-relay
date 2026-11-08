@@ -12,13 +12,19 @@ from .desktop import DesktopConnection
 
 class RuntimeConnection:
     def __init__(self, socket_path=None, on_event=None, codex_home=None, *, mode='auto',
-                 bridge_directory=None, native=None, desktop=None, clock=time.monotonic):
-        if mode not in {'auto', 'desktop', 'app_server'}:
+                 bridge_directory=None, codex_executable=None, native=None, desktop=None, clock=time.monotonic):
+        if mode not in {'auto', 'desktop', 'app_server', 'stdio'}:
             raise ValueError('invalid Codex runtime mode')
         self.mode, self.on_event, self._clock = mode, on_event or (lambda _: None), clock
         if native is None:
-            from .owned_writer import SessionWriters
-            native = SessionWriters(NativeConnection(socket_path, codex_home=codex_home))
+            from .owned_writer import SessionWriters, StdioMetadata
+            if mode == 'stdio':
+                if socket_path:
+                    raise ValueError('stdio mode cannot use --native-socket')
+                metadata = StdioMetadata(codex_executable, codex_home)
+            else:
+                metadata = NativeConnection(socket_path, codex_home=codex_home)
+            native = SessionWriters(metadata)
         self.native = native
         self.desktop = desktop or DesktopConnection(bridge_directory, codex_home=codex_home)
         self.codex_home, self.socket_path = self.native.codex_home, self.native.socket_path
@@ -78,7 +84,7 @@ class RuntimeConnection:
             try:
                 self._start_backend('app_server')
             except CodexError:
-                if self.mode == 'app_server': raise
+                if self.mode in {'app_server', 'stdio'}: raise
             self._observe_backend_generation('app_server')
             self._refresh()
         with self._lock:
