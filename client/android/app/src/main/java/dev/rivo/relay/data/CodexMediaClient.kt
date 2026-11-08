@@ -17,12 +17,22 @@ class CodexMediaClient(val api: RelayApi, val threadId: String, context: Context
         private set
     fun updateRevision(value: Long) { revision = value }
     private val versions = androidx.compose.runtime.mutableStateMapOf<String, JSONObject>()
-    private val checks = MediaCheckOrder()
+    private val validationJob = kotlinx.coroutines.SupervisorJob()
+    private val flights = MediaValidationFlights(kotlinx.coroutines.CoroutineScope(validationJob + kotlinx.coroutines.Dispatchers.Main.immediate))
     suspend fun verify(source: String) {
         if (source.startsWith("data:") || source.startsWith("content:") || source.startsWith("file:")) return
-        val check = checks.begin(source)
-        val result = api.call("/v1/media/versions?source=${encoded(source)}")
-        if (checks.isLatest(source, check)) versions[source] = result
+        flights.run(source) {
+        val result = try {
+            readMediaVersions { api.call("/v1/media/versions?source=${encoded(source)}") }
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            if (!isTransientMediaFailure(error)) versions.remove(source)
+            throw error
+        }
+        run {
+            if (result == null) versions.remove(source) else versions[source] = result
+        }
+    }
     }
     fun hasVersion(source: String): Boolean = versions.containsKey(source)
     fun imageRequest(context: Context, source: String, thumbnail: Boolean): ImageRequest.Builder {
@@ -36,6 +46,7 @@ class CodexMediaClient(val api: RelayApi, val threadId: String, context: Context
             .apply { if (!version.isNullOrBlank()) addHeader("If-Match", version) }
             .memoryCacheKey(key + ":" + version.orEmpty()).diskCacheKey(key + ":" + version.orEmpty())
             .memoryCachePolicy(if (version.isNullOrBlank()) CachePolicy.DISABLED else CachePolicy.ENABLED)
+            .diskCachePolicy(if (version.isNullOrBlank()) CachePolicy.DISABLED else CachePolicy.ENABLED)
     }
     suspend fun lookup(source: String): JSONObject? {
         val id = Regex("^/v1/media/(?:library|generated)/([a-f0-9]{64})/(?:content|thumbnail)$").matchEntire(source)?.groupValues?.get(1)
@@ -54,7 +65,7 @@ class CodexMediaClient(val api: RelayApi, val threadId: String, context: Context
         return MediaGenerationInfo(info.string("prompt").ifBlank { info.string("revisedPrompt").ifBlank { info.string("revised_prompt") } }, info.string("negativePrompt"), "Codex", parameters)
     }
     suspend fun cached(context: Context, source: String, progress: (Long, Long) -> Unit = { _, _ -> }): File = api.cachedMedia(context.cacheDir, source, progress)
-    fun close() = Unit // Loader belongs to the node API, not a chat composition.
+    fun close() { validationJob.cancel() } // Shared image loader remains owned by the API.
 }
 data class MediaGenerationInfo(val prompt: String, val negativePrompt: String = "", val source: String, val parameters: Map<String, String> = emptyMap())
 data class MediaPromptResult(val prompt: String, val source: String = "reverse")

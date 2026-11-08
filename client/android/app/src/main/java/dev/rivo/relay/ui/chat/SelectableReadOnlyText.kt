@@ -5,6 +5,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.activity.compose.BackHandler
@@ -33,7 +35,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.KeyEventType
@@ -80,8 +89,18 @@ internal fun SelectableReadOnlyText(
   onOpenImageLink: ((String) -> Unit)? = null,
   textStyle: TextStyle,
 ) {
-  var selection by remember(rendered.text) { mutableStateOf(TextRange.Zero) }
+  var selection by rememberSaveable(stateSaver = listSaver<TextRange, Int>(
+    save = { listOf(it.start, it.end) }, restore = { TextRange(it[0], it[1]) })) { mutableStateOf(TextRange.Zero) }
+  var previousText by rememberSaveable { mutableStateOf(rendered.text) }
+  if (previousText != rendered.text) {
+    selection = selectionAfterTextUpdate(previousText, rendered.text, selection)
+    previousText = rendered.text
+  }
   var textLayout by remember(rendered) { mutableStateOf<TextLayoutResult?>(null) }
+  var wasFocused by remember { mutableStateOf(false) }
+  var visibleTextBounds by remember { mutableStateOf(Rect.Zero) }
+  var textOrigin by remember { mutableStateOf(Offset.Zero) }
+  var hostOrigin by remember { mutableStateOf(Offset.Zero) }
   val interactionSource = remember { MutableInteractionSource() }
   val currentOpenLink by rememberUpdatedState(onOpenLink)
   val currentOpenImageLink by rememberUpdatedState(onOpenImageLink)
@@ -121,15 +140,26 @@ internal fun SelectableReadOnlyText(
   fun selectedText(): String {
     val start = minOf(selection.start, selection.end).coerceIn(0, rendered.length)
     val end = maxOf(selection.start, selection.end).coerceIn(start, rendered.length)
-    return rendered.text.substring(start, end).ifEmpty { rendered.text }
+    return rendered.text.substring(start, end)
   }
 
-  ThemedTextContextMenu {
+  Box(Modifier.onGloballyPositioned { hostOrigin = it.positionInWindow() }) {
+    BackHandler(!selection.collapsed) { selection = TextRange.Zero }
     BasicTextField(
       value = TextFieldValue(annotatedString = rendered, selection = selection),
       onValueChange = { selection = it.selection },
       modifier =
         modifier
+          // Measure the text itself instead of inheriting the input field minimum width.
+          .width(IntrinsicSize.Max)
+          .onGloballyPositioned {
+            textOrigin = it.positionInWindow()
+            visibleTextBounds = it.boundsInWindow().translate(-textOrigin)
+          }
+          .onFocusChanged {
+            if (wasFocused && !it.isFocused && !visibleTextBounds.isEmpty) selection = TextRange.Zero
+            wasFocused = it.isFocused
+          }
           .pointerInput(rendered, onOpenLink != null, onOpenImageLink != null) {
             if (onOpenLink == null && onOpenImageLink == null) return@pointerInput
             val movementLimit = 12.dp.toPx()
@@ -153,34 +183,49 @@ internal fun SelectableReadOnlyText(
               }
             }
           }
-          .filterTextContextMenuComponents { component ->
-            component.key == MessageTextMenuKeys.SelectAll ||
-              component.key == MessageTextMenuKeys.Copy ||
-              (onQuoteText != null && component.key == MessageTextMenuKeys.Quote)
-          }
-          .appendTextContextMenuComponents {
-            item(MessageTextMenuKeys.SelectAll, "全选") {
-              selection = TextRange(0, rendered.length)
-            }
-            item(MessageTextMenuKeys.Copy, "复制") {
-              onCopyText(selectedText())
-              selection = TextRange.Zero
-              close()
-            }
-            onQuoteText?.let { quote ->
-              item(MessageTextMenuKeys.Quote, "引用") {
-                quote(selectedText())
-                selection = TextRange.Zero
-                close()
-              }
-            }
-          }
+          // Read-only message actions are driven by the actual selection, not toolbar requests.
+          .filterTextContextMenuComponents { false }
           .testTag(testTag),
       readOnly = true,
       textStyle = textStyle,
       interactionSource = interactionSource,
       onTextLayout = { textLayout = it },
     )
+    if (!selection.collapsed && selectedText().isNotEmpty()) {
+      val anchor = textLayout?.let { layout ->
+        val start = minOf(selection.start, selection.end).coerceIn(0, rendered.length)
+        val end = maxOf(selection.start, selection.end).coerceIn(start, rendered.length)
+        // Inspect visible lines only; an offscreen selection must not pin a menu to the edge.
+        val firstLine = layout.getLineForVerticalPosition(visibleTextBounds.top)
+        val lastLine = layout.getLineForVerticalPosition(visibleTextBounds.bottom)
+        (firstLine..lastLine).firstNotNullOfOrNull { line ->
+          val from = maxOf(start, layout.getLineStart(line))
+          val to = minOf(end, layout.getLineEnd(line))
+          if (from >= to) null else visibleSelectionAnchor(
+            layout.getPathForRange(from, to).getBounds(), visibleTextBounds)
+        }
+      }
+      if (anchor != null) ImageTextActionMenu(
+        actions = buildList {
+          add(ImageMenuAction("全选", "全选", "selection_select_all") { selection = TextRange(0, rendered.length) })
+          add(ImageMenuAction("复制", "复制", "selection_copy") {
+            onCopyText(selectedText())
+            selection = TextRange.Zero
+          })
+          onQuoteText?.let { quote ->
+            add(ImageMenuAction("引用", "引用", "selection_quote") {
+              quote(selectedText())
+              selection = TextRange.Zero
+            })
+          }
+        },
+        position = anchor + textOrigin - hostOrigin,
+        tag = "message_text_context_menu",
+        focusable = false,
+        // Handle popups and scrolling are not selection cancellation.
+        onDismiss = {},
+      )
+    }
   }
 }
 
@@ -206,7 +251,9 @@ internal fun ThemedTextContextMenu(
           .pointerInput(provider) {
             awaitEachGesture {
               awaitFirstDown(requireUnconsumed = false)
-              provider.dismiss()
+              // A down event may begin scrolling or selection adjustment.
+              // Let Compose own selection dismissal; closing its session here
+              // prevents the toolbar from following an unchanged selection.
               provider.resumeAfterUserGesture()
             }
           }
@@ -228,6 +275,7 @@ private fun ThemedTextContextMenuPopup(
   provider: ThemedTextContextMenuProvider,
 ) {
   val items = session.dataProvider.data().components.filterIsInstance<TextContextMenuItem>()
+    .filter { allowedTextMenuKey(it.key) }
   if (items.isEmpty()) {
     LaunchedEffect(session) { session.close() }
     return
@@ -250,7 +298,9 @@ private fun ThemedTextContextMenuPopup(
 
   Popup(
     popupPositionProvider = positionProvider,
-    onDismissRequest = ::dismissMenu,
+    // Selection handles live in separate popups. Their down event is an outside
+    // touch here; allow Compose to show the toolbar again when dragging ends.
+    onDismissRequest = session::close,
     properties = PopupProperties(focusable = false),
   ) {
     Surface(
@@ -290,10 +340,18 @@ private fun ThemedTextContextMenuPopup(
   }
 }
 
+// Explicit keys avoid device-, locale-, and installed-app-dependent process-text actions.
+internal fun allowedTextMenuKey(key: Any): Boolean =
+  key == TextContextMenuKeys.CutKey || key == TextContextMenuKeys.CopyKey ||
+    key == TextContextMenuKeys.PasteKey || key == TextContextMenuKeys.SelectAllKey ||
+    key == TextContextMenuKeys.AutofillKey || key == PasteImageKey ||
+    key == MessageTextMenuKeys.SelectAll || key == MessageTextMenuKeys.Copy ||
+    key == MessageTextMenuKeys.Quote
+
 private fun TextContextMenuItem.keepsMenuOpenAfterClick(): Boolean =
   key == MessageTextMenuKeys.SelectAll || key == TextContextMenuKeys.SelectAllKey
 
-private class ThemedTextContextMenuProvider : TextContextMenuProvider {
+internal class ThemedTextContextMenuProvider : TextContextMenuProvider {
   var session by mutableStateOf<ThemedTextContextMenuSession?>(null)
     private set
   private var suppressedUntilUserGesture = false
@@ -330,7 +388,7 @@ private class NonClosingTextContextMenuSession : TextContextMenuSession {
   override fun close() = Unit
 }
 
-private class ThemedTextContextMenuSession(
+internal class ThemedTextContextMenuSession(
   val dataProvider: TextContextMenuDataProvider,
 ) : TextContextMenuSession {
   private val closeSignal = Channel<Unit>(capacity = Channel.CONFLATED)
@@ -366,6 +424,19 @@ internal class TextMenuPositionProvider(
       else (anchorBounds.top + selectionPosition.y + marginPx).coerceIn(0, maxY)
     return IntOffset(x, y)
   }
+}
+
+internal fun visibleSelectionAnchor(selectionBounds: Rect, viewport: Rect): Offset? {
+  val visible = selectionBounds.intersect(viewport)
+  return if (visible.isEmpty) null else visible.topLeft
+}
+
+internal fun selectionAfterTextUpdate(previous: String, current: String, selection: TextRange): TextRange {
+  // Preserve offsets only while their meaning remains unchanged.
+  if (current.startsWith(previous)) return selection
+  if (previous.startsWith(current)) return TextRange(
+    selection.start.coerceIn(0, current.length), selection.end.coerceIn(0, current.length))
+  return TextRange.Zero
 }
 
 private fun paragraphTextRange(text: String, position: Int): TextRange {

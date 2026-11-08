@@ -38,12 +38,17 @@ internal fun AssistantCopyButton(text: String, identity: String) {
 }
 
 @Composable
-internal fun AssistantMessageFooter(text: String, identity: String, outputAt: Long?) {
+internal fun AssistantMessageFooter(text: String, identity: String, outputAt: Long?, completionLabel: String? = null) {
     androidx.compose.foundation.layout.Row(
         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
         horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
     ) {
-        if (outputAt != null) Text(
+        if (completionLabel != null) Text(
+            completionLabel,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.testTag("session_completion"),
+        ) else if (outputAt != null) Text(
             java.time.Instant.ofEpochSecond(outputAt).atZone(java.time.ZoneId.systemDefault())
                 .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm")),
             style = MaterialTheme.typography.labelMedium,

@@ -41,6 +41,7 @@ internal fun ImageTextActionMenu(
   position: Offset,
   tag: String,
   onDismiss: () -> Unit,
+  focusable: Boolean = true,
 ) {
   val density = LocalDensity.current
   val maxWidth = with(density) { LocalWindowInfo.current.containerSize.width.toDp() - 16.dp }
@@ -49,7 +50,7 @@ internal fun ImageTextActionMenu(
       IntOffset(position.x.roundToInt(), position.y.roundToInt()), with(density) { 8.dp.roundToPx() },
     ),
     onDismissRequest = onDismiss,
-    properties = PopupProperties(focusable = true),
+    properties = PopupProperties(focusable = focusable),
   ) {
     Surface(
       shape = RoundedCornerShape(28.dp),

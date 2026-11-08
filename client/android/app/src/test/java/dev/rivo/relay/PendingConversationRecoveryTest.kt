@@ -29,7 +29,8 @@ class PendingConversationRecoveryTest {
             assertEquals(setOf("orphan"), ConversationStore(directory).unresolvedSubmissionIds())
             val controller = SessionController(RelayApi("http://127.0.0.1:1"), scope, store) { fail(it.message) }
             controller.resolveSubmissionDurably("orphan", JSONObject().put("status", "failed"))
-            assertEquals(listOf("accepted"), ConversationStore(directory).loadPendingMessages().map { it.submissionId })
+            assertEquals(setOf("orphan", "accepted"), ConversationStore(directory).loadPendingMessages().map { it.submissionId }.toSet())
+            assertEquals("failed", ConversationStore(directory).loadPendingMessages().first { it.submissionId == "orphan" }.delivery)
             assertTrue(store.unresolvedSubmissionIds().isEmpty())
             controller.close()
         } finally { scope.cancel(); directory.deleteRecursively() }
@@ -199,7 +200,7 @@ class PendingConversationRecoveryTest {
             assertEquals("send-id", ConversationStore(directory).loadPendingMessages().single().clientId)
             assertNull(controller.state.value.snapshot)
             controller.resolveSubmission("send-id", JSONObject().put("status", "failed"))
-            assertTrue(ConversationStore(directory).loadPendingMessages().isEmpty())
+            assertEquals("failed", ConversationStore(directory).loadPendingMessages().single().delivery)
         } finally { scope.cancel(); directory.deleteRecursively() }
     }
 

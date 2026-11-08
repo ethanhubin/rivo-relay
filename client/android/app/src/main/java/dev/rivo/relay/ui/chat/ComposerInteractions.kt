@@ -42,7 +42,7 @@ internal fun Modifier.pasteImageAttachments(context: Context, enabled: Boolean, 
         if (images.isNotEmpty()) item(PasteImageKey, "粘贴图片") { onPasteImages(images); close() }
     }
 }
-private val PasteImageKey = Any()
+internal val PasteImageKey = Any()
 private val pastedImageTypes = setOf("image/jpeg", "image/png", "image/webp")
 private fun clipboardImageUris(context: Context, clip: ClipData): List<Uri> = buildList {
     repeat(clip.itemCount) { index ->

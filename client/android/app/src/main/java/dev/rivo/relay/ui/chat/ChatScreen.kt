@@ -51,6 +51,7 @@ private val chatSectionSpacing = 12.dp
 
 @Composable
 fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: List<JSONObject>, onBack: () -> Unit,
+    onDismissFailedMessage: (String) -> Unit = {},
     onSend: (JSONArray, String?, String?, () -> Unit) -> Unit, onStop: () -> Unit,
     onRespond: (NativeRequest, JSONObject) -> Unit, onRefresh: () -> Unit, onLoadModels: () -> Unit, onEarlier: () -> Unit,
     readFile: suspend (String) -> JSONObject,
@@ -289,6 +290,10 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             .filter { it.type in setOf("agentMessage", "agent_message", "exitedReviewMode") }
             .associate { it.turnId to it.id }
     }
+    val completionLabel = snapshot?.takeIf { !state.stale && !state.loading && state.readError == null &&
+        !submissionInFlight && state.pendingMessages.isEmpty() }?.let(::sessionCompletionLabel)
+    val completionReplyId = if (completionLabel?.startsWith("已完成") == true)
+        snapshot?.turnSettings?.lastOrNull()?.turnId?.let { lastReplyIds[it] } else null
     var historyAnchor by remember(state.id) { mutableStateOf<HistoryScrollAnchor?>(null) }
     // The paging button can be the first visible item. Anchor a timeline row
     // instead, retaining its viewport position when older rows are inserted.
@@ -417,7 +422,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                         val textParts = content.filter { nativeImageSource(it, cwd) == null }
                         if (textParts.isNotEmpty() || content.isEmpty()) Surface(color = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                         shape = MaterialTheme.shapes.large, modifier = Modifier.widthIn(max = 326.dp)) {
-                        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                            .pendingMessageShimmer(message.raw.string("relayDelivery") in setOf("submitting", "accepted")), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             if (content.isEmpty()) MessageContent(message.text, cwd, onQuoteText = quoteText, onSaveFile = saveFile, inlineImage = { source ->
                                 val target = if (isHttpWebLink(source)) source else nativeFilePath(source, cwd)
                                 target?.let { NativeImage(it, readFile, downloadFile = downloadFile) }
@@ -443,9 +449,36 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                                         remaining = if (imageIndex == 2) (attachmentImages.size - 3).coerceAtLeast(0) else 0)
                                 }
                             }
-                            message.raw.string("relayDelivery").takeIf(String::isNotBlank)?.let { delivery ->
-                                Text(when (delivery) { "submitting" -> "发送中…"; "accepted" -> "已送达，等待同步"; else -> "正在确认是否送达" },
-                                    style = MaterialTheme.typography.labelSmall, modifier = Modifier.testTag("message_delivery_$delivery"))
+                            val delivery = message.raw.string("relayDelivery")
+                            if (delivery in setOf("unknown", "failed")) {
+                                var showDeliveryInfo by remember(message.id) { mutableStateOf(false) }
+                                IconButton(onClick = { showDeliveryInfo = true }, modifier = Modifier.testTag("message_delivery_$delivery")) {
+                                    Text("ⓘ", modifier = Modifier.semantics { contentDescription = if (delivery == "failed") "发送失败，查看重试方式" else "正在确认是否送达" },
+                                        color = if (delivery == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                if (showDeliveryInfo) AlertDialog(
+                                    onDismissRequest = { showDeliveryInfo = false },
+                                    title = { Text(if (delivery == "failed") "发送失败" else "正在确认是否送达") },
+                                    text = { Text(if (delivery == "failed") "消息已保留，可重新发送这条消息。" else "暂时无法确认服务端是否收到消息，正在核对结果，请勿重复发送。") },
+                                    confirmButton = { TextButton(onClick = { showDeliveryInfo = false }) { Text("关闭") } },
+                                    dismissButton = { if (delivery == "failed") TextButton(
+                                        enabled = !busy && !inputLocked && !blocked && !state.stale && (snapshot != null || pendingTitle != null && pendingReady),
+                                        onClick = {
+                                            showDeliveryInfo = false
+                                            val retried = { onDismissFailedMessage(message.raw.string("clientId")) }
+                                            val input = if (content.isEmpty()) JSONArray().put(JSONObject().put("type", "text").put("text", message.text)) else JSONArray(content)
+                                            if (onConfiguredSend != null) onConfiguredSend(input, selectedModel, selectedEffort, selectedMode, selectedServiceTier, JSONObject().apply {
+                                                if (pendingTitle != null) {
+                                                    pendingGoal?.let { put("goal", JSONObject(it)) }
+                                                    selectedSandbox?.takeUnless { it == "inherit" }?.let { put("sandbox", it) }
+                                                    selectedApproval?.takeUnless { it == "inherit" }?.let { put("approvalPolicy", it) }
+                                                }
+                                            }, retried)
+                                            else if (onSendWithMode != null) onSendWithMode(input, selectedModel, selectedEffort, selectedMode, retried)
+                                            else onSend(input, selectedModel, selectedEffort, retried)
+                                        },
+                                    ) { Text("重试") } },
+                                )
                             }
                     } else if (assistant) {
                         val isLastReply = lastReplyIds[message.turnId] == message.id
@@ -462,7 +495,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                             ChangeSummary(snapshot.changes.firstOrNull { it.string("turnId") == message.turnId }) { developerOpen = true }
                             ReviewDiagnostic(snapshot.reviewDiagnostics.lastOrNull { it.string("turnId") == message.turnId })
                         }
-                        AssistantMessageFooter(message.text, "${message.turnId}:${message.id}", timing.outputAt)
+                        AssistantMessageFooter(message.text, "${message.turnId}:${message.id}", timing.outputAt,
+                            completionLabel = completionLabel.takeIf { message.id == completionReplyId })
                     }
                     else if (message.type == "imageGeneration" && (message.raw.string("savedPath").isNotBlank() || message.raw.string("result").isNotBlank())) {
                         generatedImageSource(message, mediaIndex)?.let { NativeImage(it, readFile, downloadFile = downloadFile, identity = "${message.turnId}:${message.id}") }
@@ -490,9 +524,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     ShimmeringStageText("正在处理…", Modifier.testTag("execution_stage_shimmer"))
                 }
             }
-            val completionLabel = snapshot?.takeIf { !state.stale && !state.loading && state.readError == null &&
-                !submissionInFlight && state.pendingMessages.isEmpty() }?.let(::sessionCompletionLabel)
-            if (completionLabel != null) item(key = "session_completion") {
+            if (completionLabel != null && completionReplyId == null) item(key = "session_completion") {
                 Text(completionLabel, Modifier.fillMaxWidth().testTag("session_completion"),
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }

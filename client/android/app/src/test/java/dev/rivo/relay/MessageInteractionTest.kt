@@ -73,4 +73,20 @@ class MessageInteractionTest {
         assertEquals("text/plain", fileMimeType("source.yaml", "application/octet-stream; charset=binary"))
         assertEquals("text/markdown", fileMimeType("README.md", "text/plain"))
     }
+    @Test fun streamingAppendPreservesSelectionButReplacementClearsIt() {
+        val range = androidx.compose.ui.text.TextRange(4, 1)
+        assertEquals(range, selectionAfterTextUpdate("hello", "hello world", range))
+        assertEquals(androidx.compose.ui.text.TextRange(2, 1), selectionAfterTextUpdate("hello", "he", range))
+        assertEquals(androidx.compose.ui.text.TextRange.Zero, selectionAfterTextUpdate("hello", "other", range))
+        assertEquals(androidx.compose.ui.text.TextRange.Zero, selectionAfterTextUpdate("hello", "", range))
+    }
+    @Test fun selectionMenuTracksVisibleIntersectionInsteadOfWindowEdge() {
+        val viewport = androidx.compose.ui.geometry.Rect(0f, 100f, 200f, 300f)
+        assertNull(visibleSelectionAnchor(androidx.compose.ui.geometry.Rect(0f, 0f, 100f, 90f), viewport))
+        assertNull(visibleSelectionAnchor(androidx.compose.ui.geometry.Rect(0f, 300f, 100f, 350f), viewport))
+        assertEquals(androidx.compose.ui.geometry.Offset(20f, 100f),
+            visibleSelectionAnchor(androidx.compose.ui.geometry.Rect(20f, 80f, 100f, 140f), viewport))
+        assertEquals(androidx.compose.ui.geometry.Offset(20f, 150f),
+            visibleSelectionAnchor(androidx.compose.ui.geometry.Rect(20f, 150f, 100f, 180f), viewport))
+    }
 }

@@ -37,6 +37,7 @@ internal fun TaskModeIcon(mode: String) {
 @Composable
 internal fun ComposerModeSelector(mode: String, enabled: Boolean, goalEnabled: Boolean, onSelect: (String) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
+    androidx.activity.compose.BackHandler(expanded) { expanded = false }
     LaunchedEffect(enabled) { if (!enabled) expanded = false }
     val labels = listOf("default" to "普通模式", "plan" to "计划模式", "goal" to "目标模式")
     val gap = with(LocalDensity.current) { 10.dp.roundToPx() }
@@ -48,7 +49,7 @@ internal fun ComposerModeSelector(mode: String, enabled: Boolean, goalEnabled: B
             Text(labels.first { it.first == mode }.second, style = MaterialTheme.typography.labelMedium)
         }
         if (expanded) Popup(popupPositionProvider = remember(gap) { ModeMenuPosition(gap) },
-            onDismissRequest = { expanded = false }, properties = PopupProperties(focusable = true)) {
+            onDismissRequest = { expanded = false }, properties = PopupProperties(focusable = false)) {
             Surface(Modifier.width(258.dp).testTag("composer_mode_menu"), shape = RoundedCornerShape(18.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerLow, shadowElevation = 8.dp) {
                 Column(Modifier.padding(6.dp)) {

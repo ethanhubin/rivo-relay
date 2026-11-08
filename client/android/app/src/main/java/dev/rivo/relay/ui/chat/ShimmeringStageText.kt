@@ -4,6 +4,11 @@ import androidx.compose.animation.core.*
 import androidx.compose.material3.*
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.*
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -54,4 +59,33 @@ internal fun ShimmeringStageText(
     maxLines = maxLines,
     overflow = overflow,
   )
+}
+
+// Mask only the message content, keeping its formatting and the bubble background intact.
+@Composable
+internal fun Modifier.pendingMessageShimmer(pending: Boolean): Modifier {
+  if (!pending) return this
+  val transition = rememberInfiniteTransition(label = "message_delivery_shimmer")
+  val position by transition.animateFloat(
+    initialValue = -0.55f,
+    targetValue = 1.55f,
+    animationSpec = infiniteRepeatable(tween(1_550, easing = LinearEasing)),
+    label = "message_delivery_shimmer_position",
+  )
+  return graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+    .drawWithContent {
+      drawContent()
+      val width = size.width.coerceAtLeast(1f)
+      val center = position * width
+      drawRect(
+        brush = Brush.linearGradient(
+          0f to Color.Black.copy(alpha = 0.55f),
+          0.5f to Color.Black,
+          1f to Color.Black.copy(alpha = 0.55f),
+          start = Offset(center - width * 0.3f, 0f),
+          end = Offset(center + width * 0.3f, 0f),
+        ),
+        blendMode = BlendMode.DstIn,
+      )
+    }
 }

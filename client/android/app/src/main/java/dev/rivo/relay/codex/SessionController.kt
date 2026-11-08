@@ -302,12 +302,19 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         while (pendingByThread.size > 12) pendingByThread.remove(pendingByThread.keys.first())
         publishPending(threadId)
     }
+    fun dismissFailedMessage(clientId: String) {
+        pendingByThread.keys.toList().forEach { id ->
+            pendingByThread[id] = pendingByThread[id].orEmpty().filterNot { it.clientId == clientId && it.delivery == "failed" }
+            publishPending(id)
+        }
+        store?.enqueueRemovePendingMessages(setOf(clientId))
+    }
     fun pendingMessagesFor(threadId: String): List<PendingNativeMessage> = pendingByThread[threadId].orEmpty()
     suspend fun persistSubmission(submissionId: String) {
         pendingByThread.values.flatten().filter { it.submissionId == submissionId }.forEach { store?.savePendingMessage(it) }
     }
     private fun resolveMessage(message: PendingNativeMessage, response: org.json.JSONObject): PendingNativeMessage? = when (response.string("status")) {
-        "failed" -> null
+        "failed" -> message.copy(delivery = "failed")
         "accepted" -> if (message.kind in setOf("queue", "create")) null else message.copy(delivery = "accepted",
             nativeTurnId = response.optJSONObject("receipt")?.string("turnId")?.takeIf(String::isNotBlank))
         else -> message.copy(delivery = "unknown")

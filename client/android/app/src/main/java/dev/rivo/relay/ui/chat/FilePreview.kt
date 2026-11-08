@@ -126,15 +126,19 @@ internal fun NativeImage(source: String, readFile: suspend (String) -> JSONObjec
                     bitmap = (cached.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap?.asImageBitmap()
                 }
                 mediaClient.verify(source)
+                val result = dev.rivo.relay.data.retryChangedMedia(refresh = { mediaClient.verify(source) }) {
                 val request = mediaClient.imageRequest(context, source, true).size(previewEdge).allowHardware(false).build()
                 val result = mediaClient.imageLoader.execute(request)
+                if (result is coil.request.ErrorResult) throw result.throwable
+                result
+                }
                 (result.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap?.asImageBitmap()
             } else if (isHttpWebLink(source) || (!source.startsWith("data:") && nativeCache != null))
                 previewBitmap(cacheFileSource(context, source, downloadFile, nativeCache) { _, _ -> }, previewEdge)
             else previewBitmap(imageBytes(source, readFile))
             if (bitmap == null) error = "此图片格式暂不支持预览"
         }
-        catch (e: Exception) { if (e is CancellationException) throw e; bitmap = null; error = e.message ?: "图片暂时无法读取" }
+        catch (e: Exception) { if (e is CancellationException) throw e; bitmap = dev.rivo.relay.data.imageAfterValidationFailure(bitmap, e); error = e.message ?: "图片暂时无法读取" }
     }
     when {
         bitmap != null -> Box(if (compact) modifier.size(76.dp, 88.dp)

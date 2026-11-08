@@ -248,7 +248,7 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
     /** Include overlays left behind if the process died between receipt and cleanup. */
     suspend fun unresolvedSubmissionIds(): Set<String> = withContext(Dispatchers.IO) {
         sentDraftCheckpoints().keys + pendingSubmissionCheckpoints().keys +
-            loadPendingMessages().filter { it.delivery != "accepted" }.map { it.submissionId }
+            loadPendingMessages().filter { it.delivery !in setOf("accepted", "failed") }.map { it.submissionId }
     }
     fun markSentDraftResolved(submissionId: String, response: JSONObject): Boolean {
         val saved = getMetadata("sent-draft:$submissionId")?.let(::JSONObject) ?: return false
@@ -453,10 +453,10 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
                 val state = read(source.nameWithoutExtension, 16 * 1024) ?: return@forEach
                 if (state.string("submissionId") != submissionId) return@forEach
                 val status = response.string("status")
-                if (status == "failed" || status == "accepted" && state.string("kind") in setOf("queue", "create")) {
+                if (status == "accepted" && state.string("kind") in setOf("queue", "create")) {
                     removePendingMessage(state.string("clientId"))
                 } else {
-                    state.put("delivery", if (status == "accepted") "accepted" else "unknown")
+                    state.put("delivery", when (status) { "accepted", "failed" -> status; else -> "unknown" })
                     response.optJSONObject("receipt")?.string("turnId")?.takeIf(String::isNotBlank)?.let { state.put("nativeTurnId", it) }
                     write(source.nameWithoutExtension, state.toString())
                 }

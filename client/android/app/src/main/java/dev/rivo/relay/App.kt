@@ -329,7 +329,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     val generation = pendingGeneration
                     val pendingMessages = (node.session.pendingMessagesFor(draftKey) + createdThread?.let(node.session::pendingMessagesFor).orEmpty()).distinctBy { it.clientId }
                     ChatScreen(SessionState(id = draftKey, pendingMessages = pendingMessages, overlayRevision = session.overlayRevision), submission.busy, submission.pending != null || network == null || handoffLoading, catalog.models,
-                        onBack = ::back, onSend = { _, _, _, _ -> }, onStop = {}, onRespond = { _, _ -> },
+                        onBack = ::back, onDismissFailedMessage = { node.session.dismissFailedMessage(it) }, onSend = { _, _, _, _ -> }, onStop = {}, onRespond = { _, _ -> },
                         onRefresh = {}, onLoadModels = node.catalog::loadModels, onEarlier = {},
                         readFile = { path -> node.api.readFile(path) },
                         pendingTitle = project.name, pendingReady = pendingReady,
@@ -464,7 +464,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     },
                     defaultSettings = defaultSettings, onSaveDefaults = ::saveDefaults, onForwardLink = ::forwardLink, draftReloadKey = draftReloadKey,
                     modelCatalogNotice = catalog.modelsError ?: if (catalog.modelsStale) "模型目录暂未更新，当前使用最近可用选项" else null,
-                    onSend = { _, _, _, _ -> }, onConfiguredSend = { input, model, effort, mode, serviceTier, _, accepted ->
+                    onDismissFailedMessage = { node.session.dismissFailedMessage(it) }, onSend = { _, _, _, _ -> }, onConfiguredSend = { input, model, effort, mode, serviceTier, _, accepted ->
                         val currentState = node.session.state.value
                         val current = currentState.snapshot
                         val id = threadId

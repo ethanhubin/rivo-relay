@@ -27,13 +27,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.window.DialogProperties
 
 @Composable
 internal fun AttachmentSourceMenu(expanded: Boolean, imageSlots: Int, fileSlots: Int, onDismiss: () -> Unit,
     onCamera: () -> Unit, onImage: () -> Unit, onFile: () -> Unit, onVideo: () -> Unit,
     onWorkspace: () -> Unit) {
+    androidx.activity.compose.BackHandler(expanded) { onDismiss() }
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss,
+        properties = PopupProperties(focusable = false),
         modifier = Modifier.width(240.dp).testTag("attachment_dialog"),
         shape = RoundedCornerShape(24.dp), containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
         data class Option(val label: String, val icon: String, val tag: String, val enabled: Boolean, val action: () -> Unit)

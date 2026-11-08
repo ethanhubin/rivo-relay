@@ -12,6 +12,16 @@ import java.io.File
 
 class ConversationStoreTest {
     @get:Rule val directory = TemporaryFolder()
+    @Test fun failedMessageSurvivesReopenWithoutReceiptPolling() = runBlocking {
+        val store = ConversationStore(directory.root)
+        store.savePendingMessage(PendingNativeMessage("submission", "client", "thread",
+            listOf(JSONObject().put("type", "text").put("text", "keep me"))))
+        store.resolvePendingMessage("submission", JSONObject().put("status", "failed"))
+        val reopened = ConversationStore(directory.root)
+        assertEquals("failed", reopened.loadPendingMessages().single().delivery)
+        assertEquals("keep me", reopened.loadPendingMessages().single().input.single().getString("text"))
+        assertFalse(reopened.unresolvedSubmissionIds().contains("submission"))
+    }
     @Test fun draftsSurviveReopenWithoutCrossingNodeOrThread() = runBlocking {
         val root = directory.root
         val path = ConversationStore.nodeDirectory(root, "node/device/base")

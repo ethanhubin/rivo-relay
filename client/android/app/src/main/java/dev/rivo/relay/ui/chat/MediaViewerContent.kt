@@ -998,20 +998,34 @@ private fun FullScreenGalleryPage(
         .size((screenWidthPx * 2).toInt().coerceIn(1, 4096), (screenHeightPx * 2).toInt().coerceIn(1, 4096))
         .scale(coil.size.Scale.FIT)
         .precision(coil.size.Precision.INEXACT)
-        .diskCachePolicy(CachePolicy.ENABLED)
         .networkCachePolicy(CachePolicy.ENABLED)
         .crossfade(false)
         .build()
     }
   var retryVersion by remember(item.original, mediaClient) { mutableIntStateOf(0) }
+  var versionRetryUsed by remember(item.original, mediaClient) { mutableStateOf(false) }
+  var versionRefreshPending by remember(item.original, mediaClient) { mutableStateOf(false) }
   var originalLoaded by remember(item.original, mediaClient) {
     mutableStateOf(item.original == item.preview && mediaClient == null)
   }
   var originalFailed by remember(item.original, mediaClient) { mutableStateOf(false) }
+  var validationFailed by remember(item.original, mediaClient) { mutableStateOf(false) }
+  var validationBlocked by remember(item.original, mediaClient) { mutableStateOf(false) }
   LaunchedEffect(item.original, mediaClient, mediaClient?.revision, retryVersion) {
-    try { mediaClient?.verify(item.original) }
+    try {
+      mediaClient?.verify(item.original)
+      validationFailed = false
+      validationBlocked = false
+      versionRefreshPending = false
+    }
     catch (e: kotlinx.coroutines.CancellationException) { throw e }
-    catch (_: Exception) { originalFailed = true }
+    catch (error: Exception) {
+      validationFailed = true
+      if (!dev.rivo.relay.data.isTransientMediaFailure(error)) {
+        validationBlocked = true
+        originalLoaded = false
+      }
+    }
   }
   val reportImageSize: (AsyncImagePainter.State.Success) -> Unit = { state ->
     val drawable = state.result.drawable
@@ -1030,7 +1044,7 @@ private fun FullScreenGalleryPage(
         contentScale = contentScale,
       )
     }
-    if (!originalLoaded && (item.original != item.preview || mediaClient != null)) {
+    if (!validationBlocked && !originalLoaded && (item.original != item.preview || mediaClient != null)) {
       // Replace the preview atomically: keeping it behind a smaller or transparent
       // original exposes a second image. The original deliberately has no crossfade.
       AsyncImage(
@@ -1042,7 +1056,7 @@ private fun FullScreenGalleryPage(
         contentScale = contentScale,
       )
     }
-    if (loadOriginal && (item.original != item.preview || mediaClient != null)) {
+    if (!validationBlocked && !versionRefreshPending && loadOriginal && (item.original != item.preview || mediaClient != null)) {
       key(retryVersion, item.original, mediaClient) { AsyncImage(
         imageLoader = mediaClient?.imageLoader ?: context.imageLoader,
         model = originalImageRequest,
@@ -1056,7 +1070,14 @@ private fun FullScreenGalleryPage(
           originalFailed = false
           reportImageSize(it)
         },
-        onError = { originalFailed = true },
+        onError = {
+          originalFailed = true
+          if (!versionRetryUsed && dev.rivo.relay.data.isMediaVersionMismatch(it.result.throwable)) {
+            versionRetryUsed = true
+            versionRefreshPending = true
+            retryVersion++
+          }
+        },
         modifier =
           Modifier.fillMaxSize()
             .testTag(
@@ -1065,19 +1086,19 @@ private fun FullScreenGalleryPage(
         contentScale = contentScale,
       ) }
     }
-    if (loadOriginal && !originalLoaded && !originalFailed) {
+    if (loadOriginal && !originalLoaded && !originalFailed && !validationFailed) {
       CircularProgressIndicator(
         modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 28.dp).size(24.dp),
         color = Color.White,
         strokeWidth = 2.dp,
       )
     }
-    if (loadOriginal && originalFailed) {
+    if (loadOriginal && (originalFailed || validationFailed)) {
       TextButton(
-        onClick = { originalFailed = false; retryVersion++ },
+        onClick = { originalFailed = false; versionRetryUsed = false; retryVersion++ },
         modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 28.dp)
           .testTag("fullscreen_original_error"),
-      ) { Text("原图加载失败 · 重试", color = Color.White, style = MaterialTheme.typography.labelMedium) }
+      ) { Text(if (originalFailed) "原图加载失败 · 重试" else "图片版本校验失败 · 重试", color = Color.White, style = MaterialTheme.typography.labelMedium) }
     }
   }
 }

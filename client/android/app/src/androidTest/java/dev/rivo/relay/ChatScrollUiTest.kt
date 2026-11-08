@@ -37,7 +37,9 @@ class ChatScrollUiTest {
     private fun show(onEarlier: () -> Unit = {}) {
         compose.activityRule.scenario.onActivity { it.enableEdgeToEdge() }
         compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize()) { Box(Modifier.systemBarsPadding()) {
-            ChatScreen(current.value, false, false, emptyList(), {}, { _,_,_,_-> }, {}, {_,_->}, {}, {}, onEarlier, { JSONObject() })
+            ChatScreen(state = current.value, busy = false, blocked = false, models = emptyList(),
+                onBack = {}, onSend = { _, _, _, _ -> }, onStop = {}, onRespond = { _, _ -> },
+                onRefresh = {}, onLoadModels = {}, onEarlier = onEarlier, readFile = { JSONObject() })
         } } } }
     }
     private fun evidence(name: String) {
