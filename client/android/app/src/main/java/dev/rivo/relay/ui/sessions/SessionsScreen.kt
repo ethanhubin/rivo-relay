@@ -1,9 +1,11 @@
 package dev.rivo.relay.ui.sessions
 
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -24,6 +26,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
@@ -33,6 +36,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.rivo.relay.R
 import dev.rivo.relay.codex.threadIsExecuting
 import dev.rivo.relay.codex.threadPendingLabel
 import dev.rivo.relay.codex.threadIsActive
@@ -59,6 +63,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
     pendingConversations: List<PendingConversation> = emptyList(), canDiscardPending: Boolean = true,
     onResumePending: (String) -> Unit = {}, onDiscardPending: (String) -> Unit = {},
     canManageThreads: Boolean = canCreate) {
+    val context = LocalContext.current
     var selectedIds by remember(projectKey, archived) { mutableStateOf(emptySet<String>()) }
     var search by rememberSaveable(projectKey) { mutableStateOf("") }
     var confirmDiscardId by remember(projectKey) { mutableStateOf<String?>(null) }
@@ -167,9 +172,17 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                                 }
                                 Text(thread.name, Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.bodyLarge,
                                     fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                if (thread.workspace != null || thread.externalWorkspace != null) Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.secondaryContainer,
-                                    modifier = Modifier.padding(start = 6.dp).testTag("session_worktree_${thread.id}")) {
-                                    Text(if (thread.externalWorkspace != null) "外部工作树" else "工作树", Modifier.padding(horizontal = 5.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall)
+                                if (thread.workspace != null || thread.externalWorkspace != null) {
+                                    val label = if (thread.externalWorkspace != null) "外部工作树" else "工作树"
+                                    Box(Modifier.padding(start = 6.dp).size(28.dp)
+                                        .testTag("session_worktree_${thread.id}")
+                                        .clickable(onClickLabel = label) {
+                                            if (selectedIds.isNotEmpty()) toggle(thread.id)
+                                            else Toast.makeText(context, label, Toast.LENGTH_SHORT).show()
+                                        }, contentAlignment = Alignment.Center) {
+                                        Icon(painterResource(R.drawable.ic_worktree), label,
+                                            Modifier.size(18.dp), tint = MaterialTheme.colorScheme.secondary)
+                                    }
                                 }
                                 if (thread.id in unreadThreadIds) Box(Modifier.padding(start = 7.dp).size(7.dp).background(MaterialTheme.colorScheme.primary, CircleShape)
                                     .testTag("unread_thread_${thread.id}").semantics { contentDescription = "有未读更新" })

@@ -101,7 +101,7 @@ class PendingConversationUiTest {
         compose.onNodeWithText("最近会话 1").assertIsDisplayed()
     }
 
-    @Test fun firstSubmissionIsVisibleBeforeNativeThreadExistsAndFailureKeepsDraft() {
+    @Test fun firstSubmissionKeepsDisabledDraftAndFailureRestoresEditing() {
         val pending = mutableStateOf(emptyList<PendingNativeMessage>())
         val busy = mutableStateOf(false)
         compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize().systemBarsPadding()) {
@@ -111,15 +111,24 @@ class PendingConversationUiTest {
                     pending.value = listOf(PendingNativeMessage("create", "first-send", "pending:draft",
                         (0 until input.length()).map { input.getJSONObject(it) }, kind = "create"))
                 }, onStop = {}, onRespond = { _, _ -> }, onRefresh = {}, onLoadModels = {}, onEarlier = {},
-                readFile = { JSONObject() }, pendingTitle = "项目")
+                readFile = { JSONObject() }, pendingTitle = "项目",
+                pendingReceiptUnresolved = pending.value.any { it.delivery == "unknown" })
         } } }
         compose.onNodeWithTag("message_input").performTextInput("先检查项目")
         compose.onNodeWithTag("send_message").performClick()
-        compose.onNodeWithText("发送中…").assertIsDisplayed()
-        compose.onNodeWithText("今天想从哪里开始？").assertDoesNotExist()
-        compose.onNodeWithTag("send_message").assertIsNotEnabled()
-        compose.runOnIdle { pending.value = emptyList(); busy.value = false }
+        compose.onNodeWithTag("send_progress").assertIsDisplayed()
+        compose.onNodeWithTag("message_input").assertTextEquals("先检查项目").assertIsNotEnabled()
         compose.onNodeWithText("发送中…").assertDoesNotExist()
+        compose.onNodeWithText("今天想从哪里开始？").assertIsDisplayed()
+        compose.onNodeWithTag("send_message").assertIsNotEnabled()
+        compose.onNodeWithTag("new_session_model").assertIsNotEnabled()
+        compose.onNodeWithTag("new_session_effort").assertIsNotEnabled()
+        compose.runOnIdle { pending.value = pending.value.map { it.copy(delivery = "unknown") }; busy.value = false }
+        compose.onNodeWithTag("send_progress").assertDoesNotExist()
+        compose.onNodeWithTag("message_input").assertTextEquals("先检查项目").assertIsNotEnabled()
+        compose.onNodeWithTag("send_message").assertIsNotEnabled()
+        compose.runOnIdle { pending.value = emptyList() }
+        compose.onNodeWithTag("send_progress").assertDoesNotExist()
         compose.onNodeWithTag("message_input").assertTextEquals("先检查项目")
         compose.onNodeWithTag("send_message").assertIsEnabled()
     }

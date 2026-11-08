@@ -332,7 +332,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         cachedFile = { path, progress -> node.api.cachedFile(context.cacheDir, path, progress) },
                         pendingWorkspace = { PendingWorkspaceSelector(project,
                             { node.api.call("/v1/projects/${encoded(project.id)}/git") },
-                            writable && createdThread == null, initialRef = pendingRef) { ref, ready ->
+                            writable && createdThread == null && node.conversations.pendingThreadId(localId) == null &&
+                                !node.conversations.pendingHasUnresolvedSubmission(localId), initialRef = pendingRef) { ref, ready ->
                                 if (createdThread == null) {
                                     pendingRef = ref; pendingReady = ready
                                     try { node.conversations.setPendingWorktreeRef(localId, ref) }

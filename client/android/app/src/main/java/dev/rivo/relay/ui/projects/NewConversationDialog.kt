@@ -42,7 +42,7 @@ fun NewConversationDialog(project: ProjectSummary, readGit: suspend () -> JSONOb
                 OutlinedButton(onClick = { workspaceMenu = true }, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp).testTag("new_conversation_workspace"), shape = androidx.compose.foundation.shape.RoundedCornerShape(13.dp)) {
                     Text(if (worktree) "工作树" else "本地目录", Modifier.weight(1f)); Text("⌄")
                 }
-                DropdownMenu(workspaceMenu, { workspaceMenu = false }) {
+                DropdownMenu(workspaceMenu && enabled, { workspaceMenu = false }) {
                     DropdownMenuItem(text = { Text("本地目录") }, onClick = { worktree = false; workspaceMenu = false })
                     DropdownMenuItem(text = { Column { Text("工作树"); Text("从已提交版本创建隔离工作区", style = MaterialTheme.typography.labelSmall) } },
                         enabled = git?.optBoolean("available") == true, onClick = { worktree = true; workspaceMenu = false })
@@ -58,7 +58,7 @@ fun NewConversationDialog(project: ProjectSummary, readGit: suspend () -> JSONOb
                     OutlinedButton(onClick = { refMenu = true }, enabled = enabled && !loading, modifier = Modifier.fillMaxWidth().testTag("new_conversation_ref")) {
                         Text(ref?.let { it.string("name") + " · " + it.string("commit").take(8) } ?: "选择来源", Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis); Text("⌄")
                     }
-                    DropdownMenu(refMenu, { refMenu = false }, modifier = Modifier.heightIn(max = 280.dp)) {
+                    DropdownMenu(refMenu && enabled, { refMenu = false }, modifier = Modifier.heightIn(max = 280.dp)) {
                         refs.forEach { option -> DropdownMenuItem(text = { Column { Text(option.string("name")); Text(option.string("commit").take(8), style = MaterialTheme.typography.labelSmall) } },
                             onClick = { selected = option.string("id"); refMenu = false }) }
                     }
@@ -104,7 +104,7 @@ fun PendingWorkspaceSelector(project: ProjectSummary, readGit: suspend () -> JSO
                 OutlinedButton(onClick = { workspaceMenu = true }, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp).testTag("new_conversation_workspace"), shape = androidx.compose.foundation.shape.RoundedCornerShape(13.dp)) {
                     Text(if (worktree) "工作树" else "本地目录", Modifier.weight(1f)); Text("⌄")
                 }
-                DropdownMenu(workspaceMenu, { workspaceMenu = false }) {
+                DropdownMenu(workspaceMenu && enabled, { workspaceMenu = false }) {
                     DropdownMenuItem(text = { Text("本地目录") }, onClick = { worktree = false; workspaceMenu = false })
                     DropdownMenuItem(text = { Column { Text("工作树"); Text("从已提交版本创建隔离工作区", style = MaterialTheme.typography.labelSmall) } },
                         onClick = { worktree = true; workspaceMenu = false })
@@ -120,7 +120,7 @@ fun PendingWorkspaceSelector(project: ProjectSummary, readGit: suspend () -> JSO
                     OutlinedButton(onClick = { refMenu = true }, enabled = enabled && !loading, modifier = Modifier.fillMaxWidth().testTag("new_conversation_ref")) {
                         Text(ref?.let { it.string("name") + " · " + it.string("commit").take(8) } ?: "选择来源", Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis); Text("⌄")
                     }
-                    DropdownMenu(refMenu, { refMenu = false }, modifier = Modifier.heightIn(max = 280.dp)) {
+                    DropdownMenu(refMenu && enabled, { refMenu = false }, modifier = Modifier.heightIn(max = 280.dp)) {
                         refs.forEach { option -> DropdownMenuItem(text = { Column { Text(option.string("name")); Text(option.string("commit").take(8), style = MaterialTheme.typography.labelSmall) } },
                             onClick = { selected = option.string("id"); refMenu = false }) }
                     }

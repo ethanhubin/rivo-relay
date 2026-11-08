@@ -34,10 +34,10 @@ class ChatScrollUiTest {
                     .put("text", if (it == count - 1) tail else "历史消息 $it\n\n这是用于检查滚动位置的正文。")) }
             })))).put("status", "idle"))
     private val current = mutableStateOf(SessionState(id = "scroll-test", loading = true))
-    private fun show() {
+    private fun show(onEarlier: () -> Unit = {}) {
         compose.activityRule.scenario.onActivity { it.enableEdgeToEdge() }
         compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize()) { Box(Modifier.systemBarsPadding()) {
-            ChatScreen(current.value, false, false, emptyList(), {}, { _,_,_,_-> }, {}, {_,_->}, {}, {}, {}, { JSONObject() })
+            ChatScreen(current.value, false, false, emptyList(), {}, { _,_,_,_-> }, {}, {_,_->}, {}, {}, onEarlier, { JSONObject() })
         } } } }
     }
     private fun evidence(name: String) {
@@ -76,6 +76,32 @@ class ChatScrollUiTest {
         atLatest(); compose.onNodeWithText("恢复自动跟随").assertIsDisplayed()
         evidence("chat-scroll-latest-0.1.5")
     }
+    @Test fun loadingEarlierKeepsVisibleMessagePosition() = checkEarlierPosition("more")
+    @Test fun loadingFinalPageKeepsVisibleMessagePosition() = checkEarlierPosition(null)
+
+    private fun checkEarlierPosition(nextCursor: String?) {
+        val initial = snapshot(30)
+        current.value = SessionState(id = "scroll-test", snapshot = initial, historyCursor = "older")
+        show { current.value = current.value.copy(loadingEarlier = true) }
+        atLatest()
+        compose.onNodeWithTag("chat_history").performTouchInput { swipeDown() }
+        compose.onNodeWithTag("chat_history").performScrollToIndex(0)
+        val message = compose.onNodeWithText("历史消息 0", substring = true)
+        val before = message.fetchSemanticsNode().boundsInRoot.top
+        compose.onNodeWithTag("load_earlier").performClick()
+        compose.runOnIdle {
+            val older = initial.messages.take(10).mapIndexed { index, item ->
+                item.copy(id = "older-$index", text = "更早消息 $index")
+            }
+            current.value = current.value.copy(
+                snapshot = initial.copy(messages = older + initial.messages),
+                loadingEarlier = false, historyCursor = nextCursor)
+        }
+        compose.waitForIdle()
+        message.assertIsDisplayed()
+        assertEquals(before, message.fetchSemanticsNode().boundsInRoot.top, 1f)
+    }
+
     @Test fun switchingThreadsResetsHistoryReadingPosition() {
         current.value = SessionState(id="scroll-test", snapshot=snapshot(30)); show(); atLatest()
         compose.onNodeWithTag("chat_history").performTouchInput { swipeDown() }

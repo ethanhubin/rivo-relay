@@ -13,6 +13,8 @@ import android.provider.DocumentsContract
 import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.border
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -95,7 +97,7 @@ private suspend fun imageBytes(source: String, readFile: suspend (String) -> JSO
 internal fun NativeImage(source: String, readFile: suspend (String) -> JSONObject,
     downloadFile: suspend (String, OutputStream, (Long, Long) -> Unit) -> Unit = { path, output, progress ->
         val bytes = imageBytes(path, readFile); output.write(bytes); progress(bytes.size.toLong(), bytes.size.toLong())
-    }, modifier: Modifier = Modifier, identity: String = source) {
+    }, modifier: Modifier = Modifier, identity: String = source, compact: Boolean = false, remaining: Int = 0) {
     var bitmap by remember(source) { mutableStateOf<ImageBitmap?>(null) }
     var error by remember(source) { mutableStateOf<String?>(null) }
     var origin by remember(source) { mutableStateOf(Rect.Zero) }
@@ -127,9 +129,14 @@ internal fun NativeImage(source: String, readFile: suspend (String) -> JSONObjec
         catch (e: Exception) { if (e is CancellationException) throw e; error = e.message ?: "图片暂时无法读取" }
     }
     when {
-        bitmap != null -> Box(modifier) {
-            Image(bitmap!!, "会话图片，点击放大", Modifier.widthIn(max = with(density) { (windowSize.width / 2).toDp() }).heightIn(max = with(density) { (windowSize.height / 2).toDp() })
+        bitmap != null -> Box(if (compact) modifier.size(76.dp, 88.dp)
+            .clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(10.dp)) else modifier) {
+            Image(bitmap!!, "会话图片，点击放大", (if (compact) Modifier.fillMaxSize() else Modifier.widthIn(max = with(density) { (windowSize.width / 2).toDp() }).heightIn(max = with(density) { (windowSize.height / 2).toDp() }))
                 .onGloballyPositioned { origin = it.boundsInWindow() }.combinedClickable(onClick = { imageAction = null; viewerSource = source; fullscreen = true }, onLongClick = { menu = true }).testTag("native_image"), contentScale = ContentScale.Fit)
+            if (compact && remaining > 0) Box(Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.5f)), contentAlignment = Alignment.Center) {
+                Text("+$remaining", color = Color.White, style = MaterialTheme.typography.headlineSmall)
+            }
             if (menu) Popup(alignment = Alignment.TopCenter, onDismissRequest = { menu = false }, properties = PopupProperties(focusable = true)) {
                 Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh, shadowElevation = 4.dp) {
                     Row(Modifier.testTag("image_actions").padding(horizontal = 8.dp)) {
@@ -141,8 +148,10 @@ internal fun NativeImage(source: String, readFile: suspend (String) -> JSONObjec
                 }
             }
         }
-        error != null -> Text("${error!!} · 点击重试", modifier.clickable { attempt++ }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        else -> LinearProgressIndicator(modifier.fillMaxWidth().padding(vertical = 16.dp))
+        error != null -> Text(if (compact) "加载失败\n点击重试" else "${error!!} · 点击重试", (if (compact) modifier.size(76.dp, 88.dp) else modifier).clickable { attempt++ }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        else -> if (compact) Box(modifier.size(76.dp, 88.dp).clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surface), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+        } else LinearProgressIndicator(modifier.fillMaxWidth().padding(vertical = 16.dp))
     }
     if (fullscreen) FilePreviewDialog(viewerSource, readFile, downloadFile, initialAction = imageAction, forceKind = FileOpenKind.IMAGE, origin = origin) { fullscreen = false; imageAction = null }
 }

@@ -31,6 +31,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.SolidColor
@@ -228,7 +229,7 @@ fun MessageComposer(
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             if (images.isNotEmpty() || files.isNotEmpty()) {
-                Column(Modifier.fillMaxWidth().heightIn(max = 164.dp).verticalScroll(rememberScrollState()).testTag("draft_attachments"),
+                Column(Modifier.fillMaxWidth().alpha(if (enabled) 1f else 0.38f).heightIn(max = 164.dp).verticalScroll(rememberScrollState()).testTag("draft_attachments"),
                     verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     images.forEach { image ->
                         val bitmap = remember(image) {
@@ -254,7 +255,7 @@ fun MessageComposer(
                         } }
                     }
                     files.forEach { file ->
-                        Surface(Modifier.fillMaxWidth().clickable { onOpenFile(file) }.testTag("draft_file_" + file.string("name")),
+                        Surface(Modifier.fillMaxWidth().clickable(enabled = enabled && !preparing) { onOpenFile(file) }.testTag("draft_file_" + file.string("name")),
                             shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
                             Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                 Text("附", style = MaterialTheme.typography.labelLarge)
@@ -293,7 +294,7 @@ fun MessageComposer(
                             modifier = Modifier.weight(1f).pasteImageAttachments(context, enabled && !preparing, onPasteImages)
                                 .focusRequester(focusRequester).heightIn(min = 52.dp)
                                 .padding(horizontal = 16.dp, vertical = 14.dp).testTag("message_input"),
-                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.38f)),
                             cursorBrush = SolidColor(MaterialTheme.colorScheme.onSurface),
                             minLines = inputMinLines,
                             maxLines = 3,
@@ -337,7 +338,7 @@ fun MessageComposer(
                                 tonalElevation = 4.dp) { settingsContent() }
                         }
 
-                        if (isRunning && text.isBlank() && images.isEmpty() && files.isEmpty() && !voice.transcribing) OutlinedButton(
+                        if (!busy && isRunning && text.isBlank() && images.isEmpty() && files.isEmpty() && !voice.transcribing) OutlinedButton(
                             onClick = onStop, enabled = canStop,
                             modifier = Modifier.width(80.dp).height(44.dp).testTag("stop_turn"), shape = RoundedCornerShape(22.dp),
                             contentPadding = PaddingValues(horizontal = 10.dp)) { Text("■ 停止", style = MaterialTheme.typography.labelLarge) }
@@ -350,12 +351,17 @@ fun MessageComposer(
                                     }
                                 } else onSend()
                             },
-                            enabled = enabled && (canSend || voice.transcribing) && !preparing && !voice.sendPending,
+                            enabled = !busy && enabled && (canSend || voice.transcribing) && !preparing && !voice.sendPending,
                             modifier = Modifier.width(80.dp).height(44.dp).testTag("send_message"),
                             shape = RoundedCornerShape(22.dp),
                             contentPadding = PaddingValues(horizontal = 10.dp),
                         ) {
-                            Text(if (voice.sendPending) "转写中…" else if (busy) "提交中…" else if (queueing) "↑ 排队" else if (isRunning) "↑ 补充" else "↑ 发送",
+                            if (busy) {
+                                CircularProgressIndicator(Modifier.size(14.dp).testTag("send_progress"),
+                                    color = LocalContentColor.current, strokeWidth = 2.dp)
+                                Spacer(Modifier.width(4.dp))
+                            }
+                            Text(if (voice.sendPending && !busy) "转写中…" else if (busy) "发送" else if (queueing) "↑ 排队" else if (isRunning) "↑ 补充" else "↑ 发送",
                                 style = MaterialTheme.typography.labelLarge, maxLines = 1)
                         }
                     }

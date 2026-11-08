@@ -288,7 +288,7 @@ private fun SettingsSelector(title: String, selected: String, options: List<Pair
         OutlinedButton(onClick = { expanded = true }, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp).testTag(tag), shape = RoundedCornerShape(13.dp), contentPadding = PaddingValues(horizontal = 10.dp)) {
             Text(selected, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis); Text("⌄")
         }
-        DropdownMenu(expanded, { expanded = false }) { options.forEach { (id, name) ->
+        DropdownMenu(expanded && enabled, { expanded = false }) { options.forEach { (id, name) ->
             DropdownMenuItem(text = { Text(name) }, onClick = { expanded = false; onSelect(id) }, modifier = Modifier.testTag("${tag}_${id ?: "inherit"}"))
         } }
     }

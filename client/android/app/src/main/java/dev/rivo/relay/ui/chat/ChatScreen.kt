@@ -39,6 +39,8 @@ import kotlinx.coroutines.ensureActive
 private class ChatDraftPersistence(var draft: ConversationDraft, var loaded: Boolean,
     var persist: (String, ConversationDraft) -> Unit)
 
+private data class HistoryScrollAnchor(val key: String, val offset: Int, val firstKey: String?)
+
 private val chatActivitySpacing = 6.dp
 private val chatSectionSpacing = 12.dp
 
@@ -204,7 +206,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         }.getOrDefault(JSONArray())
     }
     val submissionInFlight = busy || pendingFirstTurnSent || state.pendingMessages.any { it.delivery in setOf("submitting", "unknown") }
-    val hideSubmitted = hideSubmittedDraft(submissionInFlight, unchangedSubmission,
+    val hideSubmitted = pendingTitle == null && hideSubmittedDraft(submissionInFlight, unchangedSubmission,
         composerInput, state.pendingMessages)
     // Drop the mask after a definitive outcome. Never mutate the recovery copy here.
     SideEffect { if (!submissionInFlight && submittedDraft != null) submittedDraft = null }
@@ -266,8 +268,21 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     }
     val list = key(state.id) { rememberLazyListState() }
     var followLatest by remember(state.id) { mutableStateOf(true) }
-    val timeline = remember(snapshot?.messages, snapshot?.turnSettings, state.pendingMessages, snapshot?.activeTurnId, state.stale) {
-        nativeTimelineRows(projectedSessionMessages(snapshot, state.pendingMessages), snapshot?.activeTurnId?.takeUnless { state.stale }, snapshot?.turnSettings.orEmpty())
+    val timeline = remember(snapshot?.messages, snapshot?.turnSettings, state.pendingMessages, snapshot?.activeTurnId, state.stale, pendingTitle) {
+        nativeTimelineRows(projectedSessionMessages(snapshot, if (pendingTitle == null) state.pendingMessages else emptyList()), snapshot?.activeTurnId?.takeUnless { state.stale }, snapshot?.turnSettings.orEmpty())
+    }
+    var historyAnchor by remember(state.id) { mutableStateOf<HistoryScrollAnchor?>(null) }
+    // The paging button can be the first visible item. Anchor a timeline row
+    // instead, retaining its viewport position when older rows are inserted.
+    SideEffect {
+        val anchor = historyAnchor
+        if (anchor != null && timeline.firstOrNull()?.key != anchor.firstKey) {
+            val index = timeline.indexOfFirst { it.key == anchor.key }
+            if (index >= 0) {
+                list.requestScrollToItem(index + (if (state.historyCursor != null) 1 else 0), -anchor.offset)
+            }
+            historyAnchor = null
+        }
     }
     val executionActive = !state.stale && snapshot?.isOngoing == true && snapshot.status != "waiting" && snapshot.requests.isEmpty()
     val currentActivity = (timeline.lastOrNull() as? NativeTimelineRow.Activities)
@@ -282,7 +297,10 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     }
     val scrollConnection = remember(list) { object : NestedScrollConnection {
         override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-            if (source == NestedScrollSource.UserInput && available.y > 0f) followLatest = false
+            if (source == NestedScrollSource.UserInput) {
+                historyAnchor = null
+                if (available.y > 0f) followLatest = false
+            }
             return Offset.Zero
         }
         override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
@@ -358,7 +376,14 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             if (pendingTitle != null && timeline.isEmpty()) item {
                 Text("今天想从哪里开始？", Modifier.padding(vertical = 24.dp), style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (state.historyCursor != null) item { TextButton(onClick = { followLatest = false; onEarlier() }, enabled = !state.loadingEarlier && snapshot?.historyReady == true, modifier = Modifier.fillMaxWidth().testTag("load_earlier")) { Text(if (snapshot?.historyReady != true) "历史同步中…" else if (state.loadingEarlier) "正在加载…" else "加载更早的消息") } }
+            if (state.historyCursor != null) item { TextButton(onClick = {
+                followLatest = false
+                val keys = timeline.map { it.key }.toSet()
+                historyAnchor = list.layoutInfo.visibleItemsInfo.firstOrNull { it.key in keys }?.let {
+                    HistoryScrollAnchor(it.key as String, it.offset, timeline.firstOrNull()?.key)
+                }
+                onEarlier()
+            }, enabled = !state.loadingEarlier && snapshot?.historyReady == true, modifier = Modifier.fillMaxWidth().testTag("load_earlier")) { Text(if (snapshot?.historyReady != true) "历史同步中…" else if (state.loadingEarlier) "正在加载…" else "加载更早的消息") } }
             if (!state.loading && snapshot != null && timeline.isEmpty()) item {
                 Text("继续这个项目中的工作", Modifier.padding(vertical = 24.dp), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -388,8 +413,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                                 val target = if (isHttpWebLink(source)) source else nativeFilePath(source, cwd)
                                 target?.let { NativeImage(it, readFile, downloadFile = downloadFile) }
                             }, onFile = ::openFile)
-                            content.forEach { part -> val imageSource = nativeImageSource(part, cwd)
-                                if (imageSource != null) NativeImage(imageSource, readFile, downloadFile = downloadFile) else when (part.string("type")) {
+                            content.filter { nativeImageSource(it, cwd) == null }.forEach { part ->
+                                when (part.string("type")) {
                                 "text" -> MessageContent(part.string("text"), cwd, onQuoteText = quoteText, onSaveFile = saveFile, inlineImage = { source ->
                                 val target = if (isHttpWebLink(source)) source else nativeFilePath(source, cwd)
                                 target?.let { NativeImage(it, readFile, downloadFile = downloadFile) }
@@ -399,6 +424,13 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                                 "mention", "skill" -> TextButton(onClick = { nativeFilePath(part.string("path"), cwd)?.let(::openFile) }) { Text((if (part.string("type") == "skill") "技能：" else "文件：") + part.string("name")) }
                                 else -> Text(part.toString(2), style = MaterialTheme.typography.bodySmall)
                             } }
+                            val attachmentImages = content.mapNotNull { nativeImageSource(it, cwd) }
+                            if (attachmentImages.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                attachmentImages.take(3).forEachIndexed { imageIndex, source ->
+                                    NativeImage(source, readFile, downloadFile = downloadFile, compact = true,
+                                        remaining = if (imageIndex == 2) (attachmentImages.size - 3).coerceAtLeast(0) else 0)
+                                }
+                            }
                             message.raw.string("relayDelivery").takeIf(String::isNotBlank)?.let { delivery ->
                                 Text(when (delivery) { "submitting" -> "发送中…"; "accepted" -> "已送达，等待同步"; else -> "正在确认是否送达" },
                                     style = MaterialTheme.typography.labelSmall, modifier = Modifier.testTag("message_delivery_$delivery"))
