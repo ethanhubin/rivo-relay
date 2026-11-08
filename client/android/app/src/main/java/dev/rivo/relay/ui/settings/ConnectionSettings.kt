@@ -41,7 +41,7 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
                     OutlinedButton(onClick = { nodeMenuOpen = true },
                         modifier = Modifier.fillMaxWidth().testTag("settings_node_selector")) {
                         Text(connection.name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(" ▾")
+                        Text(" ›")
                     }
                     DropdownMenu(expanded = nodeMenuOpen, onDismissRequest = { nodeMenuOpen = false }) {
                         savedNodes.filter { it.authorized }.forEach { saved ->

@@ -69,7 +69,7 @@ fun ProjectDirectoryDialog(readDirectory: suspend (String) -> JSONObject, writab
         BackHandler(enabled = !busy, onBack = goBack)
         Surface(Modifier.fillMaxSize().systemBarsPadding().testTag("project_directory_browser"), color = MaterialTheme.colorScheme.background) {
             Column(Modifier.fillMaxSize()) {
-                Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
+                Surface(color = MaterialTheme.colorScheme.background) {
                     Column(Modifier.fillMaxWidth().padding(horizontal = RivoSpacing.Page, vertical = RivoSpacing.Sm), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Xs)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             TextButton(onClick = goBack, enabled = !busy && !loading, modifier = Modifier.testTag("project_directory_parent")) { Text("‹ 返回") }
@@ -80,7 +80,7 @@ fun ProjectDirectoryDialog(readDirectory: suspend (String) -> JSONObject, writab
                             maxLines = 1, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-                Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+                Surface(color = MaterialTheme.colorScheme.background) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = RivoSpacing.Page, vertical = RivoSpacing.Sm), horizontalArrangement = Arrangement.spacedBy(RivoSpacing.Sm)) {
                         OutlinedButton(onClick = { folderName = ""; createFolder = true }, enabled = writable && !busy && !loading && error == null && path.isNotBlank(),
                             modifier = Modifier.weight(1f).testTag("project_new_folder")) { Text("新建目录") }
