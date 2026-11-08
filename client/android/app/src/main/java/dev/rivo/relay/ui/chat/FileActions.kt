@@ -60,12 +60,12 @@ internal fun fileOpenKind(source: String, mime: String = ""): FileOpenKind {
 @Composable
 internal fun FileOpenActions(name: String, isApk: Boolean, onAction: (FileAction) -> Unit, onDismiss: () -> Unit, source: String? = null) {
     AlertDialog(onDismissRequest = onDismiss, modifier = Modifier.testTag("file_open_actions"),
-        title = { Text(name) },
-        text = { Column {
+        title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text(name) } },
+        text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Column {
             Text(if (isApk) "选择保存到本机或打开 APK。" else "选择打开文件、保存到本机或分享。")
             if (!isApk) TextButton(onClick = { onAction(FileAction.SHARE) }, modifier = Modifier.testTag("share_file")) { Text("分享") }
             source?.let { ForwardLinkButton(it, name, onDismiss) }
-        } },
+        } } },
         confirmButton = { TextButton(onClick = { onAction(FileAction.OPEN) }, modifier = Modifier.testTag("open_file")) { Text(if (isApk) "打开" else "用其他应用打开") } },
         dismissButton = { Row {
             TextButton(onClick = { onAction(FileAction.SAVE) }, modifier = Modifier.testTag("save_file")) { Text("保存到本机") }
@@ -80,8 +80,8 @@ internal data class FileTransferState(val title: String, val running: Boolean = 
 internal fun FileTransferDialog(state: FileTransferState, onCancel: () -> Unit, onRetry: () -> Unit, onClose: () -> Unit) {
     AlertDialog(onDismissRequest = {}, modifier = Modifier.testTag("file_transfer_dialog"),
         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
-        title = { Text(state.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
-        text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text(state.title, maxLines = 2, overflow = TextOverflow.Ellipsis) } },
+        text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (state.running) {
                 if (state.total > 0) LinearProgressIndicator(progress = { (state.bytes.toDouble() / state.total).toFloat().coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
                 else LinearProgressIndicator(Modifier.fillMaxWidth())

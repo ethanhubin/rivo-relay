@@ -313,6 +313,8 @@ internal fun FullScreenVideo(
     onDismissRequest = { if (!locked) onDismiss() },
     properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
   ) {
+ dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+
     Box(Modifier.fillMaxSize().background(Color.Black).testTag("fullscreen_video")) {
       AndroidView(
         factory = { viewContext ->
@@ -575,7 +577,9 @@ internal fun FullScreenVideo(
       }
 
     }
-  }
+
+}
+}
 }
 
 @Composable

@@ -94,11 +94,11 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
                     add(runtime.string("handoffUnavailableReason"))
             }
         }.map(String::trim).filter(String::isNotBlank).distinct()
-        AlertDialog(onDismissRequest = { runtimeDetails = false }, title = { Text("Codex 连接") },
-            text = { Column(Modifier.testTag("writer_runtime_details").verticalScroll(rememberScrollState()),
+        AlertDialog(onDismissRequest = { runtimeDetails = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("Codex 连接") } },
+            text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Column(Modifier.testTag("writer_runtime_details").verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 details.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
-            } }, confirmButton = { TextButton({ runtimeDetails = false }) { Text("关闭") } })
+            } } }, confirmButton = { TextButton({ runtimeDetails = false }) { Text("关闭") } })
     }
 
 }

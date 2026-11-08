@@ -165,6 +165,8 @@ internal fun ImageViewerDialog(bitmap: ImageBitmap, onSave: (() -> Unit)? = null
         offset = if (scale == 1f) Offset.Zero else offset + pan
     }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+ dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+
         Box(Modifier.fillMaxSize().background(Color.Black).systemBarsPadding()) {
             Image(bitmap, "全屏图片，可双指缩放", Modifier.fillMaxSize().pointerInput(bitmap) {
                 detectTapGestures(onDoubleTap = { scale = if (scale > 1f) 1f else 3f; offset = Offset.Zero })
@@ -179,7 +181,9 @@ internal fun ImageViewerDialog(bitmap: ImageBitmap, onSave: (() -> Unit)? = null
                 onSave?.let { IconButton(it, Modifier.testTag("save_file")) { Icon(FileIcons.SaveAlt, "保存到本机", tint = Color.White) } }
             }
         }
-    }
+
+}
+}
 }
 
 /** QiGuang's file-kind routing: binary files open a compact action dialog, previews own their viewer. */
@@ -332,6 +336,8 @@ internal fun FilePreviewDialog(path: String, readFile: suspend (String) -> JSONO
         kind == FileOpenKind.AUDIO || kind == FileOpenKind.VIDEO -> MediaFilePreview(name, kind == FileOpenKind.VIDEO, media, error,
             onRetry = { media = null; previewAttempt++ }, onAction = { performAction(it) }, onDismiss = onDismiss, source = currentPath)
         else -> Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+ dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+
             Surface(Modifier.fillMaxSize()) {
                 Column(Modifier.fillMaxSize().systemBarsPadding().testTag("file_preview")) {
                     FilePreviewToolbar(name, { performAction(FileAction.SAVE) }, { performAction(FileAction.SHARE) }, onDismiss, currentPath)
@@ -364,7 +370,9 @@ internal fun FilePreviewDialog(path: String, readFile: suspend (String) -> JSONO
                     }
                 }
             }
-        }
+
+}
+}
     }
     transfer?.let { state -> FileTransferDialog(state,
         onCancel = { transferGeneration.incrementAndGet(); transferJob?.cancel(); transfer = null; if (compact || initialAction != null) onDismiss() },

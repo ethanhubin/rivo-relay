@@ -204,7 +204,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
         }
     }
     pendingConversations.firstOrNull { it.id == confirmDiscardId }?.let { pending -> AlertDialog(onDismissRequest = { confirmDiscardId = null },
-        title = { Text("删除待发送草稿？") }, text = { Text(if (pending.firstTurnSent) "放弃尚未完成的目标设置。首条任务已发送，删除此记录不会停止任务；原生会话会保留。" else "这会删除手机保存的文字、附件和目标草稿，已经创建的原生会话会保留。") },
+        title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("删除待发送草稿？") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text(if (pending.firstTurnSent) "放弃尚未完成的目标设置。首条任务已发送，删除此记录不会停止任务；原生会话会保留。" else "这会删除手机保存的文字、附件和目标草稿，已经创建的原生会话会保留。") } },
         confirmButton = { TextButton(onClick = { confirmDiscardId = null; onDiscardPending(pending.id) }, enabled = canDiscardPending,
             modifier = Modifier.testTag("confirm_delete_pending_conversation")) { Text("删除") } },
         dismissButton = { TextButton(onClick = { confirmDiscardId = null }) { Text("取消") } }) }

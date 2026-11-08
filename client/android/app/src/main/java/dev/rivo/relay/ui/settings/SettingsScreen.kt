@@ -133,8 +133,8 @@ fun SettingsScreen(
         }
     }
     if (notesOpen) release?.let { latest ->
-        AlertDialog(onDismissRequest = { notesOpen = false }, title = { Text("${latest.version} 更新说明") },
-            text = { Text(latest.notes.ifBlank { "此版本未提供更新说明" }, Modifier.verticalScroll(rememberScrollState())) },
+        AlertDialog(onDismissRequest = { notesOpen = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("${latest.version} 更新说明") } },
+            text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text(latest.notes.ifBlank { "此版本未提供更新说明" }, Modifier.verticalScroll(rememberScrollState())) } },
             confirmButton = { TextButton(onClick = { notesOpen = false }) { Text("完成") } })
     }
 }

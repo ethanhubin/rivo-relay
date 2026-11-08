@@ -176,16 +176,16 @@ fun TodosScreen(state: TodosState, projects: List<ProjectSummary>, canDispatch: 
         onOpenAttachment = onOpenAttachment,
         onOpenThread = editing?.takeIf { it.threadId.isNotBlank() }?.let { item -> { editor = false; onOpenThread(item) } })
     delivery?.let { item -> DispatchSheet(item, projects, canDispatch && state.online && state.pendingCount == 0 && !state.syncing, loadThreads, { delivery = null }) { project, thread -> onDispatch(item, project, thread) { delivery = null } } }
-    if (deleteConfirm) AlertDialog(onDismissRequest = { deleteConfirm = false }, title = { Text("删除 ${selectedIds.size} 项待办？") },
-        text = { Text("所选待办及其清单项目将被永久删除。已关联的 Codex 会话仍会保留。") },
+    if (deleteConfirm) AlertDialog(onDismissRequest = { deleteConfirm = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("删除 ${selectedIds.size} 项待办？") } },
+        text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("所选待办及其清单项目将被永久删除。已关联的 Codex 会话仍会保留。") } },
         confirmButton = { Button(onClick = {
             val pending = currentItems.filter { it.id in selectedIds }.toMutableList()
             deleteConfirm = false; selectedIds = emptySet()
             fun next() { if (pending.isNotEmpty()) onDelete(pending.removeAt(0)) { next() } }
             next()
         }, enabled = !state.mutating, modifier = Modifier.testTag("todo_confirm_delete")) { Text("确认删除") } }, dismissButton = { TextButton(onClick = { deleteConfirm = false }) { Text("取消") } })
-    if (discardConfirm) AlertDialog(onDismissRequest = { discardConfirm = false }, title = { Text("使用节点上的待办？") },
-        text = { Text("成功连接后，会放弃这台手机尚未同步的待办修改，并读取节点版本。已提交给 Codex 的任务不受影响。") },
+    if (discardConfirm) AlertDialog(onDismissRequest = { discardConfirm = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("使用节点上的待办？") } },
+        text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("成功连接后，会放弃这台手机尚未同步的待办修改，并读取节点版本。已提交给 Codex 的任务不受影响。") } },
         confirmButton = { TextButton(onClick = { discardConfirm = false; onDiscardLocal?.invoke() }) { Text("放弃本机更改") } },
         dismissButton = { TextButton(onClick = { discardConfirm = false }) { Text("取消") } })
 }
@@ -279,7 +279,7 @@ private fun DispatchSheet(item: Todo, projects: List<ProjectSummary>, enabled: B
             finally { loading = false }
         }
     }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text("交给 Codex") }, text = {
+    AlertDialog(onDismissRequest = onDismiss, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("交给 Codex") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(item.title, style = MaterialTheme.typography.titleMedium)
             Text("项目", style = MaterialTheme.typography.labelMedium)
@@ -288,19 +288,19 @@ private fun DispatchSheet(item: Todo, projects: List<ProjectSummary>, enabled: B
                 Text(selectedProject?.name ?: "请选择项目", Modifier.weight(1f))
                 Text("›")
             }
-            if (projectMenu) AlertDialog(onDismissRequest = { projectMenu = false }, title = { Text("选择项目") }, text = {
+            if (projectMenu) AlertDialog(onDismissRequest = { projectMenu = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("选择项目") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu {
                 LazyColumn { items(projects) { project ->
                     ListItem(headlineContent = { Text(project.name) }, leadingContent = { RadioButton(selectedProject?.id == project.id, null) },
                         modifier = Modifier.clickable { selectedProject = project; projectMenu = false })
                 } }
-            }, confirmButton = { TextButton({ projectMenu = false }) { Text("取消") } })
+            } }, confirmButton = { TextButton({ projectMenu = false }) { Text("取消") } })
             Text("会话", style = MaterialTheme.typography.labelMedium)
             var threadMenu by remember { mutableStateOf(false) }
             TextButton(onClick = { threadMenu = true }, modifier = Modifier.fillMaxWidth().testTag("dispatch_thread")) {
                 Text(threads.firstOrNull { it.id == selectedThread }?.name ?: "新建会话", Modifier.weight(1f))
                 Text("›")
             }
-            if (threadMenu) AlertDialog(onDismissRequest = { threadMenu = false }, title = { Text("选择会话") }, text = {
+            if (threadMenu) AlertDialog(onDismissRequest = { threadMenu = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("选择会话") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu {
                 LazyColumn {
                     item { ListItem(headlineContent = { Text("新建会话") }, leadingContent = { RadioButton(selectedThread == null, null) },
                         modifier = Modifier.clickable { selectedThread = null; threadMenu = false }) }

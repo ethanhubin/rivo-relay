@@ -659,11 +659,11 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             }
         }
     }
-    endingPending?.let { pending -> AlertDialog(onDismissRequest = { endingPending = null }, title = { Text("清除手机上的等待记录？") },
-        text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    endingPending?.let { pending -> AlertDialog(onDismissRequest = { endingPending = null }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("清除手机上的等待记录？") } },
+        text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("原操作可能仍在执行；请先检查原会话。此操作只解除手机等待，不取消或重新发送原任务，服务记录保留。")
             Text("节点：${node.connection.name}\n操作：${pending.label}\n提交 ID：${pending.id}", style = MaterialTheme.typography.labelSmall)
-        } }, confirmButton = { TextButton(onClick = { node.submissions.finishReconciliation(pending.id); endingPending = null }, enabled = !submission.busy && submission.pending?.id == pending.id,
+        } } }, confirmButton = { TextButton(onClick = { node.submissions.finishReconciliation(pending.id); endingPending = null }, enabled = !submission.busy && submission.pending?.id == pending.id,
             modifier = Modifier.testTag("confirm_finish_reconciliation")) { Text("清除等待记录") } }, dismissButton = { TextButton(onClick = { endingPending = null }) { Text("返回") } }) }
     todoAttachment?.let { path -> dev.rivo.relay.ui.chat.FilePreviewDialog(path,
         { p -> node.api.call("/v1/files?path=" + encoded(p)) }, { p, output, progress -> node.api.downloadFile(p, output, progress) }) { todoAttachment = null } }
@@ -671,11 +671,15 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
         onDismissRequest = { if (!pairing) { addNode = false; setError(null) } },
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
     ) {
+ dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             LoginScreen(pairing, error, pair, setError,
                 onBack = { addNode = false; setError(null) })
         }
-    }
+
+}
+}
     if (addProject) ProjectDirectoryDialog(
         readDirectory = { path -> node.api.call("/v1/project-directories?path=" + encoded(path)) }, writable = projectsWritable,
         submissionError = error ?: submission.notice, nodeName = node.connection.name, busy = submission.busy,

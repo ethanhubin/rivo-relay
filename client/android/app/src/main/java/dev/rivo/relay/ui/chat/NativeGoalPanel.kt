@@ -63,14 +63,14 @@ fun NativeGoalPanel(goal: JSONObject?, enabled: Boolean, onAction: (JSONObject) 
     }
     if (editing) {
         val validBudget = budget.isBlank() || (budget.toLongOrNull()?.let { it > 0 } == true)
-        AlertDialog(onDismissRequest = ::cancelEditing, title = { Text("持续目标") }, text = {
+        AlertDialog(onDismissRequest = ::cancelEditing, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("持续目标") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(if (pending) "目标保存在草稿中，发送首条任务时启用。Codex 会跨轮次持续推进，直至完成、暂停或遇到限制。" else "Codex 会跨轮次持续推进，直至完成、暂停或遇到限制。保存后启用目标。")
                 OutlinedTextField(objective, { objective = it }, label = { Text("希望完成什么") }, minLines = 3, maxLines = 8)
                 OutlinedTextField(budget, { budget = it }, label = { Text("Token 预算（可选）") }, singleLine = true, isError = !validBudget,
                     supportingText = { Text(if (pending) "留空不设置新预算；此前已提交的预算不会因此清除" else if (goal == null) "留空不设置预算" else "留空保留已有预算；预算是否允许继续由原生运行时判断") })
             }
-        }, confirmButton = {
+        } }, confirmButton = {
             TextButton(onClick = {
                 val body = JSONObject().put("operation", "set").put("objective", objective.trim())
                 budget.toLongOrNull()?.let { body.put("tokenBudget", it) }
@@ -78,8 +78,8 @@ fun NativeGoalPanel(goal: JSONObject?, enabled: Boolean, onAction: (JSONObject) 
             }, enabled = enabled && objective.isNotBlank() && objective.length <= 200000 && validBudget) { Text(if (pending) "保存目标" else "保存并启用") }
         }, dismissButton = { TextButton(onClick = ::cancelEditing) { Text("取消") } })
     }
-    if (clearing) AlertDialog(onDismissRequest = { clearing = false }, title = { Text("清除目标？") },
-        text = { Text(if (pending) "移除草稿中的目标。若此前已提交目标，下一次发送时会清除会话中的目标。" else "移除此会话的持续目标。聊天记录和队列保留；当前轮次可通过停止按钮单独停止。") },
+    if (clearing) AlertDialog(onDismissRequest = { clearing = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("清除目标？") } },
+        text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text(if (pending) "移除草稿中的目标。若此前已提交目标，下一次发送时会清除会话中的目标。" else "移除此会话的持续目标。聊天记录和队列保留；当前轮次可通过停止按钮单独停止。") } },
         confirmButton = { TextButton(onClick = { onAction(JSONObject().put("operation", "clear")); clearing = false }, enabled = enabled) { Text("清除") } },
         dismissButton = { TextButton(onClick = { clearing = false }) { Text("取消") } })
 }

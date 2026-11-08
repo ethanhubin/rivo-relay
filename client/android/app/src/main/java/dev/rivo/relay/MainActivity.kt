@@ -43,7 +43,7 @@ class MainActivity : ComponentActivity() {
                         navigationBarStyle = SystemBarStyle.auto(android.graphics.Color.argb(230, 255, 255, 255), android.graphics.Color.argb(128, 27, 27, 27)) { darkTheme },
                     )
                 }
-                RelayApp(model)
+                dev.rivo.relay.ui.chat.ThemedTextContextMenu { RelayApp(model) }
             }
         }
     }

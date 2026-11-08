@@ -196,6 +196,8 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
     val hasContent = title.isNotBlank() || filled.isNotEmpty()
     fun dismiss() { if (!busy) { focus.clearFocus(force = true); keyboard?.hide(); onDismiss() } }
     Dialog(onDismissRequest = ::dismiss, properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = false)) {
+ dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+
         val window = (LocalView.current.parent as DialogWindowProvider).window
         SideEffect {
             window.setDimAmount(.20f)
@@ -280,16 +282,18 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
                 }
             }
         }
-    }
+
+}
+}
     if (reminderOpen) TodoReminderDialog(due, reminderTime, repeat, { reminderOpen = false }) { dateTime, rule ->
         due = dateTime.toLocalDate().toString(); reminderTime = dateTime.toLocalTime().toString(); repeat = rule; reminderOpen = false
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         else reminderEnabled = true
     }
-    if (deleteConfirm) AlertDialog(onDismissRequest = { deleteConfirm = false }, title = { Text("删除这条待办？") }, text = { Text("待办会被删除，已关联的 Codex 会话仍会保留。") },
+    if (deleteConfirm) AlertDialog(onDismissRequest = { deleteConfirm = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("删除这条待办？") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("待办会被删除，已关联的 Codex 会话仍会保留。") } },
         confirmButton = { Button(onClick = { deleteConfirm = false; onDelete() }, enabled = !busy) { Text("删除") } }, dismissButton = { TextButton(onClick = { deleteConfirm = false }) { Text("取消") } })
-    if (chooseAttachmentSource) AlertDialog(onDismissRequest = { chooseAttachmentSource = false }, title = { Text("添加附件") }, text = {
+    if (chooseAttachmentSource) AlertDialog(onDismissRequest = { chooseAttachmentSource = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("添加附件") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu {
         Column {
             TextButton(onClick = { selectSource(TodoAttachmentSource.Files) },
                 modifier = Modifier.testTag("todo_attachment_local_files")) { Text("本地文件") }
@@ -299,16 +303,16 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
                 modifier = Modifier.testTag("todo_attachment_workspace")) { Text("节点项目文件") }
             Text("本地文件和照片保留在这台手机上。", style = MaterialTheme.typography.bodySmall)
         }
-    }, confirmButton = { TextButton(onClick = { chooseAttachmentSource = false }) { Text("取消") } })
+    } }, confirmButton = { TextButton(onClick = { chooseAttachmentSource = false }) { Text("取消") } })
     if (chooseAttachmentProject) AlertDialog(onDismissRequest = { chooseAttachmentProject = false },
-        title = { Text("选择文件所在项目") }, text = {
+        title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("选择文件所在项目") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu {
             Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
                 projects.forEach { project -> TextButton(onClick = {
                     attachmentRoot = project.path
                     chooseAttachmentProject = false
                 }) { Text(project.name) } }
             }
-        }, confirmButton = { TextButton(onClick = { chooseAttachmentProject = false }) { Text("取消") } })
+        } }, confirmButton = { TextButton(onClick = { chooseAttachmentProject = false }) { Text("取消") } })
     val root = attachmentRoot
     if (root != null && readDirectory != null) WorkspaceFilePicker(root, readDirectory, { attachmentRoot = null }) { reference ->
         addAttachment(reference.string("name"), reference.string("path"))
@@ -341,6 +345,8 @@ private fun TodoReminderDialog(initialDueDate: String, initialTime: String, init
     val picker = rememberDatePickerState(initialSelectedDateMillis = date.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli())
     fun selectedDate() = picker.selectedDateMillis?.let { Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate() } ?: date
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+ dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+
         Surface(Modifier.fillMaxWidth().padding(horizontal = 10.dp).heightIn(max = 820.dp).testTag("todo_reminder_dialog"),
             shape = RoundedCornerShape(32.dp), color = MaterialTheme.colorScheme.surface) {
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = RivoSpacing.Md, vertical = RivoSpacing.Xxl),
@@ -390,5 +396,7 @@ private fun TodoReminderDialog(initialDueDate: String, initialTime: String, init
                 }
             }
         }
-    }
+
+}
+}
 }

@@ -668,8 +668,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         }
     }
     removingQueue?.let { task -> AlertDialog(onDismissRequest = { if (!busy) removingQueue = null },
-        title = { Text(if (task.recoveryRequired) "忽略待恢复记录？" else "撤回待发任务？") },
-        text = { Text(if (task.recoveryRequired) "仅移除此队列记录，不会停止或重新发送原任务。请先核对会话历史。" else "该任务将从等待队列移除，不再执行。") },
+        title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text(if (task.recoveryRequired) "忽略待恢复记录？" else "撤回待发任务？") } },
+        text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text(if (task.recoveryRequired) "仅移除此队列记录，不会停止或重新发送原任务。请先核对会话历史。" else "该任务将从等待队列移除，不再执行。") } },
         confirmButton = { TextButton(onClick = { onQueue(JSONObject().put("operation", if (task.recoveryRequired) "dismiss" else "remove").put("itemId", task.id).put("revision", task.revision)) { removingQueue = null } }, enabled = !busy && !blocked && !writerBusy && state.canManageQueue(), modifier = Modifier.testTag("queue_remove")) { Text(if (task.recoveryRequired) "确认忽略" else "确认撤回") } },
         dismissButton = { TextButton(onClick = { removingQueue = null }) { Text("取消") } }) }
     filePath?.let { FilePreviewDialog(it, readFile, downloadFile, initialAction = fileAction) { filePath = null; fileAction = null } }
@@ -678,8 +678,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             if (files.size < 16 && files.none { it.string("path") == file.string("path") }) files = files + file
             workspaceFileDialog = false
         })
-    if (stopConfirm) AlertDialog(onDismissRequest = { stopConfirm = false }, title = { Text("停止当前轮次？") },
-        text = { Text("将中断当前 Codex 轮次。已产生的内容和改动会保留；这不等同于暂停或清除持续目标，队列也会保留。") },
+    if (stopConfirm) AlertDialog(onDismissRequest = { stopConfirm = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("停止当前轮次？") } },
+        text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("将中断当前 Codex 轮次。已产生的内容和改动会保留；这不等同于暂停或清除持续目标，队列也会保留。") } },
         confirmButton = { Button(onClick = { stopConfirm = false; onStop() }, enabled = !busy && !blocked && canOperate) { Text("停止当前轮次") } },
         dismissButton = { TextButton(onClick = { stopConfirm = false }) { Text("取消") } })
     forwardingLink?.let { link -> CodexLinkDestinationDialog(link, readTool,

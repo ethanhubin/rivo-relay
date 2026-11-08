@@ -58,6 +58,8 @@ internal fun DeveloperToolsDialog(
         finally { coroutineContext.ensureActive(); loaded = true }
     }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+ dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+
         Surface(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize().systemBarsPadding()) {
                 Row(Modifier.fillMaxWidth().padding(8.dp)) {
@@ -112,16 +114,18 @@ internal fun DeveloperToolsDialog(
                 }
             }
         }
-    }
-    cleanupConfirm?.let { confirmed -> AlertDialog(onDismissRequest = { cleanupConfirm = null }, title = { Text("清理当前工作树？") },
-        text = { Text("将移除此会话的工作树目录。请确认工作已经完成，且没有正在使用此目录的任务。") },
+
+}
+}
+    cleanupConfirm?.let { confirmed -> AlertDialog(onDismissRequest = { cleanupConfirm = null }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("清理当前工作树？") } },
+        text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("将移除此会话的工作树目录。请确认工作已经完成，且没有正在使用此目录的任务。") } },
         confirmButton = { TextButton(onClick = {
             cleanupConfirm = null
             if (confirmed.optBoolean("dirty")) discardConfirm = confirmed
             else submit("$base/workspace/cleanup", JSONObject().put("discard", false).put("revision", confirmed.string("revision"))) { if (alive && currentThread == threadId) generation++ }
         }, enabled = !busy && canCleanup) { Text("继续") } }, dismissButton = { TextButton(onClick = { cleanupConfirm = null }) { Text("取消") } }) }
-    discardConfirm?.let { confirmed -> AlertDialog(onDismissRequest = { discardConfirm = null }, title = { Text("工作树包含未提交改动") },
-        text = { Text("继续后节点会先归档当前脏目录，再移除工作树。未提交改动将不再留在原工作目录中。确定归档并清理？") },
+    discardConfirm?.let { confirmed -> AlertDialog(onDismissRequest = { discardConfirm = null }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("工作树包含未提交改动") } },
+        text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("继续后节点会先归档当前脏目录，再移除工作树。未提交改动将不再留在原工作目录中。确定归档并清理？") } },
         confirmButton = { TextButton(onClick = {
             submit("$base/workspace/cleanup", JSONObject().put("discard", true).put("revision", confirmed.string("revision"))) { if (alive && currentThread == threadId) { discardConfirm = null; generation++ } }
         }, enabled = !busy && canCleanup, modifier = Modifier.testTag("confirm_discard_workspace")) { Text("归档并清理") } },

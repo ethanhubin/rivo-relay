@@ -32,7 +32,7 @@ fun NewConversationDialog(project: ProjectSummary, readGit: suspend () -> JSONOb
         catch (e: Exception) { error = e.message ?: "无法读取 Git 来源" }
         finally { loading = false }
     }
-    AlertDialog(onDismissRequest = { if (!busy) onDismiss() }, title = { Text("新建会话") }, text = {
+    AlertDialog(onDismissRequest = { if (!busy) onDismiss() }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("新建会话") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu {
         Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(project.name, style = MaterialTheme.typography.titleMedium)
             Text(project.path, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -43,8 +43,8 @@ fun NewConversationDialog(project: ProjectSummary, readGit: suspend () -> JSONOb
                     Text(if (worktree) "工作树" else "本地目录", Modifier.weight(1f)); dev.rivo.relay.ui.chat.SettingsRightArrow()
                 }
                 DropdownMenu(workspaceMenu && enabled, { workspaceMenu = false }) {
-                    DropdownMenuItem(text = { Text("本地目录") }, onClick = { worktree = false; workspaceMenu = false })
-                    DropdownMenuItem(text = { Column { Text("工作树"); Text("从已提交版本创建隔离工作区", style = MaterialTheme.typography.labelSmall) } },
+                    DropdownMenuItem(text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("本地目录") } }, onClick = { worktree = false; workspaceMenu = false })
+                    DropdownMenuItem(text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Column { Text("工作树"); Text("从已提交版本创建隔离工作区", style = MaterialTheme.typography.labelSmall) } } },
                         enabled = git?.optBoolean("available") == true, onClick = { worktree = true; workspaceMenu = false })
                 }
             }
@@ -59,14 +59,14 @@ fun NewConversationDialog(project: ProjectSummary, readGit: suspend () -> JSONOb
                         Text(ref?.let { it.string("name") + " · " + it.string("commit").take(8) } ?: "选择来源", Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis); dev.rivo.relay.ui.chat.SettingsRightArrow()
                     }
                     DropdownMenu(refMenu && enabled, { refMenu = false }, modifier = Modifier.heightIn(max = 280.dp)) {
-                        refs.forEach { option -> DropdownMenuItem(text = { Column { Text(option.string("name")); Text(option.string("commit").take(8), style = MaterialTheme.typography.labelSmall) } },
+                        refs.forEach { option -> DropdownMenuItem(text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Column { Text(option.string("name")); Text(option.string("commit").take(8), style = MaterialTheme.typography.labelSmall) } } },
                             onClick = { selected = option.string("id"); refMenu = false }) }
                     }
                 }
                 Text("从已提交版本创建独立目录，不会复制本地未提交改动。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-    }, confirmButton = { Button(onClick = { onCreate(selected.takeIf { worktree }) }, enabled = enabled && (!worktree || !loading && selected != null),
+    } }, confirmButton = { Button(onClick = { onCreate(selected.takeIf { worktree }) }, enabled = enabled && (!worktree || !loading && selected != null),
         modifier = Modifier.testTag("confirm_new_conversation")) { Text(if (busy) "创建中…" else "创建") } }, dismissButton = { TextButton(onDismiss, enabled = !busy) { Text("取消") } })
 }
 

@@ -8,6 +8,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -134,6 +135,38 @@ class MessageInteractionUiTest {
             assertEquals(text, clipboard.primaryClip?.getItemAt(0)?.text?.toString())
         }
         compose.onNodeWithTag("message_text_context_menu").assertDoesNotExist()
+    }
+
+    @Test fun selectionMenuCanReopenAfterCopy() {
+        showMessage("复制后再次长按")
+        repeat(2) {
+            compose.onNodeWithTag("message_text").performTouchInput { longClick() }
+            compose.onNodeWithTag("message_text_context_menu").assertIsDisplayed()
+            compose.onNodeWithText("复制").performClick()
+            compose.onNodeWithTag("message_text_context_menu").assertDoesNotExist()
+        }
+    }
+
+    @Test fun dialogSelectionReopensAfterCopyWithoutTouchingActivity() {
+        compose.setContent { RivoTheme {
+            dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+                androidx.compose.ui.window.Dialog(onDismissRequest = {}) {
+                    dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+                        Surface(Modifier.fillMaxWidth().padding(24.dp)) {
+                            androidx.compose.foundation.text.selection.SelectionContainer {
+                                androidx.compose.material3.Text("dialog selection", Modifier.testTag("dialog_selection"))
+                            }
+                        }
+                    }
+                }
+            }
+        } }
+        repeat(2) {
+            compose.onNodeWithTag("dialog_selection").performTouchInput { longClick() }
+            compose.onNodeWithTag("message_text_context_menu").assertIsDisplayed()
+            compose.onNodeWithText(compose.activity.getString(android.R.string.copy)).performClick()
+            compose.onNodeWithTag("message_text_context_menu").assertDoesNotExist()
+        }
     }
 
     @Test fun sourceCopyExcludesLineNumbers() {

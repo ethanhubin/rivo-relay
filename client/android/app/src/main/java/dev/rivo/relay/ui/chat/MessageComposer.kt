@@ -363,10 +363,14 @@ fun MessageComposer(
                         }
                         Spacer(Modifier.weight(1f))
                         if (enabled && settingsExpanded && settingsContent != null) Dialog(onDismissRequest = onDismissSettings) {
+ dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+
                             Surface(Modifier.fillMaxWidth().heightIn(max = 560.dp).testTag("composer_settings_panel"),
                                 shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh,
                                 tonalElevation = 4.dp) { settingsContent() }
-                        }
+
+}
+}
 
                         if (!busy && isRunning && text.isBlank() && images.isEmpty() && files.isEmpty() && !voice.transcribing) OutlinedButton(
                             onClick = onStop, enabled = canStop,

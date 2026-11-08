@@ -53,6 +53,19 @@ class MessageInteractionTest {
         assertEquals(IntOffset(120, 9), placement)
     }
 
+    @Test fun toolbarClampsOffscreenAnchorsAndOversizedContent() {
+        for (direction in listOf(LayoutDirection.Ltr, LayoutDirection.Rtl)) {
+            for (point in listOf(IntOffset(-400, -200), IntOffset(900, 1200))) {
+                val result = TextMenuPositionProvider(point, 8).calculatePosition(
+                    IntRect(20, 30, 300, 100), IntSize(320, 640), direction, IntSize(200, 48))
+                assertTrue(result.x in 0..120)
+                assertTrue(result.y in 0..592)
+            }
+            assertEquals(IntOffset.Zero, TextMenuPositionProvider(IntOffset(900, 1200), 8)
+                .calculatePosition(IntRect.Zero, IntSize(100, 40), direction, IntSize(200, 48)))
+        }
+    }
+
     @Test fun mimeClassificationSupportsOfficeAndMediaWithoutQueryConfusion() {
         assertEquals("application/vnd.openxmlformats-officedocument.wordprocessingml.document", fileMimeType("report.docx?download=1#top"))
         assertEquals("audio/flac", fileMimeType("recording.FLAC"))

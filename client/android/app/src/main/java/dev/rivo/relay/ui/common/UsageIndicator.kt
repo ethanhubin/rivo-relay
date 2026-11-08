@@ -34,7 +34,7 @@ fun UsageIndicator(usage: CodexUsage?, modifier: Modifier = Modifier, contextPer
         }
         window?.let { CodexQuotaProgressBar(it, Modifier.fillMaxWidth().height(3.dp)) }
     }
-    if (details) AlertDialog(onDismissRequest = { details = false }, title = { Text("Codex 用量") }, text = {
+    if (details) AlertDialog(onDismissRequest = { details = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("Codex 用量") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             usage?.limits.orEmpty().forEach { limit ->
                 Text(limit.name, style = MaterialTheme.typography.titleSmall)

@@ -86,6 +86,8 @@ private fun ApprovalRequest(request: NativeRequest, enabled: Boolean, onRespond:
         }
     }
     if (open) Dialog(onDismissRequest = { open = false }) {
+ dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+
         Surface(shape = MaterialTheme.shapes.extraLarge, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
             Column(Modifier.fillMaxWidth().heightIn(max = 600.dp).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(title, style = MaterialTheme.typography.titleLarge)
@@ -129,7 +131,9 @@ private fun ApprovalRequest(request: NativeRequest, enabled: Boolean, onRespond:
                 }
             }
         }
-    }
+
+}
+}
 }
 
 internal fun approvalLabel(decision: Any): String? = when (decision) {

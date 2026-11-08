@@ -190,6 +190,8 @@ internal fun AttachmentImageEditor(
         decorFitsSystemWindows = false,
       ),
   ) {
+ dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+
     val editorWindow = (LocalView.current.parent as DialogWindowProvider).window
     DisposableEffect(editorWindow) {
       editorWindow.addFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
@@ -249,7 +251,9 @@ internal fun AttachmentImageEditor(
         },
       )
     }
-  }
+
+}
+}
 }
 
 @Composable

@@ -396,6 +396,8 @@ internal fun FullScreenImage(
         decorFitsSystemWindows = false,
       ),
   ) {
+ dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+
     val viewerWindow = (LocalView.current.parent as DialogWindowProvider).window
     DisposableEffect(viewerWindow) {
       viewerWindow.addFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
@@ -903,7 +905,9 @@ internal fun FullScreenImage(
         }
       }
     }
-  }
+
+}
+}
   editingSource?.let { source ->
     MediaAttachmentEditor(
       source = source,

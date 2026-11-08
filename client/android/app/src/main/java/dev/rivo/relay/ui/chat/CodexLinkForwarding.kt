@@ -53,8 +53,8 @@ internal fun CodexLinkDestinationDialog(link: CodexLinkAttachment, read: suspend
         catch (failure: Exception) { error = failure.message ?: "无法读取目标会话" }
         finally { coroutineContext.ensureActive(); loading = false }
     }
-    AlertDialog(onDismissRequest = onDismiss, modifier = Modifier.testTag("codex_link_destination"), title = { Text("发送到 Codex 会话") },
-        text = { Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
+    AlertDialog(onDismissRequest = onDismiss, modifier = Modifier.testTag("codex_link_destination"), title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("发送到 Codex 会话") } },
+        text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
             Text(link.name, style = MaterialTheme.typography.titleSmall)
             Text("确认后添加到输入框，点击发送才会提交。", style = MaterialTheme.typography.bodySmall)
             projects.filterNot { it.string("id") == "__rivo_recent__" }.forEach { project -> Row(Modifier.fillMaxWidth().clickable { projectId = project.string("id") }) {

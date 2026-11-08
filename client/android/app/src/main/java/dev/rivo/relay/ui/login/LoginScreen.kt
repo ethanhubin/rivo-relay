@@ -59,8 +59,8 @@ fun LoginScreen(busy: Boolean, error: String?, onPair: (String, String) -> Unit,
         }
     }
     if (manual) {
-        AlertDialog(onDismissRequest = { if (!busy && !readingImage) manual = false }, title = { Text("手动连接") },
-            text = {
+        AlertDialog(onDismissRequest = { if (!busy && !readingImage) manual = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("手动连接") } },
+            text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("粘贴完整配对链接，或输入节点地址和配对码。", style = MaterialTheme.typography.bodySmall)
                     OutlinedTextField(address, { address = it }, label = { Text("节点地址或配对链接") },
