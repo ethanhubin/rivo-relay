@@ -53,7 +53,7 @@ fun RelayApp(vm: AppViewModel = viewModel()) {
                 } else LoginScreen(app.pairing || app.reconnecting, app.error, vm::pair, vm::setError, app.savedNodes, vm::selectNode,
                     onSettings = { loginSettings = true })
             }
-            else key(node) { ConnectedApp(node, app.error, vm::setError, vm::disconnect, vm::retryConnection, app.savedNodes, vm::selectNode) }
+            else key(node) { ConnectedApp(node, app.error, vm::setError, vm::disconnect, vm::retryConnection, app.savedNodes, vm::selectNode, vm::setConnectionMode) }
         }
     }
 }
@@ -61,7 +61,7 @@ fun RelayApp(vm: AppViewModel = viewModel()) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) -> Unit, disconnect: () -> Unit, retryConnection: () -> Unit,
-    savedNodes: List<dev.rivo.relay.connection.SavedNode>, selectNode: (String) -> Unit) {
+    savedNodes: List<dev.rivo.relay.connection.SavedNode>, selectNode: (String) -> Unit, setConnectionMode: (dev.rivo.relay.connection.ConnectionMode) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var route by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastRoute")?.let { if (it == "new") "sessions" else it }?.takeIf { it in setOf("projects", "sessions", "chat", "todos", "settings") } ?: "projects") }
     var threadId by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastThreadId")) }
@@ -257,7 +257,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     Column(Modifier.fillMaxSize().imePadding()) {
         Box(Modifier.weight(1f)) {
             when (route) {
-                "settings" -> SettingsScreen()
+                "settings" -> SettingsScreen(connection = node.connection, setConnectionMode = setConnectionMode)
                 "projects" -> ProjectsScreen(catalog.projects, node.connection.name, catalog.loading, { project -> node.catalog.project(project); route = "sessions"; setError(null) },
                     { route = "settings"; setError(null) }, { node.catalog.refreshProjects() }, { if (node.catalog.state.value.projectsFresh) addProject = true },
                     usage = catalog.usage, usageLoading = catalog.usageLoading, usageError = catalog.usageError,

@@ -97,3 +97,60 @@ class PairingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class PairingRouteUpgradeTests(unittest.TestCase):
+    def test_route_upgrade_consumes_code_and_preserves_identity(self):
+        import tempfile
+        from pathlib import Path
+        from rivo_relay.database import Database
+        from rivo_relay.pairing import PairingStore, PairingError, route_proof
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / 'db.sqlite')
+            try:
+                store = PairingStore(db)
+                original = store.exchange(store.create()['code'], 'phone')
+                code = store.create()['code']
+                def resume(code):
+                    digest = hashlib.sha256(original['token'].encode()).hexdigest()
+                    return dict(resume={'deviceId': original['connection_id'], 'binding': 'routes',
+                        'proof': route_proof(digest, 'request', code, 'node', 'routes')}, node_id='node', route_binding='routes')
+                upgraded = store.exchange(code, 'phone', **resume(code))
+                self.assertEqual('', upgraded['token'])
+                self.assertEqual(original['connection_id'], upgraded['connection_id'])
+                self.assertEqual(len(store.list_connections()), 1)
+                with self.assertRaises(PairingError):
+                    store.exchange(code, 'phone', **resume(code))
+                store.revoke(original['connection_id'])
+                fresh_code = store.create()['code']
+                fresh = store.exchange(fresh_code, 'phone', **resume(fresh_code))
+                self.assertNotEqual(fresh['connection_id'], original['connection_id'])
+            finally:
+                db.close()
+
+    def test_upgrade_proof_is_bound_to_routes_and_direction(self):
+        import tempfile, hashlib
+        from pathlib import Path
+        from rivo_relay.database import Database
+        from rivo_relay.pairing import PairingStore, route_proof
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / 'db.sqlite')
+            try:
+                store = PairingStore(db)
+                original = store.exchange(store.create()['code'], 'phone')
+                code = store.create()['code']
+                digest = hashlib.sha256(original['token'].encode()).hexdigest()
+                resume = {'deviceId': original['connection_id'], 'binding': 'trusted-route',
+                          'proof': route_proof(digest, 'request', code, 'node', 'trusted-route')}
+                result = store.exchange(code, 'phone', resume=resume, node_id='node', route_binding='trusted-route')
+                self.assertEqual(result['connection_id'], original['connection_id'])
+                self.assertEqual(result['token'], '')
+                self.assertEqual(result['reuseProof'], route_proof(digest, 'response', code, 'node', 'trusted-route'))
+                self.assertNotEqual(result['reuseProof'], resume['proof'])
+                code = store.create()['code']
+                resume.update(binding='attacker-route', proof=route_proof(digest, 'request', code, 'node', 'attacker-route'))
+                result = store.exchange(code, 'phone', resume=resume, node_id='node', route_binding='trusted-route')
+                self.assertNotEqual(result['connection_id'], original['connection_id'])
+                self.assertEqual(result['reuseProof'], '')
+            finally:
+                db.close()

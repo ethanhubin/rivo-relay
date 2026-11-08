@@ -1,6 +1,6 @@
 # Tailscale 节点更新与发布
 
-默认更新源为 `http://100.124.150.1:18767`。App 在未登录或切换会话节点后仍使用这个发布节点；无网络时明确报错，不自动访问 GitHub。
+默认更新源为 `http://100.124.150.1:18767`。0.2.43 起，扫描主发布节点带更新源声明的 v2 二维码后，可同时保存 VPS 更新路径；切换会话节点不改变更新源。未配置 VPS 时仍使用默认发布节点，无网络时明确报错，不自动访问 GitHub。
 
 - `GET /v1/app-updates/latest`：公共版本清单，包含 version、versionCode、notes、size、sha256、apkPath；禁止缓存。
 - `GET /v1/app-updates/apks/<sha256>.apk`：仅公开发布目录中的安装包，支持单 Range 下载。无配对令牌，不经过 Codex 文件读取，不提供任意文件路径。

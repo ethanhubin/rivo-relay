@@ -61,7 +61,7 @@ class UpdateViewModel : ViewModel() {
                     error = "请允许安装未知应用，然后再次点击下载并安装"
                     return@launch
                 }
-                val file = readyFile?.takeIf { it.isFile } ?: NodeAppUpdates().download(latest, File(context.cacheDir, "downloads")) { bytes, _ ->
+                val file = readyFile?.takeIf { it.isFile } ?: NodeAppUpdates.configured(context).download(latest, File(context.cacheDir, "downloads")) { bytes, _ ->
                     viewModelScope.launch { downloadedBytes = bytes }
                 }.also { readyFile = it }
                 val uri = FileProvider.getUriForFile(context, context.packageName + ".files", file)

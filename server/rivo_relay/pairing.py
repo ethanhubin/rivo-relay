@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 import hashlib
+import hmac
 import math
 import secrets
 import threading
@@ -30,6 +31,10 @@ class PairingRateLimited(PairingError):
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def route_proof(token_hash: str, direction: str, code: str, node_id: str, binding: str = "") -> str:
+    return hmac.new(bytes.fromhex(token_hash), (direction + '\0' + code + '\0' + node_id + '\0' + binding).encode(), hashlib.sha256).hexdigest()
 
 
 def _code(value: str) -> str:
@@ -105,7 +110,7 @@ class PairingStore:
             attempts.append(now)
             self._attempts[key] = attempts
 
-    def exchange(self, code: str, name: str, *, client_key: str = "unknown") -> dict:
+    def exchange(self, code: str, name: str, *, client_key: str = "unknown", resume: dict | None = None, node_id: str = "", route_binding: str = "") -> dict:
         now = self.clock()
         self._limit(client_key, now)
         if not isinstance(name, str) or not name.strip() or len(name.strip()) > 100:
@@ -114,6 +119,7 @@ class PairingStore:
         valid = False
         token = secrets.token_urlsafe(32)
         connection_id = uuid.uuid4().hex
+        reuse_proof = ""
         with self.db.transaction() as connection:
             row = connection.execute(
                 "SELECT * FROM pairing_codes WHERE code_hash = ?", (_digest(normalized),)
@@ -122,10 +128,23 @@ class PairingStore:
                 connection.execute("UPDATE pairing_codes SET attempts=attempts+1 WHERE id=?", (row["id"],))
                 valid = row["consumed_at"] is None and now < row["expires_at"]
                 if valid:
-                    connection.execute(
-                        "INSERT INTO connections(id,token_hash,name,created_at) VALUES (?,?,?,?)",
-                        (connection_id, _digest(token), name.strip(), now),
-                    )
+                    resumed = None
+                    if isinstance(resume, dict) and isinstance(resume.get('deviceId'), str) and isinstance(resume.get('proof'), str):
+                        candidate = connection.execute("SELECT id,token_hash FROM connections WHERE id=? AND revoked_at IS NULL",
+                                                       (resume['deviceId'],)).fetchone()
+                        if (candidate and route_binding and resume.get('binding') == route_binding
+                                and len(resume['proof']) == 64 and all(c in '0123456789abcdef' for c in resume['proof'])):
+                            expected = route_proof(candidate['token_hash'], 'request', code, node_id, route_binding)
+                            if hmac.compare_digest(expected, resume['proof']):
+                                resumed = candidate
+                    if resumed:
+                        connection_id, token = resumed['id'], ''
+                        reuse_proof = route_proof(resumed['token_hash'], 'response', code, node_id, route_binding)
+                    else:
+                        connection.execute(
+                            "INSERT INTO connections(id,token_hash,name,created_at) VALUES (?,?,?,?)",
+                            (connection_id, _digest(token), name.strip(), now),
+                        )
                     connection.execute(
                         "UPDATE pairing_codes SET consumed_at=?, connection_id=? WHERE id=?",
                         (now, connection_id, row["id"]),
@@ -133,7 +152,7 @@ class PairingStore:
         if not valid:
             raise PairingError("Pairing code is invalid, expired, or already used")
         return {"connection_id": connection_id, "token": token,
-                "name": name.strip(), "created_at": now}
+                "name": name.strip(), "created_at": now, "reuseProof": reuse_proof}
 
     def authenticate(self, token: str) -> dict | None:
         if not isinstance(token, str) or not token or len(token) > 512:

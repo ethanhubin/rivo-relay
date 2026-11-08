@@ -1,5 +1,8 @@
 package dev.rivo.relay.data
 
+import dev.rivo.relay.connection.NodeRoutes
+import dev.rivo.relay.connection.NodeRouteInterceptor
+import dev.rivo.relay.connection.gatewayTrust
 import java.io.IOException
 import java.io.InterruptedIOException
 import java.util.concurrent.TimeUnit
@@ -27,11 +30,19 @@ const val JSON_READ_TIMEOUT_MILLIS = 120_000L
 const val JSON_READ_IDLE_TIMEOUT_MILLIS = 30_000L
 
 /** Adapted from QiGuang HttpTransport: cancellable JSON and SSE, with Rivo envelopes and no write retry. */
-class RelayApi(private val base: String, private val token: String = "", private val dns: Dns = TailnetDns()) {
+class RelayApi(private val base: String, private val token: String = "", private val dns: Dns = TailnetDns(), private val routes: NodeRoutes? = null, private val nodeId: String = "") {
     internal val sentImages = SentImageCache()
     fun describeFailure(error: Throwable) = connectionFailure(error, base)
+    private val routing by lazy {
+        routes?.let { config ->
+            val probe = OkHttpClient.Builder().dns(dns).retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false)
+                .gatewayTrust(config).build()
+            NodeRouteInterceptor(base, config, probe, token, nodeId)
+        }
+    }
     private fun newClient() = OkHttpClient.Builder().dns(dns).retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false)
-        .connectTimeout(10, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS).callTimeout(100, TimeUnit.SECONDS).build()
+        .connectTimeout(10, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS).callTimeout(100, TimeUnit.SECONDS)
+        .apply { routes?.let { gatewayTrust(it) }; routing?.let { addInterceptor(it) } }.build()
     private val transportLock = Any()
     private val reads = mutableSetOf<Call>()
     @Volatile private var client = newClient()

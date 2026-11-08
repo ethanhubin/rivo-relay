@@ -1,6 +1,10 @@
 package dev.rivo.relay.data
 
 import dev.rivo.relay.connection.NodeEndpoints
+import dev.rivo.relay.connection.NodeRoutes
+import dev.rivo.relay.connection.NodeRouteInterceptor
+import dev.rivo.relay.connection.gatewayTrust
+import dev.rivo.relay.connection.CredentialStore
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -19,6 +23,18 @@ class NodeAppUpdates(
         .followSslRedirects(false).connectTimeout(10, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
         .callTimeout(180, TimeUnit.SECONDS).build(),
 ) {
+    companion object {
+        fun configured(context: android.content.Context): NodeAppUpdates {
+            val routes = CredentialStore(context).read("update-routes")?.let { runCatching { NodeRoutes.from(JSONObject(it)) }.getOrNull() }
+                ?: return NodeAppUpdates()
+            val base = routes.direct.ifBlank { routes.relay }
+            val probe = OkHttpClient.Builder().dns(TailnetDns()).followRedirects(false).followSslRedirects(false)
+                .retryOnConnectionFailure(false).gatewayTrust(routes).build()
+            val client = probe.newBuilder().addInterceptor(NodeRouteInterceptor(base, routes, probe))
+                .readTimeout(30, TimeUnit.SECONDS).callTimeout(180, TimeUnit.SECONDS).build()
+            return NodeAppUpdates(base, client)
+        }
+    }
     suspend fun check(currentVersion: String): AppRelease? {
         requireNotNull(versionParts(currentVersion))
         val manifest = get("${base.trimEnd('/')}/v1/app-updates/latest") { response ->
@@ -83,7 +99,7 @@ class NodeAppUpdates(
         continuation.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                if (continuation.isActive) continuation.resumeWithException(IOException("无法连接更新节点，请检查 Tailscale 网络后重试", e))
+                if (continuation.isActive) continuation.resumeWithException(IOException("无法连接更新节点，请检查网络或桌面节点状态后重试", e))
             }
             override fun onResponse(call: Call, response: Response) {
                 try {

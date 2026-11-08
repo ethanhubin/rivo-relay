@@ -6,7 +6,7 @@ Rivo Relay 是一个自托管的 **Codex 移动工作台**，让你在 Android �
 
 2026-11-07 开发代码已对照 QiGuang-Next 最新本地发布版 `1642fc8` 更新 Codex 会话、队列恢复、模型设置、原生交互与文件差异。具体迁移内容、协议适配和未迁入部分见 [Codex 最新对照](docs/qiguang-codex-sync.md)，测试与部署边界见 [验证记录](docs/validation.md)。
 
-当前 Android 测试版为 **0.2.25 / code 37**，默认通过主节点 Tailscale HTTP 更新。安装首次引导版后，在“设置 → 检查更新”下载并安装；需要连接 Tailscale。[更新清单](http://100.124.150.1:18767/v1/app-updates/latest)。GitHub Release 仅在明确要求时发布，普通发布不推送远端。详见 [发布流程](docs/node-updates.md)。
+当前 Android 测试版为 **0.2.43 / code 55**，默认通过主节点 Tailscale HTTP 更新。安装首次引导版后，在“设置 → 检查更新”下载并安装；需要连接 Tailscale。[更新清单](http://100.124.150.1:18767/v1/app-updates/latest)。GitHub Release 仅在明确要求时发布，普通发布不推送远端。详见 [发布流程](docs/node-updates.md)。
 
 ## 可以做什么
 
@@ -157,3 +157,7 @@ PYTHONPATH=server .venv/bin/python scripts/reauthorize-codex.py
 ```
 
 脚本使用 Codex 官方设备授权流程，不复制令牌。授权后验证后台认证；只有认证仍失败且已加载会话均空闲时才调用托管 daemon 的重启命令，再验证一次。网络故障、无法核实会话状态或非托管后台会明确报错，不强制结束进程。授权仍需本人完成，失败任务不会自动重发；手机配对无需重置。该脚本针对本机默认 Codex home，远程节点应在实际节点上执行。
+
+## VPS 中转与双通道
+
+新增无需域名的自建 VPS 中转，支持与 Tailscale 直连共用同一个节点及授权。桌面运行 `./scripts/start-node.sh`，首次填写 VPS IP 和节点授权密钥后生成二维码；Android 提供自动、仅直连、仅 VPS 模式。部署、密钥管理及更新源配置见 [VPS 双通道说明](docs/vps-gateway.md)。

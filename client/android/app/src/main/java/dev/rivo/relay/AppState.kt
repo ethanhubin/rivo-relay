@@ -164,6 +164,7 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
             finally { mutable.update { it.copy(pairing = false) } }
         }
     }
+    fun setConnectionMode(mode: dev.rivo.relay.connection.ConnectionMode) { pairing.setMode(mode)?.let { activate(it) } }
     fun selectNode(base: String) { pairing.select(base)?.let { activate(it) } }
     fun openNotification(target: TaskNotificationTarget) {
         if (mutable.value.node?.connection?.base != target.base) {

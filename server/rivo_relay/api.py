@@ -347,7 +347,7 @@ class Handler(BaseHTTPRequestHandler):
             if any("/" in part or "\x00" in part for part in path):
                 raise ApiError(400, "invalid_request", "Invalid path")
             if self.command == "GET" and path == ["health"]:
-                self.send_json(200, {"status": "ok"})
+                self.send_json(200, {"status": "ok", "nodeId": self.app.config.node_id})
                 return
             if self.command == 'GET' and path == ['v1', 'app-updates', 'latest']:
                 try:
@@ -363,9 +363,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == ["v1", "pair"] and self.command == "POST":
                 body = self.read_body(limit=4096)
+                from .gateway.config import pairing_route_binding
                 result = self.app.pairing.exchange(required(body, "code", 512),
-                    required(body, "deviceName", 100), client_key=self.client_address[0])
-                self.send_json(200, {"token": result["token"], "deviceId": result["connection_id"],
+                    required(body, "deviceName", 100), client_key=self.client_address[0],
+                    resume=body.get("resume"), node_id=self.app.config.node_id,
+                    route_binding=pairing_route_binding(self.app.config.workspace))
+                self.send_json(200, {"token": result["token"], "deviceId": result["connection_id"], "reuseProof": result.get("reuseProof", ""),
                     "node": {"id": self.app.config.node_id, "name": self.app.node_name.get()}})
                 return
             if self.command == "GET" and len(path) == 3 and path[:2] == ["v1", "download-links"]:

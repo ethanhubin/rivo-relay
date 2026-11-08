@@ -352,3 +352,14 @@ for release as well as takeover. Changed/expired previews must be fetched again.
 Android 输入框设置面板提供权限选择和“设为新会话默认”，默认值仅保存在当前手机的对应节点中，不修改 Desktop 全局配置。草稿保存明确的“沿用节点默认”选择，避免重开草稿时被手机默认值覆盖。会话创建已成功而首条发送尚未完成时，权限选择锁定至进入已创建会话，避免重试时显示未生效的选项。
 
 显式 `POST /v1/threads/{id}/turns` 在发送时允许正常获取已释放会话的写权限；获取失败不会启动 turn，也不结束外部进程。读取会话仍核验实际持有者（包括已释放会话），后台队列发送仍受主动释放标记约束。
+
+
+## VPS 双通道配对（v2）
+
+v1 配对保持兼容。`scripts/start-node.sh` 的 v2 二维码 fragment 增加 `node`（稳定节点 ID）、`direct`、`relay`、`pin`（网关完整 DER 证书 SHA-256），以及可选 `updates=1`。所有值使用 URL 编码；桌面注册密钥不进入二维码。`GET /health` 额外返回 `nodeId`，供本机启动器确认监听端口属于指定 workspace。
+
+手机重新配对已保存的节点时，`POST /v1/pair` 可以增加 `resume:{deviceId,binding,proof}`，不携带旧 Bearer。`binding` 为 UTF-8 的 `direct + "\n" + relay + "\n" + pin` 的 SHA-256 小写十六进制；服务端必须与自身 `gateway-client.json` 配置计算的结果一致。
+
+请求 proof 为 `HMAC-SHA256(SHA256(token), "request\0" + code + "\0" + nodeId + "\0" + binding)`，结果为小写十六进制。有效一次性配对码和 proof 在同一事务里验证，只有未撤销的原连接可复用。复用响应返回原 `deviceId`、空 `token`，并提供相同算法、方向改为 `response` 的 `reuseProof`。手机校验响应 proof 后保留本地旧 token。正常新配对仍返回新 token；无效 proof 不会复用旧连接，也不会绕过配对码校验。
+
+网关对外路径 `/relay/{slot}/v1/...` 保留现有业务认证、请求体、响应及 SSE。完整传输与部署约定见 [VPS 双通道说明](vps-gateway.md)。
