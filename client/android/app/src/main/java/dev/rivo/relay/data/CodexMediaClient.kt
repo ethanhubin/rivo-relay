@@ -25,16 +25,7 @@ class CodexMediaClient(val api: RelayApi, val threadId: String, context: Context
         return if (id != null) api.call("/v1/media/library/${encoded(id)}/provenance")
         else api.call("/v1/media/library?source=${encoded(source)}").objects("items").firstOrNull()
     }
-    suspend fun favorite(sourceOrId: String, desired: Boolean?): MediaFavoriteResult {
-        val record = if (sourceOrId.startsWith('/') || sourceOrId.contains(":") || sourceOrId.startsWith("data:")) lookup(sourceOrId)
-            else if (Regex("[a-f0-9]{64}").matches(sourceOrId)) api.call("/v1/media/library/${encoded(sourceOrId)}/provenance") else null
-        if (desired == null) return MediaFavoriteResult(record?.string("id").orEmpty(), record?.optBoolean("favorite") == true)
-        val id = record?.string("id")?.takeIf { it.isNotBlank() } ?: api.call("/v1/media/library", "POST",
-            JSONObject().put("source", sourceOrId).apply { if (!threadId.startsWith("pending:")) put("threadId", threadId) })
-            .let { it.optJSONObject("item") ?: it }.string("id").also { require(it.isNotBlank()) { "节点没有返回媒体 ID" } }
-        val saved = api.call("/v1/media/library/${encoded(id)}", "PATCH", JSONObject().put("favorite", desired))
-        return MediaFavoriteResult(id, (saved.optJSONObject("item") ?: saved).optBoolean("favorite", desired))
-    }
+
     suspend fun generationInfo(id: String): MediaGenerationInfo {
         val result = api.call("/v1/media/library/${encoded(id)}/provenance")
         val provenance = result.optJSONObject("provenance") ?: result
@@ -48,6 +39,5 @@ class CodexMediaClient(val api: RelayApi, val threadId: String, context: Context
     suspend fun cached(context: Context, source: String, progress: (Long, Long) -> Unit = { _, _ -> }): File = api.cachedMedia(context.cacheDir, source, progress)
     fun close() = imageLoader.shutdown()
 }
-data class MediaFavoriteResult(val mediaId: String, val favorite: Boolean)
 data class MediaGenerationInfo(val prompt: String, val negativePrompt: String = "", val source: String, val parameters: Map<String, String> = emptyMap())
 data class MediaPromptResult(val prompt: String, val source: String = "reverse")

@@ -48,6 +48,8 @@ internal fun WorkspaceFilePicker(root: String, readDirectory: suspend (String) -
         finally { loading = false }
     }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+ dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+
         BackHandler(onBack = goBack)
         Surface(Modifier.fillMaxSize().testTag("attachment_source_browser"), color = MaterialTheme.colorScheme.surface) {
             Column(Modifier.fillMaxSize().systemBarsPadding()) {
@@ -89,7 +91,9 @@ internal fun WorkspaceFilePicker(root: String, readDirectory: suspend (String) -
                 }
             }
         }
-    }
+
+}
+}
 }
 
 /** Same dimensions, colours, hierarchy and tap target as QiGuang AttachmentSourceRow. */

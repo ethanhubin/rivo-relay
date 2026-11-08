@@ -52,23 +52,23 @@ internal fun ImageTextActionMenu(
     properties = PopupProperties(focusable = true),
   ) {
     Surface(
-      shape = RoundedCornerShape(18.dp),
+      shape = RoundedCornerShape(28.dp),
       color = MaterialTheme.colorScheme.surfaceBright.copy(alpha = 1f),
       contentColor = MaterialTheme.colorScheme.onSurface,
       shadowElevation = 10.dp,
       border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 1f)),
       modifier = Modifier.widthIn(max = maxWidth).testTag(tag),
     ) {
-      Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(0.dp)) {
+      Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
         actions.forEach { action ->
           Text(
             text = action.label,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (action.enabled) 1f else 0.38f),
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.clip(RoundedCornerShape(16.dp))
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.clip(RoundedCornerShape(24.dp))
               .clickable(enabled = action.enabled) { onDismiss(); action.onClick() }
               .semantics { contentDescription = action.title }
-              .padding(horizontal = 10.dp, vertical = 8.dp)
+              .padding(horizontal = 18.dp, vertical = 13.dp)
               .testTag(action.tag),
           )
         }

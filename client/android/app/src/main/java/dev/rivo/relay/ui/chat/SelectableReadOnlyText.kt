@@ -3,6 +3,11 @@ package dev.rivo.relay.ui.chat
 import android.view.ViewConfiguration
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -30,6 +35,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
@@ -191,9 +199,14 @@ internal fun ThemedTextContextMenu(
       modifier =
         modifier
           .onGloballyPositioned { coordinates = it }
+          .onPreviewKeyEvent { event ->
+            if (event.type == KeyEventType.KeyDown) provider.resumeAfterUserGesture()
+            false
+          }
           .pointerInput(provider) {
             awaitEachGesture {
               awaitFirstDown(requireUnconsumed = false)
+              provider.dismiss()
               provider.resumeAfterUserGesture()
             }
           }
@@ -219,7 +232,13 @@ private fun ThemedTextContextMenuPopup(
     LaunchedEffect(session) { session.close() }
     return
   }
+  fun dismissMenu() {
+    session.close()
+    provider.onActionClosed(session)
+  }
+  BackHandler { dismissMenu() }
   val density = LocalDensity.current
+  val maxWidth = with(density) { LocalWindowInfo.current.containerSize.width.toDp() - 16.dp }
   val position = session.dataProvider.position(anchorCoordinates)
   val positionProvider =
     remember(position, density) {
@@ -231,7 +250,7 @@ private fun ThemedTextContextMenuPopup(
 
   Popup(
     popupPositionProvider = positionProvider,
-    onDismissRequest = session::close,
+    onDismissRequest = ::dismissMenu,
     properties = PopupProperties(focusable = false),
   ) {
     Surface(
@@ -240,22 +259,26 @@ private fun ThemedTextContextMenuPopup(
       contentColor = MaterialTheme.colorScheme.onSurface,
       shadowElevation = 10.dp,
       border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 1f)),
-      modifier = Modifier.testTag("message_text_context_menu"),
+      modifier = Modifier.widthIn(max = maxWidth).testTag("message_text_context_menu"),
     ) {
-      Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+      Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
         items.forEach { item ->
           Text(
             text = item.label,
             modifier =
               Modifier.clip(RoundedCornerShape(24.dp))
                 .clickable {
-                  val wasClosing = session.closeRequested
-                  item.onClick.invoke(
-                    if (item.keepsMenuOpenAfterClick()) NonClosingTextContextMenuSession()
-                    else session
-                  )
-                  if (!wasClosing && session.closeRequested) {
+                  if (item.keepsMenuOpenAfterClick()) {
+                    item.onClick.invoke(NonClosingTextContextMenuSession())
+                  } else {
+                    // Block reentrant show requests before clipboard/selection callbacks.
+                    // Platform and appended actions do not all call close themselves.
                     provider.onActionClosed(session)
+                    try {
+                      item.onClick.invoke(session)
+                    } finally {
+                      session.close()
+                    }
                   }
                 }
                 .padding(horizontal = 18.dp, vertical = 13.dp),
@@ -288,8 +311,9 @@ private class ThemedTextContextMenuProvider : TextContextMenuProvider {
   }
 
   fun onActionClosed(target: ThemedTextContextMenuSession) {
+    if (session !== target) return
     suppressedUntilUserGesture = true
-    if (session === target) session = null
+    session = null
   }
 
   fun resumeAfterUserGesture() {
@@ -338,7 +362,7 @@ internal class TextMenuPositionProvider(
     val x = (anchorBounds.left + selectionPosition.x).coerceIn(0, maxX)
     val above = anchorBounds.top + selectionPosition.y - popupContentSize.height - marginPx
     val y =
-      if (above >= 0) above
+      if (above >= 0) above.coerceAtMost(maxY)
       else (anchorBounds.top + selectionPosition.y + marginPx).coerceIn(0, maxY)
     return IntOffset(x, y)
   }

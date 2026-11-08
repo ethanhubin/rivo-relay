@@ -1,5 +1,7 @@
 package dev.rivo.relay.ui.todos
 
+import dev.rivo.relay.ui.theme.listItemBackground
+
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
@@ -174,16 +176,16 @@ fun TodosScreen(state: TodosState, projects: List<ProjectSummary>, canDispatch: 
         onOpenAttachment = onOpenAttachment,
         onOpenThread = editing?.takeIf { it.threadId.isNotBlank() }?.let { item -> { editor = false; onOpenThread(item) } })
     delivery?.let { item -> DispatchSheet(item, projects, canDispatch && state.online && state.pendingCount == 0 && !state.syncing, loadThreads, { delivery = null }) { project, thread -> onDispatch(item, project, thread) { delivery = null } } }
-    if (deleteConfirm) AlertDialog(onDismissRequest = { deleteConfirm = false }, title = { Text("删除 ${selectedIds.size} 项待办？") },
-        text = { Text("所选待办及其清单项目将被永久删除。已关联的 Codex 会话仍会保留。") },
+    if (deleteConfirm) AlertDialog(onDismissRequest = { deleteConfirm = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("删除 ${selectedIds.size} 项待办？") } },
+        text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("所选待办及其清单项目将被永久删除。已关联的 Codex 会话仍会保留。") } },
         confirmButton = { Button(onClick = {
             val pending = currentItems.filter { it.id in selectedIds }.toMutableList()
             deleteConfirm = false; selectedIds = emptySet()
             fun next() { if (pending.isNotEmpty()) onDelete(pending.removeAt(0)) { next() } }
             next()
         }, enabled = !state.mutating, modifier = Modifier.testTag("todo_confirm_delete")) { Text("确认删除") } }, dismissButton = { TextButton(onClick = { deleteConfirm = false }) { Text("取消") } })
-    if (discardConfirm) AlertDialog(onDismissRequest = { discardConfirm = false }, title = { Text("使用节点上的待办？") },
-        text = { Text("成功连接后，会放弃这台手机尚未同步的待办修改，并读取节点版本。已提交给 Codex 的任务不受影响。") },
+    if (discardConfirm) AlertDialog(onDismissRequest = { discardConfirm = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("使用节点上的待办？") } },
+        text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("成功连接后，会放弃这台手机尚未同步的待办修改，并读取节点版本。已提交给 Codex 的任务不受影响。") } },
         confirmButton = { TextButton(onClick = { discardConfirm = false; onDiscardLocal?.invoke() }) { Text("放弃本机更改") } },
         dismissButton = { TextButton(onClick = { discardConfirm = false }) { Text("取消") } })
 }
@@ -216,7 +218,7 @@ private fun TodoCard(item: Todo, busy: Boolean, onToggle: () -> Unit, onEdit: ()
         return
     }
     val cardAlpha by animateFloatAsState(if (item.completed && !selecting) .58f else 1f, tween(260), label = "todoCardAlpha")
-    Surface(shape = RoundedCornerShape(RivoRadius.Card), color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
+    Surface(shape = RoundedCornerShape(RivoRadius.Card), color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.listItemBackground,
         modifier = modifier.fillMaxWidth().alpha(cardAlpha).animateContentSize().testTag("todo_${item.id}")) {
         Column(Modifier.padding(vertical = RivoSpacing.Sm)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).combinedClickable(enabled = !busy,
@@ -277,28 +279,45 @@ private fun DispatchSheet(item: Todo, projects: List<ProjectSummary>, enabled: B
             finally { loading = false }
         }
     }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text("交给 Codex") }, text = {
+    AlertDialog(onDismissRequest = onDismiss, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("交给 Codex") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(item.title, style = MaterialTheme.typography.titleMedium)
             Text("项目", style = MaterialTheme.typography.labelMedium)
             var projectMenu by remember { mutableStateOf(false) }
-            Box { OutlinedButton(onClick = { projectMenu = true }, modifier = Modifier.fillMaxWidth().testTag("dispatch_project")) { Text(selectedProject?.name ?: "请选择项目") }
-                DropdownMenu(projectMenu, { projectMenu = false }, modifier = Modifier.testTag("dispatch_project_menu")) { projects.forEach { project -> DropdownMenuItem(text = { Text(project.name) }, onClick = { selectedProject = project; projectMenu = false }) } }
+            TextButton(onClick = { projectMenu = true }, modifier = Modifier.fillMaxWidth().testTag("dispatch_project")) {
+                Text(selectedProject?.name ?: "请选择项目", Modifier.weight(1f))
+                Text("›")
             }
+            if (projectMenu) AlertDialog(onDismissRequest = { projectMenu = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("选择项目") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+                LazyColumn { items(projects) { project ->
+                    ListItem(headlineContent = { Text(project.name) }, leadingContent = { RadioButton(selectedProject?.id == project.id, null) },
+                        modifier = Modifier.clickable { selectedProject = project; projectMenu = false })
+                } }
+            } }, confirmButton = { TextButton({ projectMenu = false }) { Text("取消") } })
             Text("会话", style = MaterialTheme.typography.labelMedium)
             var threadMenu by remember { mutableStateOf(false) }
-            Box { OutlinedButton(onClick = { threadMenu = true }, enabled = !loading, modifier = Modifier.fillMaxWidth().testTag("dispatch_thread")) { Text(threads.firstOrNull { it.id == selectedThread }?.name ?: "新建会话") }
-                DropdownMenu(threadMenu, { threadMenu = false }) {
-                    DropdownMenuItem(text = { Text("新建会话") }, onClick = { selectedThread = null; threadMenu = false })
-                    threads.forEach { thread -> DropdownMenuItem(text = { Text(thread.name) }, onClick = { selectedThread = thread.id; threadMenu = false }) }
-                }
+            TextButton(onClick = { threadMenu = true }, modifier = Modifier.fillMaxWidth().testTag("dispatch_thread")) {
+                Text(threads.firstOrNull { it.id == selectedThread }?.name ?: "新建会话", Modifier.weight(1f))
+                Text("›")
             }
+            if (threadMenu) AlertDialog(onDismissRequest = { threadMenu = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("选择会话") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+                LazyColumn {
+                    item { ListItem(headlineContent = { Text("新建会话") }, leadingContent = { RadioButton(selectedThread == null, null) },
+                        modifier = Modifier.clickable { selectedThread = null; threadMenu = false }) }
+                    if (loading) item { Text("正在读取会话…") }
+                    items(threads) { thread ->
+                        ListItem(headlineContent = { Text(thread.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                            leadingContent = { RadioButton(selectedThread == thread.id, null) },
+                            modifier = Modifier.clickable { selectedThread = thread.id; threadMenu = false })
+                    }
+                }
+            } }, confirmButton = { TextButton({ threadMenu = false }) { Text("取消") } })
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            Text("提交待办标题和备注，并保留会话关联。待办完成由你确认。", style = MaterialTheme.typography.bodySmall)
+            Text("提交待办内容并保留会话关联。Codex 验证完成或收到你的完成确认后，会回写待办状态。", style = MaterialTheme.typography.bodySmall)
             if (item.localAttachments().isNotEmpty()) {
                 Text("开始执行后，本机附件会上传到节点的附件目录，并随待办发送给 Codex。", style = MaterialTheme.typography.bodySmall)
             }
         }
-    }, confirmButton = { Button(onClick = { selectedProject?.let { onDispatch(it.id, selectedThread) } }, enabled = enabled && selectedProject != null && !loading && error == null,
+    } }, confirmButton = { Button(onClick = { selectedProject?.let { onDispatch(it.id, selectedThread) } }, enabled = enabled && selectedProject != null,
         modifier = Modifier.testTag("confirm_dispatch")) { Text("开始执行") } }, dismissButton = { TextButton(onDismiss) { Text("取消") } })
 }

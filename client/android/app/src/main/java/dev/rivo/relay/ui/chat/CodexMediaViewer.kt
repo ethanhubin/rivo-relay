@@ -134,9 +134,13 @@ private fun MediaAttachmentEditorContent(source: Uri, client: CodexMediaClient?,
                 }
             }
         }
-    }, alwaysExport = true) } ?: Dialog(onDismissRequest = onDismiss) { Surface {
+    }, alwaysExport = true) } ?: Dialog(onDismissRequest = onDismiss) {
+ dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+ Surface {
         if (error != null) TextButton(onDismiss) { Text(error!!) } else CircularProgressIndicator()
-    } }
-    if (draft != null && error != null) AlertDialog(onDismissRequest = { error = null }, title = { Text("图片保存失败") },
-        text = { Text(error.orEmpty()) }, confirmButton = { TextButton(onClick = { error = null }) { Text("返回编辑") } })
+    }
+}
+}
+    if (draft != null && error != null) AlertDialog(onDismissRequest = { error = null }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("图片保存失败") } },
+        text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text(error.orEmpty()) } }, confirmButton = { TextButton(onClick = { error = null }) { Text("返回编辑") } })
 }

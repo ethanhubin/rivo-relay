@@ -36,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -70,7 +71,7 @@ import org.json.JSONObject
 
 /**
  * QiGuang Codex Composer layout with a focus-expanding, three-line BasicTextField,
- * divider, and one compact action row (8x6dp insets, 6dp spacing).
+ * and one compact action row (8x6dp insets, 6dp spacing).
  * Source: QiGuang ui/main/ChatComposerContent.kt and AttachmentAddIcon.kt.
  * Rivo keeps draft ownership and native submission in ChatScreen. Mode icons,
  * attachment cards and the non-focusable settings popup follow the source UI.
@@ -103,6 +104,7 @@ fun MessageComposer(
     onOpenFile: (JSONObject) -> Unit = {},
     discussionMode: Boolean = false,
     onToggleMode: () -> Unit = {},
+    textEditable: Boolean = enabled,
     focusRequest: Int = 0,
     onPasteImages: (List<android.net.Uri>) -> Unit = {},
     settingsExpanded: Boolean = false,
@@ -115,6 +117,12 @@ fun MessageComposer(
     var attachmentsOpen by remember { mutableStateOf(false) }
     LaunchedEffect(enabled) { if (!enabled) attachmentsOpen = false }
     val context = LocalContext.current
+    var cameraUri by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        val uri = cameraUri
+        cameraUri = null
+        if (success && uri != null) onPasteImages(listOf(android.net.Uri.parse(uri)))
+    }
     val keyboard = LocalSoftwareKeyboardController.current
     val focusRequester = remember { FocusRequester() }
     var inputFocused by remember { mutableStateOf(false) }
@@ -223,11 +231,11 @@ fun MessageComposer(
             }
         }
     }
-    LaunchedEffect(focusRequest) { if (focusRequest > 0) { focusRequester.requestFocus(); keyboard?.show() } }
+    LaunchedEffect(focusRequest) { if (focusRequest > 0 && textEditable) { focusRequester.requestFocus(); keyboard?.show() } }
     // QiGuang uses 42dp visible controls; preserve Rivo's 44dp touch target.
     CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides RivoSize.MinTouchTarget) {
         Column(
-            modifier.fillMaxWidth().padding(start = 12.dp, top = 8.dp, end = 12.dp)
+            modifier.fillMaxWidth().padding(start = 12.dp, top = 8.dp, end = 12.dp, bottom = 10.dp)
                 .testTag("message_composer"),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
@@ -285,19 +293,22 @@ fun MessageComposer(
             Surface(
                 modifier = Modifier.fillMaxWidth().testTag("composer_surface"),
                 shape = MaterialTheme.shapes.extraLarge,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                // A hairline remains one physical pixel at every display density.
+                border = if (MaterialTheme.colorScheme.background.luminance() < 0.5f)
+                    BorderStroke(0.dp, MaterialTheme.colorScheme.outlineVariant) else null,
+                shadowElevation = 8.dp,
             ) {
                 Column {
                     Row(Modifier.fillMaxWidth().animateContentSize(tween(180)), verticalAlignment = Alignment.CenterVertically) {
                         BasicTextField(
                             value = inputValue,
                             onValueChange = { if (it.text != inputValue.text) cancelVoice(); inputValue = it; onTextChange(it.text) },
-                            enabled = enabled,
+                            enabled = textEditable,
                             modifier = Modifier.weight(1f).pasteImageAttachments(context, enabled && !preparing, onPasteImages)
                                 .focusRequester(focusRequester).onFocusChanged { inputFocused = it.isFocused }.heightIn(min = 52.dp)
                                 .padding(horizontal = 16.dp, vertical = 14.dp).testTag("message_input"),
-                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.38f)),
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (textEditable) 1f else 0.38f)),
                             cursorBrush = SolidColor(MaterialTheme.colorScheme.onSurface),
                             minLines = if (inputFocused) 2 else 1,
                             maxLines = if (inputFocused) 3 else 1,
@@ -321,7 +332,6 @@ fun MessageComposer(
                         }
                     }
                     if (preparing) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp))
-                    else HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     Row(
                         Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -330,6 +340,21 @@ fun MessageComposer(
                         Box {
                             ComposerToolButton({ attachmentsOpen = true }, enabled && !preparing,
                                 "添加附件", "add_attachment") { ComposerAddIcon() }
+                            AttachmentSourceMenu(attachmentsOpen, 10 - images.size, 16 - files.size,
+                                onDismiss = { attachmentsOpen = false },
+                                onCamera = {
+                                    try {
+                                        val directory = java.io.File(context.cacheDir, "previews").apply { mkdirs() }
+                                        val photo = java.io.File.createTempFile("camera-", ".jpg", directory)
+                                        val uri = androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".files", photo)
+                                        cameraUri = uri.toString()
+                                        cameraLauncher.launch(uri)
+                                    } catch (error: Exception) {
+                                        cameraUri = null
+                                        android.widget.Toast.makeText(context, "无法打开相机", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                }, onImage = onAddImage, onVideo = onAddVideo, onFile = onAddFile,
+                                onWorkspace = onAddWorkspaceFile)
                         }
                         ComposerModeSelector(if (goalMode) "goal" else if (discussionMode) "plan" else "default",
                             enabled, goalModeEnabled) { mode ->
@@ -338,10 +363,14 @@ fun MessageComposer(
                         }
                         Spacer(Modifier.weight(1f))
                         if (enabled && settingsExpanded && settingsContent != null) Dialog(onDismissRequest = onDismissSettings) {
+ dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+
                             Surface(Modifier.fillMaxWidth().heightIn(max = 560.dp).testTag("composer_settings_panel"),
                                 shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh,
                                 tonalElevation = 4.dp) { settingsContent() }
-                        }
+
+}
+}
 
                         if (!busy && isRunning && text.isBlank() && images.isEmpty() && files.isEmpty() && !voice.transcribing) OutlinedButton(
                             onClick = onStop, enabled = canStop,
@@ -357,7 +386,7 @@ fun MessageComposer(
                                 } else onSend()
                             },
                             enabled = !busy && enabled && (canSend || voice.transcribing) && !preparing && !voice.sendPending,
-                            modifier = Modifier.width(80.dp).height(44.dp).testTag("send_message"),
+                            modifier = Modifier.width(80.dp).height(if (queueing) 40.dp else 44.dp).testTag("send_message"),
                             shape = RoundedCornerShape(22.dp),
                             contentPadding = PaddingValues(horizontal = 10.dp),
                         ) {
@@ -374,9 +403,8 @@ fun MessageComposer(
             }
         }
     }
-    if (attachmentsOpen) AttachmentSourceDialog(10 - images.size, 16 - files.size, onDismiss = { attachmentsOpen = false },
-        onImage = { attachmentsOpen = false; onAddImage() }, onFile = { attachmentsOpen = false; onAddFile() },
-        onVideo = { attachmentsOpen = false; onAddVideo() }, onWorkspace = { attachmentsOpen = false; onAddWorkspaceFile() })
+
+
 }
 
 @Composable
@@ -396,8 +424,8 @@ private fun ComposerToolButton(
 @Composable
 private fun ComposerAddIcon() {
     val color = LocalContentColor.current
-    Canvas(Modifier.size(20.dp)) {
-        val stroke = size.minDimension * .16f
+    Canvas(Modifier.size(28.dp)) {
+        val stroke = size.minDimension * .10f
         val inset = size.minDimension * .22f
         val center = Offset(size.width / 2f, size.height / 2f)
         drawLine(color, Offset(inset, center.y), Offset(size.width - inset, center.y), stroke, StrokeCap.Round)

@@ -1,5 +1,7 @@
 package dev.rivo.relay.ui.projects
 
+import dev.rivo.relay.ui.theme.listItemBackground
+
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.os.Build
@@ -89,7 +91,7 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                                 modifier = Modifier.size(24.dp))
                             Spacer(Modifier.width(10.dp))
                             Text(nodeName, Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
-                            Text(" ▾", style = MaterialTheme.typography.labelLarge)
+                            Text(" ›", style = MaterialTheme.typography.labelLarge)
                         }
                         DropdownMenu(expanded = nodeMenuOpen, onDismissRequest = { nodeMenuOpen = false },
                             modifier = Modifier.widthIn(max = 320.dp).testTag("node_switch_menu")) {
@@ -105,7 +107,7 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                     if (onAdd != null) Surface(onClick = onAdd, enabled = canAdd, modifier = Modifier.size(48.dp).testTag("add_project")
                         .semantics { contentDescription = "新建项目" },
                         shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.primaryContainer) {
-                        Box(contentAlignment = Alignment.Center) { Text("+", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onPrimaryContainer) }
+                        Box(contentAlignment = Alignment.Center) { Text("＋", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Light, color = MaterialTheme.colorScheme.onPrimaryContainer) }
                     }
                 }
                 usage?.weeklyWindow?.let { window ->
@@ -135,7 +137,7 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
             Box(Modifier.fillMaxWidth()) {
                 Surface(modifier = Modifier.fillMaxWidth().testTag("project_${project.id}").combinedClickable(
                     onClick = { onProject(project) }, onLongClickLabel = "项目操作", onLongClick = { projectMenuOpen = true }),
-                    shape = RoundedCornerShape(RivoRadius.Card), color = MaterialTheme.colorScheme.surfaceContainerLow) {
+                    shape = RoundedCornerShape(RivoRadius.Card), color = MaterialTheme.colorScheme.listItemBackground) {
                     Row(Modifier.heightIn(min = 74.dp).padding(10.dp), verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(RivoSpacing.Md)) {
                         Surface(Modifier.size(44.dp), shape = RoundedCornerShape(RivoRadius.Control), color = MaterialTheme.colorScheme.surfaceContainerHighest) {

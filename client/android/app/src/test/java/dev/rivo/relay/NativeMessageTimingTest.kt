@@ -40,4 +40,40 @@ class NativeMessageTimingTest {
         assertNull(nativeTimestamp(JSONObject.NULL))
         assertNull(nativeTimestamp("invalid"))
     }
+    @Test fun completionFooterTracksLatestStoppedTurn() {
+        val snapshot = SessionSnapshot("s", "", "idle", "", emptyList(), emptyList(), JSONObject(), turnSettings = listOf(turn))
+        assertTrue(sessionCompletionLabel(snapshot)!!.matches(Regex("已完成 [0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}")))
+        for ((status, label) in mapOf("failed" to "执行失败", "interrupted" to "已中断", "canceled" to "已取消", "cancelled" to "已取消"))
+            assertEquals(label, sessionCompletionLabel(snapshot.copy(turnSettings = listOf(turn.copy(status = status)))))
+        assertNull(sessionCompletionLabel(snapshot.copy(activeTurnId = "next")))
+        assertNull(sessionCompletionLabel(snapshot.copy(status = "running")))
+        assertNull(sessionCompletionLabel(snapshot.copy(queueDepth = 1)))
+        assertNull(sessionCompletionLabel(snapshot.copy(turnSettings = listOf(turn, turn.copy(status = "inProgress")))))
+        assertNull(sessionCompletionLabel(snapshot.copy(turnSettings = emptyList())))
+    }
+    @Test fun goalFooterUsesExplicitStateAndDisappearsOnResume() {
+        val snapshot = SessionSnapshot("s", "", "idle", "", emptyList(), emptyList(), JSONObject(), turnSettings = listOf(turn))
+        for ((status, label) in mapOf("paused" to "已暂停", "blocked" to "受阻", "usageLimited" to "额度受限", "budgetLimited" to "预算已用尽")) {
+            val stopped = snapshot.copy(goal = JSONObject().put("status", status).put("updatedAt", 120))
+            assertEquals(label, sessionCompletionLabel(stopped))
+            assertNull(sessionCompletionLabel(stopped.copy(activeTurnId = "next")))
+            assertTrue(sessionCompletionLabel(stopped.copy(turnSettings = listOf(turn.copy(startedAt = 130, completedAt = 140))))!!.startsWith("已完成 "))
+            assertEquals(label, sessionCompletionLabel(stopped.copy(turnSettings = emptyList())))
+        }
+        assertNull(sessionCompletionLabel(snapshot.copy(goal = JSONObject().put("status", "active"))))
+        assertTrue(sessionCompletionLabel(snapshot.copy(goal = JSONObject().put("status", "complete").put("updatedAt", 120)))!!.startsWith("已完成 "))
+    }
+    @Test fun uncertainOrConflictingStateNeverKeepsTerminalFooter() {
+        val snapshot = SessionSnapshot("s", "", "idle", "", emptyList(), emptyList(), JSONObject(), turnSettings = listOf(turn))
+        assertNull(sessionCompletionLabel(snapshot.copy(nativeExecution = "running")))
+        assertNull(sessionCompletionLabel(snapshot.copy(nativeSyncState = "syncing")))
+        assertNull(sessionCompletionLabel(snapshot.copy(recoveryRequired = true)))
+        assertNull(sessionCompletionLabel(snapshot.copy(workspaceUnavailable = true)))
+        assertNull(sessionCompletionLabel(snapshot.copy(messages = listOf(message.copy(turnId = "next")))))
+        assertNull(sessionCompletionLabel(snapshot.copy(turnSettings = listOf(turn.copy(status = "unknown")))))
+        assertNull(sessionCompletionLabel(snapshot.copy(goal = JSONObject().put("status", "blocked"))))
+        val oldGoal = JSONObject().put("status", "blocked").put("updatedAt", 110)
+        assertTrue(sessionCompletionLabel(snapshot.copy(goal = oldGoal))!!.startsWith("已完成 "))
+        assertEquals("已完成", sessionCompletionLabel(snapshot.copy(turnSettings = listOf(turn.copy(completedAt = Long.MAX_VALUE)))))
+    }
 }

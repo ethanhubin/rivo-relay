@@ -67,8 +67,8 @@ internal fun rememberConfirmedWebLinkOpener(
     AlertDialog(
       modifier = Modifier.testTag("message_web_link_dialog"),
       onDismissRequest = { pendingUrl = null },
-      title = { Text("打开外部链接？") },
-      text = {
+      title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("打开外部链接？") } },
+      text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu {
         Column(Modifier.verticalScroll(rememberScrollState())) {
           Text("可使用浏览器打开，或将链接内容保存到本机：")
           SelectionContainer { Text(target) }
@@ -81,7 +81,7 @@ internal fun rememberConfirmedWebLinkOpener(
           if (shareFailed) Text("无法打开分享面板，请重试。", color = MaterialTheme.colorScheme.error)
           if (failed) Text("无法打开链接，请检查是否已安装浏览器。", color = MaterialTheme.colorScheme.error)
         }
-      },
+      } },
       confirmButton = {
         TextButton(onClick = {
           // Android intent matching expects a lowercase scheme.

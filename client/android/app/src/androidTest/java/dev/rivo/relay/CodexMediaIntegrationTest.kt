@@ -28,27 +28,19 @@ class CodexMediaIntegrationTest {
             val local = first.imageRequest(context, "file:///private/test.png", false).build()
             assertNull(local.headers["Authorization"])
             server.enqueue(MockResponse().setBody("{\"items\":[]}"))
-            assertFalse(first.favorite(source, null).favorite)
+            assertNull(first.lookup(source))
             val lookup = server.takeRequest(2, TimeUnit.SECONDS)!!
             assertEquals("GET", lookup.method)
             assertEquals(source, lookup.requestUrl!!.queryParameter("source"))
             assertEquals(1, server.requestCount) // Viewing does not import.
         } finally { first.close(); second.close(); server.shutdown() }
     }
-    @Test fun explicitFavoriteImportsOnceAndKeepsNativeProvenanceFacts() = runBlocking {
+    @Test fun generationInfoKeepsNativeProvenanceFacts() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val server = MockWebServer(); server.start()
         val client = CodexMediaClient(RelayApi(server.url("/").toString(), "token"), "t", context)
         val id = "a".repeat(64)
         try {
-            server.enqueue(MockResponse().setBody("{\"items\":[]}"))
-            server.enqueue(MockResponse().setBody("{\"id\":\"$id\",\"favorite\":false}"))
-            server.enqueue(MockResponse().setBody("{\"id\":\"$id\",\"favorite\":true}"))
-            assertTrue(client.favorite("/native/image.png", true).favorite)
-            assertEquals("GET", server.takeRequest().method)
-            val imported = server.takeRequest(); assertEquals("POST", imported.method)
-            assertEquals("/native/image.png", org.json.JSONObject(imported.body.readUtf8()).getString("source"))
-            assertEquals("PATCH", server.takeRequest().method)
             server.enqueue(MockResponse().setBody("""{"threadId":"t","turnId":"turn","itemId":"item","provenance":{"promptKind":"revised","facts":{"revisedPrompt":"Revised description","quality":"high"}}}"""))
             val info = client.generationInfo(id)
             assertEquals("Revised description", info.prompt)

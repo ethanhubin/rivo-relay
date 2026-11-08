@@ -107,6 +107,8 @@ internal fun MediaFilePreview(name: String, video: Boolean, file: File?, error: 
         }
     }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = !video)) {
+ dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+
         Surface(Modifier.then(if (video) Modifier.fillMaxSize() else Modifier.fillMaxWidth()), shape = if (video) androidx.compose.ui.graphics.RectangleShape else MaterialTheme.shapes.extraLarge) {
             Column(Modifier.then(if (video) Modifier.systemBarsPadding() else Modifier.padding(vertical = 12.dp)).testTag(if (video) "video_preview" else "audio_preview")) {
                 if (video) FilePreviewToolbar(name, { onAction(FileAction.SAVE) }, { onAction(FileAction.SHARE) }, onDismiss, source)
@@ -152,7 +154,9 @@ internal fun MediaFilePreview(name: String, video: Boolean, file: File?, error: 
                 }
             }
         }
-    }
+
+}
+}
 }
 
 private fun mediaTime(value: Long) = "%d:%02d".format(value / 60000, value / 1000 % 60)
@@ -177,7 +181,7 @@ internal fun HtmlFilePreview(html: String, modifier: Modifier = Modifier) {
                 return true
             }
         }
-    } }, update = { view -> if (view.tag != html) { view.tag = html; view.loadDataWithBaseURL(null, htmlPreviewDocument(html), "text/html", "UTF-8", null) } }, modifier = modifier.fillMaxWidth())
+   } }, update = { view -> if (view.tag != html) { view.tag = html; view.loadDataWithBaseURL(null, htmlPreviewDocument(html), "text/html", "UTF-8", null) } }, modifier = modifier.fillMaxWidth())
 }
 
 /** Prefix before authored markup so even fragments get a mobile viewport and isolation policy. */

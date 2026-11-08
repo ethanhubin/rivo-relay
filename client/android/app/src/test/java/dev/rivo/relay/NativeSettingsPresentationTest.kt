@@ -17,21 +17,29 @@ class NativeSettingsPresentationTest {
 
     @Test fun newSessionsExplicitlyInheritNodeDefaults() {
         assertEquals("沿用节点默认", sandboxSettingLabel(null, true, "inherit"))
-        assertEquals("沿用节点默认", approvalSettingLabel(null, true, null))
+        assertEquals("沿用项目配置", approvalSettingLabel(null, true, null))
         assertEquals("沿用节点默认模型", inheritedSettingLabel(null, "model", "模型", true))
         assertEquals("工作区读写", sandboxSettingLabel(null, true, "workspace-write"))
-        assertEquals("不要求审批", approvalSettingLabel(null, true, "never"))
+        assertEquals("完全访问", approvalSettingLabel(null, true, "preset-full"))
     }
 
     @Test fun knownAndCustomPoliciesRemainDistinct() {
-        val known = JSONObject("""{"sandboxPolicy":{"type":"workspaceWrite"},"approvalPolicy":"on-request","model":"native-model"}""")
+        val known = JSONObject("""{"sandboxPolicy":{"type":"workspaceWrite"},"approvalPolicy":"on-request","approvalsReviewer":"user","model":"native-model"}""")
         assertEquals("工作区读写", sandboxSettingLabel(known, false, null))
-        assertEquals("按需审批", approvalSettingLabel(known, false, null))
+        assertEquals("请求审批", approvalSettingLabel(known, false, null))
         assertEquals("继承当前模型 · native-model", inheritedSettingLabel(known, "model", "模型", false))
         val custom = JSONObject("""{"sandbox":{"type":"externalSandbox"},"approvalPolicy":{"granular":{"mcp_elicitations":true}}}""")
         assertEquals("当前自定义权限", sandboxSettingLabel(custom, false, null))
-        assertEquals("当前自定义审批", approvalSettingLabel(custom, false, null))
+        assertEquals("项目自定义", approvalSettingLabel(custom, false, null))
         assertEquals("外部沙盒\n原生审批：细粒度规则", nativePermissionSummary(custom))
+    }
+
+    @Test fun automaticReviewAndCustomRootsRemainDistinct() {
+        val settings = JSONObject("""{"cwd":"/project","sandbox":{"type":"workspaceWrite"},"approvalPolicy":"on-request","approvalsReviewer":"auto_review"}""")
+        assertEquals("自动审批", approvalSettingLabel(settings, false, null))
+        settings.getJSONObject("sandbox").put("writableRoots", org.json.JSONArray().put("/outside"))
+        assertEquals("项目自定义", approvalSettingLabel(settings, false, null))
+        assertEquals(3, approvalSettingOptions.size)
     }
 
     @Test fun releaseAvailabilityRemainsCompatibleWithOlderNodes() {
@@ -45,7 +53,7 @@ class NativeSettingsPresentationTest {
 
     @Test fun unknownAndCustomSettingsCannotBeSavedAsGuessedPresets() {
         assertNotNull(nativeDefaultsUnavailableReason(JSONObject(), false, null, null, null))
-        val known = JSONObject("""{"sandbox":{"type":"workspaceWrite"},"approvalPolicy":"on-request","reasoningEffort":"medium"}""")
+        val known = JSONObject("""{"sandbox":{"type":"workspaceWrite"},"approvalPolicy":"on-request","approvalsReviewer":"user","reasoningEffort":"medium"}""")
         assertNotNull(nativeDefaultsUnavailableReason(known, false, "model", "medium", null))
         known.put("serviceTier", JSONObject.NULL)
         assertNull(nativeDefaultsUnavailableReason(known, false, "model", "medium", null))

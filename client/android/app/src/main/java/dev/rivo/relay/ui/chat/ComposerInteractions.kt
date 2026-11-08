@@ -52,17 +52,18 @@ private fun clipboardImageUris(context: Context, clip: ClipData): List<Uri> = bu
     }
 }
 
-/** Same bolt and speech bubble geometry as QiGuang's permanent task-mode button. */
+/** Terminal for direct tasks, speech bubble for discussion. */
 @Composable
 internal fun ComposerModeIcon(discussion: Boolean) {
     val color = LocalContentColor.current
-    Canvas(Modifier.size(16.dp).testTag(if (discussion) "codex_mode_icon_plan" else "codex_mode_icon_default")) {
+    Canvas(Modifier.size(24.dp).testTag(if (discussion) "codex_mode_icon_plan" else "codex_mode_icon_default")) {
         val stroke = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round)
-        if (!discussion) drawPath(Path().apply {
-            moveTo(size.width * .57f, size.height * .05f); lineTo(size.width * .18f, size.height * .57f)
-            lineTo(size.width * .47f, size.height * .57f); lineTo(size.width * .37f, size.height * .95f)
-            lineTo(size.width * .82f, size.height * .42f); lineTo(size.width * .53f, size.height * .42f); close()
-        }, color)
+        if (!discussion) {
+            drawRoundRect(color, Offset(size.width * .12f, size.height * .12f), Size(size.width * .76f, size.height * .76f), CornerRadius(size.width * .16f), style = stroke)
+            drawLine(color, Offset(size.width * .32f, size.height * .34f), Offset(size.width * .48f, size.height * .50f), stroke.width, StrokeCap.Round)
+            drawLine(color, Offset(size.width * .48f, size.height * .50f), Offset(size.width * .32f, size.height * .66f), stroke.width, StrokeCap.Round)
+            drawLine(color, Offset(size.width * .57f, size.height * .66f), Offset(size.width * .70f, size.height * .66f), stroke.width, StrokeCap.Round)
+        }
         else {
             drawRoundRect(color, Offset(size.width * .08f, size.height * .10f), Size(size.width * .84f, size.height * .66f), CornerRadius(size.width * .18f), style = stroke)
             drawLine(color, Offset(size.width * .29f, size.height * .76f), Offset(size.width * .20f, size.height * .91f), stroke.width, StrokeCap.Round)

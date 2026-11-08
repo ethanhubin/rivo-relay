@@ -25,7 +25,7 @@ from .host_probe import read_identity
 from .live_items import ITEM_EVENTS, TERMINAL, project_item, merge_item
 from .native_journal import NativeJournal
 from .interactions import Interactions
-from .projects import ProjectCatalog, pages, thread_pages
+from .projects import ProjectCatalog, pages, thread_pages, RECENT_PROJECT_ID, unlisted_threads
 from .files import read_file, read_directory, upload_attachment, download_file, upload_attachment_stream, stream_download
 from .developer import (project_directory, project_git, review_context, workspace_diff,
                         diff_summary, validate_review, Workspaces)
@@ -289,23 +289,32 @@ class CodexService:
 
     def list_sessions(self, project_id, archived=False):
         self.start()
-        project = self.projects.get(project_id)
-        roots = [r["path"] for r in project.get("roots", [])]
-        # Legacy Desktop worktree threads can lack projectId and use a cwd
-        # outside every project root. Verify Git membership on the native host.
-        threads = list(thread_pages(self.connection, {
-            "archived": archived, "modelProviders": [],
-            "sortKey": "updated_at", "sortDirection": "desc",
-        })) if roots else []
-        associations = self.projects.external_worktrees.associations(threads, [project])
-        by_id = {t["id"]: t for t in threads
-                 if t.get("projectId") == project_id or (not t.get('projectId') and
-                     (t.get('cwd') in roots or t['id'] in associations))}
-        for thread in thread_pages(self.connection, {
-            "projectId": project_id, "archived": archived, "modelProviders": [],
-            "sortKey": "updated_at", "sortDirection": "desc",
-        }):
-            by_id[thread["id"]] = thread
+        if project_id == RECENT_PROJECT_ID:
+            projects = list(pages(self.connection, "project/list"))
+            threads = thread_pages(self.connection, {
+                "archived": archived, "modelProviders": [],
+                "sortKey": "updated_at", "sortDirection": "desc",
+            })
+            associations = self.projects.external_worktrees.associations(
+                [t for t in threads if not t.get("projectId")], projects)
+            by_id = {t["id"]: t for t in unlisted_threads(threads, projects, associations)}
+        else:
+            project = self.projects.get(project_id)
+            roots = [r["path"] for r in project.get("roots", [])]
+            # Include legacy threads associated by root or Git worktree.
+            threads = list(thread_pages(self.connection, {
+                "archived": archived, "modelProviders": [],
+                "sortKey": "updated_at", "sortDirection": "desc",
+            })) if roots else []
+            associations = self.projects.external_worktrees.associations(threads, [project])
+            by_id = {t["id"]: t for t in threads
+                     if t.get("projectId") == project_id or (not t.get('projectId') and
+                         (t.get('cwd') in roots or t['id'] in associations))}
+            for thread in thread_pages(self.connection, {
+                "projectId": project_id, "archived": archived, "modelProviders": [],
+                "sortKey": "updated_at", "sortDirection": "desc",
+            }):
+                by_id[thread["id"]] = thread
         queues = self.execution_queue.by_thread() if hasattr(self, 'execution_queue') else {}
         managed = {}
         if self.workspaces:
@@ -319,7 +328,7 @@ class CodexService:
                  "preview": t.get("preview", ""), "status": statuses[t["id"]],
                  "pinned": str((t.get("section") or {}).get("name", "")).casefold() == "pinned",
                  "updatedAt": t.get("updatedAt"), "cwd": t.get("cwd"),
-                 "projectId": t.get("projectId") or project_id,
+                 "projectId": t.get("projectId") or (None if project_id == RECENT_PROJECT_ID else project_id),
                  "source": t.get('source'), "gitInfo": t.get('gitInfo'),
                  "externalWorkspace": associations.get(t['id']) if t['id'] not in managed else None,
                  "executionMode": 'worktree' if t['id'] in managed else 'local',
@@ -634,6 +643,14 @@ class CodexService:
 
     @staticmethod
     def _permission_options(sandbox, approval_policy):
+        presets = {
+            'preset-request': ('workspace-write', 'on-request', 'user'),
+            'preset-auto': ('workspace-write', 'on-request', 'auto_review'),
+            'preset-full': ('danger-full-access', 'never', 'user'),
+        }
+        if approval_policy in presets:
+            mode, policy, reviewer = presets[approval_policy]
+            return {'sandbox': mode, 'approvalPolicy': policy, 'approvalsReviewer': reviewer}
         if sandbox is not None and sandbox not in ('read-only', 'workspace-write', 'danger-full-access'):
             raise CodexError('文件访问权限无效', code='invalid_settings', http_status=400)
         if approval_policy is not None and approval_policy not in ('on-request', 'untrusted', 'never', 'on-failure'):
@@ -641,6 +658,8 @@ class CodexService:
         return {key: value for key, value in (('sandbox', sandbox), ('approvalPolicy', approval_policy)) if value is not None}
 
     def create_session(self, project_id, title="", worktree_ref=None, *, sandbox=None, approval_policy=None):
+        if project_id == RECENT_PROJECT_ID:
+            raise CodexError("请先选择项目再新建会话", code="invalid_request", http_status=400)
         permissions = self._permission_options(sandbox, approval_policy)
         self.start()
         project = self.projects.get(project_id)
@@ -1355,6 +1374,7 @@ class CodexService:
 
     def update_settings(self, thread_id, *, model=None, effort=None, service_tier=None, sandbox=None, approval_policy=None):
         permissions = self._permission_options(sandbox, approval_policy)
+        sandbox = permissions.get('sandbox')
         self.start()
         self._assert_workspace(thread_id)
         params = {"threadId": thread_id}
@@ -1370,6 +1390,8 @@ class CodexService:
             self._resume(thread_id)
             if 'approvalPolicy' in permissions:
                 params['approvalPolicy'] = permissions['approvalPolicy']
+            if 'approvalsReviewer' in permissions:
+                params['approvalsReviewer'] = permissions['approvalsReviewer']
             if sandbox is not None:
                 current = self._settings.get(thread_id, {})
                 if (current.get('collaborationMode') or {}).get('mode') == 'plan':
@@ -1377,7 +1399,7 @@ class CodexService:
                 types = {'read-only': 'readOnly', 'workspace-write': 'workspaceWrite', 'danger-full-access': 'dangerFullAccess'}
                 params['sandboxPolicy'] = {'type': types[sandbox]}
                 if sandbox != 'danger-full-access':
-                    params['sandboxPolicy']['networkAccess'] = (current.get('sandbox') or {}).get('networkAccess') is True
+                    params['sandboxPolicy']['networkAccess'] = False if approval_policy and approval_policy.startswith('preset-') else (current.get('sandbox') or {}).get('networkAccess') is True
             response = self.connection.request("thread/settings/update", params)
             if sandbox is not None:
                 self._forget_observation(thread_id, 'modeBaseline')

@@ -6,6 +6,7 @@ import dev.rivo.relay.connection.NodeRouteInterceptor
 import dev.rivo.relay.connection.gatewayTrust
 import dev.rivo.relay.connection.CredentialStore
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.delay
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONObject
@@ -15,6 +16,8 @@ import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+
+private class UpdateTransportException(cause: IOException) : IOException("更新下载中断，请检查网络后重试", cause)
 
 /** Public update transport: no pairing token, redirects or implicit GitHub fallback. */
 class NodeAppUpdates(
@@ -60,46 +63,68 @@ class NodeAppUpdates(
             throw IOException("安装包地址无效")
         directory.mkdirs()
         val temporary = File.createTempFile("rivo-update-", ".part", directory)
+        val digest = MessageDigest.getInstance("SHA-256")
+        var total = 0L
+        var lastReport = System.nanoTime()
+        progress(0L, release.size)
         try {
-            return get(expected) { response ->
-                val body = response.body ?: throw IOException("安装包为空")
-                if (body.contentLength() != release.size) throw IOException("安装包长度不匹配")
-                val digest = MessageDigest.getInstance("SHA-256")
-                var total = 0L
-                var lastReport = System.nanoTime()
-                progress(0L, release.size)
-                body.byteStream().use { input -> temporary.outputStream().use { output ->
-                    val buffer = ByteArray(65536)
-                    while (true) {
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        total += count
-                        if (total > release.size) throw IOException("安装包超出声明长度")
-                        digest.update(buffer, 0, count); output.write(buffer, 0, count)
-                        val now = System.nanoTime()
-                        if (total == release.size || now - lastReport >= 100_000_000L) {
-                            progress(total, release.size)
-                            lastReport = now
+            repeat(3) { attempt ->
+                try {
+                    get(expected, total.takeIf { it > 0 }) { response ->
+                        val body = response.body ?: throw IOException("安装包为空")
+                        if (total > 0 && response.code == 200) {
+                            total = 0L
+                            digest.reset()
+                            progress(0L, release.size)
+                        } else if (total > 0 && (response.code != 206 ||
+                                response.header("Content-Range") != "bytes $total-${release.size - 1}/${release.size}")) {
+                            throw IOException("安装包续传响应无效")
+                        } else if (total == 0L && response.code != 200) {
+                            throw IOException("安装包响应无效")
                         }
+                        if (body.contentLength() != release.size - total) throw IOException("安装包长度不匹配")
+                        body.byteStream().use { input -> java.io.FileOutputStream(temporary, total > 0).use { output ->
+                            val buffer = ByteArray(65536)
+                            while (total < release.size) {
+                                val count = try { input.read(buffer) } catch (e: IOException) { throw UpdateTransportException(e) }
+                                if (count < 0) throw UpdateTransportException(IOException("响应提前结束"))
+                                total += count
+                                if (total > release.size) throw IOException("安装包超出声明长度")
+                                output.write(buffer, 0, count)
+                                digest.update(buffer, 0, count)
+                                val now = System.nanoTime()
+                                if (total == release.size || now - lastReport >= 100_000_000L) {
+                                    progress(total, release.size)
+                                    lastReport = now
+                                }
+                            }
+                        } }
                     }
-                } }
+                } catch (e: UpdateTransportException) {
+                    if (attempt == 2) throw e
+                    delay(500L * (attempt + 1))
+                    return@repeat
+                }
                 val hash = digest.digest().joinToString("") { "%02x".format(it) }
                 if (total != release.size || hash != release.sha256) throw IOException("安装包校验失败，请重新下载")
                 val target = File(directory, "rivo-relay-${release.sha256}.apk")
                 if (!temporary.renameTo(target)) throw IOException("无法保存安装包")
-                target
+                return target
             }
+            throw IOException("更新下载中断，请检查网络后重试")
         } finally { temporary.delete() }
     }
 
-    private suspend fun <T> get(url: String, read: (Response) -> T): T = suspendCancellableCoroutine { continuation ->
+    private suspend fun <T> get(url: String, offset: Long? = null, read: (Response) -> T): T = suspendCancellableCoroutine { continuation ->
         val parsed = url.toHttpUrl()
         require(parsed.username.isEmpty() && parsed.password.isEmpty())
-        val call = client.newCall(Request.Builder().url(parsed).build())
+        val request = Request.Builder().url(parsed)
+        if (offset != null) request.header("Range", "bytes=$offset-")
+        val call = client.newCall(request.build())
         continuation.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                if (continuation.isActive) continuation.resumeWithException(IOException("无法连接更新节点，请检查网络或桌面节点状态后重试", e))
+                if (continuation.isActive) continuation.resumeWithException(UpdateTransportException(e))
             }
             override fun onResponse(call: Call, response: Response) {
                 try {

@@ -93,7 +93,7 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
     val keyboard = LocalSoftwareKeyboardController.current
     val existingList = item?.details?.objects("subtasks")?.isNotEmpty() == true
     var title by rememberSaveable(item?.id) { mutableStateOf(if (existingList) item?.title.orEmpty() else "") }
-    var notes by rememberSaveable(item?.id) { mutableStateOf(item?.notes.orEmpty()) }
+    val notes = item?.notes.orEmpty()
     var due by rememberSaveable(item?.id) { mutableStateOf(item?.details?.string("dueDate").orEmpty()) }
     var repeat by rememberSaveable(item?.id) { mutableStateOf(item?.details?.string("repeatRule")?.ifBlank { "none" } ?: "none") }
     var reminderEnabled by rememberSaveable(item?.id) { mutableStateOf((item?.details?.optLong("reminderAt") ?: 0) > 0) }
@@ -196,6 +196,8 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
     val hasContent = title.isNotBlank() || filled.isNotEmpty()
     fun dismiss() { if (!busy) { focus.clearFocus(force = true); keyboard?.hide(); onDismiss() } }
     Dialog(onDismissRequest = ::dismiss, properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = false)) {
+ dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+
         val window = (LocalView.current.parent as DialogWindowProvider).window
         SideEffect {
             window.setDimAmount(.20f)
@@ -241,10 +243,7 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
                                 modifier = Modifier.size(36.dp).semantics { contentDescription = "移除子任务" }, contentPadding = PaddingValues(0.dp)) { Text("×") }
                         }
                     }
-                    BasicTextField(notes, { notes = it.take(4000) }, Modifier.fillMaxWidth().padding(vertical = 8.dp).testTag("todo_notes"), enabled = !busy,
-                        textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant), cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        decorationBox = { inner -> Box { if (notes.isEmpty()) Text("备注", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant); inner() } })
-                    Spacer(Modifier.height(if (subtasks.size == 1 && !existingList) 32.dp else RivoSpacing.Md))
+                    Spacer(Modifier.height(RivoSpacing.Md))
                     if (attachments.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = RivoSpacing.Sm), horizontalArrangement = Arrangement.spacedBy(RivoSpacing.Sm)) {
                         attachments.forEachIndexed { index, attachment -> Surface(Modifier.width(96.dp), shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
                             Column(Modifier.padding(6.dp)) {
@@ -273,7 +272,8 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
                                 modifier = Modifier.testTag("todo_start_codex")) { Text("Codex") }
                             if (onOpenThread != null) TodoEditorButton(onClick = onOpenThread, enabled = !busy) { Text("会话") }
                             Spacer(Modifier.weight(1f).widthIn(min = 2.dp))
-                            TodoEditorButton(onClick = { onSave(normalizedTitle, notes, details()) }, enabled = hasContent && !busy, modifier = Modifier.testTag("save_todo")) {
+                            TodoEditorButton(onClick = { onSave(normalizedTitle, notes, details()) }, enabled = hasContent && !busy, modifier = Modifier.testTag("save_todo"),
+                                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp)) {
                                 Text(if (saving) "保存中…" else "完成", style = MaterialTheme.typography.labelLarge)
                             }
                         }
@@ -282,16 +282,18 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
                 }
             }
         }
-    }
+
+}
+}
     if (reminderOpen) TodoReminderDialog(due, reminderTime, repeat, { reminderOpen = false }) { dateTime, rule ->
         due = dateTime.toLocalDate().toString(); reminderTime = dateTime.toLocalTime().toString(); repeat = rule; reminderOpen = false
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         else reminderEnabled = true
     }
-    if (deleteConfirm) AlertDialog(onDismissRequest = { deleteConfirm = false }, title = { Text("删除这条待办？") }, text = { Text("待办会被删除，已关联的 Codex 会话仍会保留。") },
+    if (deleteConfirm) AlertDialog(onDismissRequest = { deleteConfirm = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("删除这条待办？") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("待办会被删除，已关联的 Codex 会话仍会保留。") } },
         confirmButton = { Button(onClick = { deleteConfirm = false; onDelete() }, enabled = !busy) { Text("删除") } }, dismissButton = { TextButton(onClick = { deleteConfirm = false }) { Text("取消") } })
-    if (chooseAttachmentSource) AlertDialog(onDismissRequest = { chooseAttachmentSource = false }, title = { Text("添加附件") }, text = {
+    if (chooseAttachmentSource) AlertDialog(onDismissRequest = { chooseAttachmentSource = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("添加附件") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu {
         Column {
             TextButton(onClick = { selectSource(TodoAttachmentSource.Files) },
                 modifier = Modifier.testTag("todo_attachment_local_files")) { Text("本地文件") }
@@ -301,16 +303,16 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
                 modifier = Modifier.testTag("todo_attachment_workspace")) { Text("节点项目文件") }
             Text("本地文件和照片保留在这台手机上。", style = MaterialTheme.typography.bodySmall)
         }
-    }, confirmButton = { TextButton(onClick = { chooseAttachmentSource = false }) { Text("取消") } })
+    } }, confirmButton = { TextButton(onClick = { chooseAttachmentSource = false }) { Text("取消") } })
     if (chooseAttachmentProject) AlertDialog(onDismissRequest = { chooseAttachmentProject = false },
-        title = { Text("选择文件所在项目") }, text = {
+        title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("选择文件所在项目") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu {
             Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
                 projects.forEach { project -> TextButton(onClick = {
                     attachmentRoot = project.path
                     chooseAttachmentProject = false
                 }) { Text(project.name) } }
             }
-        }, confirmButton = { TextButton(onClick = { chooseAttachmentProject = false }) { Text("取消") } })
+        } }, confirmButton = { TextButton(onClick = { chooseAttachmentProject = false }) { Text("取消") } })
     val root = attachmentRoot
     if (root != null && readDirectory != null) WorkspaceFilePicker(root, readDirectory, { attachmentRoot = null }) { reference ->
         addAttachment(reference.string("name"), reference.string("path"))
@@ -343,6 +345,8 @@ private fun TodoReminderDialog(initialDueDate: String, initialTime: String, init
     val picker = rememberDatePickerState(initialSelectedDateMillis = date.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli())
     fun selectedDate() = picker.selectedDateMillis?.let { Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate() } ?: date
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+ dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+
         Surface(Modifier.fillMaxWidth().padding(horizontal = 10.dp).heightIn(max = 820.dp).testTag("todo_reminder_dialog"),
             shape = RoundedCornerShape(32.dp), color = MaterialTheme.colorScheme.surface) {
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = RivoSpacing.Md, vertical = RivoSpacing.Xxl),
@@ -350,21 +354,33 @@ private fun TodoReminderDialog(initialDueDate: String, initialTime: String, init
                 Text("设置提醒时间", Modifier.align(Alignment.CenterHorizontally), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Text("提醒时间", style = MaterialTheme.typography.titleMedium)
-                    Row(horizontalArrangement = Arrangement.spacedBy(RivoSpacing.Sm)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(RivoSpacing.Sm), verticalAlignment = Alignment.CenterVertically) {
                         Surface(Modifier.testTag("todo_reminder_date"), shape = RoundedCornerShape(RivoRadius.Control), color = MaterialTheme.colorScheme.primaryContainer) {
-                            Text(selectedDate().toString(), Modifier.padding(horizontal = RivoSpacing.Md, vertical = RivoSpacing.Sm), color = MaterialTheme.colorScheme.onPrimaryContainer)
+                            Box(Modifier.heightIn(min = 48.dp).padding(horizontal = RivoSpacing.Md, vertical = RivoSpacing.Sm), contentAlignment = Alignment.Center) {
+                                Text(selectedDate().toString(), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                            }
                         }
                         Surface(onClick = { TimePickerDialog(context, { _, hour, minute -> time = LocalTime.of(hour, minute) }, time.hour, time.minute, true).show() },
                             modifier = Modifier.testTag("todo_reminder_time"), shape = RoundedCornerShape(RivoRadius.Control), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
-                            Text(time.format(DateTimeFormatter.ofPattern("HH:mm")), Modifier.padding(horizontal = RivoSpacing.Md, vertical = RivoSpacing.Sm))
+                            Box(Modifier.heightIn(min = 48.dp).padding(horizontal = RivoSpacing.Md, vertical = RivoSpacing.Sm), contentAlignment = Alignment.Center) {
+                                Text(time.format(DateTimeFormatter.ofPattern("HH:mm")), style = MaterialTheme.typography.bodyLarge)
+                            }
                         }
                     }
                 }
                 Box(Modifier.fillMaxWidth()) {
                     Surface(onClick = { repeatMenu = true }, modifier = Modifier.fillMaxWidth().testTag("todo_repeat"), color = Color.Transparent) {
-                        Row(Modifier.fillMaxWidth().padding(vertical = RivoSpacing.Sm), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(vertical = RivoSpacing.Sm), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Text("重复提醒", style = MaterialTheme.typography.titleMedium)
-                            Text("${repeatRuleLabel(repeat)}  ⌄", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(repeatRuleLabel(repeat), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                val arrowColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                androidx.compose.foundation.Canvas(Modifier.size(16.dp)) {
+                                    val stroke = 1.8.dp.toPx()
+                                    drawLine(arrowColor, androidx.compose.ui.geometry.Offset(size.width * .25f, size.height * .375f), androidx.compose.ui.geometry.Offset(size.width * .5f, size.height * .625f), stroke, androidx.compose.ui.graphics.StrokeCap.Round)
+                                    drawLine(arrowColor, androidx.compose.ui.geometry.Offset(size.width * .5f, size.height * .625f), androidx.compose.ui.geometry.Offset(size.width * .75f, size.height * .375f), stroke, androidx.compose.ui.graphics.StrokeCap.Round)
+                                }
+                            }
                         }
                     }
                     DropdownMenu(repeatMenu, { repeatMenu = false }) { listOf("none", "daily", "weekly", "monthly", "yearly").forEach { rule ->
@@ -380,5 +396,7 @@ private fun TodoReminderDialog(initialDueDate: String, initialTime: String, init
                 }
             }
         }
-    }
+
+}
+}
 }

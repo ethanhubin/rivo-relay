@@ -99,7 +99,8 @@ fun SettingsScreen(
         }
         PinnedCompletionSettings()
 
-        Card(Modifier.fillMaxWidth()) {
+        Card(Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("应用更新", style = MaterialTheme.typography.titleMedium)
                 Text("Rivo Relay ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyLarge)
@@ -132,8 +133,8 @@ fun SettingsScreen(
         }
     }
     if (notesOpen) release?.let { latest ->
-        AlertDialog(onDismissRequest = { notesOpen = false }, title = { Text("${latest.version} 更新说明") },
-            text = { Text(latest.notes.ifBlank { "此版本未提供更新说明" }, Modifier.verticalScroll(rememberScrollState())) },
+        AlertDialog(onDismissRequest = { notesOpen = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("${latest.version} 更新说明") } },
+            text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text(latest.notes.ifBlank { "此版本未提供更新说明" }, Modifier.verticalScroll(rememberScrollState())) } },
             confirmButton = { TextButton(onClick = { notesOpen = false }) { Text("完成") } })
     }
 }

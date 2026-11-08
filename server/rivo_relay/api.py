@@ -53,7 +53,7 @@ def permission_options(body: dict) -> dict:
     options = {}
     for key, arg, allowed in (
         ('sandbox', 'sandbox', ('read-only', 'workspace-write', 'danger-full-access')),
-        ('approvalPolicy', 'approval_policy', ('on-request', 'untrusted', 'never', 'on-failure')),
+        ('approvalPolicy', 'approval_policy', ('on-request', 'untrusted', 'never', 'on-failure', 'preset-request', 'preset-auto', 'preset-full')),
     ):
         value = body.get(key)
         if value is not None:
@@ -377,6 +377,17 @@ class Handler(BaseHTTPRequestHandler):
                 if ticket is None or ticket[1] < time.time():
                     raise ApiError(404, "expired_download", "下载链接已过期")
                 self.send_file(ticket[0])
+                return
+            if self.command == "POST" and path == ["v1", "todo-completion"]:
+                headers = self.headers.get_all("Authorization", [])
+                if len(headers) != 1 or not headers[0].startswith("Bearer "):
+                    raise ApiError(401, "unauthorized", "Missing completion credential")
+                self.read_body(limit=4096)
+                try:
+                    todo = self.app.todo_completion.complete(headers[0][7:])
+                except PermissionError:
+                    raise ApiError(401, "unauthorized", "Invalid completion credential")
+                self.send_json(200, {"todo": {"id": todo["id"], "completed": todo["completed"]}})
                 return
             token, connection = self.authenticate()
             if self.command == 'GET' and path in (['v1', 'media', 'content'], ['v1', 'media', 'thumbnail']):

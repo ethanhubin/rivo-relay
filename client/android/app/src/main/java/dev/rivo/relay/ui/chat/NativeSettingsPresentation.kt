@@ -4,7 +4,7 @@ import dev.rivo.relay.data.string
 import org.json.JSONObject
 
 internal val sandboxSettingOptions = listOf("read-only" to "只读", "workspace-write" to "工作区读写", "danger-full-access" to "完全访问")
-internal val approvalSettingOptions = listOf("on-request" to "按需审批", "untrusted" to "不受信任操作需审批", "never" to "不要求审批", "on-failure" to "失败时审批（旧版）")
+internal val approvalSettingOptions = listOf("preset-request" to "请求审批", "preset-auto" to "自动审批", "preset-full" to "完全访问")
 
 internal fun nativeSandbox(settings: JSONObject?): JSONObject? =
     settings?.optJSONObject("sandbox") ?: settings?.optJSONObject("sandboxPolicy")
@@ -24,14 +24,27 @@ internal fun sandboxSettingLabel(settings: JSONObject?, newSession: Boolean, cho
 }
 
 internal fun approvalSettingLabel(settings: JSONObject?, newSession: Boolean, choice: String?): String {
-    val policy = if (newSession) choice?.takeUnless { it == "inherit" } else settings?.opt("approvalPolicy")
-    return approvalSettingOptions.firstOrNull { it.first == policy }?.second
-        ?: when {
-            newSession -> "沿用节点默认"
-            policy is JSONObject && policy.length() > 0 -> "当前自定义审批"
-            policy is String && policy.isNotBlank() -> "当前自定义审批"
-            else -> "尚未读取审批策略"
+    val preset = if (newSession) choice else permissionPreset(settings)
+    return approvalSettingOptions.firstOrNull { it.first == preset }?.second
+        ?: if (newSession) "沿用项目配置" else if (settings?.opt("approvalPolicy") == null || settings.isNull("approvalPolicy")) "尚未读取审批策略" else "项目自定义"
+}
+
+internal fun permissionPreset(settings: JSONObject?): String? {
+    val sandbox = nativeSandbox(settings) ?: return null
+    val roots = sandbox.optJSONArray("writableRoots")
+    if (sandbox.keys().asSequence().any { it !in setOf("type", "networkAccess", "writableRoots", "excludeTmpdirEnvVar", "excludeSlashTmp") }) return null
+    if (sandbox.optBoolean("networkAccess") || sandbox.optBoolean("excludeTmpdirEnvVar") || sandbox.optBoolean("excludeSlashTmp") ||
+        roots != null && (0 until roots.length()).any { roots.optString(it) != settings?.string("cwd") }) return null
+    val policy = settings?.opt("approvalPolicy")
+    return when {
+        nativeSandboxChoice(settings) == "danger-full-access" && policy == "never" -> "preset-full"
+        nativeSandboxChoice(settings) == "workspace-write" && policy == "on-request" -> when(settings?.string("approvalsReviewer")) {
+            "user" -> "preset-request"
+            "auto_review" -> "preset-auto"
+            else -> null
         }
+        else -> null
+    }
 }
 
 internal fun inheritedSettingLabel(settings: JSONObject?, key: String, title: String, newSession: Boolean): String {
@@ -66,7 +79,7 @@ internal fun nativeDefaultsUnavailableReason(settings: JSONObject?, newSession: 
     val approval = settings?.opt("approvalPolicy")
     if (approval == null || approval == JSONObject.NULL || approval is String && approval.isBlank())
         return "审批策略尚未读取，暂不能设为新会话默认。"
-    if (approvalSettingOptions.none { it.first == approval })
+    if (permissionPreset(settings) == null)
         return "当前自定义审批无法保存为审批预设；请先明确选择审批策略。"
     val inheritedTier = settings?.has("serviceTier") == true && settings.isNull("serviceTier")
     if (serviceTier.isNullOrBlank() && !inheritedTier) return "快速模式尚未读取，暂不能设为新会话默认。"

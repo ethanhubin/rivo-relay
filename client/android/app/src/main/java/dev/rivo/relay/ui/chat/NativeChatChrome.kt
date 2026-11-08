@@ -3,6 +3,10 @@ package dev.rivo.relay.ui.chat
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.widget.Toast
+import androidx.compose.ui.draw.shadow
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -31,6 +35,7 @@ import dev.rivo.relay.codex.ControlState
 import dev.rivo.relay.data.*
 import dev.rivo.relay.ui.common.ConnectionStatusDot
 import dev.rivo.relay.ui.common.CodexQuotaProgressBar
+import dev.rivo.relay.ui.theme.NightBackground
 import org.json.JSONObject
 
 @Composable
@@ -89,11 +94,11 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
                     add(runtime.string("handoffUnavailableReason"))
             }
         }.map(String::trim).filter(String::isNotBlank).distinct()
-        AlertDialog(onDismissRequest = { runtimeDetails = false }, title = { Text("Codex 连接") },
-            text = { Column(Modifier.testTag("writer_runtime_details").verticalScroll(rememberScrollState()),
+        AlertDialog(onDismissRequest = { runtimeDetails = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("Codex 连接") } },
+            text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Column(Modifier.testTag("writer_runtime_details").verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 details.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
-            } }, confirmButton = { TextButton({ runtimeDetails = false }) { Text("关闭") } })
+            } } }, confirmButton = { TextButton({ runtimeDetails = false }) { Text("关闭") } })
     }
 
 }
@@ -122,13 +127,22 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
     Box(Modifier.fillMaxWidth().height(64.dp).testTag("conversation_header")) {
         Row(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = onBack, modifier = Modifier.size(40.dp).testTag("back_sessions").semantics { contentDescription = "返回会话列表" },
-                contentPadding = PaddingValues(0.dp)) { Text("‹", style = MaterialTheme.typography.headlineSmall) }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
+            TextButton(onClick = onBack, colors = ButtonDefaults.textButtonColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow), modifier = Modifier.size(40.dp).shadow(2.dp, RoundedCornerShape(20.dp), ambientColor = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.08f), spotColor = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.08f)).testTag("back_sessions").semantics { contentDescription = "返回会话列表" },
+                contentPadding = PaddingValues(0.dp)) {
+                val arrowColor = LocalContentColor.current
+                Canvas(Modifier.size(24.dp)) {
+                    val stroke = 2.dp.toPx()
+                    val tip = Offset(size.width * .22f, size.height * .5f)
+                    drawLine(arrowColor, tip, Offset(size.width * .78f, size.height * .5f), stroke, StrokeCap.Round)
+                    drawLine(arrowColor, tip, Offset(size.width * .49f, size.height * .23f), stroke, StrokeCap.Round)
+                    drawLine(arrowColor, tip, Offset(size.width * .49f, size.height * .77f), stroke, StrokeCap.Round)
+                }
+            }
+            Column(Modifier.weight(1f).fillMaxHeight().clickable(onClick = onSettings).padding(horizontal = 8.dp).testTag("conversation_status"), verticalArrangement = Arrangement.Center) {
                 SelectionContainer { Text(snapshot?.name ?: if (state.readError != null && !state.loading) "会话读取失败" else "正在读取会话…",
-                    Modifier.testTag("conversation_title"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
+                    Modifier.testTag("conversation_title"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium,
                     maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                Row(Modifier.fillMaxWidth().clickable(onClick = onSettings).testTag("conversation_status"), verticalAlignment = Alignment.CenterVertically,
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                     ConnectionStatusDot(when {
                         recoveryState == RecoveryState.CONNECTING -> null
@@ -147,30 +161,31 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
                 }
             }
             Box {
-                TextButton(onClick = { menu = true }, modifier = Modifier.size(40.dp).testTag("conversation_more_button")
+                TextButton(onClick = { menu = true }, colors = ButtonDefaults.textButtonColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow), modifier = Modifier.size(40.dp).shadow(2.dp, RoundedCornerShape(20.dp), ambientColor = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.08f), spotColor = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.08f)).testTag("conversation_more_button")
                     .semantics { contentDescription = "更多" }, contentPadding = PaddingValues(0.dp)) { Text("⋮", style = MaterialTheme.typography.titleLarge) }
-                DropdownMenu(menu, { menu = false }) {
-                    DropdownMenuItem(text = { Text("改动与代码审查") }, onClick = { menu = false; onReview() }, enabled = snapshot != null,
+                DropdownMenu(menu, { menu = false }, modifier = Modifier.width(248.dp),
+                    shape = RoundedCornerShape(28.dp), containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                    tonalElevation = 0.dp, shadowElevation = 12.dp) {
+                    ConversationMenuItem(icon = "review", text = { Text("改动与代码审查") }, onClick = { menu = false; onReview() }, enabled = snapshot != null,
                         modifier = Modifier.testTag("open_codex_review"))
-                    DropdownMenuItem(text = { Text("刷新会话") }, onClick = { menu = false; onRefresh() }, modifier = Modifier.testTag("refresh_conversation"))
-                    if (onPin != null) DropdownMenuItem(text = { Text(if (pinned) "取消置顶" else "置顶") },
+                    ConversationMenuItem(icon = "refresh", text = { Text("刷新会话") }, onClick = { menu = false; onRefresh() }, modifier = Modifier.testTag("refresh_conversation"))
+                    if (onPin != null) ConversationMenuItem(icon = "pin", text = { Text(if (pinned) "取消置顶" else "置顶") },
                         onClick = { menu = false; onPin(!pinned) }, enabled = canManage, modifier = Modifier.testTag("set_session_pinned"))
-                    if (onArchive != null) DropdownMenuItem(text = { Text("归档") }, onClick = { menu = false; onArchive() },
+                    if (onArchive != null) ConversationMenuItem(icon = "archive", text = { Text("归档") }, onClick = { menu = false; onArchive() },
                         enabled = canManage && snapshot != null && snapshot.activeTurnId.isBlank() && snapshot.requests.isEmpty() && snapshot.queue.isEmpty(),
                         modifier = Modifier.testTag("archive_session"))
-                    DropdownMenuItem(text = { Text("释放权限") },
+                    ConversationMenuItem(icon = "release", text = { Text("释放权限") },
                         onClick = { menu = false; onWriterAction?.invoke("release") },
                         enabled = state.showRelease() && onWriterAction != null && !writerBusy && writerBlockedReason == null &&
                             releaseUnavailableReason(snapshot?.nativeRuntime) == null,
                         modifier = Modifier.testTag("release_session_permission"))
-                    HorizontalDivider()
-                    DropdownMenuItem(text = { Text("复制会话 ID") }, enabled = state.id != null, modifier = Modifier.testTag("copy_session_id"),
+                    ConversationMenuItem(icon = "copy", text = { Text("复制会话 ID") }, enabled = state.id != null, modifier = Modifier.testTag("copy_session_id"),
                         onClick = { menu = false; state.id?.let { id -> context.getSystemService(ClipboardManager::class.java)
                             .setPrimaryClip(ClipData.newPlainText("Codex 会话 ID", id)); Toast.makeText(context, "已复制会话 ID", Toast.LENGTH_SHORT).show() } })
                 }
             }
         }
-        usage?.weeklyWindow?.let { CodexQuotaProgressBar(it, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(2.dp).testTag("codex_subscription_usage")) }
+        usage?.weeklyWindow?.let { CodexQuotaProgressBar(it, Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = dev.rivo.relay.ui.theme.RivoSpacing.Page).height(2.dp).testTag("codex_subscription_usage")) }
     }
 
 }
@@ -189,17 +204,17 @@ internal fun NativeComposerSettings(settings: JSONObject?, models: List<JSONObje
             val id = model.string("model").ifBlank { model.string("id") }
             id to model.string("displayName").ifBlank { id }
         }
-        val inheritModel = inheritedSettingLabel(settings, "model", "模型", newSession)
-        val inheritEffort = inheritedSettingLabel(settings, "reasoningEffort", "思考强度", newSession)
-        SettingsSelector("模型", selectedModel ?: inheritModel, listOf(null to inheritModel) + modelOptions,
-            enabled, "composer_model", onModel)
-        val effectiveModel = selectedModel ?: settings?.string("model")
-        val effectiveEffort = selectedEffort ?: settings?.string("reasoningEffort")
+        val effectiveModel = selectedModel ?: settings?.string("model")?.takeIf(String::isNotBlank)
+            ?: models.firstOrNull { it.optBoolean("isDefault") }?.let { it.string("model").ifBlank { it.string("id") } }
         val capability = models.firstOrNull { it.string("model").ifBlank { it.string("id") } == effectiveModel }
+        val effectiveEffort = selectedEffort ?: settings?.string("reasoningEffort")?.takeIf(String::isNotBlank)
+            ?: reasoningEffortForModel(capability, null)
+        SettingsSelector("模型", modelOptions.firstOrNull { it.first == effectiveModel }?.second ?: effectiveModel ?: "正在读取默认模型",
+            modelOptions, enabled, "composer_model", onModel)
         val efforts = capability?.objects("supportedReasoningEfforts").orEmpty().map { it.string("reasoningEffort") }.filter(String::isNotBlank)
-        if (efforts.isNotEmpty()) SettingsSelector("思考强度", selectedEffort ?: inheritEffort, listOf(null to inheritEffort) + efforts.map { it to it },
+        if (efforts.isNotEmpty()) SettingsSelector("思考强度", effectiveEffort ?: "正在读取默认强度", efforts.map { it to it },
             enabled, "composer_effort", onEffort)
-        if (efforts.isEmpty()) Text(selectedEffort?.let { "思考强度 · $it" } ?: inheritEffort,
+        if (efforts.isEmpty()) Text(effectiveEffort?.let { "思考强度 · $it" } ?: "正在读取默认强度",
             style = MaterialTheme.typography.labelSmall, modifier = Modifier.testTag("composer_effort_status"))
         if (models.isEmpty()) Text("暂未取得可用模型，可继续沿用当前设置。", style = MaterialTheme.typography.labelSmall)
         catalogNotice?.let { Text(it, Modifier.testTag("model_catalog_notice"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -219,15 +234,11 @@ internal fun NativeComposerSettings(settings: JSONObject?, models: List<JSONObje
         val approvalOptions = approvalSettingOptions
         val currentSandbox = nativeSandboxChoice(settings)
         val effectiveSandbox = if (newSession) sandboxChoice?.takeUnless { it == "inherit" } else currentSandbox
-        val effectiveApproval = if (newSession) approvalChoice?.takeUnless { it == "inherit" } else (settings?.opt("approvalPolicy") as? String)
+        val effectiveApproval = if (newSession) approvalChoice?.takeUnless { it == "inherit" } else permissionPreset(settings)
         val inPlan = (selectedMode ?: settings?.optJSONObject("collaborationMode")?.string("mode")) == "plan"
         if (newSession || savesToSession) {
-            SettingsSelector("文件访问权限", sandboxSettingLabel(settings, newSession, sandboxChoice),
-                (if (newSession) listOf(null to "沿用节点默认") else emptyList()) + sandboxOptions,
-                enabled && permissionsEditable && (newSession || !inPlan), "composer_sandbox", onSandbox)
-            SettingsSelector("审批策略", approvalSettingLabel(settings, newSession, approvalChoice),
-                (if (newSession) listOf(null to "沿用节点默认") else emptyList()) + approvalOptions,
-                enabled && permissionsEditable, "composer_approval", onApproval)
+            SettingsSelector("权限模式", approvalSettingLabel(settings, newSession, approvalChoice),
+                approvalOptions, enabled && permissionsEditable && (newSession || !inPlan), "composer_approval", onApproval)
             if (!permissionsEditable) Text("会话已创建，发送完成后可在会话设置中修改权限。", style = MaterialTheme.typography.labelSmall)
             if (inPlan) Text("讨论模式使用只读权限；退出后恢复所选权限。", style = MaterialTheme.typography.labelSmall)
         }
@@ -260,30 +271,22 @@ internal fun NewSessionSettings(models: List<JSONObject>, model: String?, effort
         .verticalScroll(rememberScrollState()).testTag("new_session_settings"),
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
         workspace?.invoke()
-        Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("会话设置", style = MaterialTheme.typography.titleSmall)
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Column(Modifier.weight(1f)) {
-                    SettingsSelector("模型", model ?: "沿用节点默认",
-                        listOf(null to "沿用节点默认") + models.map {
+            Surface(shape = RoundedCornerShape(24.dp), color = if (MaterialTheme.colorScheme.background == NightBackground)
+                MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.surfaceContainerLow) {
+                Column {
+                    SettingsPanelRow("模型", model ?: capability?.string("displayName")?.takeIf(String::isNotBlank)
+                        ?: capability?.string("model")?.takeIf(String::isNotBlank) ?: "正在读取默认模型",
+                        models.map {
                             it.string("model").ifBlank { it.string("id") } to it.string("displayName").ifBlank { it.string("model").ifBlank { it.string("id") } }
                         }, enabled, "new_session_model", onModel)
-                }
-                Column(Modifier.weight(1f)) {
-                    SettingsSelector("思考强度", effort ?: "沿用节点默认",
-                        listOf(null to "沿用节点默认") + efforts.map { it to it },
-                        enabled, "new_session_effort", onEffort)
-                }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Column(Modifier.weight(1f)) {
-                    SettingsSelector("文件访问权限", sandboxSettingLabel(null, true, sandbox),
-                        listOf(null to "沿用节点默认") + sandboxSettingOptions,
-                        enabled && permissionsEditable, "new_session_sandbox", onSandbox)
-                }
-                Column(Modifier.weight(1f)) {
-                    SettingsSelector("审批策略", approvalSettingLabel(null, true, approval),
-                        listOf(null to "沿用节点默认") + approvalSettingOptions,
+                    HorizontalDivider(Modifier.padding(horizontal = 16.dp))
+                    SettingsPanelRow("思考强度", effort ?: reasoningEffortForModel(capability, null) ?: "正在读取默认强度",
+                        efforts.map { it to it }, enabled, "new_session_effort", onEffort)
+                    HorizontalDivider(Modifier.padding(horizontal = 16.dp))
+                    SettingsPanelRow("权限模式", approvalSettingLabel(null, true, approval),
+                        approvalSettingOptions,
                         enabled && permissionsEditable, "new_session_approval", onApproval)
                 }
             }
@@ -298,10 +301,85 @@ private fun SettingsSelector(title: String, selected: String, options: List<Pair
     Spacer(Modifier.height(6.dp))
     Box {
         OutlinedButton(onClick = { expanded = true }, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp).testTag(tag), shape = RoundedCornerShape(13.dp), contentPadding = PaddingValues(horizontal = 10.dp)) {
-            Text(selected, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis); Text("⌄")
+            Text(selected, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis); SettingsRightArrow()
         }
         DropdownMenu(expanded && enabled, { expanded = false }) { options.forEach { (id, name) ->
             DropdownMenuItem(text = { Text(name) }, onClick = { expanded = false; onSelect(id) }, modifier = Modifier.testTag("${tag}_${id ?: "inherit"}"))
         } }
+    }
+}
+
+@Composable
+private fun ConversationMenuItem(icon: String, text: @Composable () -> Unit, onClick: () -> Unit,
+    enabled: Boolean = true, modifier: Modifier = Modifier) {
+    val color = if (icon == "archive") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+    DropdownMenuItem(text = text, onClick = onClick, enabled = enabled,
+        modifier = modifier.heightIn(min = 52.dp), contentPadding = PaddingValues(horizontal = 24.dp, vertical = 8.dp),
+        colors = MenuDefaults.itemColors(textColor = color, leadingIconColor = color),
+        leadingIcon = { ConversationMenuIcon(icon) })
+}
+
+@Composable
+private fun ConversationMenuIcon(kind: String) {
+    val color = LocalContentColor.current
+    Canvas(Modifier.size(24.dp)) {
+        val u = size.width / 24f
+        val stroke = androidx.compose.ui.graphics.drawscope.Stroke(1.8f * u, cap = StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
+        fun line(vararg coordinates: Float) {
+            val path = androidx.compose.ui.graphics.Path().apply {
+                moveTo(coordinates[0]*u, coordinates[1]*u)
+                for (i in 2 until coordinates.size step 2) lineTo(coordinates[i]*u, coordinates[i+1]*u)
+            }
+            drawPath(path, color, style = stroke)
+        }
+        fun box(x: Float, y: Float, w: Float, h: Float) = drawRoundRect(color, Offset(x*u,y*u),
+            androidx.compose.ui.geometry.Size(w*u,h*u), androidx.compose.ui.geometry.CornerRadius(2*u), style = stroke)
+        when (kind) {
+            "copy" -> { box(8f,3f,13f,14f); box(3f,8f,13f,13f) }
+            "archive" -> { box(3f,3f,18f,5f); box(4f,8f,16f,13f); line(9f,12f,15f,12f) }
+            "pin" -> { line(4f,21f,9f,16f); line(8f,5f,15f,3f,21f,9f,17f,12f,15f,18f,6f,9f,8f,5f) }
+            "refresh" -> {
+                drawArc(color, 40f, 290f, false, Offset(4*u,4*u), androidx.compose.ui.geometry.Size(16*u,16*u), style = stroke)
+                line(20f,3f,20f,9f,14f,9f)
+            }
+            "release" -> { box(4f,10f,16f,11f); line(8f,10f,8f,6f,10f,3f,15f,3f,18f,6f); line(12f,14f,12f,17f) }
+            else -> { box(4f,3f,16f,18f); line(8f,8f,16f,8f); line(8f,12f,16f,12f); line(8f,16f,12f,16f) }
+        }
+    }
+}
+
+@Composable
+internal fun SettingsRightArrow() {
+    val color = MaterialTheme.colorScheme.onSurfaceVariant
+    Canvas(Modifier.size(16.dp)) {
+        val path = androidx.compose.ui.graphics.Path().apply {
+            moveTo(size.width * .38f, size.height * .22f)
+            lineTo(size.width * .65f, size.height * .5f)
+            lineTo(size.width * .38f, size.height * .78f)
+        }
+        drawPath(path, color, style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx(), cap = StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+    }
+}
+
+@Composable
+private fun SettingsPanelRow(title: String, selected: String, options: List<Pair<String?, String>>,
+    enabled: Boolean, tag: String, onSelect: (String?) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        Row(Modifier.fillMaxWidth().clickable(enabled = enabled) { expanded = true }.testTag(tag)
+            .padding(horizontal = 16.dp, vertical = 15.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(selected, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 1f else .38f),
+                textAlign = androidx.compose.ui.text.style.TextAlign.End, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            SettingsRightArrow()
+        }
+        DropdownMenu(expanded && enabled, { expanded = false }) {
+            options.forEach { (id, name) ->
+                DropdownMenuItem(text = { Text(name) }, onClick = { expanded = false; onSelect(id) },
+                    modifier = Modifier.testTag("${tag}_${id ?: "inherit"}"))
+            }
+        }
     }
 }

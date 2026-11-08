@@ -771,6 +771,18 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(self.app.todos.get("details-todo")["details"], details)
 
+    def test_agent_completion_endpoint_uses_only_scoped_credential(self):
+        self.app.todos.create("Complete target", todo_id="agent-completion")
+        self.app.todos.link("agent-completion", "project", "thread")
+        credential = self.app.todo_completion.issue(self.app.todos.get("agent-completion"))
+        status, _, _ = self.request("POST", "/v1/todo-completion", {}, token="invalid")
+        self.assertEqual(status, 401)
+        status, result, _ = self.request("POST", "/v1/todo-completion", {}, token=credential)
+        self.assertEqual(status, 200)
+        self.assertTrue(result["todo"]["completed"])
+        status, _, _ = self.request("GET", "/v1/todos", token=credential)
+        self.assertEqual(status, 401)
+
     def test_uploaded_todo_attachment_is_delivered_without_mutating_todo(self):
         name = 'photo.jpg'
         path = '/native/.codex/rivo-relay-todo-media/id/photo.jpg'

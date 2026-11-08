@@ -32,6 +32,8 @@ import androidx.compose.ui.unit.dp
 import dev.rivo.relay.codex.SessionState
 import dev.rivo.relay.codex.control
 import dev.rivo.relay.codex.showTakeover
+import dev.rivo.relay.codex.canManageQueue
+import dev.rivo.relay.codex.canResumeQueue
 import dev.rivo.relay.codex.canCompose
 import dev.rivo.relay.data.*
 import org.json.JSONObject
@@ -154,7 +156,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val latestInputLocked by rememberUpdatedState(inputLocked)
     LaunchedEffect(inputLocked) {
         if (inputLocked) {
-            focus.clearFocus(); keyboard?.hide(); settingsOpen = false
+            settingsOpen = false
             editingImage = null; workspaceFileDialog = false; removingQueue = null; stopConfirm = false
         }
     }
@@ -192,8 +194,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             selectedSandbox = saved.sandbox; selectedApproval = saved.approvalPolicy
         }
         if (pendingTitle != null) {
-            selectedSandbox = selectedSandbox ?: defaultSettings?.string("sandbox")?.takeIf(String::isNotBlank) ?: "inherit"
-            selectedApproval = selectedApproval ?: defaultSettings?.string("approvalPolicy")?.takeIf(String::isNotBlank) ?: "inherit"
+            selectedSandbox = selectedSandbox ?: "inherit"
+            selectedApproval = selectedApproval ?: "inherit"
             selectedModel = selectedModel ?: defaultSettings?.string("model")?.takeIf(String::isNotBlank)
             selectedEffort = selectedEffort ?: defaultSettings?.string("effort")?.takeIf(String::isNotBlank)
             selectedServiceTier = selectedServiceTier ?: defaultSettings?.string("serviceTier")?.takeIf(String::isNotBlank)
@@ -211,6 +213,11 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val submissionInFlight = busy || pendingFirstTurnSent || state.pendingMessages.any { it.delivery in setOf("submitting", "unknown") }
     val hideSubmitted = pendingTitle == null && hideSubmittedDraft(submissionInFlight, unchangedSubmission,
         composerInput, state.pendingMessages)
+    // A masked draft is the recovery copy of an unresolved submission, not a new empty draft.
+    val textEditable = draftLoaded && !busy && !pendingFirstTurnSent && !pendingReceiptUnresolved && !hideSubmitted
+    LaunchedEffect(textEditable) {
+        if (!textEditable) { focus.clearFocus(); keyboard?.hide() }
+    }
     // Drop the mask after a definitive outcome. Never mutate the recovery copy here.
     SideEffect { if (!submissionInFlight && submittedDraft != null) submittedDraft = null }
 
@@ -337,34 +344,16 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     }) else null
     val saveFile: (String) -> Unit = { fileAction = FileAction.SAVE; filePath = it }
     fun openSettings() { if (inputLocked) return; settingsOpen = !settingsOpen; if (settingsOpen) { focus.clearFocus(); keyboard?.hide(); onLoadModels() } }
-    val mediaFavorite: (suspend (String, Boolean?) -> dev.rivo.relay.data.MediaFavoriteResult)? = mediaClient?.let { client ->
-        { source, desired -> client.favorite(source, desired) }
-    }
+
     val mediaCache: NativeCachedDownload? = mediaClient?.let { client ->
         { path, progress ->
             if (isHttpWebLink(path) || path.startsWith("/v1/media/")) client.cached(mediaContext, path, progress)
             else requireNotNull(cachedFile)(path, progress)
         }
     } ?: cachedFile
-    val mediaAttach: suspend (java.io.File, String, String) -> Boolean = attach@{ file, name, mime ->
-        val target = state.id ?: return@attach false
-        if (busy || inputLocked || preparing || !draftLoaded) return@attach false
-        if (mime.startsWith("image/")) {
-            val image = prepareImage(context, android.net.Uri.fromFile(file))
-            if (currentSessionId != target || latestInputLocked) return@attach false
-            require(images.size < 10 && images.sumOf { it.bytes.size.toLong() } + image.bytes.size <= 40L * 1024 * 1024) { "最多 10 张图片，合计 40 MiB" }
-            images = images + image
-        } else {
-            require(files.size < 16) { "最多 16 个附件" }
-            val uploaded = uploadFile(target, name, file)
-            if (currentSessionId != target || latestInputLocked) return@attach false
-            files = files + JSONObject().put("type", "mention").put("name", uploaded.getString("name")).put("path", uploaded.getString("path"))
-        }
-        true
-    }
-    CompositionLocalProvider(LocalMediaAttachment provides mediaAttach, LocalMediaAssets provides mediaAssets, LocalMediaSourceIndex provides mediaSources, LocalCodexGallery provides gallery,
+    CompositionLocalProvider(LocalMediaAssets provides mediaAssets, LocalMediaSourceIndex provides mediaSources, LocalCodexGallery provides gallery,
         LocalMediaEdited provides { uri -> addImages(listOf(uri)) }, LocalCodexMediaClient provides mediaClient,
-        LocalImageFavorite provides mediaFavorite, LocalNativeFileCache provides mediaCache,
+        LocalNativeFileCache provides mediaCache,
         LocalCodexLinkForwarder provides if (onForwardLink == null || busy || blocked) null else { link -> forwardingLink = link }) {
     Column(Modifier.fillMaxSize().imePadding().testTag("chat_page")) {
         if (pendingTitle != null) Row(Modifier.fillMaxWidth().height(64.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -379,7 +368,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         val bottomOverlayPadding = with(LocalDensity.current) { bottomOverlayHeight.toDp() }
         Box(Modifier.weight(1f).fillMaxWidth()) {
         // Draw history behind the rounded composer; reserve scroll space for the final message.
-        LazyColumn(state = list, modifier = Modifier.fillMaxSize().padding(bottom = 8.dp).nestedScroll(scrollConnection).testTag("chat_history"), contentPadding = PaddingValues(start = 20.dp, top = 20.dp, end = 20.dp, bottom = bottomOverlayPadding + 20.dp), verticalArrangement = Arrangement.spacedBy(chatActivitySpacing)) {
+        LazyColumn(state = list, modifier = Modifier.fillMaxSize().padding(bottom = 20.dp).nestedScroll(scrollConnection).testTag("chat_history"), contentPadding = PaddingValues(start = 20.dp, top = 20.dp, end = 20.dp, bottom = bottomOverlayPadding + 20.dp), verticalArrangement = Arrangement.spacedBy(chatActivitySpacing)) {
             if (pendingTitle != null && timeline.isEmpty()) item {
                 Text("今天想从哪里开始？", Modifier.padding(vertical = 24.dp), style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -412,15 +401,18 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 val assistant = message.type in setOf("agentMessage", "agent_message", "exitedReviewMode")
                 var expanded by remember(message.id) { mutableStateOf(false) }
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = if (user) Alignment.End else Alignment.Start) {
-                    if (user) Surface(color = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    if (user) {
+                        val content = message.content
+                        val attachmentImages = content.mapNotNull { nativeImageSource(it, cwd) }
+                        val textParts = content.filter { nativeImageSource(it, cwd) == null }
+                        if (textParts.isNotEmpty() || content.isEmpty()) Surface(color = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                         shape = MaterialTheme.shapes.large, modifier = Modifier.widthIn(max = 326.dp)) {
                         Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            val content = message.content
                             if (content.isEmpty()) MessageContent(message.text, cwd, onQuoteText = quoteText, onSaveFile = saveFile, inlineImage = { source ->
                                 val target = if (isHttpWebLink(source)) source else nativeFilePath(source, cwd)
                                 target?.let { NativeImage(it, readFile, downloadFile = downloadFile) }
                             }, onFile = ::openFile)
-                            content.filter { nativeImageSource(it, cwd) == null }.forEach { part ->
+                            textParts.forEach { part ->
                                 when (part.string("type")) {
                                 "text" -> MessageContent(part.string("text"), cwd, onQuoteText = quoteText, onSaveFile = saveFile, inlineImage = { source ->
                                 val target = if (isHttpWebLink(source)) source else nativeFilePath(source, cwd)
@@ -431,8 +423,11 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                                 "mention", "skill" -> TextButton(onClick = { nativeFilePath(part.string("path"), cwd)?.let(::openFile) }) { Text((if (part.string("type") == "skill") "技能：" else "文件：") + part.string("name")) }
                                 else -> Text(part.toString(2), style = MaterialTheme.typography.bodySmall)
                             } }
-                            val attachmentImages = content.mapNotNull { nativeImageSource(it, cwd) }
-                            if (attachmentImages.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        }
+                        }
+                            if (attachmentImages.isNotEmpty()) Row(
+                                modifier = Modifier.padding(top = if (textParts.isNotEmpty()) 6.dp else 0.dp).testTag("user_message_attachments"),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 attachmentImages.take(3).forEachIndexed { imageIndex, source ->
                                     NativeImage(source, readFile, downloadFile = downloadFile, compact = true,
                                         remaining = if (imageIndex == 2) (attachmentImages.size - 3).coerceAtLeast(0) else 0)
@@ -442,7 +437,6 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                                 Text(when (delivery) { "submitting" -> "发送中…"; "accepted" -> "已送达，等待同步"; else -> "正在确认是否送达" },
                                     style = MaterialTheme.typography.labelSmall, modifier = Modifier.testTag("message_delivery_$delivery"))
                             }
-                        }
                     } else if (assistant) {
                         val isLastReply = snapshot?.messages?.lastOrNull {
                             it.turnId == message.turnId && it.type in setOf("agentMessage", "agent_message", "exitedReviewMode")
@@ -487,6 +481,12 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 ChatTimelineSummaryRow {
                     ShimmeringStageText("正在处理…", Modifier.testTag("execution_stage_shimmer"))
                 }
+            }
+            val completionLabel = snapshot?.takeIf { !state.stale && !state.loading && state.readError == null &&
+                !submissionInFlight && state.pendingMessages.isEmpty() }?.let(::sessionCompletionLabel)
+            if (completionLabel != null) item(key = "session_completion") {
+                Text(completionLabel, Modifier.fillMaxWidth().testTag("session_completion"),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             item(key = "relay_latest_anchor") { Spacer(Modifier.fillMaxWidth().height(1.dp).testTag("latest_message_anchor")) }
         }
@@ -551,8 +551,13 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 }
             }
         }
+        if (state.canResumeQueue() && onWriterAction != null) {
+            TextButton(onClick = { onWriterAction("resume") },
+                enabled = !busy && !blocked && !writerBusy,
+                modifier = Modifier.testTag("resume_queue")) { Text("恢复队列") }
+        }
         val waitingQueue = snapshot?.queue.orEmpty().filter { it.status !in setOf("running", "dispatching") && !it.recoveryRequired && it.id != snapshot?.recoveryTask?.id }
-        if (snapshot != null && waitingQueue.isNotEmpty()) ExecutionQueuePanel(snapshot.id, waitingQueue, !busy && !blocked && canOperate,
+        if (snapshot != null && waitingQueue.isNotEmpty()) ExecutionQueuePanel(snapshot.id, waitingQueue, !busy && !blocked && !writerBusy && state.canManageQueue(),
             canSteer = canOperate && snapshot.activeTurnId.isNotBlank() && snapshot.requests.isEmpty(),
             onEdit = ::editQueuedTask, onWithdraw = { removingQueue = it },
             onSteer = { task -> onQueue(JSONObject().put("operation", "steer").put("itemId", task.id).put("revision", task.revision).put("expectedTurnId", snapshot.activeTurnId), {}) },
@@ -577,12 +582,13 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             Text(if (displayedGoal == null) "设置持续目标" else "编辑持续目标")
         }
         MessageComposer(
-            text = if (hideSubmitted) "" else draft, onTextChange = { draft = it }, images = if (hideSubmitted) emptyList() else images,
+            text = if (hideSubmitted) "" else draft, onTextChange = { if (textEditable) draft = it }, images = if (hideSubmitted) emptyList() else images,
             onEditImage = { focus.clearFocus(); keyboard?.hide(); editingImage = it },
             onRemoveImage = { image -> images = images.filterNot { it.id == image.id } },
             files = if (hideSubmitted) emptyList() else files, onRemoveFile = { reference -> files = files.filterNot { it === reference } },
             onOpenFile = { reference -> nativeFilePath(reference.string("path"), cwd)?.let(::openFile) },
             preparing = preparing, error = attachmentError, enabled = !busy && !inputLocked && draftLoaded,
+            textEditable = textEditable,
             canSend = !(goalMode && displayedGoal == null) && !pendingReceiptUnresolved && !pendingFirstTurnSent && (pendingGoal == null || goalCapability == true) && (draft.isNotBlank() || images.isNotEmpty() || files.isNotEmpty() || pendingGoal != null) && !state.stale && (snapshot != null || pendingTitle != null && pendingReady),
             isRunning = snapshot?.activeTurnId?.isNotBlank() == true, canStop = !busy && !blocked && !state.stale && canOperate, busy = busy,
             onAddImage = { focus.clearFocus(); keyboard?.hide(); imagePickerTarget = state.id; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
@@ -662,9 +668,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         }
     }
     removingQueue?.let { task -> AlertDialog(onDismissRequest = { if (!busy) removingQueue = null },
-        title = { Text(if (task.recoveryRequired) "忽略待恢复记录？" else "撤回待发任务？") },
-        text = { Text(if (task.recoveryRequired) "仅移除此队列记录，不会停止或重新发送原任务。请先核对会话历史。" else "该任务将从等待队列移除，不再执行。") },
-        confirmButton = { TextButton(onClick = { onQueue(JSONObject().put("operation", if (task.recoveryRequired) "dismiss" else "remove").put("itemId", task.id).put("revision", task.revision)) { removingQueue = null } }, enabled = !busy && !blocked && !state.stale && (canOperate || task.recoveryRequired), modifier = Modifier.testTag("queue_remove")) { Text(if (task.recoveryRequired) "确认忽略" else "确认撤回") } },
+        title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text(if (task.recoveryRequired) "忽略待恢复记录？" else "撤回待发任务？") } },
+        text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text(if (task.recoveryRequired) "仅移除此队列记录，不会停止或重新发送原任务。请先核对会话历史。" else "该任务将从等待队列移除，不再执行。") } },
+        confirmButton = { TextButton(onClick = { onQueue(JSONObject().put("operation", if (task.recoveryRequired) "dismiss" else "remove").put("itemId", task.id).put("revision", task.revision)) { removingQueue = null } }, enabled = !busy && !blocked && !writerBusy && state.canManageQueue(), modifier = Modifier.testTag("queue_remove")) { Text(if (task.recoveryRequired) "确认忽略" else "确认撤回") } },
         dismissButton = { TextButton(onClick = { removingQueue = null }) { Text("取消") } }) }
     filePath?.let { FilePreviewDialog(it, readFile, downloadFile, initialAction = fileAction) { filePath = null; fileAction = null } }
     if (workspaceFileDialog && !inputLocked) WorkspaceFilePicker(cwd, readDirectory,
@@ -672,8 +678,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             if (files.size < 16 && files.none { it.string("path") == file.string("path") }) files = files + file
             workspaceFileDialog = false
         })
-    if (stopConfirm) AlertDialog(onDismissRequest = { stopConfirm = false }, title = { Text("停止当前轮次？") },
-        text = { Text("将中断当前 Codex 轮次。已产生的内容和改动会保留；这不等同于暂停或清除持续目标，队列也会保留。") },
+    if (stopConfirm) AlertDialog(onDismissRequest = { stopConfirm = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("停止当前轮次？") } },
+        text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("将中断当前 Codex 轮次。已产生的内容和改动会保留；这不等同于暂停或清除持续目标，队列也会保留。") } },
         confirmButton = { Button(onClick = { stopConfirm = false; onStop() }, enabled = !busy && !blocked && canOperate) { Text("停止当前轮次") } },
         dismissButton = { TextButton(onClick = { stopConfirm = false }) { Text("取消") } })
     forwardingLink?.let { link -> CodexLinkDestinationDialog(link, readTool,

@@ -2,7 +2,7 @@
 
 单个 `:app` 模块，包名 `dev.rivo.relay`，不会覆盖 QiGuang。采用 Kotlin、Compose、Moonlight 主题、StateFlow 和 OkHttp。QiGuang 的来源与调整记录见 [migration-sources.json](migration-sources.json)。
 
-2026-11-07 对照 QiGuang 最新本地发布版的 Codex 迁移见 [完整对照](../../docs/qiguang-codex-sync.md)。包括模型/快速模式与节点默认设置、写权限条、恢复面板、精确身份消息接管、草稿恢复、10 图附件、链接转发及结构化差异分页，以及 Desktop 运行时状态、原生历史失效、Coil 图片查看器、Media3 音视频、媒体库和流式语音输入；验证以根目录 `docs/validation.md` 为准。
+2026-11-07 对照 QiGuang 最新本地发布版的 Codex 迁移见 [完整对照](../../docs/qiguang-codex-sync.md)。包括模型/快速模式与节点默认设置、写权限条、恢复面板、精确身份消息接管、草稿恢复、10 图附件、链接转发及结构化差异分页，以及 Desktop 运行时状态、原生历史失效、Coil 图片查看器、Media3 音视频和流式语音输入；验证以根目录 `docs/validation.md` 为准。
 
 当前安装包版本为 **0.2.55 / versionCode 67**，沿用此前签名，可覆盖升级并保留登录与本地数据。默认从主节点 `http://100.124.150.1:18767` 检查更新和下载，独立于会话所选节点；不自动回退 GitHub。构建与校验位于 `workspace/artifacts/release-0.2.55/`。详见 [节点发布流程](../../docs/node-updates.md)。
 
@@ -109,3 +109,20 @@
 已释放且允许普通恢复的会话可编辑草稿、添加附件并发送消息；发送请求在服务端先通过普通 `thread/resume` 获取权限，再启动任务，不结束其他进程。没有单独的“恢复操作”入口。后台队列和历史读取不会撤销主动释放；外部占用仍需用户提前点击接管并确认影响范围。此发送行为需要配套更新 Relay 服务端。
 
 断网、同步失败、交接中、外部占用或提交结果待核对时继续锁定写操作并保留草稿与历史。权限变更使旧读取失效，必须取得新鲜快照才恢复操作；缓存状态不显示权限按钮。接管继续保留原有主机、持锁进程和影响范围核验。
+
+### 项目权限
+
+App 的权限菜单仅提供“请求审批”“自动审批”“完全访问”。新会话未选择预设时不发送权限覆盖，原生运行时按项目工作目录加载 `.codex/config.toml`；项目配置需要满足原生信任要求，未配置的字段继承节点默认。App 不编辑该文件。
+
+项目可在 `.codex/config.toml` 中配置，例如：
+
+```toml
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+approvals_reviewer = "user"
+
+[sandbox_workspace_write]
+network_access = false
+```
+
+选择预设仅覆盖会话权限：请求审批使用工作区沙箱和人工审核，自动审批使用工作区沙箱和 `auto_review`，完全访问使用 `danger-full-access` 与 `never`。自动审批需要节点原生运行时支持；原生接口拒绝时显示错误，不降级为完全访问。自定义权限在会话内显示为“项目自定义”，没有 App 编辑入口。

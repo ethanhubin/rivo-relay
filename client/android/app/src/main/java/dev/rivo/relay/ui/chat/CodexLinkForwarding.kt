@@ -43,7 +43,7 @@ internal fun CodexLinkDestinationDialog(link: CodexLinkAttachment, read: suspend
                 val response = read("/v1/projects")
                 coroutineContext.ensureActive()
                 projects = response.objects("projects")
-                projectId = projects.firstOrNull()?.string("id")
+                projectId = projects.firstOrNull { it.string("id") != "__rivo_recent__" }?.string("id")
             } else {
                 val response = read("/v1/threads?projectId=${encoded(projectId!!)}&archived=false")
                 coroutineContext.ensureActive()
@@ -53,11 +53,11 @@ internal fun CodexLinkDestinationDialog(link: CodexLinkAttachment, read: suspend
         catch (failure: Exception) { error = failure.message ?: "无法读取目标会话" }
         finally { coroutineContext.ensureActive(); loading = false }
     }
-    AlertDialog(onDismissRequest = onDismiss, modifier = Modifier.testTag("codex_link_destination"), title = { Text("发送到 Codex 会话") },
-        text = { Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
+    AlertDialog(onDismissRequest = onDismiss, modifier = Modifier.testTag("codex_link_destination"), title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("发送到 Codex 会话") } },
+        text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
             Text(link.name, style = MaterialTheme.typography.titleSmall)
             Text("确认后添加到输入框，点击发送才会提交。", style = MaterialTheme.typography.bodySmall)
-            projects.forEach { project -> Row(Modifier.fillMaxWidth().clickable { projectId = project.string("id") }) {
+            projects.filterNot { it.string("id") == "__rivo_recent__" }.forEach { project -> Row(Modifier.fillMaxWidth().clickable { projectId = project.string("id") }) {
                 RadioButton(selected = projectId == project.string("id"), onClick = { projectId = project.string("id") })
                 Text(project.string("name"), Modifier.padding(top = 12.dp))
             } }
@@ -73,7 +73,7 @@ internal fun CodexLinkDestinationDialog(link: CodexLinkAttachment, read: suspend
                     Text(sessionTitle(session), Modifier.padding(top = 12.dp))
                 } }
             }
-        } }, confirmButton = { TextButton(onClick = { projectId?.let { onConfirm(it, selected, link.source, link.name) } },
+        } } }, confirmButton = { TextButton(onClick = { projectId?.let { onConfirm(it, selected, link.source, link.name) } },
             enabled = !loading && error == null && projectId != null && (selected == null || sessions.any { it.string("id") == selected }),
             modifier = Modifier.testTag("confirm_forward_link")) { Text("确认添加") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } })

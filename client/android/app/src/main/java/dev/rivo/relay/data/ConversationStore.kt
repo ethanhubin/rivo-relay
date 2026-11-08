@@ -307,7 +307,7 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
         settings.string("effort").takeIf(String::isNotBlank)?.let { value.put("effort", it) }
         settings.string("serviceTier").takeIf { it == "default" || it == "priority" }?.let { value.put("serviceTier", it) }
         settings.string("sandbox").takeIf { it in setOf("read-only", "workspace-write", "danger-full-access") }?.let { value.put("sandbox", it) }
-        settings.string("approvalPolicy").takeIf { it in setOf("on-request", "untrusted", "never", "on-failure") }?.let { value.put("approvalPolicy", it) }
+        settings.string("approvalPolicy").takeIf { it in setOf("preset-request", "preset-auto", "preset-full") }?.let { value.put("approvalPolicy", it) }
         putRecoveryMetadata("codex-default-settings", value.toString())
     }
     fun pendingCompleted(projectId: String) = getMetadata("completed:pending:$projectId") == "true"

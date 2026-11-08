@@ -1,8 +1,9 @@
 package dev.rivo.relay.ui.chat
 
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -10,55 +11,86 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 
-/** QiGuang AttachmentPickerDialog, limited to Relay's existing local and node sources. */
 @Composable
-internal fun AttachmentSourceDialog(imageSlots: Int, fileSlots: Int, onDismiss: () -> Unit,
-    onImage: () -> Unit, onFile: () -> Unit, onVideo: () -> Unit, onWorkspace: () -> Unit) {
-    val hasMedia = LocalCodexMediaClient.current != null
-    var tab by rememberSaveable { mutableIntStateOf(0) }
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(Modifier.fillMaxSize().padding(horizontal = 24.dp), contentAlignment = Alignment.Center) {
-            Surface(Modifier.fillMaxWidth().widthIn(max = 420.dp).heightIn(max = 720.dp).testTag("attachment_dialog"),
-                shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), shadowElevation = 12.dp) {
-                Column(Modifier.padding(20.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("添加附件", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-                    Text("选择要发送到当前对话的内容", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    PrimaryTabRow(selectedTabIndex = tab) {
-                        Tab(tab == 0, { tab = 0 }, modifier = Modifier.testTag("attachment_tab_local"), text = { Text("本地") })
-                        Tab(tab == 1, { tab = 1 }, modifier = Modifier.testTag("attachment_tab_node"), text = { Text("节点") })
-                        if (hasMedia) Tab(tab == 2, { tab = 2 }, modifier = Modifier.testTag("attachment_tab_media"), text = { Text("媒体库") })
+internal fun AttachmentSourceMenu(expanded: Boolean, imageSlots: Int, fileSlots: Int, onDismiss: () -> Unit,
+    onCamera: () -> Unit, onImage: () -> Unit, onFile: () -> Unit, onVideo: () -> Unit,
+    onWorkspace: () -> Unit) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss,
+        modifier = Modifier.width(240.dp).testTag("attachment_dialog"),
+        shape = RoundedCornerShape(24.dp), containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
+        data class Option(val label: String, val icon: String, val tag: String, val enabled: Boolean, val action: () -> Unit)
+        listOf(
+            Option("拍照", "camera", "add_camera", imageSlots > 0, onCamera),
+            Option("照片", "image", "add_image", imageSlots > 0, onImage),
+            Option("视频", "video", "add_video", fileSlots > 0, onVideo),
+            Option("本地文件", "folder", "add_file", fileSlots > 0, onFile),
+            Option("工作区文件", "folder", "add_workspace_file", fileSlots > 0, onWorkspace),
+        ).forEach { option ->
+            DropdownMenuItem(text = { Text(option.label) }, onClick = { onDismiss(); option.action() },
+                enabled = option.enabled, modifier = Modifier.testTag(option.tag),
+                leadingIcon = {
+                    Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                            AttachmentSourceIcon(option.icon, Modifier.size(22.dp))
+                        }
                     }
-                    if (tab == 0) {
-                        AttachmentSourceOption("图", "从相册选择图片", "可多选；还可添加 ${imageSlots.coerceAtLeast(0)} 张，支持裁剪与标注", "add_image", imageSlots > 0, onImage)
-                        AttachmentSourceOption("文", "浏览文件", "可多选；上传至当前节点，单个最大 1 GiB", "add_file", fileSlots > 0, onFile)
-                        AttachmentSourceOption("视", "选择视频", "作为文件上传至当前节点，单个最大 1 GiB", "add_video", fileSlots > 0, onVideo)
-                    } else if (tab == 2 && hasMedia) CodexMediaLibrary(imageSlots, fileSlots, onDismiss)
-                    else AttachmentSourceOption("工", "节点工作区文件", "浏览当前会话工作区并附加文件引用", "add_workspace_file", fileSlots > 0, onWorkspace)
-                    OutlinedButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth().height(48.dp).testTag("attachment_cancel"), shape = RoundedCornerShape(16.dp)) { Text("取消") }
-                }
-            }
+                }, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp))
         }
     }
 }
 
+/** Native outlines remain visible without font glyphs or an external icon loader. */
 @Composable
-private fun AttachmentSourceOption(icon: String, title: String, description: String, tag: String, enabled: Boolean, onClick: () -> Unit) {
-    Surface(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth().testTag(tag), shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
-        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(icon, style = MaterialTheme.typography.titleMedium)
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(title, style = MaterialTheme.typography.titleSmall)
-                Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+private fun AttachmentSourceIcon(kind: String, modifier: Modifier) {
+    val color = LocalContentColor.current
+    Canvas(modifier) {
+        val u = size.minDimension / 24f
+        val stroke = Stroke(1.7f * u, cap = StrokeCap.Round)
+        fun point(x: Float, y: Float) = Offset(x * u, y * u)
+        when (kind) {
+            "camera" -> {
+                drawRoundRect(color, point(2f, 6f), Size(20f * u, 15f * u), CornerRadius(3f * u), style = stroke)
+                drawCircle(color, 4f * u, point(12f, 13f), style = stroke)
+                val path = Path().apply { moveTo(7f*u, 6f*u); lineTo(9f*u, 3f*u); lineTo(15f*u, 3f*u); lineTo(17f*u, 6f*u) }
+                drawPath(path, color, style = stroke)
             }
-            Text("›", style = MaterialTheme.typography.titleLarge)
+            "image" -> {
+                drawRoundRect(color, point(3f, 3f), Size(18f * u, 18f * u), CornerRadius(3f * u), style = stroke)
+                drawCircle(color, 1.5f * u, point(8f, 8f))
+                val path = Path().apply { moveTo(3f*u, 17f*u); lineTo(9f*u, 11f*u); lineTo(13f*u, 15f*u); lineTo(16f*u, 12f*u); lineTo(21f*u, 17f*u) }
+                drawPath(path, color, style = stroke)
+            }
+            "video" -> {
+                drawRoundRect(color, point(2f, 5f), Size(14f * u, 14f * u), CornerRadius(3f * u), style = stroke)
+                val path = Path().apply { moveTo(16f*u, 10f*u); lineTo(22f*u, 6f*u); lineTo(22f*u, 18f*u); lineTo(16f*u, 14f*u) }
+                drawPath(path, color, style = stroke)
+            }
+            "folder" -> {
+                val path = Path().apply { moveTo(3f*u, 5f*u); lineTo(9f*u, 5f*u); lineTo(12f*u, 8f*u); lineTo(21f*u, 8f*u); lineTo(21f*u, 20f*u); lineTo(3f*u, 20f*u); close() }
+                drawPath(path, color, style = stroke)
+            }
+            else -> {
+                drawLine(color, point(6f, 6f), point(18f, 18f), stroke.width, StrokeCap.Round)
+                drawLine(color, point(18f, 6f), point(6f, 18f), stroke.width, StrokeCap.Round)
+            }
         }
     }
 }

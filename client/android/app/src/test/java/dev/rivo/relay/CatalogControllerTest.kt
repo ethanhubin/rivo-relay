@@ -23,6 +23,151 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 class CatalogControllerTest {
+    @Test fun partialArchiveOnlyRetiresConfirmedProvisionalThread() = runBlocking {
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = MockResponse().setBody("""{"threads":[]}""")
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = CatalogController(api(server), scope, { throw it })
+        try {
+            controller.project(ProjectSummary("p", "P", "/p", 0))
+            withTimeout(3000) { controller.state.first { it.threadsFresh } }
+            controller.recordCreatedThread("p", "a")
+            controller.recordCreatedThread("p", "b")
+            controller.forgetCreatedThreads(listOf("a"))
+            assertEquals(listOf("b"), controller.state.value.threads.map { it.id })
+            controller.refreshThreads()?.join()
+            assertEquals(listOf("b"), controller.state.value.threads.map { it.id })
+            controller.setArchived(true)
+            controller.refreshThreads()?.join()
+            assertTrue(controller.state.value.threads.isEmpty())
+            controller.setArchived(false)
+            controller.refreshThreads()?.join()
+            assertEquals(listOf("b"), controller.state.value.threads.map { it.id })
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun rapidNavigationCoalescesAndSameSelectionSharesRequest() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setBody("""{"threads":[{"id":"t","status":"idle"}]}"""))
+        server.enqueue(MockResponse().setBody("""{"threads":[{"id":"t","status":"idle"}]}""").setBodyDelay(200, TimeUnit.MILLISECONDS))
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = CatalogController(api(server), scope, { throw it })
+        try {
+            repeat(20) { controller.project(ProjectSummary("p$it", "P", "/p", 1)); yield() }
+            withTimeout(3000) { controller.state.first { it.threadsFresh } }
+            assertEquals(1, server.requestCount)
+            assertTrue(server.takeRequest().path!!.contains("p19"))
+            val read = controller.refreshThreads()
+            repeat(20) { assertSame(read, controller.refreshThreads()) }
+            controller.project(ProjectSummary("p19", "P", "/p", 1))
+            assertEquals("t", controller.state.value.threads.single().id)
+            read?.join()
+            assertEquals(2, server.requestCount)
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun receiptIsScopedExpiresAndRetainsFreshDetailDuringIndexing() = runBlocking {
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = MockResponse().setBody("""{"threads":[]}""")
+        }
+        server.start()
+        var now = 0L
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = CatalogController(api(server), scope, { throw it }, monotonicMillis = { now })
+        suspend fun settled() { yield(); withTimeout(3000) { controller.state.first { !it.threadsLoading } } }
+        try {
+            controller.project(ProjectSummary("p", "P", "/p", 0)); settled()
+            val requests = server.requestCount
+            controller.recordCreatedThread("q", "new")
+            assertTrue(controller.state.value.threads.isEmpty())
+            assertEquals(requests, server.requestCount)
+            controller.project(ProjectSummary("q", "Q", "/q", 0))
+            assertEquals("new", controller.state.value.threads.single().id)
+            settled()
+            controller.reconcileSession(dev.rivo.relay.data.SessionSnapshot("new", "N", "idle", "",
+                emptyList(), emptyList(), JSONObject(), updatedAt = 10, nativeExecution = "idle"))
+            controller.refreshThreads()?.join()
+            assertEquals("idle", controller.state.value.threads.single().nativeExecution)
+            controller.setArchived(true); settled()
+            assertTrue(controller.state.value.threads.isEmpty())
+            controller.setArchived(false); settled()
+            assertEquals("new", controller.state.value.threads.single().id)
+            now = 120_001
+            controller.refreshThreads()?.join()
+            assertTrue(controller.state.value.threads.isEmpty())
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun detailCompletionFencesOlderListButAllowsLaterRunningState() = runBlocking {
+        val server = MockWebServer()
+        val running = """{"threads":[{"id":"t","status":"running","nativeExecution":"running","updatedAt":10}]}"""
+        server.enqueue(MockResponse().setBody(running))
+        server.enqueue(MockResponse().setBody(running).setBodyDelay(300, TimeUnit.MILLISECONDS))
+        server.enqueue(MockResponse().setBody(running))
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = CatalogController(api(server), scope, { throw it })
+        try {
+            controller.project(ProjectSummary("p", "P", "/p", 1))
+            withTimeout(3000) { controller.state.first { it.threadsFresh } }
+            val oldRead = controller.refreshThreads()
+            withTimeout(3000) { while (server.requestCount < 2) delay(10) }
+            val completed = dev.rivo.relay.data.SessionSnapshot("t", "T", "idle", "",
+                emptyList(), emptyList(), JSONObject(), updatedAt = 10, nativeExecution = "idle")
+            controller.reconcileSession(completed.copy(updatedAt = 9))
+            assertTrue(dev.rivo.relay.codex.threadIsExecuting(controller.state.value.threads.single()))
+            controller.reconcileSession(completed)
+            oldRead?.join()
+            assertFalse(dev.rivo.relay.codex.threadIsExecuting(controller.state.value.threads.single()))
+            controller.refreshThreads()?.join()
+            assertTrue(dev.rivo.relay.codex.threadIsExecuting(controller.state.value.threads.single()))
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun createdReceiptBridgesListIndexingDelayWithoutDuplicates() = runBlocking {
+        val server = MockWebServer()
+        repeat(2) { server.enqueue(MockResponse().setBody("""{"threads":[]}""")) }
+        server.enqueue(MockResponse().setBody("""{"threads":[{"id":"new","name":"Server title","status":"idle"}]}"""))
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = CatalogController(api(server), scope, { throw it })
+        try {
+            controller.project(ProjectSummary("p", "Project", "/p", 0))
+            withTimeout(3000) { controller.state.first { it.threadsFresh } }
+            controller.recordCreatedThread("p", "new")
+            assertEquals("new", controller.state.value.threads.single().id)
+            yield()
+            withTimeout(3000) { controller.state.first { !it.threadsLoading } }
+            assertEquals("new", controller.state.value.threads.single().id)
+            controller.refreshThreads()?.join()
+            assertEquals("Server title", controller.state.value.threads.single().name)
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun completedDetailClearsListSpinner() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setBody("""{"threads":[{"id":"t","status":"running","nativeExecution":"running","hasOutstandingWork":true,"updatedAt":10}]}"""))
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = CatalogController(api(server), scope, { throw it })
+        try {
+            controller.project(ProjectSummary("p", "Project", "/p", 1))
+            withTimeout(3000) { controller.state.first { it.threadsFresh } }
+            val completed = dev.rivo.relay.data.SessionSnapshot("t", "Thread", "idle", "",
+                emptyList(), emptyList(), JSONObject(), updatedAt = 10, nativeExecution = "idle")
+            controller.reconcileSession(completed.copy(nativeSyncState = "converging"))
+            assertTrue(dev.rivo.relay.codex.threadIsExecuting(controller.state.value.threads.single()))
+            controller.reconcileSession(completed)
+            assertFalse(dev.rivo.relay.codex.threadIsExecuting(controller.state.value.threads.single()))
+            assertFalse(controller.state.value.threads.single().hasOutstandingWork)
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
     @Test fun switchingNodesDoesNotDescribeLoadingCacheAsOffline() {
         val cached = CatalogState(projects = listOf(ProjectSummary("p", "Project", "/p", 1)), projectsLoading = true)
         assertFalse(dev.rivo.relay.codex.catalogCacheNoticeVisible("projects", cached, true))

@@ -1,5 +1,7 @@
 package dev.rivo.relay.ui.sessions
 
+import dev.rivo.relay.ui.theme.listItemBackground
+
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
@@ -62,7 +64,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
     projectKey: String = projectName, initialCount: Int = 0,
     pendingConversations: List<PendingConversation> = emptyList(), canDiscardPending: Boolean = true,
     onResumePending: (String) -> Unit = {}, onDiscardPending: (String) -> Unit = {},
-    canManageThreads: Boolean = canCreate) {
+    canManageThreads: Boolean = canCreate, showCreate: Boolean = true) {
     val context = LocalContext.current
     var selectedIds by remember(projectKey, archived) { mutableStateOf(emptySet<String>()) }
     var search by rememberSaveable(projectKey) { mutableStateOf("") }
@@ -128,11 +130,11 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                 }
                 if (loading && shown.isEmpty() && shownPending.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(28.dp)) }
                 else if (shown.isEmpty() && shownPending.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                    Text(when { search.isNotBlank() -> "没有匹配的会话"; archived -> "没有已归档会话"; else -> "还没有 Codex 会话，点击右下角新建" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(when { search.isNotBlank() -> "没有匹配的会话"; archived -> "没有已归档会话"; !showCreate -> "暂无会话"; else -> "还没有 Codex 会话，点击右下角新建" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(bottom = 100.dp), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Xs)) {
                     items(shownPending, key = { "pending:${it.id}" }) { pending ->
                         Surface(onClick = { onResumePending(pending.id) }, shape = MaterialTheme.shapes.large,
-                            color = MaterialTheme.colorScheme.surfaceContainerLow,
+                            color = MaterialTheme.colorScheme.listItemBackground,
                             modifier = Modifier.fillMaxWidth().testTag("pending_conversation_${pending.id}")) {
                             Row(Modifier.padding(horizontal = RivoSpacing.Md, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text("◷", Modifier.size(28.dp), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleLarge)
@@ -151,8 +153,8 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                             onClick = { if (selectedIds.isNotEmpty()) toggle(thread.id) else if (!archived) onThread(thread) },
                             onLongClick = { toggle(thread.id) }, onLongClickLabel = "选择会话"), shape = MaterialTheme.shapes.large,
                             color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else if (thread.pinned)
-                                MaterialTheme.colorScheme.primary.copy(alpha = .08f).compositeOver(MaterialTheme.colorScheme.surfaceContainerLow)
-                                else MaterialTheme.colorScheme.surfaceContainerLow) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = .08f).compositeOver(MaterialTheme.colorScheme.listItemBackground)
+                                else MaterialTheme.colorScheme.listItemBackground) {
                             Row(Modifier.padding(horizontal = RivoSpacing.Md, vertical = RivoSpacing.Md), verticalAlignment = Alignment.CenterVertically) {
                                 Box(Modifier.size(28.dp).testTag("select_thread_${thread.id}"), contentAlignment = Alignment.Center) {
                                     when {
@@ -194,7 +196,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
             }
         }
         // Surface supplies the same round FAB geometry while preserving the disabled-write contract.
-        Surface(onClick = onNew, enabled = canCreate, modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp).size(62.dp)
+        if (showCreate) Surface(onClick = onNew, enabled = canCreate, modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp).size(62.dp)
             .testTag("new_thread").semantics { contentDescription = "新建会话" }, shape = CircleShape,
             color = if (canCreate) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHighest,
             contentColor = if (canCreate) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, shadowElevation = 6.dp) {
@@ -202,7 +204,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
         }
     }
     pendingConversations.firstOrNull { it.id == confirmDiscardId }?.let { pending -> AlertDialog(onDismissRequest = { confirmDiscardId = null },
-        title = { Text("删除待发送草稿？") }, text = { Text(if (pending.firstTurnSent) "放弃尚未完成的目标设置。首条任务已发送，删除此记录不会停止任务；原生会话会保留。" else "这会删除手机保存的文字、附件和目标草稿，已经创建的原生会话会保留。") },
+        title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("删除待发送草稿？") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text(if (pending.firstTurnSent) "放弃尚未完成的目标设置。首条任务已发送，删除此记录不会停止任务；原生会话会保留。" else "这会删除手机保存的文字、附件和目标草稿，已经创建的原生会话会保留。") } },
         confirmButton = { TextButton(onClick = { confirmDiscardId = null; onDiscardPending(pending.id) }, enabled = canDiscardPending,
             modifier = Modifier.testTag("confirm_delete_pending_conversation")) { Text("删除") } },
         dismissButton = { TextButton(onClick = { confirmDiscardId = null }) { Text("取消") } }) }

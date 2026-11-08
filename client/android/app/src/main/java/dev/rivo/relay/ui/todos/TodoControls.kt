@@ -96,7 +96,7 @@ internal fun TodoExpandButton(expanded: Boolean, enabled: Boolean, tag: String, 
 
 @Composable
 internal fun TodoEditorButton(onClick: () -> Unit, enabled: Boolean, modifier: Modifier = Modifier,
-    contentPadding: PaddingValues = PaddingValues(horizontal = 6.dp, vertical = 4.dp), content: @Composable RowScope.() -> Unit) {
+    contentPadding: PaddingValues = PaddingValues(horizontal = 12.dp, vertical = 4.dp), content: @Composable RowScope.() -> Unit) {
     val dark = MaterialTheme.colorScheme.surface.red < .5f
     val background = if (dark) Color(0xFF29292E) else Color(0xFFF0F0F0)
     androidx.compose.material3.TextButton(

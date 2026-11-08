@@ -84,9 +84,9 @@ import kotlinx.coroutines.withContext
 
 private const val EDITOR_MAX_BITMAP_EDGE = 4_096
 private val DefaultAnnotationRed = Color(0xFFF04444)
-private val EditorChromeColor = Color(0xCC181820)
-private val EditorSelectedBackground = Color(0x664E3D91)
-private val EditorSelectedIcon = Color(0xFFB8A8FF)
+private val EditorChromeColor = Color(0xCC181818)
+private val EditorSelectedBackground = Color(0x66555555)
+private val EditorSelectedIcon = Color(0xFFFFFFFF)
 private val InitialCrop = Rect(0f, .25f, 1f, .75f)
 private val FullImageViewport = Rect(0f, 0f, 1f, 1f)
 
@@ -130,6 +130,25 @@ internal data class AttachmentEditResult(
       crop.right >= .999f && crop.bottom >= .999f
 }
 
+internal data class AttachmentEditorSnapshot(
+  val crop: Rect,
+  val cropStarted: Boolean,
+  val annotations: List<AttachmentAnnotation>,
+  val selectedId: Long?,
+  val color: Color,
+)
+
+internal class AttachmentEditHistory {
+  private val steps = mutableStateListOf<AttachmentEditorSnapshot>()
+  val canUndo: Boolean get() = steps.isNotEmpty()
+  fun record(before: AttachmentEditorSnapshot, after: AttachmentEditorSnapshot) {
+    // Selection changes alone do not alter the image.
+    if (before.crop == after.crop && before.annotations == after.annotations && before.color == after.color) return
+    steps.add(before)
+  }
+  fun undo(): AttachmentEditorSnapshot? = if (steps.isEmpty()) null else steps.removeAt(steps.lastIndex)
+}
+
 @Composable
 internal fun AttachmentImageEditor(
   source: DraftImage,
@@ -171,6 +190,8 @@ internal fun AttachmentImageEditor(
         decorFitsSystemWindows = false,
       ),
   ) {
+ dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+
     val editorWindow = (LocalView.current.parent as DialogWindowProvider).window
     DisposableEffect(editorWindow) {
       editorWindow.addFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
@@ -230,7 +251,9 @@ internal fun AttachmentImageEditor(
         },
       )
     }
-  }
+
+}
+}
 }
 
 @Composable
@@ -251,6 +274,17 @@ internal fun AttachmentImageEditorContent(
   var currentColor by remember(bitmap) { mutableStateOf(DefaultAnnotationRed) }
   var colorsVisible by remember(bitmap) { mutableStateOf(false) }
   var canvasSize by remember(bitmap) { mutableStateOf(IntSize.Zero) }
+  val history = remember(bitmap) { AttachmentEditHistory() }
+  var dragging by remember(bitmap) { mutableStateOf(false) }
+  fun snapshot() = AttachmentEditorSnapshot(crop, cropStarted, annotations.toList(), selectedAnnotationId, currentColor)
+  fun restore(state: AttachmentEditorSnapshot) {
+    crop = state.crop
+    cropStarted = state.cropStarted
+    annotations.clear()
+    annotations.addAll(state.annotations)
+    selectedAnnotationId = state.selectedId
+    currentColor = state.color
+  }
   val density = LocalDensity.current
   val handleTolerance = with(density) { 26.dp.toPx() }
 
@@ -263,8 +297,10 @@ internal fun AttachmentImageEditorContent(
           .padding(horizontal = 16.dp, vertical = 0.dp)
           .padding(top = 84.dp, bottom = 104.dp)
           .onSizeChanged { canvasSize = it }
-          .pointerInput(tool, canvasSize, bitmap) {
+          .pointerInput(tool, canvasSize, bitmap, saving) {
+            if (saving) return@pointerInput
             if (canvasSize == IntSize.Zero) return@pointerInput
+            var beforeDrag: AttachmentEditorSnapshot? = null
             var cropHandle = CropHandle.NONE
             var annotationIndex = -1
             var annotationHandle = AnnotationHandle.END
@@ -275,6 +311,11 @@ internal fun AttachmentImageEditorContent(
                 val viewport = editorViewport(tool, crop)
                 val bounds = fittedImageRect(canvasSize, bitmap, viewport)
                 if (!bounds.contains(position)) return@detectDragGestures
+                beforeDrag = snapshot()
+                dragging = true
+                cropHandle = CropHandle.NONE
+                annotationIndex = -1
+                draftAnnotationId = null
                 colorsVisible = false
                 if (activeTool == AttachmentEditorTool.CROP) {
                   cropHandle = cropHandleAt(position, crop.toScreen(bounds), handleTolerance)
@@ -351,10 +392,14 @@ internal fun AttachmentImageEditorContent(
                     selectedAnnotationId = null
                   }
                 }
+                beforeDrag?.let { history.record(it, snapshot()) }
+                beforeDrag = null
+                dragging = false
               },
               onDragCancel = {
-                val draftId = draftAnnotationId
-                if (draftId != null) annotations.removeAll { it.id == draftId }
+                beforeDrag?.let(::restore)
+                beforeDrag = null
+                dragging = false
               },
             )
           }
@@ -455,11 +500,13 @@ internal fun AttachmentImageEditorContent(
         EditorColorPalette(
           selected = currentColor,
           onSelect = { color ->
+            val before = snapshot()
             currentColor = color
             selectedAnnotationId?.let { selected ->
               val index = annotations.indexOfFirst { it.id == selected }
               if (index >= 0) annotations[index] = annotations[index].copy(color = color)
             }
+            history.record(before, snapshot())
             colorsVisible = false
           },
         )
@@ -474,11 +521,37 @@ internal fun AttachmentImageEditorContent(
           horizontalArrangement = Arrangement.spacedBy(4.dp),
           verticalAlignment = Alignment.CenterVertically,
         ) {
+          val canUndo = history.canUndo && !saving && !dragging
+          Box(
+            Modifier.size(48.dp).clip(CircleShape)
+              .clickable(enabled = canUndo) {
+                history.undo()?.let(::restore)
+                colorsVisible = false
+              }
+              .semantics { contentDescription = "回退一步" }
+              .testTag("attachment_editor_undo"),
+            contentAlignment = Alignment.Center,
+          ) {
+            val tint = Color.White.copy(alpha = if (canUndo) 1f else .35f)
+            Canvas(Modifier.size(25.dp)) {
+              val path = androidx.compose.ui.graphics.Path().apply {
+                moveTo(size.width * .18f, size.height * .35f)
+                lineTo(size.width * .55f, size.height * .35f)
+                cubicTo(size.width * .94f, size.height * .35f, size.width * .94f, size.height * .82f, size.width * .55f, size.height * .82f)
+              }
+              val stroke = 2.2.dp.toPx()
+              drawPath(path, tint, style = Stroke(stroke, cap = StrokeCap.Round))
+              drawLine(tint, Offset(size.width * .18f, size.height * .35f), Offset(size.width * .38f, size.height * .15f), stroke, StrokeCap.Round)
+              drawLine(tint, Offset(size.width * .18f, size.height * .35f), Offset(size.width * .38f, size.height * .55f), stroke, StrokeCap.Round)
+            }
+          }
           AttachmentEditorTool.entries.forEach { candidate ->
             EditorToolButton(
               tool = candidate,
               selected = tool == candidate,
+              enabled = !saving && !dragging,
               onClick = {
+                val before = snapshot()
                 tool = candidate
                 colorsVisible = false
                 if (candidate == AttachmentEditorTool.CROP) {
@@ -488,12 +561,13 @@ internal fun AttachmentImageEditorContent(
                   }
                   selectedAnnotationId = null
                 }
+                history.record(before, snapshot())
               },
             )
           }
           Box(
             modifier =
-              Modifier.size(52.dp)
+              Modifier.size(48.dp)
                 .clip(CircleShape)
                 .clickable(enabled = !saving) { colorsVisible = !colorsVisible }
                 .semantics { contentDescription = "选择标注颜色" }
@@ -543,6 +617,7 @@ private fun EditorTopAction(
 private fun EditorToolButton(
   tool: AttachmentEditorTool,
   selected: Boolean,
+  enabled: Boolean,
   onClick: () -> Unit,
 ) {
   val description =
@@ -554,12 +629,12 @@ private fun EditorToolButton(
     }
   Box(
     modifier =
-      Modifier.size(52.dp)
+      Modifier.size(48.dp)
         .clip(RoundedCornerShape(16.dp))
         .background(
           if (selected) EditorSelectedBackground else Color.Transparent
         )
-        .clickable(onClick = onClick)
+        .clickable(enabled = enabled, onClick = onClick)
         .semantics {
           contentDescription = description
           this.selected = selected

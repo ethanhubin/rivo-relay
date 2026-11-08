@@ -26,7 +26,7 @@ internal class ModeMenuPosition(private val gap: Int) : PopupPositionProvider {
 internal fun TaskModeIcon(mode: String) {
     if (mode != "goal") ComposerModeIcon(mode == "plan") else {
         val color = LocalContentColor.current
-        Canvas(Modifier.size(18.dp)) {
+        Canvas(Modifier.size(24.dp)) {
             drawCircle(color, style = Stroke(1.6.dp.toPx()))
             drawCircle(color, radius = size.minDimension * .28f, style = Stroke(1.6.dp.toPx()))
             drawCircle(color, radius = 1.6.dp.toPx())
@@ -41,21 +41,20 @@ internal fun ComposerModeSelector(mode: String, enabled: Boolean, goalEnabled: B
     val labels = listOf("default" to "普通模式", "plan" to "计划模式", "goal" to "目标模式")
     val gap = with(LocalDensity.current) { 10.dp.roundToPx() }
     Box {
-        OutlinedButton(onClick = { expanded = !expanded }, enabled = enabled,
+        TextButton(onClick = { expanded = !expanded }, enabled = enabled,
             modifier = Modifier.height(40.dp).testTag("codex_task_mode"), contentPadding = PaddingValues(horizontal = 10.dp)) {
             TaskModeIcon(mode)
             Spacer(Modifier.width(6.dp))
             Text(labels.first { it.first == mode }.second, style = MaterialTheme.typography.labelMedium)
-            Text(" ⌃")
         }
         if (expanded) Popup(popupPositionProvider = remember(gap) { ModeMenuPosition(gap) },
             onDismissRequest = { expanded = false }, properties = PopupProperties(focusable = true)) {
             Surface(Modifier.width(258.dp).testTag("composer_mode_menu"), shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh, shadowElevation = 8.dp) {
+                color = MaterialTheme.colorScheme.surfaceContainerLow, shadowElevation = 8.dp) {
                 Column(Modifier.padding(6.dp)) {
                     labels.forEach { (value, label) ->
                         val available = value != "goal" || goalEnabled
-                        Surface(shape = RoundedCornerShape(12.dp), color = if (mode == value) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh) {
+                        Surface(shape = RoundedCornerShape(12.dp), color = if (mode == value) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerLow) {
                             DropdownMenuItem(text = { Column {
                                 Text(label)
                                 Text(when (value) {

@@ -13,6 +13,16 @@ import uuid
 from .connection import CodexError
 
 
+RECENT_PROJECT_ID = "__rivo_recent__"
+
+
+def unlisted_threads(threads, projects, associations):
+    ids = {project["id"] for project in projects}
+    roots = {root.get("path") for project in projects for root in project.get("roots", []) if root.get("path")}
+    return [thread for thread in threads if thread.get("projectId") not in ids and not (
+        not thread.get("projectId") and (thread.get("cwd") in roots or thread["id"] in associations))]
+
+
 def pages(connection, method, params=None):
     cursor = None
     seen = set()
@@ -111,6 +121,12 @@ class ProjectCatalog:
                            "activeGoalCount": sum(thread['id'] in active_goals for thread in matches),
                            "queuedTaskCount": sum(sum(item['status'] == 'waiting' for item in queues.get(thread['id'], [])) for thread in matches),
                            "recoveryCount": sum(any(item.get('recoveryRequired') for item in queues.get(thread['id'], [])) for thread in matches)})
+        recent = unlisted_threads(threads, projects, associations)
+        result.append({"id": RECENT_PROJECT_ID, "name": "最近", "path": "", "roots": [],
+                       "threadCount": len(recent),
+                       "outstandingWorkCount": sum(1 for t in recent if queues.get(t["id"]) or t["id"] in active_goals or execution.get(t["id"]) == "running" or (isinstance(t.get("status"), dict) and t["status"].get("type") == "active")),
+                       "runningTurnCount": sum(1 for t in recent if execution.get(t["id"]) == "running" or (isinstance(t.get("status"), dict) and t["status"].get("type") == "active")),
+                       "activeGoalCount": sum(t["id"] in active_goals for t in recent)})
         return result
 
     def get(self, project_id):

@@ -66,10 +66,12 @@ fun ProjectDirectoryDialog(readDirectory: suspend (String) -> JSONObject, writab
     }
     val goBack: () -> Unit = { parentPath?.let { requestedPath = it } ?: onDismiss() }
     Dialog(onDismissRequest = { if (!busy) onDismiss() }, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+ dev.rivo.relay.ui.chat.ThemedTextContextMenu {
+
         BackHandler(enabled = !busy, onBack = goBack)
         Surface(Modifier.fillMaxSize().systemBarsPadding().testTag("project_directory_browser"), color = MaterialTheme.colorScheme.background) {
             Column(Modifier.fillMaxSize()) {
-                Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
+                Surface(color = MaterialTheme.colorScheme.background) {
                     Column(Modifier.fillMaxWidth().padding(horizontal = RivoSpacing.Page, vertical = RivoSpacing.Sm), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Xs)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             TextButton(onClick = goBack, enabled = !busy && !loading, modifier = Modifier.testTag("project_directory_parent")) { Text("‹ 返回") }
@@ -80,7 +82,7 @@ fun ProjectDirectoryDialog(readDirectory: suspend (String) -> JSONObject, writab
                             maxLines = 1, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-                Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+                Surface(color = MaterialTheme.colorScheme.background) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = RivoSpacing.Page, vertical = RivoSpacing.Sm), horizontalArrangement = Arrangement.spacedBy(RivoSpacing.Sm)) {
                         OutlinedButton(onClick = { folderName = ""; createFolder = true }, enabled = writable && !busy && !loading && error == null && path.isNotBlank(),
                             modifier = Modifier.weight(1f).testTag("project_new_folder")) { Text("新建目录") }
@@ -116,24 +118,26 @@ fun ProjectDirectoryDialog(readDirectory: suspend (String) -> JSONObject, writab
                 }
             }
         }
-    }
-    if (createFolder) AlertDialog(onDismissRequest = { createFolder = false }, title = { Text("新建并添加项目") }, text = {
+
+}
+}
+    if (createFolder) AlertDialog(onDismissRequest = { createFolder = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("新建并添加项目") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu {
         Column(verticalArrangement = Arrangement.spacedBy(RivoSpacing.Sm)) {
             Text("将在以下位置新建目录：\n$path")
             OutlinedTextField(folderName, { folderName = it }, label = { Text("目录名称") }, singleLine = true, enabled = writable,
                 isError = folderName.isNotEmpty() && !validProjectFolderName(folderName.trim()), modifier = Modifier.fillMaxWidth().testTag("project_folder_name"))
         }
-    }, confirmButton = { Button(onClick = { createFolder = false; trustTarget = path to Normalizer.normalize(folderName.trim(), Normalizer.Form.NFC) },
+    } }, confirmButton = { Button(onClick = { createFolder = false; trustTarget = path to Normalizer.normalize(folderName.trim(), Normalizer.Form.NFC) },
         enabled = writable && validProjectFolderName(folderName.trim()), modifier = Modifier.testTag("confirm_create_project_folder")) { Text("创建并添加") } },
         dismissButton = { TextButton(onClick = { createFolder = false }) { Text("取消") } })
     trustTarget?.let { target ->
         val targetPath = target.second?.let { childDirectory(target.first, it) } ?: target.first
-        AlertDialog(onDismissRequest = { trustTarget = null }, title = { Text("信任此项目文件夹？") },
-            text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        AlertDialog(onDismissRequest = { trustTarget = null }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("信任此项目文件夹？") } },
+            text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (nodeName.isNotBlank()) Text("节点：$nodeName")
                 Text(targetPath, modifier = Modifier.testTag("project_trust_path"))
                 Text("Codex 将使用该文件夹的项目配置和指令。确认后会保存对此文件夹的信任；请只添加你信任的项目。")
-            } },
+            } } },
             confirmButton = { Button(onClick = {
                 trustTarget = null
                 if (target.first == path && !loading && writable && !busy) onAdd(target.first, target.second)

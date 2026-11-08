@@ -49,6 +49,34 @@ class FakeNative:
 
 
 class NativeSemanticsTests(unittest.TestCase):
+    def test_permission_presets_and_project_inheritance(self):
+        self.assertEqual({}, CodexService._permission_options(None, None))
+        for name, sandbox, policy, reviewer in (
+            ('request', 'workspace-write', 'on-request', 'user'),
+            ('auto', 'workspace-write', 'on-request', 'auto_review'),
+            ('full', 'danger-full-access', 'never', 'user'),
+        ):
+            self.assertEqual({'sandbox': sandbox, 'approvalPolicy': policy, 'approvalsReviewer': reviewer},
+                CodexService._permission_options('read-only', 'preset-' + name))
+
+    def test_permission_preset_reaches_native_update_as_one_change(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        service.update_settings('thread', approval_policy='preset-auto')
+        params = next(params for method, params in native.calls if method == 'thread/settings/update')
+        self.assertEqual('on-request', params['approvalPolicy'])
+        self.assertEqual('auto_review', params['approvalsReviewer'])
+        self.assertEqual({'type': 'workspaceWrite', 'networkAccess': False}, params['sandboxPolicy'])
+
+    def test_project_permissions_are_not_overridden_on_creation(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        with patch.object(service.projects, 'get', return_value={'roots': [{'path': '/project'}]}):
+            service.create_session('project')
+        params = next(params for method, params in native.calls if method == 'thread/start')
+        self.assertEqual('/project', params['cwd'])
+        self.assertFalse({'sandbox', 'approvalPolicy', 'approvalsReviewer', 'config'} & params.keys())
+
     def test_goal_snapshot_reads_native_state_and_clear_without_resume_loop(self):
         native = FakeNative()
         original = native.request
@@ -313,6 +341,32 @@ class NativeSemanticsTests(unittest.TestCase):
         self.assertEqual({"assigned", "legacy", "worktree"}, {t["id"] for t in sessions})
         self.assertEqual(3, len(sessions))
         self.assertEqual(len(sessions), service.list_projects()[0]["threadCount"])
+
+    def test_recent_lists_only_threads_without_a_visible_project(self):
+        native = FakeNative()
+        threads = [
+            {"id": "assigned", "projectId": "project", "cwd": "/workspace"},
+            {"id": "root", "projectId": None, "cwd": "/workspace"},
+            {"id": "worktree", "projectId": None, "cwd": "/worktree"},
+            {"id": "unlisted", "projectId": None, "cwd": "/other"},
+            {"id": "orphan", "projectId": "deleted", "cwd": "/old"},
+        ]
+        def request(method, params, **kwargs):
+            if method == "project/list":
+                return {"data": [{"id": "project", "roots": [{"path": "/workspace"}]}], "nextCursor": None}
+            if method == "thread/list":
+                return {"data": copy.deepcopy(threads), "nextCursor": None}
+            return {"goal": None} if method == "thread/goal/get" else {}
+        native.request = request
+        service = CodexService(connection=native)
+        with patch.object(service.projects.external_worktrees, "associations", return_value={"worktree": {"projectId": "project"}}):
+            recent = service.list_projects()[-1]
+            listed = service.list_sessions(recent["id"])
+        self.assertEqual("最近", recent["name"])
+        self.assertEqual(2, recent["threadCount"])
+        self.assertEqual({"unlisted", "orphan"}, {t["id"] for t in listed})
+        with self.assertRaises(CodexError):
+            service.create_session(recent["id"])
 
     def test_captured_native_history_preserves_ids_and_chronological_order(self):
         fixture = json.loads((Path(__file__).parent / "fixtures/native-0.159.0.json").read_text())
