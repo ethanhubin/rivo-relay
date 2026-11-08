@@ -124,11 +124,11 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             TextButton(onClick = onBack, modifier = Modifier.size(40.dp).testTag("back_sessions").semantics { contentDescription = "返回会话列表" },
                 contentPadding = PaddingValues(0.dp)) { Text("‹", style = MaterialTheme.typography.headlineSmall) }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
+            Column(Modifier.weight(1f).fillMaxHeight().clickable(onClick = onSettings).testTag("conversation_status"), verticalArrangement = Arrangement.Center) {
                 SelectionContainer { Text(snapshot?.name ?: if (state.readError != null && !state.loading) "会话读取失败" else "正在读取会话…",
                     Modifier.testTag("conversation_title"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
                     maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                Row(Modifier.fillMaxWidth().clickable(onClick = onSettings).testTag("conversation_status"), verticalAlignment = Alignment.CenterVertically,
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                     ConnectionStatusDot(when {
                         recoveryState == RecoveryState.CONNECTING -> null

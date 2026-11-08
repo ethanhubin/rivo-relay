@@ -350,21 +350,33 @@ private fun TodoReminderDialog(initialDueDate: String, initialTime: String, init
                 Text("设置提醒时间", Modifier.align(Alignment.CenterHorizontally), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Text("提醒时间", style = MaterialTheme.typography.titleMedium)
-                    Row(horizontalArrangement = Arrangement.spacedBy(RivoSpacing.Sm)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(RivoSpacing.Sm), verticalAlignment = Alignment.CenterVertically) {
                         Surface(Modifier.testTag("todo_reminder_date"), shape = RoundedCornerShape(RivoRadius.Control), color = MaterialTheme.colorScheme.primaryContainer) {
-                            Text(selectedDate().toString(), Modifier.padding(horizontal = RivoSpacing.Md, vertical = RivoSpacing.Sm), color = MaterialTheme.colorScheme.onPrimaryContainer)
+                            Box(Modifier.heightIn(min = 48.dp).padding(horizontal = RivoSpacing.Md, vertical = RivoSpacing.Sm), contentAlignment = Alignment.Center) {
+                                Text(selectedDate().toString(), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                            }
                         }
                         Surface(onClick = { TimePickerDialog(context, { _, hour, minute -> time = LocalTime.of(hour, minute) }, time.hour, time.minute, true).show() },
                             modifier = Modifier.testTag("todo_reminder_time"), shape = RoundedCornerShape(RivoRadius.Control), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
-                            Text(time.format(DateTimeFormatter.ofPattern("HH:mm")), Modifier.padding(horizontal = RivoSpacing.Md, vertical = RivoSpacing.Sm))
+                            Box(Modifier.heightIn(min = 48.dp).padding(horizontal = RivoSpacing.Md, vertical = RivoSpacing.Sm), contentAlignment = Alignment.Center) {
+                                Text(time.format(DateTimeFormatter.ofPattern("HH:mm")), style = MaterialTheme.typography.bodyLarge)
+                            }
                         }
                     }
                 }
                 Box(Modifier.fillMaxWidth()) {
                     Surface(onClick = { repeatMenu = true }, modifier = Modifier.fillMaxWidth().testTag("todo_repeat"), color = Color.Transparent) {
-                        Row(Modifier.fillMaxWidth().padding(vertical = RivoSpacing.Sm), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(vertical = RivoSpacing.Sm), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Text("重复提醒", style = MaterialTheme.typography.titleMedium)
-                            Text("${repeatRuleLabel(repeat)}  ⌄", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(repeatRuleLabel(repeat), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                val arrowColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                androidx.compose.foundation.Canvas(Modifier.size(16.dp)) {
+                                    val stroke = 1.8.dp.toPx()
+                                    drawLine(arrowColor, androidx.compose.ui.geometry.Offset(size.width * .25f, size.height * .375f), androidx.compose.ui.geometry.Offset(size.width * .5f, size.height * .625f), stroke, androidx.compose.ui.graphics.StrokeCap.Round)
+                                    drawLine(arrowColor, androidx.compose.ui.geometry.Offset(size.width * .5f, size.height * .625f), androidx.compose.ui.geometry.Offset(size.width * .75f, size.height * .375f), stroke, androidx.compose.ui.graphics.StrokeCap.Round)
+                                }
+                            }
                         }
                     }
                     DropdownMenu(repeatMenu, { repeatMenu = false }) { listOf("none", "daily", "weekly", "monthly", "yearly").forEach { rule ->
