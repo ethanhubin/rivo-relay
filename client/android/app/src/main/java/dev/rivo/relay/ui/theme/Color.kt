@@ -10,12 +10,13 @@ val MoonlightSuccess = Color(0xFF45C58A)
 val MoonlightWarning = Color(0xFFF3AE62)
 val MoonlightDanger = Color(0xFFFF909A)
 
-val NightBackground = Color(0xFF101010)
-val NightSurface = Color(0xFF1A1A1A)
-val NightSurfaceHigh = Color(0xFF242424)
-val NightSurfaceHighest = Color(0xFF303030)
+// Black canvas and neutral gray controls, matching the reference dark interface.
+val NightBackground = Color(0xFF000000)
+val NightSurface = Color(0xFF303030)
+val NightSurfaceHigh = Color(0xFF383838)
+val NightSurfaceHighest = Color(0xFF404040)
 val NightOutline = Color(0xFF737373)
-val NightOutlineSoft = Color(0xFF383838)
+val NightOutlineSoft = Color(0xFF484848)
 val NightText = Color(0xFFF5F5F5)
 val NightTextMuted = Color(0xFFAAAAAA)
 
