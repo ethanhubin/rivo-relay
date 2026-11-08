@@ -41,32 +41,28 @@ private val pendingProjectSaver = Saver<ProjectSummary?, ArrayList<String>>(
 @Composable
 fun RelayApp(vm: AppViewModel = viewModel()) {
     val app by vm.state.collectAsStateWithLifecycle()
-    var loginSettings by rememberSaveable { mutableStateOf(false) }
-    BackHandler(app.node == null && loginSettings) { loginSettings = false }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Box(Modifier.fillMaxSize().systemBarsPadding()) {
             val node = app.node
             if (node == null) {
-                if (loginSettings) Column {
-                    TextButton(onClick = { loginSettings = false }) { Text("返回登录") }
-                    SettingsScreen()
-                } else LoginScreen(app.pairing || app.reconnecting, app.error, vm::pair, vm::setError, app.savedNodes, vm::selectNode,
-                    onSettings = { loginSettings = true })
+                LoginScreen(app.pairing || app.reconnecting, app.error, vm::pair, vm::setError)
             }
-            else key(node) { ConnectedApp(node, app.error, vm::setError, vm::disconnect, vm::retryConnection, app.savedNodes, vm::selectNode, vm::setConnectionMode) }
+            else key(node) { ConnectedApp(node, app.error, vm::setError, app.pairing, vm::pair, vm::retryConnection, app.savedNodes, vm::selectNode, vm::settingsConnection, vm::setNodeConnectionMode) }
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) -> Unit, disconnect: () -> Unit, retryConnection: () -> Unit,
-    savedNodes: List<dev.rivo.relay.connection.SavedNode>, selectNode: (String) -> Unit, setConnectionMode: (dev.rivo.relay.connection.ConnectionMode) -> Unit) {
+private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) -> Unit, pairing: Boolean, pair: (String, String) -> Unit, retryConnection: () -> Unit,
+    savedNodes: List<dev.rivo.relay.connection.SavedNode>, selectNode: (String) -> Unit, settingsConnection: (String) -> dev.rivo.relay.connection.NodeConnection?,
+    setNodeConnectionMode: (String, dev.rivo.relay.connection.ConnectionMode) -> dev.rivo.relay.connection.NodeConnection?) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var route by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastRoute")?.let { if (it == "new") "sessions" else it }?.takeIf { it in setOf("projects", "sessions", "chat", "todos", "settings") } ?: "projects") }
     var threadId by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastThreadId")) }
     var chatParent by rememberSaveable { mutableStateOf("sessions") }
     var addProject by remember { mutableStateOf(false) }
+    var addNode by rememberSaveable { mutableStateOf(false) }
     var pendingGeneration by rememberSaveable { mutableStateOf(0) }
     var pendingDraft by remember { mutableStateOf(ConversationDraft()) }
     var pendingProject by rememberSaveable(stateSaver = pendingProjectSaver) { mutableStateOf<ProjectSummary?>(null) }
@@ -154,6 +150,9 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     }
     val displayError = error ?: if (route == "chat" && session.id == threadId) session.readError ?: session.historyError else null
     LaunchedEffect(route, threadId) { handoffPrompt = null }
+    LaunchedEffect(node, network) {
+        if (network != null) node.reconcilePendingReceipts()
+    }
     LaunchedEffect(submission.pending?.id, network) {
         if (submission.pending != null && network != null) {
             kotlinx.coroutines.delay(3000)
@@ -257,9 +256,10 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     Column(Modifier.fillMaxSize().imePadding()) {
         Box(Modifier.weight(1f)) {
             when (route) {
-                "settings" -> SettingsScreen(connection = node.connection, api = node.api, setConnectionMode = setConnectionMode,
-                    savedNodes = savedNodes, onSelectNode = selectNode,
-                    onAddNode = disconnect, canAddNode = !submission.busy && !handoffLoading)
+                "settings" -> SettingsScreen(connection = node.connection, api = node.api,
+                    resolveConnection = settingsConnection, setNodeConnectionMode = setNodeConnectionMode,
+                    savedNodes = savedNodes,
+                    onAddNode = { setError(null); addNode = true }, canAddNode = !submission.busy && !handoffLoading)
                 "projects" -> ProjectsScreen(catalog.projects, node.connection.name, catalog.loading, { project -> node.catalog.project(project); route = "sessions"; setError(null) },
                     { route = "settings"; setError(null) }, { node.catalog.refreshProjects() }, { if (node.catalog.state.value.projectsFresh) addProject = true },
                     usage = catalog.usage, usageLoading = catalog.usageLoading, usageError = catalog.usageError,
@@ -274,7 +274,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     },
                     // A stalled request must not trap the user on this node; pending IDs are stored per node.
                     onSelectNode = selectNode,
-                    onAddNode = disconnect, canAddNode = !submission.busy && !handoffLoading)
+                    onAddNode = { setError(null); addNode = true }, canAddNode = !submission.busy && !handoffLoading)
                 "sessions" -> SessionsScreen(catalog.selectedProject?.name ?: "会话", catalog.threads.filterNot { thread -> visiblePending.any { node.conversations.pendingThreadId(it.id) == thread.id } }, catalog.loading, writable && catalog.selectedProject != null,
                     ::back, { openChat(it.id, "sessions") }, { if (writable) node.catalog.state.value.selectedProject?.let { openPending(it) } }, { node.catalog.refreshThreads() },
                     canManageThreads = threadsWritable,
@@ -622,6 +622,15 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             modifier = Modifier.testTag("confirm_finish_reconciliation")) { Text("清除等待记录") } }, dismissButton = { TextButton(onClick = { endingPending = null }) { Text("返回") } }) }
     todoAttachment?.let { path -> dev.rivo.relay.ui.chat.FilePreviewDialog(path,
         { p -> node.api.call("/v1/files?path=" + encoded(p)) }, { p, output, progress -> node.api.downloadFile(p, output, progress) }) { todoAttachment = null } }
+    if (addNode) androidx.compose.ui.window.Dialog(
+        onDismissRequest = { if (!pairing) { addNode = false; setError(null) } },
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            LoginScreen(pairing, error, pair, setError,
+                onBack = { addNode = false; setError(null) })
+        }
+    }
     if (addProject) ProjectDirectoryDialog(
         readDirectory = { path -> node.api.call("/v1/project-directories?path=" + encoded(path)) }, writable = projectsWritable,
         submissionError = error ?: submission.notice, nodeName = node.connection.name, busy = submission.busy,

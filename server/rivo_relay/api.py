@@ -692,6 +692,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(400, "invalid_request", "response must be an object")
             return self.app.submit(connection_id, sid, "request.respond", key, body,
                 lambda: codex.respond(key, response))
+        if len(path) == 4 and path[:2] == ["v1", "submissions"] and path[3] == "reconcile" and method == "POST":
+            return public_submission(self.app.submissions.reconcile(path[2], connection_id))
         if len(path) == 3 and path[:2] == ["v1", "submissions"] and method == "GET":
             return public_submission(self.app.submissions.get(path[2], connection_id))
         if path == ["v1", "todos"]:

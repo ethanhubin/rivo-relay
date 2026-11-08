@@ -10,50 +10,51 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.ui.theme.RivoSpacing
+import dev.rivo.relay.R
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LoginScreen(busy: Boolean, error: String?, onPair: (String, String) -> Unit, onError: (String) -> Unit, savedNodes: List<dev.rivo.relay.connection.SavedNode> = emptyList(), onSelect: (String) -> Unit = {}, onSettings: () -> Unit = {}) {
+fun LoginScreen(busy: Boolean, error: String?, onPair: (String, String) -> Unit, onError: (String) -> Unit,
+    onBack: (() -> Unit)? = null) {
     var manual by rememberSaveable { mutableStateOf(false) }
     var address by rememberSaveable { mutableStateOf("") }
     var code by rememberSaveable { mutableStateOf("") }
     var readingImage by remember { mutableStateOf(false) }
     val pickImage = rememberQrImagePicker({ onPair(it, "") }, onError) { readingImage = it }
     val scan = rememberQrScanner({ onPair(it, "") }, onError)
-    Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(RivoSpacing.Page),
-        verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-        Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.primaryContainer) {
-            Text("R", Modifier.padding(horizontal = 24.dp, vertical = 12.dp), style = MaterialTheme.typography.displaySmall,
-                color = MaterialTheme.colorScheme.onPrimaryContainer)
-        }
-        Spacer(Modifier.height(24.dp))
-        Text("登录节点", style = MaterialTheme.typography.headlineSmall)
-        Spacer(Modifier.height(8.dp))
-        Text("扫描电脑上节点生成的配对二维码", style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(32.dp))
-        Button(onClick = scan, enabled = !busy && !readingImage, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("scan_connect")) {
-            if (busy) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("正在连接…") }
-            else Text("扫码连接")
-        }
-        OutlinedButton(onClick = pickImage, enabled = !busy && !readingImage, modifier = Modifier.fillMaxWidth().testTag("photo_connect")) {
-            Text(if (readingImage) "正在识别…" else "从相册识别")
-        }
-        TextButton(onClick = { manual = true }, enabled = !busy && !readingImage, modifier = Modifier.testTag("manual_entry")) { Text("手动输入") }
-        savedNodes.forEach { node ->
-            OutlinedButton(onClick = { if (node.authorized) onSelect(node.base) else { address = node.base; code = ""; manual = true } }, enabled = !busy && !readingImage, modifier = Modifier.fillMaxWidth().testTag("saved_node_${node.base}")) {
-                Column(Modifier.fillMaxWidth()) {
-                    Text(node.name)
-                    if (node.name != node.base) Text(node.base, style = MaterialTheme.typography.bodySmall)
-                    Text(if (node.authorized) "连接 / 重试" else "重新授权", style = MaterialTheme.typography.labelSmall)
-                }
+    Column(Modifier.fillMaxSize().imePadding()) {
+        if (onBack != null) TopAppBar(title = { Text("新增节点") }, navigationIcon = {
+            IconButton(onClick = onBack, enabled = !busy, modifier = Modifier.testTag("login_back")) {
+                Icon(painterResource(R.drawable.ic_arrow_back), contentDescription = "返回")
             }
+        })
+        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(RivoSpacing.Page),
+            verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+            Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.primaryContainer) {
+                Text("R", Modifier.padding(horizontal = 24.dp, vertical = 12.dp), style = MaterialTheme.typography.displaySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer)
+            }
+            Spacer(Modifier.height(24.dp))
+            Text("登录节点", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(8.dp))
+            Text("扫描电脑上节点生成的配对二维码", style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(32.dp))
+            Button(onClick = scan, enabled = !busy && !readingImage, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("scan_connect")) {
+                if (busy) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("正在连接…") }
+                else Text("扫码连接")
+            }
+            OutlinedButton(onClick = pickImage, enabled = !busy && !readingImage, modifier = Modifier.fillMaxWidth().testTag("photo_connect")) {
+                Text(if (readingImage) "正在识别…" else "从相册识别")
+            }
+            TextButton(onClick = { manual = true }, enabled = !busy && !readingImage, modifier = Modifier.testTag("manual_entry")) { Text("手动输入") }
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 16.dp).testTag("login_error")) }
         }
-        TextButton(onClick = onSettings, modifier = Modifier.testTag("login_settings")) { Text("设置与检查更新") }
-        error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 16.dp).testTag("login_error")) }
     }
     if (manual) {
         AlertDialog(onDismissRequest = { if (!busy && !readingImage) manual = false }, title = { Text("手动连接") },

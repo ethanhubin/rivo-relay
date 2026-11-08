@@ -17,23 +17,28 @@ class NodeConnection(val base: String, val name: String, val nodeId: String, val
     fun serialized() = JSONObject().put("base", base).put("name", name).put("nodeId", nodeId).put("deviceId", deviceId).put("token", token).put("storageBase", storageBase).apply { routes?.let { put("routes", it.json()) } }.toString()
 }
 data class SavedNode(val base: String, val name: String, val authorized: Boolean)
-class PairingRepository(private val credentials: CredentialStore) {
+class PairingRepository internal constructor(
+    private val read: (String) -> String?,
+    private val save: (String, String) -> Unit,
+    private val remove: (String) -> Unit,
+) {
+    constructor(credentials: CredentialStore) : this(credentials::read, credentials::save, credentials::remove)
     init {
-        RouteMemory.read = { credentials.read(it) }
-        RouteMemory.write = { key, value -> credentials.save(key, value) }
+        RouteMemory.read = { read(it) }
+        RouteMemory.write = { key, value -> save(key, value) }
         for (key in listOf("connection", "nodes")) {
-            credentials.read(key)?.let { raw ->
+            read(key)?.let { raw ->
                 val migrated = NodeEndpoints.migrateStored(raw, key == "nodes")
-                if (migrated != raw) credentials.save(key, migrated)
+                if (migrated != raw) save(key, migrated)
             }
         }
     }
     init {
-        val old = credentials.read("nodes") ?: "[]"
-        val provisioned = NodeEndpoints.provisionedNodes(old, credentials.read("connection"))
-        if (provisioned != old) credentials.save("nodes", provisioned)
+        val old = read("nodes") ?: "[]"
+        val provisioned = NodeEndpoints.provisionedNodes(old, read("connection"))
+        if (provisioned != old) save("nodes", provisioned)
     }
-    private fun records() = runCatching { org.json.JSONArray(credentials.read("nodes") ?: "[]") }.getOrDefault(org.json.JSONArray())
+    private fun records() = runCatching { org.json.JSONArray(read("nodes") ?: "[]") }.getOrDefault(org.json.JSONArray())
     private fun remember(base: String, connection: NodeConnection? = null) {
         val old = records()
         val next = org.json.JSONArray()
@@ -41,29 +46,33 @@ class PairingRepository(private val credentials: CredentialStore) {
         next.put(connection?.let { JSONObject(it.serialized()) } ?: previous ?: JSONObject().put("base", base).put("name", base))
         (0 until old.length()).map { old.getJSONObject(it) }.filter { item -> item.string("base") != base && (connection == null || item.string("nodeId") != connection.nodeId) &&
             !(connection?.routes != null && item.string("token").isBlank() && item.string("base") in listOf(connection.routes.direct, connection.routes.relay)) }.forEach { next.put(it) }
-        credentials.save("nodes", next.toString())
+        save("nodes", next.toString())
     }
     fun saved(): List<SavedNode> {
         restore()?.let { remember(it.base, it) }
         val all = records()
         return (0 until all.length()).map { all.getJSONObject(it) }.map { SavedNode(it.string("base"), it.string("name"), it.string("token").isNotBlank()) }
     }
-    fun select(base: String): NodeConnection? {
+    fun connection(base: String): NodeConnection? {
         val all = records()
         val item = (0 until all.length()).map { all.getJSONObject(it) }.firstOrNull { it.string("base") == (if (base.trimEnd('/') == NodeEndpoints.LEGACY) NodeEndpoints.DIRECT else base) && it.string("token").isNotBlank() } ?: return null
-        credentials.save("connection", item.toString())
-        return restore()
+        return decode(item.toString())
+    }
+    fun select(base: String): NodeConnection? = connection(base)?.also { save("connection", it.serialized()) }
+    private fun decode(value: String): NodeConnection {
+        val j = JSONObject(value)
+        return NodeConnection(j.getString("base"), j.getString("name"), j.string("nodeId"), j.string("deviceId"), j.getString("token"), j.optString("storageBase", j.getString("base")), j.optJSONObject("routes")?.let(NodeRoutes::from))
     }
     fun invalidate() {
         val active = restore()
         val all = records()
         (0 until all.length()).map { all.getJSONObject(it) }.filter { it.string("base") == active?.base }.forEach { it.remove("token") }
-        credentials.save("nodes", all.toString())
+        save("nodes", all.toString())
         forget()
     }
-    fun restore(): NodeConnection? = credentials.read("connection")?.let { value -> runCatching {
+    fun restore(): NodeConnection? = read("connection")?.let { value -> runCatching {
         val j = JSONObject(value); NodeConnection(j.getString("base"), j.getString("name"), j.string("nodeId"), j.string("deviceId"), j.getString("token"), j.optString("storageBase", j.getString("base")), j.optJSONObject("routes")?.let(NodeRoutes::from))
-    }.getOrElse { credentials.remove("connection"); null } }
+    }.getOrElse { remove("connection"); null } }
     suspend fun pair(input: String, code: String): NodeConnection {
         val address = PairingParser.parse(input, code.ifBlank { "address-only" }, BuildConfig.DEBUG).baseUrl
         remember(address)
@@ -92,22 +101,24 @@ class PairingRepository(private val credentials: CredentialStore) {
         val connection = NodeConnection(stableBase, node.string("name"), node.string("id"), j.string("deviceId"), token,
             old?.optString("storageBase", stableBase) ?: stableBase, pairing.routes)
         remember(connection.base, connection)
-        if (pairing.updateSource && pairing.routes != null) credentials.save("update-routes", pairing.routes.copy(mode = ConnectionMode.AUTO).json().toString())
-        credentials.save("connection", connection.serialized())
+        if (pairing.updateSource && pairing.routes != null) save("update-routes", pairing.routes.copy(mode = ConnectionMode.AUTO).json().toString())
+        save("connection", connection.serialized())
         return connection
     }
     fun updateName(connection: NodeConnection) {
         remember(connection.base, connection)
         val active = restore()
         if (active?.base == connection.base && active.nodeId == connection.nodeId && active.deviceId == connection.deviceId)
-            credentials.save("connection", connection.serialized())
+            save("connection", connection.serialized())
     }
-    fun setMode(mode: ConnectionMode): NodeConnection? {
-        val active = restore() ?: return null
-        val routes = active.routes ?: return active
-        val record = JSONObject(active.serialized()).put("routes", routes.copy(mode = mode).validated().json())
-        credentials.save("connection", record.toString())
-        return restore()?.also { remember(it.base, it) }
+    fun setMode(mode: ConnectionMode): NodeConnection? = restore()?.let { setMode(it.base, mode) }
+    fun setMode(base: String, mode: ConnectionMode): NodeConnection? {
+        val selected = connection(base) ?: return null
+        val routes = selected.routes ?: return selected
+        val updated = decode(JSONObject(selected.serialized()).put("routes", routes.copy(mode = mode).validated().json()).toString())
+        remember(updated.base, updated)
+        if (restore()?.base == updated.base) save("connection", updated.serialized())
+        return updated
     }
-    fun forget() { credentials.remove("connection") }
+    fun forget() { remove("connection") }
 }

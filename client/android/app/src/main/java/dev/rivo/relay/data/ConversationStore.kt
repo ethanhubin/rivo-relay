@@ -245,6 +245,11 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
             runCatching { key.removePrefix("sent-draft:") to JSONObject(metadata.getString(key)) }.getOrNull()
         }.toMap()
     }
+    /** Include overlays left behind if the process died between receipt and cleanup. */
+    suspend fun unresolvedSubmissionIds(): Set<String> = withContext(Dispatchers.IO) {
+        sentDraftCheckpoints().keys + pendingSubmissionCheckpoints().keys +
+            loadPendingMessages().filter { it.delivery != "accepted" }.map { it.submissionId }
+    }
     fun markSentDraftResolved(submissionId: String, response: JSONObject): Boolean {
         val saved = getMetadata("sent-draft:$submissionId")?.let(::JSONObject) ?: return false
         when (response.string("status")) {

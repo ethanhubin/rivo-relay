@@ -11,7 +11,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /** The preference file contains only ciphertext. The non-exportable key lives in Android Keystore. */
-class CredentialStore(context: Context) {
+class CredentialStore(context: Context) : CredentialStorage {
     private val preferences = context.getSharedPreferences("rivo_secure", Context.MODE_PRIVATE)
     private val alias = "dev.rivo.relay.credentials.v1"
     private fun key(): SecretKey {
@@ -22,12 +22,12 @@ class CredentialStore(context: Context) {
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
         }.generateKey()
     }
-    fun save(name: String, plaintext: String) {
+    override fun save(name: String, plaintext: String) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
         val bytes = cipher.iv + cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
         check(preferences.edit().putString(name, Base64.encodeToString(bytes, Base64.NO_WRAP)).commit()) { "无法安全保存连接" }
     }
-    fun read(name: String): String? {
+    override fun read(name: String): String? {
         val encrypted = preferences.getString(name, null) ?: return null
         return try {
             val bytes = Base64.decode(encrypted, Base64.NO_WRAP)
@@ -35,5 +35,5 @@ class CredentialStore(context: Context) {
             String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8)
         } catch (_: Exception) { remove(name); null }
     }
-    fun remove(name: String) { preferences.edit().remove(name).commit() }
+    override fun remove(name: String) { check(preferences.edit().remove(name).commit()) { "无法清除安全存储记录" } }
 }

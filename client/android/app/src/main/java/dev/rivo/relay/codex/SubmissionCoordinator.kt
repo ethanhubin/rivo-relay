@@ -1,6 +1,6 @@
 package dev.rivo.relay.codex
 
-import dev.rivo.relay.connection.CredentialStore
+import dev.rivo.relay.connection.CredentialStorage
 import dev.rivo.relay.data.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -25,7 +25,7 @@ internal suspend fun recordSubmissionFailure(cause: Throwable, definitive: Boole
 }
 
 /** Stable identity and frozen target adapted from QiGuang submission coordinator, without replay/outbox/queue. */
-class SubmissionCoordinator(private val api: RelayApi, private val scope: CoroutineScope, private val vault: CredentialStore,
+class SubmissionCoordinator(private val api: RelayApi, private val scope: CoroutineScope, private val vault: CredentialStorage,
     private val storageKey: String,
     private val onResolved: suspend (PendingSubmission, JSONObject) -> Unit = { _, _ -> },
     private val failure: (Throwable) -> Unit) {
@@ -35,6 +35,7 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
     val state = mutable.asStateFlow()
     private var afterAccepted: ((JSONObject) -> Unit)? = null
     private fun failureMessage(response: JSONObject, label: String): String = when (response.string("errorCode")) {
+        "submission_not_received" -> "节点未收到该操作，已解除等待；草稿已保留，请重新发送。"
         "native_auth_required" -> "Codex 登录已失效，请在后台重新授权并检查独立后台登录状态。无需重新配对手机。"
         "writer_still_held" -> "会话仍被进程持有，未确认释放成功"
         "handoff_changed", "handoff_confirmation_required" -> "持锁进程或关联会话已变化，请重新操作并确认"
@@ -85,26 +86,46 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
         scope.launch {
             var completed: JSONObject? = null
             var requestStarted = false
+            var terminalResponse = false
             try {
                 val requestBody = prepareBody(frozenBody)
                 save(pending)
                 beforeSend(pending)
                 requestStarted = true
                 val response = api.call(path, "POST", requestBody)
+                terminalResponse = response.string("status") in setOf("accepted", "failed")
                 when (response.string("status")) {
                     "accepted" -> { onResolved(pending, response); save(null); afterAccepted = null; mutable.update { it.copy(notice = null) }; completed = response.optJSONObject("receipt") ?: JSONObject() }
                     "failed" -> { onResolved(pending, response); save(null); afterAccepted = null; failure(ApiException(422, "submission_failed", failureMessage(response, label))) }
                     else -> { onResolved(pending, response); retainReceipt(pending, response); mutable.update { it.copy(notice = "$label 结果待核对，不会自动重发") } }
                 }
             } catch (e: Exception) {
-                val definitive = !requestStarted || e is ApiException && e.status in 400..499 && e.status != 408
-                val reported = recordSubmissionFailure(e, definitive,
-                    record = { onResolved(pending, JSONObject().put("status", if (definitive) "failed" else "unknown")) },
-                    clear = { save(null); afterAccepted = null })
-                if (reported !is CancellationException) failure(reported)
+                // A local persistence error cannot undo an authoritative receipt.
+                // Keep the durable ID/callback so reconciliation can finish the save.
+                if (terminalResponse) {
+                    if (e !is CancellationException) failure(e)
+                } else {
+                    // A conflicting ID belongs to the original request, not this continuation.
+                    if (e is ApiException && e.code == "submission_conflict") afterAccepted = null
+                    val definitive = !requestStarted || e is ApiException && e.status in 400..499 &&
+                        e.status != 408 && e.code != "submission_conflict"
+                    val reported = withContext(NonCancellable) {
+                        recordSubmissionFailure(e, definitive,
+                            record = { onResolved(pending, JSONObject().put("status", if (definitive) "failed" else "unknown")) },
+                            clear = { save(null); afterAccepted = null })
+                    }
+                    if (reported !is CancellationException) failure(reported)
+                }
             } finally { mutable.update { it.copy(busy = false) } }
-            completed?.let(accepted)
+            completed?.let { complete(accepted, it) }
         }
+    }
+    private fun complete(callback: (JSONObject) -> Unit, receipt: JSONObject) {
+        try { callback(receipt) }
+        catch (e: CancellationException) { throw e }
+        catch (e: Exception) { failure(e) }
+        // A continuation can own the next submission already. Never reset its
+        // state or rewrite the previous accepted result when the callback fails.
     }
     /** Each write has a durable ID. Stop the batch on failure or uncertainty. */
     fun submitBatch(operations: List<BatchSubmission>, onChanged: () -> Unit = {}) {
@@ -122,8 +143,10 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
         mutable.update { it.copy(busy = true, reconciling = true) }
         scope.launch {
             var completed: Pair<(JSONObject) -> Unit, JSONObject>? = null
+            var receivedResponse = false
             try {
-                val response = api.call("/v1/submissions/" + encoded(pending.id))
+                val response = api.reconcileSubmission(pending.id)
+                receivedResponse = true
                 when (response.string("status")) {
                     "accepted", "failed" -> {
                         onResolved(pending, response)
@@ -139,12 +162,12 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
             } catch (e: Exception) {
                 // Background receipt polling must not repeatedly raise global connection errors.
                 // Retain the durable ID and try again; authentication errors still need attention.
-                if (e is ApiException && e.status == 401) failure(e)
+                if (e !is CancellationException && (receivedResponse || e is ApiException && e.status == 401)) failure(e)
             }
             finally { mutable.update { it.copy(busy = false, reconciling = false) } }
             // Clear the old owner before invoking a continuation. A batch may synchronously
             // start its next submission, whose busy flag/callback must not be reset by this read.
-            completed?.let { (completion, receipt) -> completion(receipt) }
+            completed?.let { (completion, receipt) -> complete(completion, receipt) }
         }
     }
 }

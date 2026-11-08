@@ -117,6 +117,33 @@ class SubmissionStore:
                 raise SubmissionNotFound(submission_id)
             return _public(row)
 
+    def reconcile(self, submission_id: str, connection_id: str) -> dict:
+        """Read an existing claim or fence an absent request before declaring failure.
+
+        The same transaction lock as claim() ensures a delayed POST cannot dispatch
+        after the phone is told that its missing submission did not execute.
+        """
+        _identifier(submission_id, "submission_id")
+        _identifier(connection_id, "connection_id")
+        with self.db.transaction() as connection:
+            row = connection.execute("SELECT * FROM submissions WHERE id=?", (submission_id,)).fetchone()
+            if row is not None:
+                if row["connection_id"] != connection_id:
+                    raise SubmissionNotFound(submission_id)
+                return _public(row)
+            owner = connection.execute(
+                "SELECT id FROM connections WHERE id=? AND revoked_at IS NULL", (connection_id,)
+            ).fetchone()
+            if owner is None:
+                raise ValueError("Submission connection is missing or revoked")
+            now = self.clock()
+            connection.execute(
+                """INSERT INTO submissions(id,connection_id,operation,target_json,payload_hash,status,error_code,created_at,updated_at)
+                   VALUES (?,?,'submission.reconcile','null','','failed','submission_not_received',?,?)""",
+                (submission_id, connection_id, now, now),
+            )
+            return _public(connection.execute("SELECT * FROM submissions WHERE id=?", (submission_id,)).fetchone())
+
     def find_for_target(self, operation: str, target: Any) -> list[dict]:
         """Return durable claims for one operation/target, newest first.
 

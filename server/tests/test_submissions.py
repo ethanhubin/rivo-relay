@@ -27,6 +27,46 @@ class SubmissionTests(unittest.TestCase):
         args.update(overrides)
         return self.store.claim(**args)
 
+    def test_missing_reconciliation_is_durable_and_blocks_late_dispatch(self):
+        result = self.store.reconcile("request-1", self.owner)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error_code"], "submission_not_received")
+        self.assertEqual(result, self.store.reconcile("request-1", self.owner))
+        with self.assertRaises(SubmissionConflict):
+            self.claim()
+        reopened = Database(self.path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(result, SubmissionStore(reopened).get("request-1"))
+
+    def test_reconciliation_preserves_existing_claim_and_owner(self):
+        self.claim()
+        for status in ("pending", "unknown", "accepted"):
+            if status == "unknown": self.store.mark_unknown("request-1")
+            if status == "accepted": self.store.mark_accepted("request-1", {"threadId": "native"})
+            self.assertEqual(self.store.reconcile("request-1", self.owner)["status"], status)
+        other = self.pairing.exchange(self.pairing.create()["code"], "Other")["connection_id"]
+        with self.assertRaises(SubmissionNotFound):
+            self.store.reconcile("request-1", other)
+
+    def test_claim_racing_reconciliation_has_only_one_winner(self):
+        other_db = Database(self.path)
+        self.addCleanup(other_db.close)
+        other = SubmissionStore(other_db)
+        for n in range(20):
+            sid = f"race-{n}"
+            gate = threading.Barrier(2)
+            def claim():
+                gate.wait()
+                try: return self.claim(submission_id=sid)["should_dispatch"]
+                except SubmissionConflict: return False
+            def reconcile():
+                gate.wait()
+                return other.reconcile(sid, self.owner)
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                sent = pool.submit(claim)
+                result = pool.submit(reconcile)
+                self.assertEqual(sent.result(), result.result()["status"] == "pending")
+
     def test_claim_is_durable_before_dispatch_and_duplicate_never_dispatches(self):
         self.assertTrue(self.claim()["should_dispatch"])
         reopened = Database(self.path)

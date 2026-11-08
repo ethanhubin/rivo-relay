@@ -19,6 +19,41 @@ class PendingConversationRecoveryTest {
       {"id":"turn","items":[{"id":"canonical","type":"userMessage","clientId":"$client","content":[{"type":"text","text":"same"}]},{"id":"reply","type":"agentMessage","text":"answer"}]},
       {"id":"newer","items":[{"id":"later","type":"agentMessage","text":"later answer"}]}]},"status":"idle","nativeSync":{"state":"ready"}}""")
 
+    @Test fun orphanOverlayIsRecoveredAndReceiptIsDurableBeforeRetiringItsCheckpoint() = runBlocking {
+        val directory = Files.createTempDirectory("rivo-orphan-overlay").toFile()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        try {
+            val store = ConversationStore(directory)
+            store.savePendingMessage(PendingNativeMessage("orphan", "client", "native", input("unsent")))
+            store.savePendingMessage(PendingNativeMessage("accepted", "accepted-client", "native", input("sent"), delivery = "accepted"))
+            assertEquals(setOf("orphan"), ConversationStore(directory).unresolvedSubmissionIds())
+            val controller = SessionController(RelayApi("http://127.0.0.1:1"), scope, store) { fail(it.message) }
+            controller.resolveSubmissionDurably("orphan", JSONObject().put("status", "failed"))
+            assertEquals(listOf("accepted"), ConversationStore(directory).loadPendingMessages().map { it.submissionId })
+            assertTrue(store.unresolvedSubmissionIds().isEmpty())
+            controller.close()
+        } finally { scope.cancel(); directory.deleteRecursively() }
+    }
+
+    @Test fun fencedMissingCreationUnlocksDraftWithoutDiscardingInput() = runBlocking {
+        val directory = Files.createTempDirectory("rivo-missing-create").toFile()
+        try {
+            val store = ConversationStore(directory)
+            val id = store.createPending("project")
+            val key = "pending:$id"
+            store.saveDraftOrdered(key, ConversationDraft("unsent input", model = "chosen"))
+            store.checkpointPendingSubmission(id, "missing", "create")
+            assertTrue(store.pendingHasUnresolvedSubmission(id))
+            store.resolvePendingSubmission("missing", JSONObject("""{"status":"failed","errorCode":"submission_not_received"}"""))
+            val restarted = ConversationStore(directory)
+            assertFalse(restarted.pendingHasUnresolvedSubmission(id))
+            assertFalse(restarted.pendingCompleted(id))
+            assertNull(restarted.pendingThreadId(id))
+            assertEquals("unsent input", restarted.loadDraft(key).text)
+            assertEquals("chosen", restarted.loadDraft(key).model)
+        } finally { directory.deleteRecursively() }
+    }
+
     @Test fun severalPendingDraftsAndLegacyDraftStayIndependentAcrossRestart() = runBlocking {
         val directory = Files.createTempDirectory("rivo-many-pending").toFile()
         try {

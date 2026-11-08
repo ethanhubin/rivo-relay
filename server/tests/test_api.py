@@ -680,6 +680,20 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/v1/threads/thread-1/turns", body, token=self.token)[1], record)
         self.assertEqual(self.native.sent, [])
 
+    def test_missing_submission_reconcile_fences_late_post(self):
+        path = "/v1/submissions/missing-create"
+        self.assertEqual(self.request("GET", path, token=self.token)[0], 404)
+        status, result, _ = self.request("POST", path + "/reconcile", {}, token=self.token)
+        self.assertEqual(status, 200)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["errorCode"], "submission_not_received")
+        self.assertEqual(self.request("GET", path, token=self.token)[1], result)
+        body = {"submissionId": "missing-create", "text": "Synthetic task"}
+        self.assertEqual(self.request("POST", "/v1/threads/thread-1/turns", body, token=self.token)[0], 409)
+        self.assertEqual(self.native.sent, [])
+        other = self._pair()
+        self.assertEqual(self.request("POST", path + "/reconcile", {}, token=other["token"])[0], 404)
+
     def test_submission_lookup_is_scoped_to_originating_connection(self):
         body = {"submissionId": "private-1", "text": "Synthetic task"}
         self.request("POST", "/v1/threads/thread-1/turns", body, token=self.token)

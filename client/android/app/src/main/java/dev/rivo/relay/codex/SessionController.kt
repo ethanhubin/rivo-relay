@@ -302,9 +302,13 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
             nativeTurnId = response.optJSONObject("receipt")?.string("turnId")?.takeIf(String::isNotBlank))
         else -> message.copy(delivery = "unknown")
     }
-    fun resolveSubmission(submissionId: String, response: org.json.JSONObject) {
+    suspend fun resolveSubmissionDurably(submissionId: String, response: org.json.JSONObject) {
+        withContext(Dispatchers.IO) { store?.resolvePendingMessage(submissionId, response) }
+        resolveSubmission(submissionId, response, persist = false)
+    }
+    fun resolveSubmission(submissionId: String, response: org.json.JSONObject, persist: Boolean = true) {
         if (!pendingLoaded) resolvedPending[submissionId] = copyJsonObject(response)
-        store?.enqueueResolvePendingMessage(submissionId, response)
+        if (persist) store?.enqueueResolvePendingMessage(submissionId, response)
         pendingByThread.keys.toList().forEach { id ->
             pendingByThread[id] = pendingByThread[id].orEmpty().mapNotNull { message ->
                 if (message.submissionId != submissionId) message

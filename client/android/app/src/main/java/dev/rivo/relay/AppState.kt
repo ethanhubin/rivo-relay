@@ -43,7 +43,7 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
     val submissions = SubmissionCoordinator(api, scope, vault, "pending:${connection.nodeId}:${connection.deviceId}:${connection.storageBase}",
         onResolved = { pending, response ->
             session.invalidateControl()
-            session.resolveSubmission(pending.id, response)
+            session.resolveSubmissionDurably(pending.id, response)
             val (acceptedDraft, pendingChanged) = withContext(Dispatchers.IO) {
                 val changed = conversations.resolvePendingSubmission(pending.id, response) != null
                 conversations.markSentDraftResolved(pending.id, response) to changed
@@ -58,18 +58,24 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
     private var pendingRecoveryJob: Job? = null
     fun reconcilePendingReceipts() {
         if (pendingRecoveryJob?.isActive == true) return
-        // Read known receipts only; never repeat native mutations here.
+        // The coordinator owns its callback and durable ID; do not resolve only
+        // the draft checkpoint and leave its global submission lock behind.
+        val activeSubmission = submissions.state.value.pending?.id
+        submissions.reconcile()
+        // Never repeat native mutations; missing receipts are fenced by the node.
         pendingRecoveryJob = scope.launch {
             val checkpoints = try { withContext(Dispatchers.IO) {
-                conversations.sentDraftCheckpoints().keys + conversations.pendingSubmissionCheckpoints().keys
+                conversations.unresolvedSubmissionIds()
             } } catch (e: CancellationException) { throw e }
             catch (e: Exception) { failure(e); return@launch }
-            for (id in checkpoints) try {
+            for (id in checkpoints - setOfNotNull(activeSubmission)) try {
+                // A reconciled create may have just started its first-turn submission.
+                if (id == submissions.state.value.pending?.id) continue
                 val checkpoint = conversations.sentDraftCheckpoints()[id]
                 val needsPendingResolution = withContext(Dispatchers.IO) { id in conversations.pendingSubmissionCheckpoints() }
                 val accepted = if (checkpoint?.string("status") == "accepted" && !needsPendingResolution) true else {
-                    val response = api.call("/v1/submissions/${encoded(id)}")
-                    session.resolveSubmission(id, response)
+                    val response = api.reconcileSubmission(id)
+                    session.resolveSubmissionDurably(id, response)
                     val (pendingChanged, acceptedDraft) = withContext(Dispatchers.IO) {
                         (conversations.resolvePendingSubmission(id, response) != null) to conversations.markSentDraftResolved(id, response)
                     }
@@ -110,22 +116,27 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
     private val mutable = MutableStateFlow(AppState())
     val state = mutable.asStateFlow()
     private var nodeJob: Job? = null
+    private val nodeHandoff = NodeJobHandoff()
     private var lastStore: ConversationStore? = null
     init { mutable.value = AppState(savedNodes = pairing.saved()); pairing.restore()?.let { activate(it) } }
-    private fun activate(connection: NodeConnection, openThread: String? = null, openTodos: Boolean = false) {
+    private fun activate(connection: NodeConnection, openThread: String? = null, openTodos: Boolean = false, openProjects: Boolean = false) {
         val previousStore = lastStore
-        nodeJob?.cancel()
+        val predecessors = nodeHandoff.retire(nodeJob)
         val job = SupervisorJob(viewModelScope.coroutineContext[Job]); nodeJob = job
         val scope = CoroutineScope(viewModelScope.coroutineContext + job)
         mutable.value = AppState(savedNodes = pairing.saved(), reconnecting = true)
         scope.launch {
             try {
+                // Cancellation may still be committing a submission outcome. Keep
+                // every predecessor across rapid switches, including cancelled activations.
+                predecessors.joinAll()
                 val store = withContext(Dispatchers.IO) {
                     runCatching { previousStore?.flushMetadata() }
                     ConversationStore(ConversationStore.nodeDirectory(File(getApplication<Application>().filesDir, "conversations"),
                         "${connection.nodeId}:${connection.deviceId}:${connection.storageBase}"))
                 }
                 if (nodeJob !== job) return@launch
+                if (openProjects) store.putMetadata("lastRoute", "projects")
                 lastStore = store
                 val node = NodeRuntime(connection, scope, vault, getApplication(), store, ::requestTaskNotifications) { error ->
                     if (nodeJob === job && job.isActive) fail(error)
@@ -157,7 +168,7 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
         if (mutable.value.pairing) return
         mutable.update { it.copy(pairing = true, error = null) }
         viewModelScope.launch {
-            try { activate(pairing.pair(input, code)) } catch (e: Exception) {
+            try { activate(pairing.pair(input, code), openProjects = true) } catch (e: Exception) {
                 if (e is CancellationException) throw e
                 mutable.update { it.copy(error = if (e is ApiException && e.status == 401) "配对码已过期、已使用或无效，请在电脑生成新码。节点地址已保存。" else e.message ?: "连接失败，请重试。", savedNodes = pairing.saved()) }
             }
@@ -165,7 +176,13 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
         }
     }
     fun setConnectionMode(mode: dev.rivo.relay.connection.ConnectionMode) { pairing.setMode(mode)?.let { activate(it) } }
-    fun selectNode(base: String) { pairing.select(base)?.let { activate(it) } }
+    fun selectNode(base: String) { pairing.select(base)?.let { activate(it, openProjects = true) } }
+    fun settingsConnection(base: String): NodeConnection? = pairing.connection(base)
+    fun setNodeConnectionMode(base: String, mode: ConnectionMode): NodeConnection? {
+        val updated = pairing.setMode(base, mode) ?: return null
+        if (mutable.value.node?.connection?.base == base) activate(updated)
+        return updated
+    }
     fun openNotification(target: TaskNotificationTarget) {
         if (mutable.value.node?.connection?.base != target.base) {
             val connection = pairing.select(target.base)
@@ -217,6 +234,7 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
         reconnectJob = viewModelScope.launch {
             try {
                 node.api.resetTransport()
+                node.reconcilePendingReceipts()
                 syncNodeName(node, this)
                 if (mutable.value.node !== node) return@launch
                 // Read the actual visible state immediately; a preliminary node

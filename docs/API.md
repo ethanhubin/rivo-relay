@@ -50,6 +50,8 @@
 | `POST /v1/threads/{threadId}/archive` | `{submissionId,archived:boolean}` | 提交记录；接受时 `{threadId}`；false 为恢复 |
 | `POST /v1/requests/respond` | `{submissionId,key,response:{…}}` | 提交记录；接受时 `{requestId,threadId}` |
 
+`GET /v1/submissions/{submissionId}` 仅查询当前连接的回执。返回 `submission_not_found` 时，客户端可调用 `POST /v1/submissions/{submissionId}/reconcile`（空 JSON 对象）：已有记录原样返回；不存在时在与提交 claim 相同的事务锁内写入 `failed / submission_not_received` 记录，阻止同 ID 的迟到请求执行。不能仅凭 GET 404 就允许重新发送。旧节点不支持该接口时继续保留未知状态，不重放原操作。
+
 `requests` 项含 `{key,id,method,params,connectionId}`。使用原样 key 和原生 method 对应的 response；不自行生成审批默认回答。请求失效或另一端已回答时不能再次响应。`settings` 仅包含该原生版本返回的模型、effort、cwd、审批、sandbox 等设置；GET 会 resume/join 原生会话以取得实时状态，不能当作纯数据库读取。
 
 原生历史适配协议 v2 保留未知 item 类型的完整字段，客户端以未知活动展示，不因新增展示类型拒绝整页。turn 的 ID、status、完整 items、重复身份及分页游标仍严格校验；显式 `itemsView` 必须为 `full`，未知 turn status 不推断执行权限。`thread.turns[].status/error` 是轮次结果来源；失败或中断的空轮次同样展示诊断，不生成助手消息或自动重试。

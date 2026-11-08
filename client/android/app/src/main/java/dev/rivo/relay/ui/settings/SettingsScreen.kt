@@ -32,12 +32,17 @@ fun SettingsScreen(
     api: dev.rivo.relay.data.RelayApi? = null,
     setConnectionMode: (dev.rivo.relay.connection.ConnectionMode) -> Unit = {},
     savedNodes: List<dev.rivo.relay.connection.SavedNode> = emptyList(),
-    onSelectNode: (String) -> Unit = {},
+    resolveConnection: (String) -> dev.rivo.relay.connection.NodeConnection? = { null },
+    setNodeConnectionMode: ((String, dev.rivo.relay.connection.ConnectionMode) -> dev.rivo.relay.connection.NodeConnection?)? = null,
     onAddNode: () -> Unit = {},
     canAddNode: Boolean = true,
     checkUpdate: (suspend () -> AppRelease?)? = null,
     downloadAndInstall: (suspend (AppRelease) -> Unit)? = null,
     updates: UpdateViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
+    var inspectedConnection by remember(connection?.base) { mutableStateOf(connection) }
+    val inspectedApi = remember(inspectedConnection, api) {
+        if (inspectedConnection === connection) api else inspectedConnection?.api()
+    }
     val (themeMode, setThemeMode) = rememberThemePreference()
     val context = LocalContext.current
     val downloading = updates.downloading
@@ -81,7 +86,17 @@ fun SettingsScreen(
             }
         }
 
-        connection?.let { ConnectionSettings(it, api, setConnectionMode, savedNodes, onSelectNode, onAddNode, canAddNode) }
+        inspectedConnection?.let { selected ->
+            key(selected) {
+                ConnectionSettings(selected, inspectedApi, { mode ->
+                    if (setNodeConnectionMode != null) {
+                        setNodeConnectionMode(selected.base, mode)?.let { inspectedConnection = it }
+                    } else setConnectionMode(mode)
+                }, savedNodes, { base ->
+                    resolveConnection(base)?.let { inspectedConnection = it }
+                }, onAddNode, canAddNode)
+            }
+        }
         PinnedCompletionSettings()
 
         Card(Modifier.fillMaxWidth()) {
