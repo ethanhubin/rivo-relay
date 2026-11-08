@@ -20,6 +20,8 @@ fun LoginScreen(busy: Boolean, error: String?, onPair: (String, String) -> Unit,
     var manual by rememberSaveable { mutableStateOf(false) }
     var address by rememberSaveable { mutableStateOf("") }
     var code by rememberSaveable { mutableStateOf("") }
+    var readingImage by remember { mutableStateOf(false) }
+    val pickImage = rememberQrImagePicker({ onPair(it, "") }, onError) { readingImage = it }
     val scan = rememberQrScanner({ onPair(it, "") }, onError)
     Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(RivoSpacing.Page),
         verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
@@ -33,13 +35,16 @@ fun LoginScreen(busy: Boolean, error: String?, onPair: (String, String) -> Unit,
         Text("扫描电脑上节点生成的配对二维码", style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(32.dp))
-        Button(onClick = scan, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("scan_connect")) {
+        Button(onClick = scan, enabled = !busy && !readingImage, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("scan_connect")) {
             if (busy) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("正在连接…") }
             else Text("扫码连接")
         }
-        TextButton(onClick = { manual = true }, enabled = !busy, modifier = Modifier.testTag("manual_entry")) { Text("手动输入") }
+        OutlinedButton(onClick = pickImage, enabled = !busy && !readingImage, modifier = Modifier.fillMaxWidth().testTag("photo_connect")) {
+            Text(if (readingImage) "正在识别…" else "从相册识别")
+        }
+        TextButton(onClick = { manual = true }, enabled = !busy && !readingImage, modifier = Modifier.testTag("manual_entry")) { Text("手动输入") }
         savedNodes.forEach { node ->
-            OutlinedButton(onClick = { if (node.authorized) onSelect(node.base) else { address = node.base; code = ""; manual = true } }, enabled = !busy, modifier = Modifier.fillMaxWidth().testTag("saved_node_${node.base}")) {
+            OutlinedButton(onClick = { if (node.authorized) onSelect(node.base) else { address = node.base; code = ""; manual = true } }, enabled = !busy && !readingImage, modifier = Modifier.fillMaxWidth().testTag("saved_node_${node.base}")) {
                 Column(Modifier.fillMaxWidth()) {
                     Text(node.name)
                     if (node.name != node.base) Text(node.base, style = MaterialTheme.typography.bodySmall)
@@ -51,7 +56,7 @@ fun LoginScreen(busy: Boolean, error: String?, onPair: (String, String) -> Unit,
         error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 16.dp).testTag("login_error")) }
     }
     if (manual) {
-        AlertDialog(onDismissRequest = { if (!busy) manual = false }, title = { Text("手动连接") },
+        AlertDialog(onDismissRequest = { if (!busy && !readingImage) manual = false }, title = { Text("手动连接") },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("粘贴完整配对链接，或输入节点地址和配对码。", style = MaterialTheme.typography.bodySmall)
@@ -61,8 +66,8 @@ fun LoginScreen(busy: Boolean, error: String?, onPair: (String, String) -> Unit,
                     OutlinedTextField(code, { code = it }, label = { Text("配对码") }, supportingText = { Text("完整配对链接无需再填") },
                         singleLine = true, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth().testTag("pairing_code"))
                 }
-            }, confirmButton = { Button(onClick = { manual = false; onPair(address, code); code = "" }, enabled = address.isNotBlank() && !busy,
+            }, confirmButton = { Button(onClick = { manual = false; onPair(address, code); code = "" }, enabled = address.isNotBlank() && !busy && !readingImage,
                 modifier = Modifier.testTag("manual_connect")) { Text("连接") } },
-            dismissButton = { TextButton(onClick = { manual = false }, enabled = !busy) { Text("取消") } })
+            dismissButton = { TextButton(onClick = { manual = false }, enabled = !busy && !readingImage) { Text("取消") } })
     }
 }
