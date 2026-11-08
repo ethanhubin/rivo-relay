@@ -559,7 +559,6 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, modifier = Modifier.testTag("app_error")) {
                             Text("${node.connection.name}：$message", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                             TextButton(onClick = retryConnection, modifier = Modifier.testTag("retry_connection")) { Text("重连") }
-                            TextButton(onClick = { if (error != null) setError(null) else node.session.dismissReadError() }) { Text("关闭") }
                         }
                     }
                     submission.pending?.let { pending ->
@@ -575,10 +574,18 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     if (submission.pending == null) submission.notice?.let { notice ->
                         Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                             Text(notice, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                            TextButton(onClick = node.submissions::clearNotice) { Text("关闭") }
                         }
                     }
                     if (cached) Text("${node.connection.name}：暂未同步，显示上次内容", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("catalog_cached_notice"))
+                    if (displayError != null || submission.pending == null && submission.notice != null) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            TextButton(onClick = {
+                                setError(null)
+                                node.session.dismissReadError()
+                                node.submissions.clearNotice()
+                            }, modifier = Modifier.testTag("dismiss_bottom_notice")) { Text("关闭") }
+                        }
+                    }
                 }
             }
         }

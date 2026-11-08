@@ -6,6 +6,8 @@ import android.os.Handler
 import android.os.Looper
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
@@ -41,6 +43,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusProperties
@@ -66,7 +69,7 @@ import kotlinx.coroutines.flow.first
 import org.json.JSONObject
 
 /**
- * QiGuang Codex Composer layout: a 52dp-minimum, three-line BasicTextField,
+ * QiGuang Codex Composer layout with a focus-expanding, three-line BasicTextField,
  * divider, and one compact action row (8x6dp insets, 6dp spacing).
  * Source: QiGuang ui/main/ChatComposerContent.kt and AttachmentAddIcon.kt.
  * Rivo keeps draft ownership and native submission in ChatScreen. Mode icons,
@@ -108,13 +111,13 @@ fun MessageComposer(
     goalMode: Boolean = false,
     goalModeEnabled: Boolean = false,
     onSelectMode: ((String) -> Unit)? = null,
-    inputMinLines: Int = 2,
 ) {
     var attachmentsOpen by remember { mutableStateOf(false) }
     LaunchedEffect(enabled) { if (!enabled) attachmentsOpen = false }
     val context = LocalContext.current
     val keyboard = LocalSoftwareKeyboardController.current
     val focusRequester = remember { FocusRequester() }
+    var inputFocused by remember { mutableStateOf(false) }
     var inputValue by remember { mutableStateOf(TextFieldValue(text, selection = TextRange(text.length))) }
     val mediaClient = LocalCodexMediaClient.current
     val api = mediaClient?.api
@@ -286,23 +289,25 @@ fun MessageComposer(
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
             ) {
                 Column {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().animateContentSize(tween(180)), verticalAlignment = Alignment.CenterVertically) {
                         BasicTextField(
                             value = inputValue,
                             onValueChange = { if (it.text != inputValue.text) cancelVoice(); inputValue = it; onTextChange(it.text) },
                             enabled = enabled,
                             modifier = Modifier.weight(1f).pasteImageAttachments(context, enabled && !preparing, onPasteImages)
-                                .focusRequester(focusRequester).heightIn(min = 52.dp)
+                                .focusRequester(focusRequester).onFocusChanged { inputFocused = it.isFocused }.heightIn(min = 52.dp)
                                 .padding(horizontal = 16.dp, vertical = 14.dp).testTag("message_input"),
                             textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.38f)),
                             cursorBrush = SolidColor(MaterialTheme.colorScheme.onSurface),
-                            minLines = inputMinLines,
-                            maxLines = 3,
+                            minLines = if (inputFocused) 2 else 1,
+                            maxLines = if (inputFocused) 3 else 1,
                             decorationBox = { inner ->
                                 Box {
                                     if (text.isEmpty()) Text(
                                         when { isRunning -> "输入下一项任务或实时引导"; discussionMode -> "输入想讨论的方案或问题"; else -> "描述要实现或修改的功能" },
                                         style = MaterialTheme.typography.bodyMedium,
+                                        maxLines = if (inputFocused) 2 else 1,
+                                        overflow = TextOverflow.Ellipsis,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                     inner()

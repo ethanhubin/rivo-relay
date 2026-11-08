@@ -22,6 +22,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -371,8 +373,11 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             !busy && !blocked && !state.stale && canOperate, pinned, canManage, onPin, onArchive)
         if (pendingTitle == null) NativeWriterStatus(state, nodeName, writerBusy || busy || blocked, onWriterAction, takeoverBlockedReason, onRefresh)
         if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+        var bottomOverlayHeight by remember { mutableIntStateOf(0) }
+        val bottomOverlayPadding = with(LocalDensity.current) { bottomOverlayHeight.toDp() }
         Box(Modifier.weight(1f).fillMaxWidth()) {
-        LazyColumn(state = list, modifier = Modifier.fillMaxSize().nestedScroll(scrollConnection).testTag("chat_history"), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(chatActivitySpacing)) {
+        // Draw history behind the rounded composer; reserve scroll space for the final message.
+        LazyColumn(state = list, modifier = Modifier.fillMaxSize().nestedScroll(scrollConnection).testTag("chat_history"), contentPadding = PaddingValues(start = 20.dp, top = 20.dp, end = 20.dp, bottom = bottomOverlayPadding + 20.dp), verticalArrangement = Arrangement.spacedBy(chatActivitySpacing)) {
             if (pendingTitle != null && timeline.isEmpty()) item {
                 Text("今天想从哪里开始？", Modifier.padding(vertical = 24.dp), style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -485,11 +490,12 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         }
         if (showLatest) SmallFloatingActionButton(
             onClick = { followLatest = true; scope.launch { list.animateScrollToItem((list.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)) } },
-            modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp).testTag("jump_to_latest")
+            modifier = Modifier.align(Alignment.BottomEnd).padding(bottom = bottomOverlayPadding).padding(12.dp).testTag("jump_to_latest")
                 .semantics { contentDescription = "回到最新消息" },
             containerColor = MaterialTheme.colorScheme.secondaryContainer
         ) { Text("↓", style = MaterialTheme.typography.titleLarge) }
-        }
+        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+            .onSizeChanged { bottomOverlayHeight = it.height }) {
         if (pendingTitle == null) pendingWorkspace?.invoke()
         if (snapshot?.requests?.isNotEmpty() == true) Column(Modifier.fillMaxWidth().heightIn(max = 320.dp)
             .verticalScroll(rememberScrollState()).padding(horizontal = 12.dp).testTag("native_requests_panel")) {
@@ -569,7 +575,6 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             Text(if (displayedGoal == null) "设置持续目标" else "编辑持续目标")
         }
         MessageComposer(
-            inputMinLines = if (pendingTitle != null) 3 else 2,
             text = if (hideSubmitted) "" else draft, onTextChange = { draft = it }, images = if (hideSubmitted) emptyList() else images,
             onEditImage = { focus.clearFocus(); keyboard?.hide(); editingImage = it },
             onRemoveImage = { image -> images = images.filterNot { it.id == image.id } },
@@ -640,6 +645,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             onStop = { stopConfirm = true },
             queueing = snapshot != null && canOperate && snapshot.shouldQueueInput,
         )
+        }
+        }
     }
     if (developerOpen && state.id != null) DeveloperToolsDialog(state.id, readTool, submitTool, busy || blocked || !canOperate, onDismiss = { developerOpen = false },
         canCleanup = snapshot?.activeTurnId?.isBlank() == true && snapshot.requests.isEmpty() && snapshot.queue.isEmpty() && canOperate)

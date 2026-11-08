@@ -8,6 +8,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ConnectionFailureTest {
+    @Test fun failureAddressRespectsForcedRoute() {
+        val base = "http://100.124.150.1:18767"
+        val routes = dev.rivo.relay.connection.NodeRoutes(direct = base, relay = "https://vps.example/relay/private")
+        for (mode in dev.rivo.relay.connection.ConnectionMode.entries) {
+            val api = dev.rivo.relay.data.RelayApi(base, routes = routes.copy(mode = mode))
+            val message = api.describeFailure(IOException("secret"))
+            assertEquals(mode == dev.rivo.relay.connection.ConnectionMode.DIRECT, message.contains("100.124.150.1"))
+            assertEquals(mode == dev.rivo.relay.connection.ConnectionMode.RELAY, message.contains("vps.example"))
+            assertFalse(message.contains("private"))
+            assertFalse(message.contains("已提交操作"))
+        }
+    }
+
     @Test fun failuresAreActionableAndNeverRevealSecrets() {
         val base = "https://secret-user:secret-password@node.example:18766/private?token=secret-token"
         val message = connectionFailure(IOException("secret-token", UnknownHostException("secret-password")), base)

@@ -7,6 +7,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -41,7 +43,9 @@ class MessageComposerUiTest {
 
     @Test fun emptyComposerIsCompactAndInputGrowsToThreeLines() {
         var density = 1f
+        lateinit var focusManager: FocusManager
         compose.setContent {
+            focusManager = LocalFocusManager.current
             density = LocalDensity.current.density
             var draft by remember { mutableStateOf("") }
             RivoTheme {
@@ -57,13 +61,20 @@ class MessageComposerUiTest {
         assertTrue("Empty composer should use one input row and one toolbar", emptyHeight <= 116f)
         compose.onNodeWithTag("add_image").assertDoesNotExist()
         compose.onNodeWithTag("add_workspace_file").assertDoesNotExist()
+        compose.onNodeWithTag("message_input").performClick()
+        val focusedHeight = compose.onNodeWithTag("composer_surface").fetchSemanticsNode().boundsInRoot.height / density
+        assertTrue("Focus should expand empty input to two lines", focusedHeight > emptyHeight)
         compose.onNodeWithTag("message_input").performTextInput("第一行\n第二行\n第三行")
         val threeLineHeight = compose.onNodeWithTag("composer_surface").fetchSemanticsNode().boundsInRoot.height / density
-        assertTrue("Multiline input must grow from the single-line height", threeLineHeight > emptyHeight)
+        assertTrue("Multiline input must grow from the single-line height", threeLineHeight > focusedHeight)
         compose.onNodeWithTag("message_input").performTextReplacement("第一行\n第二行\n第三行\n第四行\n第五行")
         val fiveLineHeight = compose.onNodeWithTag("composer_surface").fetchSemanticsNode().boundsInRoot.height / density
         assertEquals("Long drafts should scroll within three visible lines", threeLineHeight, fiveLineHeight, 1f)
         compose.onNodeWithTag("send_message").assertIsEnabled()
+        compose.runOnIdle { focusManager.clearFocus(force = true) }
+        val collapsedHeight = compose.onNodeWithTag("composer_surface").fetchSemanticsNode().boundsInRoot.height / density
+        assertEquals("Blur should collapse without discarding the draft", emptyHeight, collapsedHeight, 1f)
+        compose.onNodeWithTag("message_input").assertTextEquals("第一行\n第二行\n第三行\n第四行\n第五行")
     }
 
     @Test fun attachmentMenuAndRunningActionsRemainAvailableWithoutExtraRows() {

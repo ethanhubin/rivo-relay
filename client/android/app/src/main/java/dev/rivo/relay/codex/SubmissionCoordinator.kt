@@ -114,7 +114,9 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
                             record = { onResolved(pending, JSONObject().put("status", if (definitive) "failed" else "unknown")) },
                             clear = { save(null); afterAccepted = null })
                     }
-                    if (reported !is CancellationException) failure(reported)
+                    // An uncertain send is represented by the durable pending receipt.
+                    // Do not stack a global transport error on top of that actionable state.
+                    if (reported !is CancellationException && (definitive || reported !== e || e is ApiException || e !is java.io.IOException)) failure(reported)
                 }
             } finally { mutable.update { it.copy(busy = false) } }
             completed?.let { complete(accepted, it) }

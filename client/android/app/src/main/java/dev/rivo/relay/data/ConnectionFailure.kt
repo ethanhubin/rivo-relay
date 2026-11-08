@@ -20,5 +20,5 @@ fun connectionFailure(error: Throwable, base: String = ""): String {
         else -> "节点连接中断（${error.javaClass.simpleName.take(60)}）。"
     }
     val target = runCatching { java.net.URI(base).let { uri -> uri.host?.let { it + if (uri.port >= 0) ":${uri.port}" else "" } } }.getOrNull()
-    return reason + (target?.let { "\n节点：$it" } ?: "") + "\n已提交操作不会自动重发。"
+    return reason + (target?.let { "\n节点：$it" } ?: "")
 }

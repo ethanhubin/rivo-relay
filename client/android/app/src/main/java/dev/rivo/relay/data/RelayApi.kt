@@ -34,7 +34,12 @@ class RelayApi(private val base: String, private val token: String = "", private
     private val connectionObserver = dev.rivo.relay.connection.ConnectionStatusObserver(routes, base)
     val connectionStatus = connectionObserver.status
     internal val sentImages = SentImageCache()
-    fun describeFailure(error: Throwable) = connectionFailure(error, base)
+    fun describeFailure(error: Throwable) = connectionFailure(error, when (routes?.mode) {
+        dev.rivo.relay.connection.ConnectionMode.RELAY -> routes.relay
+        dev.rivo.relay.connection.ConnectionMode.DIRECT -> routes.direct
+        dev.rivo.relay.connection.ConnectionMode.AUTO -> "" // A failed automatic route has no confirmed endpoint.
+        null -> base
+    })
     private val routing by lazy {
         routes?.let { config ->
             val probe = OkHttpClient.Builder().dns(dns).retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false)

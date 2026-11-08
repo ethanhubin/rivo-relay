@@ -13,6 +13,27 @@ import org.junit.Test
 import java.io.IOException
 
 class SubmissionCoordinatorTest {
+    @Test fun disconnectedSendUsesPendingThenDefinitiveNoticeWithoutGlobalError() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val errors = mutableListOf<Throwable>()
+        try {
+            server.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AFTER_REQUEST))
+            server.enqueue(MockResponse().setBody("""{"status":"failed","errorCode":"submission_not_received"}"""))
+            val coordinator = SubmissionCoordinator(api(server), scope, MemoryVault(), "key", failure = { errors += it })
+            coordinator.submit("/v1/threads", JSONObject(), "create") {}
+            idle(coordinator)
+            assertNotNull(coordinator.state.value.pending)
+            assertTrue(errors.isEmpty())
+            coordinator.reconcile(); idle(coordinator)
+            assertNull(coordinator.state.value.pending)
+            assertTrue(coordinator.state.value.notice.orEmpty().contains("节点未收到"))
+            assertTrue(errors.isEmpty())
+            assertEquals("POST", server.takeRequest().method)
+            assertEquals("GET", server.takeRequest().method)
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
     private class MemoryVault : CredentialStorage {
         var value: String? = null
         var failRemove = false
