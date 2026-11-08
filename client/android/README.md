@@ -2,7 +2,7 @@
 
 单个 `:app` 模块，包名 `dev.rivo.relay`，不会覆盖 QiGuang。采用 Kotlin、Compose、Moonlight 主题、StateFlow 和 OkHttp。QiGuang 的来源与调整记录见 [migration-sources.json](migration-sources.json)。
 
-2026-11-07 对照 QiGuang 最新本地发布版的 Codex 迁移见 [完整对照](../../docs/qiguang-codex-sync.md)。包括模型/快速模式与节点默认设置、写权限条、恢复面板、精确身份消息接管、草稿恢复、10 图附件、链接转发及结构化差异分页，以及 Desktop 运行时状态、原生历史失效、Coil 图片查看器、Media3 音视频、媒体库和流式语音输入；验证以根目录 `docs/validation.md` 为准。
+2026-11-07 对照 QiGuang 最新本地发布版的 Codex 迁移见 [完整对照](../../docs/qiguang-codex-sync.md)。包括模型/快速模式与节点默认设置、写权限条、恢复面板、精确身份消息接管、草稿恢复、10 图附件、链接转发及结构化差异分页，以及 Desktop 运行时状态、原生历史失效、Coil 图片查看器、Media3 音视频和流式语音输入；验证以根目录 `docs/validation.md` 为准。
 
 当前安装包版本为 **0.2.55 / versionCode 67**，沿用此前签名，可覆盖升级并保留登录与本地数据。默认从主节点 `http://100.124.150.1:18767` 检查更新和下载，独立于会话所选节点；不自动回退 GitHub。构建与校验位于 `workspace/artifacts/release-0.2.55/`。详见 [节点发布流程](../../docs/node-updates.md)。
 

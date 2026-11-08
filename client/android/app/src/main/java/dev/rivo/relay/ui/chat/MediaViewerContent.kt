@@ -106,11 +106,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalFoundationApi::class)
-internal val LocalImageFavorite = androidx.compose.runtime.staticCompositionLocalOf<
-  (suspend (String, Boolean?) -> dev.rivo.relay.data.MediaFavoriteResult)?
-> { null }
-
 internal data class ImageViewerItem(
   val preview: String,
   val original: String,
@@ -231,20 +226,7 @@ internal fun FullScreenImage(
   var moreMenuOpen by remember(currentImage.original) { mutableStateOf(false) }
   var longPressMenuPosition by remember(currentImage.original) { mutableStateOf<Offset?>(null) }
   val forwardLink = LocalCodexLinkForwarder.current
-  val favoriteAction = LocalImageFavorite.current?.takeIf { currentImage.mediaId != null || !currentImage.original.startsWith("data:") && !currentImage.original.startsWith("content:") && !currentImage.original.startsWith("file:") }
-  val favoriteResults = remember(viewerIdentity) { androidx.compose.runtime.mutableStateMapOf<String, dev.rivo.relay.data.MediaFavoriteResult>() }
-  var favoriteBusy by remember(currentImage.original) { mutableStateOf(false) }
-  var favoriteError by remember(currentImage.original) { mutableStateOf<String?>(null) }
-  LaunchedEffect(currentImage.original, favoriteAction) {
-    if (favoriteAction != null && favoriteResults[currentImage.original] == null) {
-      favoriteBusy = true
-      try {
-        favoriteResults[currentImage.original] = favoriteAction(currentImage.original, null)
-      } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-      catch (error: Exception) { favoriteError = error.message ?: "无法读取收藏状态" }
-      finally { favoriteBusy = false }
-    }
-  }
+
   var intrinsicImageSize by remember(currentImage.original) {
     mutableStateOf<ComposeSize?>(null)
   }
@@ -371,22 +353,7 @@ internal fun FullScreenImage(
     fun action(label: String, title: String, tag: String, enabled: Boolean = true, block: () -> Unit) {
       add(ImageMenuAction(label, title, tag, enabled, block))
     }
-    if (favoriteAction != null) {
-      val favorite = favoriteResults[currentImage.original]
-      action(if (favorite?.favorite == true) "取消收藏" else "收藏",
-        if (favorite?.favorite == true) "取消收藏" else "收藏图片", "fullscreen_favorite", !favoriteBusy) {
-        favoriteBusy = true
-        favoriteError = null
-        scope.launch {
-          try {
-            val state = favorite ?: favoriteAction(currentImage.original, null)
-            favoriteResults[currentImage.original] = favoriteAction(state.mediaId.ifBlank { currentImage.original }, !state.favorite)
-          } catch (cancelled: CancellationException) { throw cancelled }
-          catch (error: Exception) { favoriteError = error.message ?: "收藏失败，请重试" }
-          finally { favoriteBusy = false }
-        }
-      }
-    }
+
     if (currentImage.taggingState.isNotEmpty() || currentImage.hasGenerationInfo ||
       currentImage.summary.isNotBlank() || currentImage.tags.isNotEmpty()) {
       action("信息", "查看图片信息", "fullscreen_info", block = ::showCurrentImageGenerationInfo)
@@ -744,11 +711,7 @@ internal fun FullScreenImage(
           onDismiss = { longPressMenuPosition = null },
         )
       }
-      if (favoriteError != null) {
-        Text(favoriteError.orEmpty(), color = Color.White,
-          modifier = Modifier.align(Alignment.BottomCenter).background(Color.Black.copy(alpha = 0.8f)).padding(16.dp)
-            .testTag("fullscreen_favorite_error"))
-      }
+
       if (reversePromptVisible) {
         Surface(
           modifier =

@@ -32,8 +32,7 @@ import androidx.compose.ui.window.DialogProperties
 @Composable
 internal fun AttachmentSourceMenu(expanded: Boolean, imageSlots: Int, fileSlots: Int, onDismiss: () -> Unit,
     onCamera: () -> Unit, onImage: () -> Unit, onFile: () -> Unit, onVideo: () -> Unit,
-    onWorkspace: () -> Unit, onMedia: () -> Unit) {
-    val hasMedia = LocalCodexMediaClient.current != null
+    onWorkspace: () -> Unit) {
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss,
         modifier = Modifier.width(240.dp).testTag("attachment_dialog"),
         shape = RoundedCornerShape(24.dp), containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
@@ -44,7 +43,6 @@ internal fun AttachmentSourceMenu(expanded: Boolean, imageSlots: Int, fileSlots:
             Option("视频", "video", "add_video", fileSlots > 0, onVideo),
             Option("本地文件", "folder", "add_file", fileSlots > 0, onFile),
             Option("工作区文件", "folder", "add_workspace_file", fileSlots > 0, onWorkspace),
-            Option("媒体库", "image", "attachment_tab_media", hasMedia && (imageSlots > 0 || fileSlots > 0), onMedia),
         ).forEach { option ->
             DropdownMenuItem(text = { Text(option.label) }, onClick = { onDismiss(); option.action() },
                 enabled = option.enabled, modifier = Modifier.testTag(option.tag),

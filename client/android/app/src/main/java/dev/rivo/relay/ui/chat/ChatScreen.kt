@@ -344,34 +344,16 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     }) else null
     val saveFile: (String) -> Unit = { fileAction = FileAction.SAVE; filePath = it }
     fun openSettings() { if (inputLocked) return; settingsOpen = !settingsOpen; if (settingsOpen) { focus.clearFocus(); keyboard?.hide(); onLoadModels() } }
-    val mediaFavorite: (suspend (String, Boolean?) -> dev.rivo.relay.data.MediaFavoriteResult)? = mediaClient?.let { client ->
-        { source, desired -> client.favorite(source, desired) }
-    }
+
     val mediaCache: NativeCachedDownload? = mediaClient?.let { client ->
         { path, progress ->
             if (isHttpWebLink(path) || path.startsWith("/v1/media/")) client.cached(mediaContext, path, progress)
             else requireNotNull(cachedFile)(path, progress)
         }
     } ?: cachedFile
-    val mediaAttach: suspend (java.io.File, String, String) -> Boolean = attach@{ file, name, mime ->
-        val target = state.id ?: return@attach false
-        if (busy || inputLocked || preparing || !draftLoaded) return@attach false
-        if (mime.startsWith("image/")) {
-            val image = prepareImage(context, android.net.Uri.fromFile(file))
-            if (currentSessionId != target || latestInputLocked) return@attach false
-            require(images.size < 10 && images.sumOf { it.bytes.size.toLong() } + image.bytes.size <= 40L * 1024 * 1024) { "最多 10 张图片，合计 40 MiB" }
-            images = images + image
-        } else {
-            require(files.size < 16) { "最多 16 个附件" }
-            val uploaded = uploadFile(target, name, file)
-            if (currentSessionId != target || latestInputLocked) return@attach false
-            files = files + JSONObject().put("type", "mention").put("name", uploaded.getString("name")).put("path", uploaded.getString("path"))
-        }
-        true
-    }
-    CompositionLocalProvider(LocalMediaAttachment provides mediaAttach, LocalMediaAssets provides mediaAssets, LocalMediaSourceIndex provides mediaSources, LocalCodexGallery provides gallery,
+    CompositionLocalProvider(LocalMediaAssets provides mediaAssets, LocalMediaSourceIndex provides mediaSources, LocalCodexGallery provides gallery,
         LocalMediaEdited provides { uri -> addImages(listOf(uri)) }, LocalCodexMediaClient provides mediaClient,
-        LocalImageFavorite provides mediaFavorite, LocalNativeFileCache provides mediaCache,
+        LocalNativeFileCache provides mediaCache,
         LocalCodexLinkForwarder provides if (onForwardLink == null || busy || blocked) null else { link -> forwardingLink = link }) {
     Column(Modifier.fillMaxSize().imePadding().testTag("chat_page")) {
         if (pendingTitle != null) Row(Modifier.fillMaxWidth().height(64.dp), verticalAlignment = Alignment.CenterVertically) {

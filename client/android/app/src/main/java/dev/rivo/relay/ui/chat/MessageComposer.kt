@@ -117,7 +117,6 @@ fun MessageComposer(
     var attachmentsOpen by remember { mutableStateOf(false) }
     LaunchedEffect(enabled) { if (!enabled) attachmentsOpen = false }
     val context = LocalContext.current
-    var mediaOpen by remember { mutableStateOf(false) }
     var cameraUri by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         val uri = cameraUri
@@ -355,7 +354,7 @@ fun MessageComposer(
                                         android.widget.Toast.makeText(context, "无法打开相机", android.widget.Toast.LENGTH_SHORT).show()
                                     }
                                 }, onImage = onAddImage, onVideo = onAddVideo, onFile = onAddFile,
-                                onWorkspace = onAddWorkspaceFile, onMedia = { mediaOpen = true })
+                                onWorkspace = onAddWorkspaceFile)
                         }
                         ComposerModeSelector(if (goalMode) "goal" else if (discussionMode) "plan" else "default",
                             enabled, goalModeEnabled) { mode ->
@@ -400,14 +399,7 @@ fun MessageComposer(
             }
         }
     }
-    if (mediaOpen) Dialog(onDismissRequest = { mediaOpen = false }) {
-        Surface(Modifier.fillMaxWidth().heightIn(max = 560.dp), shape = RoundedCornerShape(24.dp)) {
-            Column(Modifier.padding(20.dp).verticalScroll(rememberScrollState())) {
-                Text("媒体库", style = MaterialTheme.typography.titleLarge)
-                CodexMediaLibrary(10 - images.size, 16 - files.size) { mediaOpen = false }
-            }
-        }
-    }
+
 
 }
 

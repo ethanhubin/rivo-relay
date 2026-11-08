@@ -116,7 +116,6 @@ internal fun FullScreenVideo(
   val currentIndex = video.initialIndex.coerceIn(video.items.indices)
   val currentVideo = video.items[currentIndex]
   val forwardLink = LocalCodexLinkForwarder.current
-  val favoriteAction = LocalImageFavorite.current
   val context = LocalContext.current
   val activity = remember(context) { context.findActivity() }
   val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -160,24 +159,8 @@ internal fun FullScreenVideo(
   var locked by remember(video) { mutableStateOf(false) }
   var gestureFeedback by remember(video) { mutableStateOf<String?>(null) }
   var zoomScale by remember(video) { mutableFloatStateOf(1f) }
-  var favoriteResult by remember(video) { mutableStateOf<dev.rivo.relay.data.MediaFavoriteResult?>(null) }
-  var favoriteBusy by remember(video) { mutableStateOf(false) }
-  var favoriteError by remember(video) { mutableStateOf<String?>(null) }
 
-  LaunchedEffect(currentVideo.mediaId, favoriteAction) {
-    val mediaId = currentVideo.mediaId ?: currentVideo.source
-    if (favoriteAction == null || favoriteResult != null) return@LaunchedEffect
-    favoriteBusy = true
-    try {
-      favoriteResult = favoriteAction(mediaId, null)
-    } catch (cancelled: kotlinx.coroutines.CancellationException) {
-      throw cancelled
-    } catch (error: Exception) {
-      favoriteError = error.message ?: "无法读取收藏状态"
-    } finally {
-      favoriteBusy = false
-    }
-  }
+
 
   fun revealControls() {
     if (!locked) controlsVisible = true
@@ -520,8 +503,6 @@ internal fun FullScreenVideo(
           speed = selectedSpeed,
           speedMenuVisible = speedMenuVisible,
           moreMenuVisible = moreMenuVisible,
-          favorite = favoriteResult?.favorite == true,
-          favoriteBusy = favoriteBusy,
           onClose = onDismiss,
           onForwardToCodex = forwardLink?.let { forward -> { forward(CodexLinkAttachment(currentVideo.source, videoTitle(currentVideo))) } },
           onShare = onShare?.let { share -> { revealControls(); share(currentVideo) } },
@@ -529,25 +510,6 @@ internal fun FullScreenVideo(
             revealControls()
             onDownload(currentVideo)
           },
-          onFavorite =
-            if (favoriteAction != null) {
-              {
-                favoriteBusy = true
-                favoriteError = null
-                scope.launch {
-                  try {
-                    val state = favoriteResult ?: favoriteAction(currentVideo.mediaId ?: currentVideo.source, null)
-                    favoriteResult = favoriteAction(state.mediaId.ifBlank { currentVideo.source }, !state.favorite)
-                  } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                    throw cancelled
-                  } catch (error: Exception) {
-                    favoriteError = error.message ?: "收藏失败，请重试"
-                  } finally {
-                    favoriteBusy = false
-                  }
-                }
-              }
-            } else null,
           onTogglePlayback = ::togglePlayback,
           onRewind = { seekBy(-QUICK_SEEK_MS) },
           onForward = { seekBy(QUICK_SEEK_MS) },
@@ -611,17 +573,7 @@ internal fun FullScreenVideo(
           fontWeight = FontWeight.SemiBold,
         )
       }
-      favoriteError?.let { message ->
-        Text(
-          message,
-          Modifier.align(Alignment.BottomCenter)
-            .navigationBarsPadding()
-            .background(Color.Black.copy(alpha = .8f), RoundedCornerShape(10.dp))
-            .padding(horizontal = 16.dp, vertical = 10.dp)
-            .testTag("fullscreen_video_favorite_error"),
-          color = Color.White,
-        )
-      }
+
     }
   }
 }
@@ -637,11 +589,8 @@ private fun VideoControls(
   speed: Float,
   speedMenuVisible: Boolean,
   moreMenuVisible: Boolean,
-  favorite: Boolean,
-  favoriteBusy: Boolean,
   onClose: () -> Unit,
   onDownload: () -> Unit,
-  onFavorite: (() -> Unit)?,
   onShare: (() -> Unit)?,
   onForwardToCodex: (() -> Unit)?,
   onTogglePlayback: () -> Unit,
@@ -682,16 +631,7 @@ private fun VideoControls(
           onDismissRequest = onDismissMoreMenu,
           modifier = Modifier.testTag("fullscreen_video_more_menu"),
         ) {
-          if (onFavorite != null) {
-            val favoriteTitle = if (favorite) "取消收藏" else "收藏视频"
-            androidx.compose.material3.DropdownMenuItem(
-              text = { Text(favoriteTitle) },
-              enabled = !favoriteBusy,
-              modifier = Modifier.testTag("fullscreen_video_favorite")
-                .semantics { contentDescription = favoriteTitle },
-              onClick = { onDismissMoreMenu(); onFavorite() },
-            )
-          }
+
           androidx.compose.material3.DropdownMenuItem(
             text = { Text("播放速度 ${speedLabel(speed)}×") },
             modifier = Modifier.testTag("fullscreen_video_speed")
