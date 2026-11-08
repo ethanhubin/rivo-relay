@@ -227,7 +227,7 @@ fun MessageComposer(
     // QiGuang uses 42dp visible controls; preserve Rivo's 44dp touch target.
     CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides RivoSize.MinTouchTarget) {
         Column(
-            modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)
+            modifier.fillMaxWidth().padding(start = 12.dp, top = 8.dp, end = 12.dp)
                 .testTag("message_composer"),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {

@@ -377,7 +377,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         val bottomOverlayPadding = with(LocalDensity.current) { bottomOverlayHeight.toDp() }
         Box(Modifier.weight(1f).fillMaxWidth()) {
         // Draw history behind the rounded composer; reserve scroll space for the final message.
-        LazyColumn(state = list, modifier = Modifier.fillMaxSize().nestedScroll(scrollConnection).testTag("chat_history"), contentPadding = PaddingValues(start = 20.dp, top = 20.dp, end = 20.dp, bottom = bottomOverlayPadding + 20.dp), verticalArrangement = Arrangement.spacedBy(chatActivitySpacing)) {
+        LazyColumn(state = list, modifier = Modifier.fillMaxSize().padding(bottom = 8.dp).nestedScroll(scrollConnection).testTag("chat_history"), contentPadding = PaddingValues(start = 20.dp, top = 20.dp, end = 20.dp, bottom = bottomOverlayPadding + 20.dp), verticalArrangement = Arrangement.spacedBy(chatActivitySpacing)) {
             if (pendingTitle != null && timeline.isEmpty()) item {
                 Text("今天想从哪里开始？", Modifier.padding(vertical = 24.dp), style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
