@@ -102,6 +102,7 @@ fun MessageComposer(
     onOpenFile: (JSONObject) -> Unit = {},
     discussionMode: Boolean = false,
     onToggleMode: () -> Unit = {},
+    textEditable: Boolean = enabled,
     focusRequest: Int = 0,
     onPasteImages: (List<android.net.Uri>) -> Unit = {},
     settingsExpanded: Boolean = false,
@@ -229,7 +230,7 @@ fun MessageComposer(
             }
         }
     }
-    LaunchedEffect(focusRequest) { if (focusRequest > 0) { focusRequester.requestFocus(); keyboard?.show() } }
+    LaunchedEffect(focusRequest) { if (focusRequest > 0 && textEditable) { focusRequester.requestFocus(); keyboard?.show() } }
     // QiGuang uses 42dp visible controls; preserve Rivo's 44dp touch target.
     CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides RivoSize.MinTouchTarget) {
         Column(
@@ -299,11 +300,11 @@ fun MessageComposer(
                         BasicTextField(
                             value = inputValue,
                             onValueChange = { if (it.text != inputValue.text) cancelVoice(); inputValue = it; onTextChange(it.text) },
-                            enabled = enabled,
+                            enabled = textEditable,
                             modifier = Modifier.weight(1f).pasteImageAttachments(context, enabled && !preparing, onPasteImages)
                                 .focusRequester(focusRequester).onFocusChanged { inputFocused = it.isFocused }.heightIn(min = 52.dp)
                                 .padding(horizontal = 16.dp, vertical = 14.dp).testTag("message_input"),
-                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.38f)),
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (textEditable) 1f else 0.38f)),
                             cursorBrush = SolidColor(MaterialTheme.colorScheme.onSurface),
                             minLines = if (inputFocused) 2 else 1,
                             maxLines = if (inputFocused) 3 else 1,

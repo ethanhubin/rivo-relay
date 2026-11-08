@@ -156,7 +156,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val latestInputLocked by rememberUpdatedState(inputLocked)
     LaunchedEffect(inputLocked) {
         if (inputLocked) {
-            focus.clearFocus(); keyboard?.hide(); settingsOpen = false
+            settingsOpen = false
             editingImage = null; workspaceFileDialog = false; removingQueue = null; stopConfirm = false
         }
     }
@@ -213,6 +213,11 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val submissionInFlight = busy || pendingFirstTurnSent || state.pendingMessages.any { it.delivery in setOf("submitting", "unknown") }
     val hideSubmitted = pendingTitle == null && hideSubmittedDraft(submissionInFlight, unchangedSubmission,
         composerInput, state.pendingMessages)
+    // A masked draft is the recovery copy of an unresolved submission, not a new empty draft.
+    val textEditable = draftLoaded && !busy && !pendingFirstTurnSent && !pendingReceiptUnresolved && !hideSubmitted
+    LaunchedEffect(textEditable) {
+        if (!textEditable) { focus.clearFocus(); keyboard?.hide() }
+    }
     // Drop the mask after a definitive outcome. Never mutate the recovery copy here.
     SideEffect { if (!submissionInFlight && submittedDraft != null) submittedDraft = null }
 
@@ -589,12 +594,13 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             Text(if (displayedGoal == null) "设置持续目标" else "编辑持续目标")
         }
         MessageComposer(
-            text = if (hideSubmitted) "" else draft, onTextChange = { draft = it }, images = if (hideSubmitted) emptyList() else images,
+            text = if (hideSubmitted) "" else draft, onTextChange = { if (textEditable) draft = it }, images = if (hideSubmitted) emptyList() else images,
             onEditImage = { focus.clearFocus(); keyboard?.hide(); editingImage = it },
             onRemoveImage = { image -> images = images.filterNot { it.id == image.id } },
             files = if (hideSubmitted) emptyList() else files, onRemoveFile = { reference -> files = files.filterNot { it === reference } },
             onOpenFile = { reference -> nativeFilePath(reference.string("path"), cwd)?.let(::openFile) },
             preparing = preparing, error = attachmentError, enabled = !busy && !inputLocked && draftLoaded,
+            textEditable = textEditable,
             canSend = !(goalMode && displayedGoal == null) && !pendingReceiptUnresolved && !pendingFirstTurnSent && (pendingGoal == null || goalCapability == true) && (draft.isNotBlank() || images.isNotEmpty() || files.isNotEmpty() || pendingGoal != null) && !state.stale && (snapshot != null || pendingTitle != null && pendingReady),
             isRunning = snapshot?.activeTurnId?.isNotBlank() == true, canStop = !busy && !blocked && !state.stale && canOperate, busy = busy,
             onAddImage = { focus.clearFocus(); keyboard?.hide(); imagePickerTarget = state.id; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },

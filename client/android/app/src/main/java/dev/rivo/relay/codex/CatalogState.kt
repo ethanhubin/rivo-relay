@@ -22,14 +22,19 @@ data class CatalogState(
 
 /** Separate catalog/list owner; stale requests cannot overwrite another project or archive filter. */
 class CatalogController(private val api: RelayApi, private val scope: CoroutineScope, private val failure: (Throwable) -> Unit,
-    private val store: ConversationStore? = null) {
+    private val store: ConversationStore? = null,
+    private val monotonicMillis: () -> Long = { System.nanoTime() / 1_000_000 }) {
     private val mutable = MutableStateFlow(CatalogState(pinnedProjectIds = readProjectPins()))
     val state = mutable.asStateFlow()
     private var projectsJob: Job? = null
     private var listJob: Job? = null
+    private var listKey: String? = null
+    private var listReadPending = false
     private var usageJob: Job? = null
     private var usageUpdatedAt = 0L
     private var generation = 0
+    private data class CreatedThread(val summary: ThreadSummary, val expiresAt: Long)
+    private val createdThreads = mutableMapOf<String, CreatedThread>()
     private val readVersions = mutableMapOf<String, Long>()
 
     private fun readProjectPins(): List<String> {
@@ -106,36 +111,51 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
     }
 
     fun project(project: ProjectSummary) {
+        if (mutable.value.selectedProject?.id == project.id && !mutable.value.archived) {
+            refreshThreads()
+            return
+        }
         store?.putMetadata("selectedProjectId", project.id)
         mutable.update { it.copy(selectedProject = project, threads = emptyList(), archived = false, unreadThreadIds = emptySet(), threadsFresh = false) }
-        refreshThreads()
+        applyThreads(emptyList(), fresh = false)
+        refreshThreads(coalesceSwitch = true)
     }
 
     fun setArchived(archived: Boolean) {
         if (mutable.value.archived == archived) return
         mutable.update { it.copy(archived = archived, threads = emptyList(), unreadThreadIds = emptySet(), threadsFresh = false) }
-        refreshThreads()
+        applyThreads(emptyList(), fresh = false)
+        refreshThreads(coalesceSwitch = true)
     }
 
-    fun refreshThreads(): Job? {
+    fun refreshThreads(coalesceSwitch: Boolean = false, force: Boolean = false): Job? {
         val project = mutable.value.selectedProject ?: return null
         val archived = mutable.value.archived
         val cacheKey = "threads:${project.id}:$archived"
+        if (!force && listReadPending && listKey == cacheKey) listJob?.takeIf { it.isActive }?.let { return it }
         listJob?.cancel()
+        listKey = cacheKey
+        listReadPending = true
         val targetGeneration = ++generation
         listJob = scope.launch {
             mutable.update { it.copy(threadsLoading = true) }
             try {
+                // Rapid project/filter navigation only sends the final selection.
+                if (coalesceSwitch) delay(120)
                 if (mutable.value.threads.isEmpty()) try { store?.loadCatalog(cacheKey)?.let {
                     if (generation == targetGeneration) applyThreads(it.objects("threads").map(::threadSummary), fresh = false)
                 } } catch (e: Exception) { if (e is CancellationException) throw e }
                 val response = api.call(threadsPath(project.id, archived))
+                if (generation == targetGeneration) listReadPending = false
                 if (generation == targetGeneration) applyThreads(response.objects("threads").map(::threadSummary), fresh = true)
-                try { store?.saveCatalog(cacheKey, response) } catch (e: Exception) { if (e is CancellationException) throw e }
+                if (generation == targetGeneration) try { store?.saveCatalog(cacheKey, response) } catch (e: Exception) { if (e is CancellationException) throw e }
             } catch (e: Exception) { if (e !is CancellationException && generation == targetGeneration) {
                 mutable.update { it.copy(threadsFresh = false) }; failure(e)
             } }
-            finally { if (generation == targetGeneration) mutable.update { it.copy(threadsLoading = false) } }
+            finally { if (generation == targetGeneration) {
+                listReadPending = false
+                mutable.update { it.copy(threadsLoading = false) }
+            } }
         }
         return listJob
     }
@@ -144,16 +164,45 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
     suspend fun observeThreads(activeIntervalMillis: Long = 15_000, idleIntervalMillis: Long = 60_000) {
         require(activeIntervalMillis > 0 && idleIntervalMillis > 0)
         // Reuse an in-flight project/filter read instead of canceling it on entry.
-        (listJob?.takeUnless { it.isCompleted } ?: refreshThreads())?.join()
+        refreshThreads()?.join()
         while (currentCoroutineContext().isActive) {
             delay(if (mutable.value.threads.any(::threadIsActive)) activeIntervalMillis else idleIntervalMillis)
             refreshThreads()?.join()
         }
     }
 
-    private fun applyThreads(threads: List<ThreadSummary>, fresh: Boolean) {
-        mutable.update { current -> current.copy(threads = stableThreadOrder(threads, current.threads.map { it.id }),
-            unreadThreadIds = unread(threads), threadsFresh = fresh) }
+    fun recordCreatedThread(projectId: String, threadId: String) {
+        if (projectId.isBlank() || threadId.isBlank()) return
+        if (mutable.value.threads.any { it.id == threadId }) return
+        // A receipt bridges indexing delay, but cannot keep a remotely archived/deleted row forever.
+        createdThreads.putIfAbsent(threadId, CreatedThread(
+            ThreadSummary(threadId, "新会话", "", "unknown", "", projectId), monotonicMillis() + 120_000))
+        if (mutable.value.selectedProject?.id != projectId || mutable.value.archived) return
+        applyThreads(mutable.value.threads, fresh = mutable.value.threadsFresh, confirmCreated = false)
+        refreshThreads(force = true)
+    }
+
+    fun forgetCreatedThreads(ids: Collection<String>) {
+        val removed = ids.filter { createdThreads.remove(it) != null }.toSet()
+        if (removed.isEmpty()) return
+        mutable.update { current ->
+            val threads = current.threads.filterNot { it.id in removed }
+            current.copy(threads = threads, unreadThreadIds = current.unreadThreadIds - removed)
+        }
+    }
+
+    private fun applyThreads(threads: List<ThreadSummary>, fresh: Boolean, confirmCreated: Boolean = fresh) {
+        if (confirmCreated) threads.forEach { createdThreads.remove(it.id) }
+        val current = mutable.value
+        val expired = createdThreads.filterValues { it.expiresAt <= monotonicMillis() }.keys.toSet()
+        createdThreads.keys.removeAll(expired)
+        val authoritative = if (fresh) threads else threads.filterNot { it.id in expired }
+        val provisional = if (current.archived) emptyList() else createdThreads.values.map { it.summary }.filter {
+            it.projectId == current.selectedProject?.id && authoritative.none { thread -> thread.id == it.id }
+        }
+        val merged = provisional + authoritative
+        mutable.update { it.copy(threads = stableThreadOrder(merged, current.threads.map { t -> t.id }),
+            unreadThreadIds = unread(merged), threadsFresh = fresh) }
     }
 
     /** Fresh detail reads also reconcile the list; read markers alone cannot stop its spinner. */
@@ -167,11 +216,13 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
             queueDepth = snapshot.queueDepth, recoveryRequired = snapshot.recoveryRequired,
             hasOutstandingWork = snapshot.isOngoing || snapshot.queue.isNotEmpty(),
             updatedAt = snapshot.updatedAt)
+        createdThreads[snapshot.id]?.let { createdThreads[snapshot.id] = it.copy(summary = updated) }
         if (updated == prior) return
         // A list read started before this detail observation must not restore stale execution.
         generation++
         listJob?.cancel()
         listJob = null
+        listReadPending = false
         val threads = current.threads.map { if (it.id == updated.id) updated else it }
         mutable.update { it.copy(threads = stableThreadOrder(threads, current.threads.map { t -> t.id }),
             threadsLoading = false, unreadThreadIds = unread(threads)) }
