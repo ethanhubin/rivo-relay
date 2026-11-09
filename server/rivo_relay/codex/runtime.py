@@ -33,6 +33,9 @@ class RuntimeConnection:
         self._probe_lock = threading.Lock()
         self._start_close_locks = {name: threading.RLock() for name in ('app_server', 'desktop')}
         self._pins, self._requests = {}, {}
+        # History probes pin routing too, but only real subscriptions own work
+        # that must be checked before an update stops this Relay.
+        self._subscriptions = set()
         self._backend_generations = {'app_server': self.native.generation, 'desktop': self.desktop.generation}
         self._preferred = 'desktop' if mode == 'desktop' else 'app_server'
         self._candidate_since, self._last_probe = None, float('-inf')
@@ -151,7 +154,7 @@ class RuntimeConnection:
 
     def update_threads(self):
         with self._lock:
-            result = set(self._pins)
+            result = set(self._subscriptions)
         result.update(getattr(self.native, 'update_threads', lambda: [])())
         return result
 
@@ -187,8 +190,10 @@ class RuntimeConnection:
                 selected = result.get('thread', {}).get('id') or thread_id
                 if selected:
                     self._pins[selected] = name
+                    self._subscriptions.add(selected)
             elif method == 'thread/unsubscribe' and thread_id:
                 self._pins.pop(thread_id, None)
+                self._subscriptions.discard(thread_id)
             if backend.generation != generation:
                 raise CodexError('原生连接已变化，请核对结果', request_sent=True)
         return result
@@ -261,6 +266,7 @@ class RuntimeConnection:
                 result = acquire(params)
                 with self._lock:
                     self._pins[thread_id] = 'app_server'
+                    self._subscriptions.add(thread_id)
                 return result
             yield resume
 
