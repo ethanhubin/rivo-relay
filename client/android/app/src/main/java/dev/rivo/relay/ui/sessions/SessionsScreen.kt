@@ -138,7 +138,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                         }, enabled = true, modifier = Modifier.testTag("pin_session"),
                             contentPadding = PaddingValues(horizontal = 6.dp)) { Text(if (singleSelected.pinned) "取消置顶" else "置顶") }
                         if (onArchive != null) TextButton(onClick = { onArchive(selected, !archived); selectedIds = emptySet() },
-                            enabled = canManageThreads && selected.isNotEmpty() && (archived || selected.none(::threadIsActive)), modifier = Modifier.testTag("archive_sessions"),
+                            enabled = canManageThreads && selected.isNotEmpty(), modifier = Modifier.testTag("archive_sessions"),
                             contentPadding = PaddingValues(horizontal = 6.dp)) { Text(if (archived) "恢复" else "归档") }
                         TextButton(onClick = { selectedIds = emptySet() }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("取消") }
                     }
@@ -177,9 +177,6 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                                         isSelected -> Text("✓", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.primary, modifier = Modifier.semantics { contentDescription = "已选择" })
                                         threadIsExecuting(thread) -> CircularProgressIndicator(Modifier.size(18.dp).semantics { contentDescription = "任务处理中" }, strokeWidth = 2.dp)
-                                        threadPendingLabel(thread) != null -> Text("Ⅱ", Modifier.semantics {
-                                            contentDescription = threadPendingLabel(thread)!!
-                                        }, color = MaterialTheme.colorScheme.secondary)
                                         thread.source == "todo" -> Text("☑", Modifier.testTag("session_source_todo_${thread.id}").semantics { contentDescription = "来自待办" }, style = MaterialTheme.typography.titleMedium)
                                         else -> Icon(painterResource(android.R.drawable.sym_action_chat), null, Modifier.size(20.dp))
                                     }

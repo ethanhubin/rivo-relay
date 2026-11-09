@@ -134,22 +134,25 @@ class NativeParityTests(unittest.TestCase):
         self.service.send('thread', 'test', model='chosen-model')
         self.assertEqual('native-fallback', self.service.get_session('thread')['turnSettings'][0]['model'])
 
-    def test_archive_rejects_native_running_and_queue_under_same_lock(self):
-        self.native.thread['status'] = {'type': 'active'}
-        with self.assertRaises(CodexError):
-            self.service.archive_session('thread', True)
-        self.native.thread['status'] = {'type': 'idle'}
+    def test_archive_cancels_waiting_only_after_native_success(self):
+        from unittest.mock import patch
         with self.db.transaction() as c:
             c.execute("INSERT INTO connections VALUES ('phone','digest','Phone',1,NULL)")
         queue = ExecutionQueue(self.db, self.service, EventBus())
+        self.addCleanup(queue.close)
         queue.enqueue('thread', 'queued', 'phone', {'input': [{'type': 'text', 'text': 'wait'}]})
-        with self.assertRaises(CodexError):
-            self.service.archive_session('thread', True)
-        self.assertNotIn('thread/archive', [m for m, _ in self.native.calls])
-        queue.change('thread', 'queued', 0, 'remove')
+        error = CodexError('native rejection')
+        with patch.object(self.native, 'request', side_effect=error):
+            with self.assertRaises(CodexError) as caught:
+                self.service.archive_session('thread', True)
+        self.assertIs(error, caught.exception)
+        self.assertEqual('waiting', queue.list('thread')[0]['status'])
+        self.native.thread['status'] = {'type': 'active'}
         self.service.archive_session('thread', True)
+        self.assertEqual([], queue.list('thread'))
         self.service.archive_session('thread', False)
-        self.assertEqual(['thread/archive', 'thread/unarchive'], [m for m, _ in self.native.calls if m in ('thread/archive', 'thread/unarchive')])
+        queue.tick()
+        self.assertNotIn('turn/start', [m for m, _ in self.native.calls])
 
     def test_review_queue_dispatches_once_via_native_review_not_message(self):
         with self.db.transaction() as c:

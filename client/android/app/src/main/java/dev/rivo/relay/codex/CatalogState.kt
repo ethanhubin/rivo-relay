@@ -455,24 +455,15 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
 }
 
 private fun threadsPath(projectId: String, archived: Boolean) = "/v1/threads?projectId=${encoded(projectId)}&archived=$archived"
-fun threadIsActive(thread: ThreadSummary): Boolean = thread.hasOutstandingWork || thread.recoveryRequired ||
-    thread.queueDepth > 0 || thread.nativeExecution == "running" ||
-    thread.status in setOf("running", "inProgress", "active", "waiting", "queued", "starting")
+/** Only current execution determines the list's active group. */
+fun threadIsActive(thread: ThreadSummary): Boolean = threadIsExecuting(thread)
 
-/** Queue attention and execution animation are independent. */
 fun threadIsExecuting(thread: ThreadSummary): Boolean =
-    thread.status != "waiting" && (thread.nativeExecution == "running" || thread.status in setOf("running", "inProgress", "active", "starting"))
+    thread.status != "waiting" && (thread.nativeExecution == "running" ||
+        (thread.nativeExecution.isBlank() && thread.status in setOf("running", "inProgress", "active", "starting")))
 
-fun threadPendingLabel(thread: ThreadSummary): String? = when {
-    thread.status == "waiting" -> "待回答"
-    thread.recoveryRequired -> "待恢复"
-    thread.deliveryState == "failed" -> "失败"
-    thread.queueDepth > 0 || thread.deliveryState == "queued" -> "排队中"
-    thread.deliveryState == "dispatching" -> "发送中"
-    thread.hasOutstandingWork -> "待处理"
-    thread.nativeExecution == "unknown" || thread.status == "unknown" -> "状态待确认"
-    else -> null
-}
+fun threadPendingLabel(thread: ThreadSummary): String? =
+    if (threadIsExecuting(thread)) null else "已停止"
 
 /** QiGuang ordering: pinned/active groups, stable active ranks, newest completed first. */
 fun stableThreadOrder(threads: List<ThreadSummary>, previousIds: List<String> = emptyList()): List<ThreadSummary> {
