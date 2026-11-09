@@ -608,7 +608,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 modifier = Modifier.testTag("resume_queue")) { Text("恢复队列") }
         }
         val waitingQueue = snapshot?.queue.orEmpty().filter { it.status !in setOf("running", "dispatching") && !it.recoveryRequired && it.id != snapshot?.recoveryTask?.id }
-        if (snapshot != null && waitingQueue.isNotEmpty()) ExecutionQueuePanel(snapshot.id, waitingQueue, !busy && !blocked && !writerBusy && state.canManageQueue(),
+        val displayedQueue = waitingQueue + projectedPendingQueue(snapshot, state.pendingMessages)
+        if (snapshot != null && displayedQueue.isNotEmpty()) ExecutionQueuePanel(snapshot.id, displayedQueue, !busy && !blocked && !writerBusy && state.canManageQueue(),
             canSteer = canOperate && snapshot.activeTurnId.isNotBlank() && snapshot.requests.isEmpty(),
             onEdit = ::editQueuedTask, onWithdraw = { removingQueue = it },
             onSteer = { task -> onQueue(JSONObject().put("operation", "steer").put("itemId", task.id).put("revision", task.revision).put("expectedTurnId", snapshot.activeTurnId), {}) },

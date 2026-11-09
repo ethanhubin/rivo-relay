@@ -74,7 +74,7 @@ fun ExecutionQueuePanel(threadId: String, tasks: List<QueueTask>, enabled: Boole
                             Column(Modifier.weight(1f)) {
                                 Text(task.text.ifBlank { "附件任务" }, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                                 if (task.status != "waiting") Text(when(task.status) {
-                                    "running" -> "执行中"; "dispatching" -> "正在提交"; "unknown" -> "结果待核对"; else -> "执行未完成"
+                                    "pending_accepted" -> "已接收，正在同步"; "submitting" -> "正在提交"; "pending_unknown" -> "结果待核对"; "running" -> "执行中"; "dispatching" -> "正在提交"; "unknown" -> "结果待核对"; else -> "执行未完成"
                                 }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             if (task.status == "waiting" && canSteer) TextButton(onClick = { onSteer(task) },
