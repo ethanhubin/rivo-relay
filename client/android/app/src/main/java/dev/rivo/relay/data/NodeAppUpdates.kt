@@ -38,6 +38,7 @@ class NodeAppUpdates(
             }
             val routes = credentials.read("update-routes")?.let { runCatching { NodeRoutes.from(JSONObject(it)) }.getOrNull() }
                 ?: return NodeAppUpdates()
+            if (publicUpdateOrigin(routes) != null) return gateway(routes)
             val base = routes.direct.ifBlank { routes.relay }
             val probe = OkHttpClient.Builder().dns(TailnetDns()).followRedirects(false).followSslRedirects(false)
                 .retryOnConnectionFailure(false).gatewayTrust(routes).build()
@@ -45,11 +46,21 @@ class NodeAppUpdates(
                 .readTimeout(30, TimeUnit.SECONDS).callTimeout(180, TimeUnit.SECONDS).build()
             return NodeAppUpdates(base, client)
         }
+        // Only this deployment migrates. The public endpoint uses system CA trust,
+        // not the old pin, so certificate renewal never requires pairing again.
+        internal fun publicUpdateOrigin(routes: NodeRoutes): String? {
+            if (routes.relay.isBlank()) return null
+            routes.validated()
+            val url = routes.relay.toHttpUrl()
+            return if (url.host == "134.175.156.219" && url.port in setOf(80, 8443))
+                "https://134.175.156.219:8443" else null
+        }
         internal fun gateway(routes: NodeRoutes): NodeAppUpdates {
             routes.validated()
-            val origin = routes.relay.toHttpUrl().newBuilder().encodedPath("/").build().toString().trimEnd('/')
+            val publicOrigin = publicUpdateOrigin(routes)
+            val origin = publicOrigin ?: routes.relay.toHttpUrl().newBuilder().encodedPath("/").build().toString().trimEnd('/')
             val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
-                .gatewayTrust(routes).connectTimeout(10, TimeUnit.SECONDS)
+                .apply { if (publicOrigin == null) gatewayTrust(routes) }.connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS).callTimeout(180, TimeUnit.SECONDS).build()
             return NodeAppUpdates(origin, client)
         }
@@ -99,6 +110,8 @@ class NodeAppUpdates(
                             throw IOException("安装包响应无效")
                         }
                         if (body.contentLength() != release.size - total) throw IOException("安装包长度不匹配")
+                        val transferStarted = System.nanoTime()
+                        val transferOffset = total
                         body.byteStream().use { input -> java.io.FileOutputStream(temporary, total > 0).use { output ->
                             val buffer = ByteArray(65536)
                             while (total < release.size) {
@@ -109,6 +122,15 @@ class NodeAppUpdates(
                                 output.write(buffer, 0, count)
                                 digest.update(buffer, 0, count)
                                 val now = System.nanoTime()
+                                val elapsed = now - transferStarted
+                                // One early recovery only: a lossy connection may stay alive
+                                // at tens of KiB/s and never trigger the normal read timeout.
+                                // Do not repeatedly reconnect genuinely slow mobile networks.
+                                if (attempt == 0 && release.size - total > 1024 * 1024 &&
+                                    elapsed >= 3_000_000_000L &&
+                                    (total - transferOffset).toDouble() / (elapsed / 1_000_000_000.0) < 256 * 1024) {
+                                    throw UpdateTransportException(IOException("下载起步持续低速，重新连接续传"))
+                                }
                                 if (total == release.size || now - lastReport >= 100_000_000L) {
                                     progress(total, release.size)
                                     lastReport = now
@@ -149,7 +171,10 @@ class NodeAppUpdates(
                         read(it)
                     }
                     if (continuation.isActive) continuation.resume(result)
-                } catch (e: Exception) { if (continuation.isActive) continuation.resumeWithException(e) }
+                } catch (e: Exception) {
+                    if (e is UpdateTransportException) call.cancel() // Never reuse the degraded socket.
+                    if (continuation.isActive) continuation.resumeWithException(e)
+                }
             }
         })
     }

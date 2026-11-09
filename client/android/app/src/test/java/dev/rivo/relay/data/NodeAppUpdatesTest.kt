@@ -13,6 +13,15 @@ import java.nio.file.Files
 import java.security.MessageDigest
 
 class NodeAppUpdatesTest {
+    @Test fun managedGatewayUsesPublicHttpsWithoutChangingOtherDeployments() {
+        fun routes(host: String, port: Int) = dev.rivo.relay.connection.NodeRoutes(
+            relay = "https://$host:$port/relay/" + "a".repeat(32), pin = "b".repeat(64))
+        assertEquals("https://134.175.156.219:8443", NodeAppUpdates.publicUpdateOrigin(routes("134.175.156.219", 80)))
+        assertEquals("https://134.175.156.219:8443", NodeAppUpdates.publicUpdateOrigin(routes("134.175.156.219", 8443)))
+        assertNull(NodeAppUpdates.publicUpdateOrigin(routes("134.175.156.219", 9443)))
+        assertNull(NodeAppUpdates.publicUpdateOrigin(routes("other.example", 80)))
+        assertNull(NodeAppUpdates.publicUpdateOrigin(dev.rivo.relay.connection.NodeRoutes(direct = "http://100.124.150.1:18767")))
+    }
     private val bytes = "apk fixture".toByteArray()
     private val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     private fun manifest() = JSONObject().put("version", "0.2.13").put("versionCode", 25).put("sha256", hash)
@@ -43,6 +52,38 @@ class NodeAppUpdatesTest {
                 NodeAppUpdates.gateway(routes.copy(pin = "0".repeat(64))).check("0.2.12")
                 fail("Wrong gateway certificate must fail")
             } catch (_: java.io.IOException) { }
+        }
+        Unit
+    }
+    @Test fun slowLiveConnectionReconnectsOnceAndResumesVerifiedBytes() = runBlocking {
+        val payload = ByteArray(3 * 1024 * 1024) { (it % 251).toByte() }
+        val sha = MessageDigest.getInstance("SHA-256").digest(payload).joinToString("") { "%02x".format(it) }
+        val ranges = mutableListOf<String?>()
+        MockWebServer().use { server ->
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    if (request.path == "/v1/app-updates/latest") return MockResponse().setBody(manifest()
+                        .put("sha256", sha).put("size", payload.size).put("apkPath", "/v1/app-updates/apks/$sha.apk").toString())
+                    val range = request.getHeader("Range")
+                    ranges.add(range)
+                    if (range == null) return MockResponse().setBody(okio.Buffer().write(payload))
+                        .throttleBody(16384, 100, java.util.concurrent.TimeUnit.MILLISECONDS)
+                    val start = range.removePrefix("bytes=").removeSuffix("-").toInt()
+                    return MockResponse().setResponseCode(206)
+                        .setHeader("Content-Range", "bytes $start-${payload.size - 1}/${payload.size}")
+                        .setBody(okio.Buffer().write(payload.copyOfRange(start, payload.size)))
+                }
+            }
+            val dir = Files.createTempDirectory("slow-update").toFile()
+            try {
+                val updates = NodeAppUpdates(server.url("/").toString().trimEnd('/'))
+                val progress = mutableListOf<Long>()
+                val release = updates.check("0.2.12")!!
+                assertArrayEquals(payload, updates.download(release, dir) { done, _ -> progress.add(done) }.readBytes())
+                assertEquals(2, ranges.size)
+                assertTrue(ranges[1]!!.matches(Regex("bytes=[1-9][0-9]*-")))
+                assertTrue(progress.zipWithNext().all { (a, b) -> a <= b })
+            } finally { dir.deleteRecursively() }
         }
         Unit
     }
