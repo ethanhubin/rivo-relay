@@ -7,12 +7,6 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-data class SessionState(val id: String? = null, val snapshot: SessionSnapshot? = null, val loading: Boolean = false, val stale: Boolean = false,
-    val historyCursor: String? = null, val loadingEarlier: Boolean = false, val earlierLoaded: Boolean = false,
-    val readError: String? = null, val historyError: String? = null,
-    val pendingMessages: List<PendingNativeMessage> = emptyList(), val overlayRevision: Long = 0L,
-    val controlNotice: String? = null, val lastConfirmedControl: SessionControl? = null, val mediaValidationEpoch: Long = 0)
-
 /** One active thread owns reads and subscription; switch cancels both and rejects late snapshots. */
 class SessionController(private val api: RelayApi, private val scope: CoroutineScope,
     private val store: ConversationStore? = null,
@@ -23,6 +17,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
     private val sync: NodeSessionSync? = null,
     private val pollIntervalMillis: Long = 5000,
     private val failure: (Throwable) -> Unit) {
+    private val eventSource = sync ?: NodeSessionSync(api, scope)
     private val mutable = MutableStateFlow(SessionState())
     val state = mutable.asStateFlow()
     // Node-owned recent views avoid disk IO and reparsing on A/B/A switches.
@@ -62,15 +57,14 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
     private fun isCurrent(id: String, targetGeneration: Long) = mutable.value.id == id && generation == targetGeneration
     private fun message(error: Exception): String? = if (error is CancellationException) null else if (error is ApiException) error.message else api.describeFailure(error)
     private fun invalidateHistory() { historyEpoch++; historyJob?.cancel(); historyJob = null; historyDepthTarget = null; requestedHistoryCursors.clear() }
-    fun dismissReadError() { mutable.update { it.copy(readError = null, historyError = null) } }
+    fun dismissReadError() { mutable.update { it.transition(SessionSyncEvent.DismissError).copy(historyError = null) } }
     fun open(id: String, online: Boolean = true) {
         pause()
         val targetGeneration = generation
         val previous = mutable.value
         val retained = if (previous.id == id) previous else recentViews.remove(id)
-        mutable.value = retained?.copy(loading = true, stale = true, loadingEarlier = false,
-            pendingMessages = pendingByThread[id].orEmpty(), readError = null, historyError = null)
-            ?: SessionState(id = id, loading = true, pendingMessages = pendingByThread[id].orEmpty())
+        mutable.value = (retained ?: SessionState(id = id)).transition(SessionSyncEvent.Open(online)).copy(
+            loadingEarlier = false, pendingMessages = pendingByThread[id].orEmpty(), historyError = null)
         onVisible(id)
         if (!online) {
             // Cancel the old transport immediately; retain read-only content while no route exists.
@@ -79,7 +73,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                 try { if (mutable.value.snapshot == null) cached = store?.loadSnapshot(id)?.let { withContext(Dispatchers.Default) { sessionSnapshot(it) } } }
                 catch (e: Exception) { if (e is CancellationException) throw e }
                 if (isCurrent(id, targetGeneration)) mutable.update {
-                    it.copy(snapshot = it.snapshot ?: cached, loading = false, stale = true, controlNotice = "网络不可用，恢复连接并同步后才能操作")
+                    it.copy(snapshot = it.snapshot ?: cached)
                 }
             }
             return
@@ -89,7 +83,6 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
             var reading = false
             val headCache = SessionHeadCache()
             var cachedHistoryEpoch = historyEpoch
-            var eventCursor: String? = null
             val pendingDeltas = mutableListOf<org.json.JSONObject>()
             val deltaSignals = Channel<Unit>(Channel.CONFLATED)
             val deltaLock = Mutex()
@@ -128,60 +121,54 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
             }
             // Subscribe before first snapshot. Buffered notifications coalesce into another authoritative read.
             launch {
-                while (isActive) {
-                    try { (sync?.events() ?: api.events(id, eventCursor)).collect { event ->
-                        if (isCurrent(id, targetGeneration)) {
-                            event.cursor?.let { eventCursor = it.takeIf(String::isNotBlank) }
-                            val params = event.payload.optJSONObject("params")
-                            val method = event.payload.string("method")
-                            val eventThread = params?.string("threadId")?.ifBlank { params.string("conversationId") }.orEmpty()
-                            val eventThreads = params?.optJSONArray("threadIds")
-                            // Empty threadIds means a metadata-only disconnect. It must not
-                            // disable an unrelated live writer or trigger its history reads.
-                            if (eventThread.isNotEmpty() && eventThread != id) return@collect
-                            if (eventThreads != null && (0 until eventThreads.length()).none { eventThreads.optString(it) == id }) return@collect
-                            val writerDisconnected = event.type == "native" && method in setOf("relay/writerDisconnected", "relay/nativeDisconnected")
-                            if (writerDisconnected) {
-                                pendingDeltas.clear()
-                                invalidateControl("会话 writer 已断开，正在重新核验恢复条件")
-                                mutable.update { it.copy(snapshot = it.snapshot?.copy(requests = emptyList())) }
-                            }
-                            if (event.type == "native" && params?.has("relayOffset") == true &&
-                                supportsLiveDelta(method)) {
-                                pendingDeltas += event.payload
-                                deltaSignals.trySend(Unit)
-                                if (pendingDeltas.size >= 128) flushDeltas()
-                                return@collect
-                            }
-                            if (event.type == "native" && event.payload.string("method") == "relay/ownershipChanged")
-                                invalidateControl("会话权限已变化，正在重新确认")
-                            val historyInvalidated = writerDisconnected || event.type == "reset" || (event.type == "native" &&
-                                event.payload.string("method") == "relay/historyInvalidated")
-                            if (historyInvalidated) pendingDeltas.clear() else flushDeltas()
-                            if (historyInvalidated) {
-                                invalidateHistory()
-                                mutable.update { it.copy(earlierLoaded = false, historyCursor = null, loading = true,
-                                    loadingEarlier = false, stale = true, historyError = null) }
-                            }
-                            signals.trySend(Unit)
-                        }
-                    } }
-                    catch (e: Exception) {
-                        if (e is CancellationException) throw e
-                        if (isCurrent(id, targetGeneration)) {
-                            invalidateControl("连接已中断，正在重新确认操作权限")
-                            if (e is ApiException && e.status == 401) failure(e)
-                        }
-                    }
+                eventSource.events(onInterrupted = { error ->
                     flushDeltas()
-                    if (isCurrent(id, targetGeneration)) invalidateControl("连接已中断，正在重新确认操作权限")
-                    delay(1800); signals.trySend(Unit)
+                    if (isCurrent(id, targetGeneration)) {
+                        invalidateControl("连接已中断，正在重新确认操作权限")
+                        mutable.update { it.transition(SessionSyncEvent.StreamInterrupted) }
+                        if (error is ApiException && error.status == 401) failure(error)
+                    }
+                }).collect { event ->
+                    if (isCurrent(id, targetGeneration)) {
+                        val params = event.payload.optJSONObject("params")
+                        val method = event.payload.string("method")
+                        val eventThread = params?.string("threadId")?.ifBlank { params.string("conversationId") }.orEmpty()
+                        val eventThreads = params?.optJSONArray("threadIds")
+                        // Empty threadIds means a metadata-only disconnect. It must not
+                        // disable an unrelated live writer or trigger its history reads.
+                        if (eventThread.isNotEmpty() && eventThread != id) return@collect
+                        if (eventThreads != null && (0 until eventThreads.length()).none { eventThreads.optString(it) == id }) return@collect
+                        val writerDisconnected = event.type == "native" && method in setOf("relay/writerDisconnected", "relay/nativeDisconnected")
+                        if (writerDisconnected) {
+                            pendingDeltas.clear()
+                            invalidateControl("会话 writer 已断开，正在重新核验恢复条件")
+                            mutable.update { it.copy(snapshot = it.snapshot?.copy(requests = emptyList())) }
+                        }
+                        if (event.type == "native" && params?.has("relayOffset") == true &&
+                            supportsLiveDelta(method)) {
+                            pendingDeltas += event.payload
+                            deltaSignals.trySend(Unit)
+                            if (pendingDeltas.size >= 128) flushDeltas()
+                            return@collect
+                        }
+                        if (event.type == "native" && event.payload.string("method") == "relay/ownershipChanged")
+                            invalidateControl("会话权限已变化，正在重新确认")
+                        val historyInvalidated = writerDisconnected || event.type == "reset" || (event.type == "native" &&
+                            event.payload.string("method") == "relay/historyInvalidated")
+                        if (historyInvalidated) pendingDeltas.clear() else flushDeltas()
+                        if (historyInvalidated) {
+                            invalidateHistory()
+                            mutable.update { it.transition(SessionSyncEvent.HistoryInvalidated).copy(earlierLoaded = false, historyCursor = null,
+                                loadingEarlier = false, historyError = null) }
+                        }
+                        signals.trySend(Unit)
+                    }
                 }
             }
             if (mutable.value.snapshot == null) {
                 try {
                     val cached = store?.loadSnapshot(id)?.let { withContext(Dispatchers.Default) { sessionSnapshot(it) } }
-                    if (cached != null && isCurrent(id, targetGeneration)) mutable.update { it.copy(snapshot = cached, stale = true) }
+                    if (cached != null && isCurrent(id, targetGeneration)) mutable.update { it.copy(snapshot = cached) }
                 } catch (e: Exception) { if (e is CancellationException) throw e }
             }
             signals.trySend(Unit)
@@ -194,11 +181,12 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                 val knownHeadRevision = headCache.revision
                 val requestHistoryEpoch = historyEpoch
                 val requestControlEpoch = controlEpoch
+                mutable.update { it.transition(SessionSyncEvent.ReadStarted) }
                 val readStarted = System.nanoTime()
                 val slowRead = launch {
                     delay(slowReadMillis)
-                    if (isCurrent(id, targetGeneration)) mutable.update {
-                        it.copy(stale = true, controlNotice = "服务器响应较慢，暂时禁止操作，等待同步确认")
+                    if (isCurrent(id, targetGeneration) && requestControlEpoch == controlEpoch && requestHistoryEpoch == historyEpoch) mutable.update {
+                        it.transition(SessionSyncEvent.ReadSlow)
                     }
                 }
                 try {
@@ -250,7 +238,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                         cachedHistoryEpoch = historyEpoch
                         reconcilePending(id, snapshot)
                         mutable.update { current ->
-                            current.copy(snapshot = projected, mediaValidationEpoch = current.mediaValidationEpoch + 1, loading = false, stale = false, readError = null, controlNotice = null,
+                            current.transition(SessionSyncEvent.ReadSucceeded).copy(snapshot = projected, mediaValidationEpoch = current.mediaValidationEpoch + 1,
                                 earlierLoaded = if (revisionChanged) false else current.earlierLoaded,
                                 loadingEarlier = if (revisionChanged) false else current.loadingEarlier,
                                 historyError = if (revisionChanged) null else current.historyError,
@@ -276,9 +264,9 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                     if (requestControlEpoch != controlEpoch) { signals.trySend(Unit); continue }
                     if (isCurrent(id, targetGeneration)) {
                         if (e is ApiException && e.status == 401) {
-                            mutable.update { it.copy(loading = false, stale = true) }
+                            mutable.update { it.transition(SessionSyncEvent.ReadFailed(null)) }
                             failure(e)
-                        } else if (requestHistoryEpoch == historyEpoch) mutable.update { it.copy(loading = false, stale = true, readError = message(e), controlNotice = "当前会话同步失败，暂时禁止操作，请重试或切换会话") }
+                        } else if (requestHistoryEpoch == historyEpoch) mutable.update { it.transition(SessionSyncEvent.ReadFailed(message(e))) }
                     }
                 }
                 finally { slowRead.cancel(); reading = false }
@@ -370,7 +358,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         // Its permission epoch is already obsolete. Waiting for this body to
         // finish can otherwise delay a fresh ownership check for two minutes.
         activeRead?.cancel()
-        mutable.update { it.copy(stale = true, controlNotice = notice) }
+        mutable.update { it.transition(SessionSyncEvent.Revalidate(notice)) }
         refresh()
     }
     fun refresh() { updates?.trySend(Unit) }
@@ -515,15 +503,15 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         if (current.id != null && snapshot != null) {
             recentViews.remove(current.id)
             // Do not retain unusually deep histories as additional resident views.
-            if (snapshot.messages.size <= 2000) recentViews[current.id] = current.copy(
+            if (snapshot.messages.size <= 2000) recentViews[current.id] = current.transition(SessionSyncEvent.Pause).copy(
                 snapshot = snapshot.copy(requests = emptyList()), pendingMessages = emptyList(),
-                loading = false, loadingEarlier = false, stale = true)
+                loadingEarlier = false)
             while (recentViews.size > 3) recentViews.remove(recentViews.keys.first())
         }
         onVisible(null)
         generation++; activeJob?.cancel(); activeJob = null; updates?.close(); updates = null
         invalidateHistory()
-        mutable.update { it.copy(stale = it.id != null, loadingEarlier = false) }
+        mutable.update { it.transition(SessionSyncEvent.Pause).copy(loadingEarlier = false) }
     }
     fun close() { pause(); mutable.value = SessionState() }
 }

@@ -13,6 +13,9 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import dev.rivo.relay.codex.SessionSynchronization
+import dev.rivo.relay.codex.SessionSyncEvent
+import dev.rivo.relay.codex.control
 import dev.rivo.relay.codex.SessionState
 import dev.rivo.relay.data.sessionSnapshot
 import dev.rivo.relay.ui.chat.ChatScreen
@@ -33,7 +36,7 @@ class ChatScrollUiTest {
                 repeat(count) { put(JSONObject().put("id", "message-$it").put("type", "agentMessage")
                     .put("text", if (it == count - 1) tail else "历史消息 $it\n\n这是用于检查滚动位置的正文。")) }
             })))).put("status", "idle"))
-    private val current = mutableStateOf(SessionState(id = "scroll-test", loading = true))
+    private val current = mutableStateOf(SessionState(id = "scroll-test", synchronization = SessionSynchronization.opening()))
     private fun show(onEarlier: () -> Unit = {}) {
         compose.activityRule.scenario.onActivity { it.enableEdgeToEdge() }
         compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize()) { Box(Modifier.systemBarsPadding()) {
@@ -53,6 +56,30 @@ class ChatScrollUiTest {
         compose.waitUntil(10000) { compose.onAllNodesWithTag("jump_to_latest").fetchSemanticsNodes().isEmpty() }
         compose.onNodeWithTag("latest_message_anchor").assertIsDisplayed()
     }
+    @Test fun runningRevalidationPreservesViewportAndWriterHeight() {
+        val ready = SessionState(id = "scroll-test", snapshot = snapshot(30).copy(
+            status = "running", activeTurnId = "turn", readOnly = true, writerOwner = "external"))
+        current.value = ready.copy(lastConfirmedControl = ready.control())
+        show(); atLatest()
+        val history = compose.onNodeWithTag("chat_history")
+        val beforeScroll = history.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+        val beforeWriter = compose.onNodeWithTag("writer_status").fetchSemanticsNode().boundsInRoot.height
+        val beforeAnchor = compose.onNodeWithTag("latest_message_anchor").fetchSemanticsNode().boundsInRoot
+        for (event in listOf(SessionSyncEvent.ReadSlow, SessionSyncEvent.StreamInterrupted,
+            SessionSyncEvent.HistoryInvalidated, SessionSyncEvent.RouteUnavailable, SessionSyncEvent.Open(true))) {
+            compose.runOnIdle { current.value = current.value.transition(event) }
+            compose.waitForIdle()
+            compose.onNodeWithTag("execution_stage_pending").assertIsDisplayed()
+            compose.onNodeWithTag("ownership_takeover").assertDoesNotExist()
+            assertEquals(beforeScroll, history.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value(), 0.01f)
+            assertEquals(beforeWriter, compose.onNodeWithTag("writer_status").fetchSemanticsNode().boundsInRoot.height, 0.01f)
+            assertEquals(beforeAnchor, compose.onNodeWithTag("latest_message_anchor").fetchSemanticsNode().boundsInRoot)
+            compose.runOnIdle { current.value = current.value.transition(SessionSyncEvent.ReadSucceeded) }
+            compose.waitForIdle()
+            assertEquals(beforeScroll, history.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value(), 0.01f)
+        }
+    }
+
     @Test fun initialLoadAndStreamingLongLastMessageFollowActualBottom() {
         show()
         compose.runOnIdle { current.value = SessionState(id="scroll-test", snapshot=snapshot(30, (1..40).joinToString("\n\n") { "长消息第 $it 段" })) }

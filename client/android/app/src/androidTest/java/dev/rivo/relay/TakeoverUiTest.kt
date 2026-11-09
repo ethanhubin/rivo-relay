@@ -5,6 +5,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import dev.rivo.relay.codex.SessionSynchronization
 import dev.rivo.relay.codex.SessionState
 import dev.rivo.relay.codex.control
 import dev.rivo.relay.data.sessionSnapshot
@@ -35,7 +36,7 @@ class TakeoverUiTest {
         compose.onNodeWithTag("release_session_permission").assertIsNotEnabled()
         compose.runOnIdle { busy.value = false; blocked.value = "等待核对" }
         compose.onNodeWithTag("release_session_permission").assertIsNotEnabled()
-        compose.runOnIdle { blocked.value = null; state.value = ready.copy(stale = true) }
+        compose.runOnIdle { blocked.value = null; state.value = ready.copy(synchronization = SessionSynchronization.pending()) }
         compose.onNodeWithTag("release_session_permission").assertIsNotEnabled()
         compose.runOnIdle { state.value = ready.copy(snapshot = sessionSnapshot(JSONObject()
             .put("thread", JSONObject().put("id", "t")).put("writerOwner", "relay")
@@ -54,7 +55,7 @@ class TakeoverUiTest {
         val stale = mutableStateOf(true)
         var action = ""
         compose.setContent { RivoTheme { Surface {
-            NativeWriterStatus(SessionState(id = "t", snapshot = snapshot, stale = stale.value, lastConfirmedControl = SessionState(snapshot = snapshot).control()), "节点", false,
+            NativeWriterStatus(SessionState(id = "t", snapshot = snapshot, synchronization = if (stale.value) SessionSynchronization.pending() else SessionSynchronization.confirmed(), lastConfirmedControl = SessionState(snapshot = snapshot).control()), "节点", false,
                 { action = it }, reason.value)
         } } }
         compose.onNodeWithTag("ownership_takeover").assertDoesNotExist()
@@ -64,7 +65,7 @@ class TakeoverUiTest {
         compose.runOnIdle { assertEquals("takeover", action) }
     }
     @Test fun initialLoadAndWritableRefreshNeverFlashTakeover() {
-        val state = mutableStateOf(SessionState(id = "t", loading = true))
+        val state = mutableStateOf(SessionState(id = "t", synchronization = SessionSynchronization.opening()))
         compose.setContent { RivoTheme { Surface {
             NativeWriterStatus(state.value, "节点", false, {})
         } } }
@@ -74,13 +75,13 @@ class TakeoverUiTest {
         compose.runOnIdle { state.value = ready }
         compose.onNodeWithTag("writer_status_details").assertTextEquals("节点 · 可操作").assertIsDisplayed()
         compose.onNodeWithText("释放权限").assertIsEnabled()
-        compose.runOnIdle { state.value = ready.copy(stale = true, lastConfirmedControl = ready.control()) }
+        compose.runOnIdle { state.value = ready.copy(synchronization = SessionSynchronization.pending(), lastConfirmedControl = ready.control()) }
         compose.onNodeWithTag("ownership_takeover").assertDoesNotExist()
         compose.onNodeWithText("释放权限").assertDoesNotExist()
         compose.runOnIdle { state.value = ready }
         compose.onNodeWithText("释放权限").assertIsEnabled()
         compose.onNodeWithTag("ownership_takeover").assertDoesNotExist()
-        compose.runOnIdle { state.value = SessionState(id = "other", loading = true) }
+        compose.runOnIdle { state.value = SessionState(id = "other", synchronization = SessionSynchronization.opening()) }
         compose.onNodeWithTag("ownership_takeover").assertDoesNotExist()
         compose.onNodeWithTag("writer_action").assertDoesNotExist()
     }
