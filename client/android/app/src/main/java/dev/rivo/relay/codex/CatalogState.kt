@@ -220,7 +220,8 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
         val current = mutable.value
         val prior = current.threads.firstOrNull { it.id == snapshot.id } ?: return
         if (snapshot.updatedAt < prior.updatedAt) return
-        val updated = prior.copy(status = snapshot.status, nativeExecution = snapshot.nativeExecution,
+        val updated = prior.copy(name = snapshot.name.ifBlank { prior.name },
+            status = snapshot.status, nativeExecution = snapshot.nativeExecution,
             deliveryState = snapshot.deliveryState, displayState = snapshot.displayState,
             queueDepth = snapshot.queueDepth, recoveryRequired = snapshot.recoveryRequired,
             hasOutstandingWork = snapshot.isOngoing || snapshot.queue.isNotEmpty(),

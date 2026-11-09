@@ -139,8 +139,8 @@ fun nativeTimelineRows(messages: List<NativeMessage>, activeTurnId: String? = nu
     val pending = mutableListOf<NativeMessage>()
     fun flush() { if (pending.isNotEmpty()) { rows += NativeTimelineRow.Activities(pending.toList()); pending.clear() } }
     messages.forEach { message ->
-        // Reasoning stays in native history, but never becomes a chat row or splits tool groups.
-        if (message.activity?.kind == "reasoning" || message.type == "reasoning") return@forEach
+        // Internal reasoning and sleep stay in history without splitting visible tool groups.
+        if (message.activity?.kind == "reasoning" || message.type in setOf("reasoning", "sleep")) return@forEach
         if (message.activity != null && message.activity.kind != "commentary") {
             if (pending.lastOrNull()?.turnId?.let { it != message.turnId } == true) flush()
             pending += message

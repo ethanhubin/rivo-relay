@@ -12,6 +12,17 @@ class NativeActivityProjectionTest {
     private fun turn(id: String, vararg items: JSONObject) = JSONObject().put("id", id).put("items", JSONArray(items.toList()))
     private fun command(id: String, command: String) = JSONObject().put("id", id).put("type", "commandExecution").put("command", command).put("aggregatedOutput", "result").put("status", "completed")
 
+    @Test fun sleepStaysInHistoryWithoutSplittingCommands() {
+        val sleep = JSONObject().put("id", "wait").put("type", "sleep").put("durationMs", 20000)
+        val state = snapshot(turn("one", command("a", "first"), sleep, command("b", "second")))
+        assertEquals(3, state.messages.size)
+        for (activeTurn in listOf(null, "one")) {
+            val rows = nativeTimelineRows(state.messages, activeTurn)
+            assertEquals(listOf("a", "b"), (rows.single() as NativeTimelineRow.Activities).messages.map { it.id })
+            assertTrue(nativeTimelineRows(snapshot(turn("one", sleep)).messages, activeTurn).isEmpty())
+        }
+    }
+
     @Test fun emptyReasoningIsHiddenWithoutRemovingNativeHistory() {
         val empty = JSONObject().put("id", "r").put("type", "reasoning")
             .put("summary", JSONArray()).put("content", JSONArray()).put("encrypted_content", "opaque")

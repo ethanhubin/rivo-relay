@@ -10,6 +10,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -78,6 +79,12 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
         pendingConversations.filter { !archived && (query.isBlank() ||
             pendingPreview(it).contains(query, true) || "待发送".contains(query, true)) }
     }
+    val listState = remember(projectKey, archived) { LazyListState() }
+    val pendingIds = shownPending.map { it.id }
+    LaunchedEffect(listState, pendingIds, query) {
+        // Pending drafts can arrive after threads; override key anchoring so they stay visible.
+        if (pendingIds.isNotEmpty()) listState.requestScrollToItem(0)
+    }
     val ordered = remember(threads) {
         threads.sortedWith(compareByDescending<ThreadSummary> { it.pinned }
             .thenByDescending { threadIsActive(it) }.thenByDescending { if (threadIsActive(it)) 0 else it.updatedAt })
@@ -138,7 +145,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                 if (loading && shown.isEmpty() && shownPending.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(28.dp)) }
                 else if (shown.isEmpty() && shownPending.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                     Text(when { search.isNotBlank() -> "没有匹配的会话"; archived -> "没有已归档会话"; !showCreate -> "暂无会话"; else -> "还没有 Codex 会话，点击右下角新建" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                } else LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(bottom = 100.dp), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Xs)) {
+                } else LazyColumn(Modifier.fillMaxWidth().weight(1f), state = listState, contentPadding = PaddingValues(bottom = 100.dp), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Xs)) {
                     items(shownPending, key = { "pending:${it.id}" }, contentType = { "pending" }) { pending ->
                         Surface(onClick = { onResumePending(pending.id) }, shape = MaterialTheme.shapes.large,
                             color = MaterialTheme.colorScheme.listItemBackground,

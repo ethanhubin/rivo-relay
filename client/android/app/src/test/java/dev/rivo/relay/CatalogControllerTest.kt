@@ -23,6 +23,35 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 class CatalogControllerTest {
+    @Test fun freshDetailUpdatesProvisionalTitleAndKeepsItDuringIndexing() = runBlocking {
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = MockResponse().setBody("""{"threads":[]}""")
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = CatalogController(api(server), scope, { throw it })
+        try {
+            controller.project(ProjectSummary("p", "P", "/p"))
+            controller.refreshThreads()?.join()
+            controller.recordCreatedThread("p", "new")
+            controller.refreshThreads()?.join()
+            val snapshot = dev.rivo.relay.data.SessionSnapshot("new", "修复列表同步", "idle", "",
+                emptyList(), emptyList(), JSONObject(), updatedAt = 10, nativeExecution = "idle")
+            controller.reconcileSession(snapshot.copy(nativeSyncState = "converging"))
+            assertEquals("新会话", controller.state.value.threads.single().name)
+            controller.reconcileSession(snapshot)
+            assertEquals("修复列表同步", controller.state.value.threads.single().name)
+            controller.refreshThreads()?.join()
+            assertEquals("修复列表同步", controller.state.value.threads.single().name)
+            controller.reconcileSession(snapshot.copy(name = "旧标题", updatedAt = 9))
+            controller.reconcileSession(snapshot.copy(name = ""))
+            assertEquals("修复列表同步", controller.state.value.threads.single().name)
+            controller.reconcileSession(snapshot.copy(name = "更新后的标题", updatedAt = 11))
+            assertEquals("更新后的标题", controller.state.value.threads.single().name)
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
     @Test fun successfulSyncReplacesListAndNavigationRetainsLastResult() = runBlocking {
         val server = MockWebServer()
         server.enqueue(MockResponse().setBody("""{"threads":[{"id":"a","name":"A"},{"id":"b","name":"B"}]}"""))
