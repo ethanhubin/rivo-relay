@@ -213,7 +213,7 @@ class CatalogControllerTest {
             assertEquals(1L, statsStarted.count)
             assertTrue(controller.state.value.projectsFresh)
             assertFalse(controller.state.value.projectsLoading)
-            assertFalse(controller.state.value.projects.single().statsReady)
+            assertFalse(controller.state.value.projects.single().isRunning)
             controller.project(controller.state.value.projects.single())
             withTimeout(3000) { controller.state.first { it.threadsFresh } }
             assertEquals("t", controller.state.value.threads.single().id)
@@ -223,7 +223,7 @@ class CatalogControllerTest {
             delay(100)
             assertEquals("Renamed", controller.state.value.projects.single().name)
             assertEquals("Renamed", controller.state.value.selectedProject?.name)
-            assertFalse(controller.state.value.projects.single().statsReady)
+            assertFalse(controller.state.value.projects.single().isRunning)
             assertTrue(errors.isEmpty())
         } finally { releaseStats.countDown(); scope.cancel(); server.shutdown() }
     }
@@ -324,7 +324,7 @@ class CatalogControllerTest {
         val failures = mutableListOf<Throwable>()
         val controller = CatalogController(api(server), scope, { failures.add(it) })
         try {
-            controller.project(ProjectSummary("p", "P", "/p", 1))
+            controller.project(ProjectSummary("p", "P", "/p"))
             controller.refreshThreads()?.join()
             controller.refreshProjects().join()
             assertEquals("p", controller.state.value.selectedProject?.id)
@@ -345,7 +345,7 @@ class CatalogControllerTest {
         val scope = CoroutineScope(coroutineContext + SupervisorJob())
         val controller = CatalogController(api(server), scope, { throw it })
         try {
-            controller.project(ProjectSummary("p", "P", "/p", 0))
+            controller.project(ProjectSummary("p", "P", "/p"))
             withTimeout(3000) { controller.state.first { it.threadsFresh } }
             controller.recordCreatedThread("p", "a")
             controller.recordCreatedThread("p", "b")
@@ -370,13 +370,13 @@ class CatalogControllerTest {
         val scope = CoroutineScope(coroutineContext + SupervisorJob())
         val controller = CatalogController(api(server), scope, { throw it })
         try {
-            repeat(20) { controller.project(ProjectSummary("p$it", "P", "/p", 1)); yield() }
+            repeat(20) { controller.project(ProjectSummary("p$it", "P", "/p")); yield() }
             withTimeout(3000) { controller.state.first { it.threadsFresh } }
             assertEquals(1, server.requestCount)
             assertTrue(server.takeRequest().path!!.contains("p19"))
             val read = controller.refreshThreads()
             repeat(20) { assertSame(read, controller.refreshThreads()) }
-            controller.project(ProjectSummary("p19", "P", "/p", 1))
+            controller.project(ProjectSummary("p19", "P", "/p"))
             assertEquals("t", controller.state.value.threads.single().id)
             read?.join()
             assertEquals(2, server.requestCount)
@@ -394,12 +394,12 @@ class CatalogControllerTest {
         val controller = CatalogController(api(server), scope, { throw it }, monotonicMillis = { now })
         suspend fun settled() { yield(); withTimeout(3000) { controller.state.first { !it.threadsLoading } } }
         try {
-            controller.project(ProjectSummary("p", "P", "/p", 0)); settled()
+            controller.project(ProjectSummary("p", "P", "/p")); settled()
             val requests = server.requestCount
             controller.recordCreatedThread("q", "new")
             assertTrue(controller.state.value.threads.isEmpty())
             assertEquals(requests, server.requestCount)
-            controller.project(ProjectSummary("q", "Q", "/q", 0))
+            controller.project(ProjectSummary("q", "Q", "/q"))
             assertEquals("new", controller.state.value.threads.single().id)
             settled()
             controller.reconcileSession(dev.rivo.relay.data.SessionSnapshot("new", "N", "idle", "",
@@ -426,7 +426,7 @@ class CatalogControllerTest {
         val scope = CoroutineScope(coroutineContext + SupervisorJob())
         val controller = CatalogController(api(server), scope, { throw it })
         try {
-            controller.project(ProjectSummary("p", "P", "/p", 1))
+            controller.project(ProjectSummary("p", "P", "/p"))
             withTimeout(3000) { controller.state.first { it.threadsFresh } }
             val oldRead = controller.refreshThreads()
             withTimeout(3000) { while (server.requestCount < 2) delay(10) }
@@ -451,7 +451,7 @@ class CatalogControllerTest {
         val scope = CoroutineScope(coroutineContext + SupervisorJob())
         val controller = CatalogController(api(server), scope, { throw it })
         try {
-            controller.project(ProjectSummary("p", "Project", "/p", 0))
+            controller.project(ProjectSummary("p", "Project", "/p"))
             withTimeout(3000) { controller.state.first { it.threadsFresh } }
             controller.recordCreatedThread("p", "new")
             assertEquals("new", controller.state.value.threads.single().id)
@@ -470,7 +470,7 @@ class CatalogControllerTest {
         val scope = CoroutineScope(coroutineContext + SupervisorJob())
         val controller = CatalogController(api(server), scope, { throw it })
         try {
-            controller.project(ProjectSummary("p", "Project", "/p", 1))
+            controller.project(ProjectSummary("p", "Project", "/p"))
             withTimeout(3000) { controller.state.first { it.threadsFresh } }
             val completed = dev.rivo.relay.data.SessionSnapshot("t", "Thread", "idle", "",
                 emptyList(), emptyList(), JSONObject(), updatedAt = 10, nativeExecution = "idle")
@@ -483,7 +483,7 @@ class CatalogControllerTest {
     }
 
     @Test fun switchingNodesDoesNotDescribeLoadingCacheAsOffline() {
-        val cached = CatalogState(projects = listOf(ProjectSummary("p", "Project", "/p", 1)), projectsLoading = true)
+        val cached = CatalogState(projects = listOf(ProjectSummary("p", "Project", "/p")), projectsLoading = true)
         assertFalse(dev.rivo.relay.codex.catalogCacheNoticeVisible("projects", cached, true))
         assertTrue(dev.rivo.relay.codex.catalogCacheNoticeVisible("projects", cached.copy(projectsLoading = false), true))
         assertTrue(dev.rivo.relay.codex.catalogCacheNoticeVisible("projects", cached, false))
@@ -494,7 +494,7 @@ class CatalogControllerTest {
 
     private fun api(server: MockWebServer) = RelayApi(server.url("/").newBuilder().host("127.0.0.1").build().toString())
     private fun projects(count: Int) = MockResponse().setBody(
-        """{"projects":[{"id":"p","name":"Isolated fixture","path":"/fixture","threadCount":8,"outstandingWorkCount":$count}]}""")
+        """{"projects":[{"id":"p","name":"Fixture $count","path":"/fixture","threadCount":8,"outstandingWorkCount":$count}]}""")
     private suspend fun await(latch: CountDownLatch) = withContext(Dispatchers.IO) {
         assertTrue(latch.await(5, TimeUnit.SECONDS))
     }
@@ -577,7 +577,7 @@ class CatalogControllerTest {
         assertEquals(12, pinnedThreadsToObserve(state.copy(threads = (1..20).map { thread.copy(id = "$it") })).size)
     }
 
-    @Test fun projectActivityCountIsProjectedAndMissingOrInvalidCountsAreIdle() = runBlocking {
+    @Test fun legacyProjectStatisticsCannotOverrideNodeActivity() = runBlocking {
         val server = MockWebServer()
         server.enqueue(MockResponse().setBody("""{"projects":[
             {"id":"active","name":"Active","path":"/active","threadCount":8,"outstandingWorkCount":2,"runningTurnCount":1,"activeGoalCount":1},
@@ -592,10 +592,7 @@ class CatalogControllerTest {
             withTimeout(5_000) { controller.refreshProjects().join() }
             val result = controller.state.value.projects
             assertEquals(listOf("active", "old", "invalid"), result.map { it.id })
-            assertEquals(listOf(2, 0, 0), result.map { it.outstandingWorkCount })
-            assertEquals(listOf(1, 0, 0), result.map { it.runningTurnCount })
-            assertEquals(listOf(1, 0, 0), result.map { it.activeGoalCount })
-            assertEquals(8, result.first().threadCount)
+            assertTrue(result.none { it.isRunning })
             assertNull(failure.get())
             assertEquals("/v1/projects?view=summary", server.takeRequest().path)
         } finally { scope.cancel(); server.shutdown() }
@@ -654,11 +651,11 @@ class CatalogControllerTest {
             assertEquals(1, server.requestCount)
             release.countDown()
             withTimeout(5_000) { first.join() }
-            assertEquals(2, controller.state.value.projects.single().outstandingWorkCount)
+            assertEquals("Fixture 2", controller.state.value.projects.single().name)
             val next = controller.refreshProjects()
             assertNotSame(first, next)
             withTimeout(5_000) { next.join() }
-            assertEquals(0, controller.state.value.projects.single().outstandingWorkCount)
+            assertEquals("Fixture 0", controller.state.value.projects.single().name)
             assertEquals(2, server.requestCount)
             assertNull(failure.get())
         } finally { release.countDown(); scope.cancel(); server.shutdown() }
@@ -688,7 +685,7 @@ class CatalogControllerTest {
             assertTrue(sharedRead.isActive)
             releaseSecond.countDown()
             withTimeout(5_000) { sharedRead.join() }
-            assertEquals(0, controller.state.value.projects.single().outstandingWorkCount)
+            assertEquals("Fixture 0", controller.state.value.projects.single().name)
             delay(160) // Four test polling periods after the observer has ended.
             assertEquals(2, server.requestCount)
             repeat(2) {

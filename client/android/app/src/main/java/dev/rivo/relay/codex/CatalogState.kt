@@ -21,6 +21,12 @@ data class CatalogState(
     val pinnedProjectIds: List<String> = emptyList(),
 ) { val loading: Boolean get() = projectsLoading || threadsLoading }
 
+internal fun CatalogState.withProjectActivity(activity: NodeActivity): CatalogState {
+    fun projectState(project: ProjectSummary) = project.copy(
+        isRunning = activity.tasks.values.any { it.projectId == project.id && threadIsExecuting(it) })
+    return copy(projects = projects.map(::projectState), selectedProject = selectedProject?.let(::projectState))
+}
+
 /** Separate catalog/list owner; stale requests cannot overwrite another project or archive filter. */
 class CatalogController(private val api: RelayApi, private val scope: CoroutineScope, private val failure: (Throwable) -> Unit,
     private val store: ConversationStore? = null,
@@ -29,8 +35,7 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
     private val mutable = MutableStateFlow(CatalogState(pinnedProjectIds = readProjectPins()))
     val state: StateFlow<CatalogState> = if (sync == null) mutable.asStateFlow() else
         combine(mutable, sync.activity) { current, activity ->
-            current.copy(projects = current.projects.map { project -> project.copy(
-                runningTurnCount = if (activity.tasks.values.any { it.projectId == project.id && threadIsExecuting(it) }) 1 else 0, activeGoalCount = 0) },
+            current.withProjectActivity(activity).copy(
                 threads = current.threads.map { thread ->
                     val task = activity.tasks[thread.id]
                     val status = activity.status(thread.id) ?: task?.status
@@ -108,18 +113,8 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
     }
 
     private fun applyProjects(response: JSONObject, fresh: Boolean) {
-        val projects = catalogRows(response, "projects").map {
-            ProjectSummary(it.string("id"), it.string("name"), it.string("path"), it.optInt("threadCount"),
-                outstandingWorkCount = it.optInt("outstandingWorkCount", 0).coerceAtLeast(0),
-                runningTurnCount = it.optInt("runningTurnCount", 0).coerceAtLeast(0),
-                activeGoalCount = it.optInt("activeGoalCount", 0).coerceAtLeast(0),
-                statsReady = it.optBoolean("statsReady", true))
-        }
-        val previous = mutable.value.projects.associateBy { it.id }
-        val displayed = projects.map { project ->
-            val old = previous[project.id]
-            if (!project.statsReady && old?.statsReady == true && old.name == project.name && old.path == project.path)
-                project.withStats(old) else project
+        val displayed = catalogRows(response, "projects").map {
+            ProjectSummary(it.string("id"), it.string("name"), it.string("path"))
         }
         val selectedId = mutable.value.selectedProject?.id ?: store?.getMetadata("selectedProjectId")
         // A catalog refresh is not a navigation action. A temporarily missing
@@ -504,10 +499,6 @@ private fun catalogRows(response: JSONObject, key: String): List<JSONObject> {
         row
     }
 }
-
-private fun ProjectSummary.withStats(stats: ProjectSummary): ProjectSummary = copy(
-    threadCount = stats.threadCount, outstandingWorkCount = stats.outstandingWorkCount,
-    runningTurnCount = stats.runningTurnCount, activeGoalCount = stats.activeGoalCount, statsReady = stats.statsReady)
 
 /** Summary metadata is never authoritative execution/queue evidence. */
 private fun ThreadSummary.withExecution(state: ThreadSummary): ThreadSummary = copy(

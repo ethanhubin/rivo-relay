@@ -40,7 +40,7 @@ internal fun CodexLinkDestinationDialog(link: CodexLinkAttachment, read: suspend
         loading = true; error = null
         try {
             if (projectId == null) {
-                val response = read("/v1/projects")
+                val response = read("/v1/projects?view=summary")
                 coroutineContext.ensureActive()
                 projects = response.objects("projects")
                 projectId = projects.firstOrNull { it.string("id") != "__rivo_recent__" }?.string("id")

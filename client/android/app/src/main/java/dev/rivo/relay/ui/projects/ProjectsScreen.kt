@@ -56,11 +56,7 @@ data class ProjectSummary(
     val id: String,
     val name: String,
     val path: String,
-    val threadCount: Int = 0,
-    val outstandingWorkCount: Int = 0,
-    val runningTurnCount: Int = 0,
-    val activeGoalCount: Int = 0,
-    val statsReady: Boolean = true,
+    val isRunning: Boolean = false,
 )
 
 /** Project row geometry migrated from QiGuang HomeScreen.CodexProjectRow; no Agent or node registry coupling. */
@@ -151,7 +147,7 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                         Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-                if (project.runningTurnCount > 0 || project.activeGoalCount > 0) {
+                if (project.isRunning) {
                     ProjectRunningBorder(Modifier.matchParentSize().testTag("project_${project.id}_running_border"))
                 }
                 DropdownMenu(expanded = projectMenuOpen, onDismissRequest = { projectMenuOpen = false }) {

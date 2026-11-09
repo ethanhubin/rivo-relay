@@ -74,8 +74,8 @@ class ProjectActivityUiTest {
                 Surface {
                     ProjectsScreen(
                         projects = listOf(
-                            ProjectSummary("active", "正在处理的项目", "/fixture/active", 2, outstanding),
-                            ProjectSummary("idle", "空闲项目", "/fixture/idle", 1),
+                            ProjectSummary("active", "正在处理的项目", "/fixture/active", isRunning = outstanding > 0),
+                            ProjectSummary("idle", "空闲项目", "/fixture/idle"),
                         ),
                         nodeName = "UI 验证",
                         loading = false,
