@@ -47,10 +47,11 @@ def sha256(path):
 
 async def serve(request):
     from aiohttp import web
+    from .download_transport import UpdateFileResponse
     workspace = request.app['release_workspace']
     try:
         if 'name' in request.match_info:
-            return web.FileResponse(artifact(workspace, request.match_info['name']), headers={'Cache-Control': 'public, max-age=31536000, immutable'})
+            return UpdateFileResponse(artifact(workspace, request.match_info['name']), headers={'Cache-Control': 'public, max-age=31536000, immutable'})
         item = manifest(workspace)
         if request.path.endswith('/app-updates/latest'):
             app = item['app']

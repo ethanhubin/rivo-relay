@@ -55,6 +55,24 @@ Windows 创建 Limited/S4U 无窗口计划任务；macOS 创建登录用户 Laun
 - 代理日志 2 MiB × 3；节点运行日志约 5 MiB，另保留一次重启轮换日志。bootstrap、当前/上一版依赖和 SQLite 回滚备份不按文件大小盲删。
 - 不清理其他服务的日志、目录、证书、登录或设备数据。磁盘实时检查记录见 `validation-central-updates.md`。
 
+## 下载传输与诊断
+
+更新文件接口在 Linux 上尝试为当前 TCP 连接选择 BBR，降低丢包链路下 CUBIC 发送窗口收缩造成的吞吐下降。仅影响处理 APK/节点包的连接（包括该连接之后的 keep-alive 请求），不修改主机默认拥塞算法、队列规则或其他已有连接。是否改善具体手机链路必须实测，不能用服务器回环速度代替手机结果。
+
+部署这版服务端前，管理员可加载发行版自带模块，并确认普通服务用户有权限选择它：
+
+```sh
+modprobe tcp_bbr
+sysctl net.ipv4.tcp_available_congestion_control net.ipv4.tcp_allowed_congestion_control
+runuser -u rivo-gateway -- python3 -c 'import socket; s=socket.socket(); s.setsockopt(socket.IPPROTO_TCP, socket.TCP_CONGESTION, b"bbr"); print(s.getsockopt(socket.IPPROTO_TCP, socket.TCP_CONGESTION, 16))'
+```
+
+确认支持且决定启用后，可将一行 `tcp_bbr` 写入 `/etc/modules-load.d/rivo-update-bbr.conf`，让重启后仍加载模块；无需修改 `net.ipv4.tcp_congestion_control`。模块不存在、无权限或非 Linux 时保留原算法，下载仍正常执行，日志标明回退原因。设置网关服务环境变量 `RIVO_UPDATE_CONGESTION=system` 并按正常部署流程重启即可停止为新下载连接选择 BBR。
+
+`journalctl -u rivo-gateway.service` 中的 `update_download_started` / `update_download_finished` 用 `download_id` 关联；响应也返回 `X-Rivo-Download-Id`。记录请求是否续传、实际算法、状态、发送耗时、响应体字节数、Linux TCP RTT/发送窗口和本次重传段数，不记录令牌、URL、文件路径、异常正文或客户端地址。连接取消/异常记录 `interrupted`，不冒充完成。`sent` 仅表示服务端完成交给传输层，不代表手机已收到全部字节或通过 SHA-256 校验；中断字节数未知时记为 `null`。
+
+本次排查及验证范围见 [下载性能验证记录](validation-update-download.md)。
+
 ## 设备维护入口
 
 先读 `/Users/ethan/Documents/系统管理/家庭局域网设备清单.md`，再读对应设备详情。VPS SSH 使用 `root@134.175.156.219` 和 `/Users/ethan/Documents/QiGuangBot.pem`，加 `-o IdentitiesOnly=yes`。不要输出私钥或接入凭据，不要重复向用户询问清单中已有信息。
