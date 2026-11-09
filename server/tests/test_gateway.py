@@ -105,6 +105,22 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(.1)
         self.assertEqual(len(self.gateway.pending), 0)
 
+    async def test_many_live_transfers_do_not_starve_local_or_control_connections(self):
+        responses = []
+        try:
+            # 40 WS + 40 local HTTP + control exceeds the old shared pool of 64.
+            for _ in range(40):
+                response = await self.client.get(self.url + '/v1/events')
+                responses.append(response)
+                self.assertEqual(response.status, 200)
+                self.assertEqual(await response.content.readline(), b'data: 0\n')
+            async with self.client.get(self.url + '/health') as response:
+                self.assertEqual(response.status, 200)
+            self.assertTrue(self.connector.ready.is_set())
+        finally:
+            for response in responses:
+                response.close()
+
     async def test_slow_response_drain_does_not_start_sender_close_timeout(self):
         import aiohttp
         from unittest.mock import patch

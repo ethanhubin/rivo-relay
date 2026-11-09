@@ -1,5 +1,6 @@
 """Reentrant, bounded-lifetime operation gates shared by each thread's callers."""
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
+from .read_budget import read_lock
 import threading
 
 
@@ -16,15 +17,13 @@ class ThreadGates:
             entries = [(key, self._entries.setdefault(key, [threading.RLock(), 0])) for key in keys]
             for _, entry in entries:
                 entry[1] += 1
-        acquired = []
+        acquired = ExitStack()
         try:
             for _, entry in entries:
-                entry[0].acquire()
-                acquired.append(entry[0])
+                acquired.enter_context(read_lock(entry[0]))
             yield
         finally:
-            for lock in reversed(acquired):
-                lock.release()
+            acquired.close()
             with self._lock:
                 for key, entry in entries:
                     entry[1] -= 1

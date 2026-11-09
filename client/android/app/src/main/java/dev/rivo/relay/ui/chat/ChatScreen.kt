@@ -285,8 +285,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val list = key(state.id) { rememberLazyListState() }
     var followLatest by remember(state.id) { mutableStateOf(true) }
     val timelineCache = remember(state.id) { NativeTimelineCache() }
-    val timeline = remember(state.id, snapshot?.messages, snapshot?.turnSettings, state.pendingMessages, snapshot?.activeTurnId, state.stale, pendingTitle) {
-        timelineCache.project(projectedSessionMessages(snapshot, if (pendingTitle == null) state.pendingMessages else emptyList()), snapshot?.activeTurnId?.takeUnless { state.stale }, snapshot?.turnSettings.orEmpty())
+    // Transport/permission revalidation must not regroup the visible running turn.
+    val timeline = remember(state.id, snapshot?.messages, snapshot?.turnSettings, state.pendingMessages, snapshot?.activeTurnId, pendingTitle) {
+        timelineCache.project(projectedSessionMessages(snapshot, if (pendingTitle == null) state.pendingMessages else emptyList()), snapshot?.activeTurnId, snapshot?.turnSettings.orEmpty())
     }
     // Preserve lastOrNull semantics, including review replies and empty turn IDs.
     val lastReplyIds = remember(snapshot?.messages) {
@@ -311,7 +312,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             historyAnchor = null
         }
     }
-    val executionActive = !state.stale && snapshot?.isOngoing == true && snapshot.status != "waiting" && snapshot.requests.isEmpty()
+    val executionActive = snapshot?.isOngoing == true && snapshot.status != "waiting" && snapshot.requests.isEmpty()
     val currentActivity = (timeline.lastOrNull() as? NativeTimelineRow.Activities)
         ?.takeIf { executionActive && it.messages.lastOrNull()?.turnId == snapshot?.activeTurnId }
     val modelChangeRows = remember(timeline, snapshot?.turnSettings) {

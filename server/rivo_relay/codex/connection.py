@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .notifications import NotificationQueue
+from ..read_budget import checkpoint, read_reply
 
 
 class CodexError(RuntimeError):
@@ -111,6 +112,13 @@ class NativeConnection:
             return local_native_host_info(self)
 
     def request(self, method, params=None, *, timeout=None):
+        interruptible = method in {'thread/read', 'thread/turns/list',
+            'thread/list', 'thread/loaded/list', 'thread/goal/get', 'project/list',
+            'project/read', 'model/list', 'account/read', 'account/rateLimits/read',
+            'config/read', 'fs/readDirectory', 'fs/readFile', 'fs/getMetadata',
+            'server/diagnostics'}
+        if interruptible:
+            checkpoint()
         reply = queue.Queue(maxsize=1)
         with self._lock:
             sock = self._socket
@@ -128,7 +136,10 @@ class NativeConnection:
                 self._pending.pop(request_id, None)
                 raise CodexError("Codex 请求发送中断，需核对结果", request_sent=True) from error
         try:
-            response = reply.get(timeout=self.timeout if timeout is None else timeout)
+            # Only pure metadata reads are interruptible after dispatch. Resume,
+            # repair and mutations must retain their result/reconciliation semantics.
+            reader = read_reply if interruptible else lambda q, timeout: q.get(timeout=timeout)
+            response = reader(reply, self.timeout if timeout is None else timeout)
         except queue.Empty as error:
             raise CodexError("Codex 请求超时，需核对结果", code="native_timeout", request_sent=True) from error
         finally:

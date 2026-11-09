@@ -536,6 +536,36 @@ class ApiTests(unittest.TestCase):
         status, data, headers = download(ticket, {'Range': 'bytes=-3'})
         self.assertEqual((206, b'hij', 'bytes 7-9/10'), (status, data, headers['Content-Range']))
 
+    def test_disconnected_get_releases_waiting_handler(self):
+        import queue
+        from unittest.mock import patch
+        from rivo_relay.read_budget import read_reply
+        started, finished = threading.Event(), threading.Event()
+        def blocked(*args):
+            started.set()
+            try:
+                read_reply(queue.Queue(), 30)
+            finally:
+                finished.set()
+        with patch.object(Handler, 'route', blocked):
+            client = http.client.HTTPConnection('127.0.0.1', self.port, timeout=2)
+            client.request('GET', '/v1/projects', headers={'Authorization': 'Bearer ' + self.token})
+            self.assertTrue(started.wait(1))
+            client.close()
+            self.assertTrue(finished.wait(2))
+        status, _, _ = self.request('GET', '/health')
+        self.assertEqual(status, 200)
+
+    def test_read_deadline_returns_explicit_error(self):
+        import queue
+        from unittest.mock import patch
+        from rivo_relay.read_budget import read_budget, read_reply
+        with patch('rivo_relay.api.read_budget', lambda sock: read_budget(sock, seconds=.02)), \
+                patch.object(Handler, 'route', lambda *args: read_reply(queue.Queue(), 30)):
+            status, result, _ = self.request('GET', '/v1/projects', token=self.token)
+        self.assertEqual(status, 504)
+        self.assertEqual(result['error']['code'], 'read_deadline')
+
     def _start(self, bus=None):
         self.native = NativeStub()
         self.app = RelayApp(self.config, self.native, bus)

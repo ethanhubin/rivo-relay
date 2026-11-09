@@ -10,6 +10,7 @@ import ssl
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from http.server import HTTPServer
+from .observability import event
 
 
 class BoundedHTTPServer(HTTPServer):
@@ -32,6 +33,16 @@ class BoundedHTTPServer(HTTPServer):
 
     def process_request(self, request, client_address):
         if not self._slots.acquire(blocking=False):
+            event('http_worker_rejected', reason='worker_limit')
+            # TLS has not been negotiated yet; never send plaintext on TLS.
+            if self._tls_context is None:
+                try:
+                    request.settimeout(.1)
+                    request.sendall(b'HTTP/1.1 503 Service Unavailable\r\n'
+                                    b'Content-Length: 0\r\nConnection: close\r\n'
+                                    b'Retry-After: 1\r\n\r\n')
+                except OSError:
+                    pass
             self.shutdown_request(request)
             return
         with self._active_lock:

@@ -11,6 +11,15 @@ class SessionControlTest {
         JSONObject().put("thread", JSONObject().put("id", "thread")).put("readOnly", !writable)
             .put("control", JSONObject().put("state", state).put("canOperate", writable).put("action", "resume"))))
 
+    @Test fun revalidationAndReadFailureAreNotOfflineCache() {
+        val ready = session("writable", true)
+        assertEquals("同步中", ready.copy(stale = true).syncStatusLabel())
+        assertEquals("同步失败，正在重试", ready.copy(stale = true, readError = "timeout").syncStatusLabel())
+        assertEquals("离线缓存", ready.copy(stale = true, offline = true).syncStatusLabel())
+        assertEquals("连接中断", SessionState(offline = true).syncStatusLabel())
+        assertFalse(ready.copy(stale = true).control().canOperate)
+    }
+
     @Test fun unavailableStatesNeverEnableInput() {
         for (state in listOf("external", "released", "release_pending", "workspace_unavailable", "future_state"))
             assertFalse(session(state).control().canOperate)

@@ -1,6 +1,7 @@
 package dev.rivo.relay
 
 import dev.rivo.relay.codex.SessionController
+import dev.rivo.relay.codex.syncStatusLabel
 import dev.rivo.relay.codex.control
 import dev.rivo.relay.codex.displayControl
 import dev.rivo.relay.codex.showTakeover
@@ -573,6 +574,8 @@ class SessionControllerTest {
             val slow = withTimeout(5000) { controller.state.first { it.controlNotice?.contains("响应较慢") == true } }
             assertFalse(slow.control().canOperate)
             assertEquals("initial", slow.snapshot?.name)
+            assertFalse(slow.offline)
+            assertEquals("同步中", slow.syncStatusLabel())
             assertEquals(ControlState.WRITABLE, slow.displayControl().state)
             assertFalse(slow.showTakeover())
             controller.refresh()
@@ -723,6 +726,8 @@ class SessionControllerTest {
             controller.open("t")
             val cached = withTimeout(5_000) { controller.state.first { it.snapshot?.name == "cached" && it.stale && !it.loading } }
             assertTrue(cached.stale)
+            assertFalse(cached.offline)
+            assertEquals("同步失败，正在重试", cached.syncStatusLabel())
             assertNotNull("Failed history remains visible within this session", cached.readError)
             assertTrue(cached.snapshot!!.requests.isEmpty())
             controller.loadEarlier()

@@ -35,6 +35,67 @@ class HandoffTests(unittest.TestCase):
         writers.busy.return_value = False
         return service, native, writers
 
+    def test_takeover_failure_records_stage_and_keeps_queues_paused(self):
+        for stage in ('terminate', 'verify'):
+            with self.subTest(stage=stage):
+                service, native, writers = self.service()
+                if stage == 'terminate':
+                    writers.terminate.side_effect = CodexError('writer changed', code='handoff_changed')
+                else:
+                    writers.snapshot.return_value = {'holders': []}
+                with self.assertRaises(CodexError):
+                    service.handoff(TID, 'takeover', owner='phone', ticket='ticket', confirmed=True)
+                for target in (TID, OTHER):
+                    state = service.observations_for(target)[('ownership', '')]
+                    self.assertTrue(state['released'])
+                    self.assertEqual('takeover_failed', state['releaseState'])
+                    self.assertEqual(stage, state['takeoverStage'])
+                    self.assertTrue(state['releaseError'])
+                    self.assertTrue(state['errorCode'])
+                self.assertNotIn('turn/start', [method for method, _ in native.calls])
+
+    def test_takeover_error_survives_owner_projection(self):
+        for owner in ('none', 'external', 'unknown'):
+            with self.subTest(owner=owner):
+                service, native, writers = self.service()
+                native.writer_owner = Mock(return_value=owner)
+                service._observe(TID, 'ownership', '', {
+                    'released': True, 'releaseState': 'takeover_failed',
+                    'releaseError': 'acquisition failed', 'takeoverStage': 'verify'})
+                control = service.get_session(TID)['control']
+                self.assertEqual('acquisition failed', control['handoffError'])
+                self.assertEqual('verify', control['handoffStage'])
+                self.assertFalse(control['canOperate'])
+                self.assertEqual({'none': 'resume', 'external': 'takeover', 'unknown': None}[owner], control['action'])
+
+    def test_failure_notification_does_not_mask_original_error(self):
+        service, native, writers = self.service()
+        error = CodexError('original failure', code='handoff_changed')
+        writers.terminate.side_effect = error
+        service.on_event = Mock(side_effect=RuntimeError('subscriber failed'))
+        with self.assertRaises(CodexError) as caught:
+            service.handoff(TID, 'takeover', owner='phone', ticket='ticket', confirmed=True)
+        self.assertIs(error, caught.exception)
+        for target in (TID, OTHER):
+            self.assertEqual('takeover_failed', service.observations_for(target)[('ownership', '')]['releaseState'])
+
+    def test_handoff_logs_correlate_failure_without_sensitive_text(self):
+        service, native, writers = self.service()
+        writers.terminate.side_effect = CodexError('secret-native-text', code='handoff_changed')
+        with patch('rivo_relay.codex.sessions.event') as log:
+            with self.assertRaises(CodexError):
+                service.handoff(TID, 'takeover', owner='secret-owner', ticket='ticket',
+                                confirmed=True, request_id='a' * 32)
+        records = log.call_args_list
+        self.assertEqual('handoff_finished', records[-1].args[0])
+        self.assertEqual('terminate', records[-1].kwargs['stage'])
+        self.assertEqual('handoff_changed', records[-1].kwargs['error_code'])
+        self.assertEqual('failed', records[-1].kwargs['outcome'])
+        self.assertTrue(all(call.kwargs['request_id'] == 'a' * 32 for call in records))
+        self.assertNotIn('secret-native-text', str(records))
+        self.assertNotIn('secret-owner', str(records))
+        self.assertNotIn('ticket', str(records))
+
     def test_missing_history_host_cache_can_request_live_handoff_preview(self):
         service, native, writers = self.service()
         service.native_journal.cached_host = Mock(return_value=None)

@@ -11,7 +11,7 @@ data class SessionState(val id: String? = null, val snapshot: SessionSnapshot? =
     val historyCursor: String? = null, val loadingEarlier: Boolean = false, val earlierLoaded: Boolean = false,
     val readError: String? = null, val historyError: String? = null,
     val pendingMessages: List<PendingNativeMessage> = emptyList(), val overlayRevision: Long = 0L,
-    val controlNotice: String? = null, val lastConfirmedControl: SessionControl? = null, val mediaValidationEpoch: Long = 0)
+    val controlNotice: String? = null, val lastConfirmedControl: SessionControl? = null, val mediaValidationEpoch: Long = 0, val offline: Boolean = false)
 
 /** One active thread owns reads and subscription; switch cancels both and rejects late snapshots. */
 class SessionController(private val api: RelayApi, private val scope: CoroutineScope,
@@ -69,8 +69,8 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         val previous = mutable.value
         val retained = if (previous.id == id) previous else recentViews.remove(id)
         mutable.value = retained?.copy(loading = true, stale = true, loadingEarlier = false,
-            pendingMessages = pendingByThread[id].orEmpty(), readError = null, historyError = null)
-            ?: SessionState(id = id, loading = true, pendingMessages = pendingByThread[id].orEmpty())
+            pendingMessages = pendingByThread[id].orEmpty(), readError = null, historyError = null, offline = !online)
+            ?: SessionState(id = id, loading = true, offline = !online, pendingMessages = pendingByThread[id].orEmpty())
         onVisible(id)
         if (!online) {
             // Cancel the old transport immediately; retain read-only content while no route exists.
@@ -250,7 +250,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                         cachedHistoryEpoch = historyEpoch
                         reconcilePending(id, snapshot)
                         mutable.update { current ->
-                            current.copy(snapshot = projected, mediaValidationEpoch = current.mediaValidationEpoch + 1, loading = false, stale = false, readError = null, controlNotice = null,
+                            current.copy(snapshot = projected, mediaValidationEpoch = current.mediaValidationEpoch + 1, loading = false, stale = false, offline = false, readError = null, controlNotice = null,
                                 earlierLoaded = if (revisionChanged) false else current.earlierLoaded,
                                 loadingEarlier = if (revisionChanged) false else current.loadingEarlier,
                                 historyError = if (revisionChanged) null else current.historyError,
