@@ -1195,89 +1195,101 @@ class CodexService:
             if action == 'release':
                 progress('release')
                 return self._release_process_writer(thread_id, snapshot, affected)
-            # Pause all affected Relay queues/automatic subscriptions before killing
-            # the writer. Interrupted instructions are never resumed or replayed.
-            for affected_id in affected:
-                ownership = {'released': True, 'releaseState': 'takeover', 'takeoverThreadId': thread_id}
-                if self.observations:
-                    self.observations.put(affected_id, 'ownership', '', ownership)
-                self._observe(affected_id, 'ownership', '', ownership)
-            stage = 'terminate'
-            progress(stage)
-            try:
-                self.writers.terminate(snapshot)
+            prepare = getattr(self.connection, 'prepare_takeover', None)
+            lease = prepare(thread_id) if prepare and restart_args else nullcontext(None)
+            progress('prepare')
+            with lease as acquire:
+                # Pause all affected Relay queues/automatic subscriptions before killing
+                # the writer. Interrupted instructions are never resumed or replayed.
                 for affected_id in affected:
-                    with self._lock:
-                        self._joined.discard(affected_id)
-                        self._active.pop(affected_id, None)
-                        self._created.pop(affected_id, None)
-                        self._materializing.pop(affected_id, None)
-                        for key in [key for key in self._live if key[0] == affected_id]:
-                            self._live.pop(key, None)
-                            self._pending_terminal.discard(key)
-                # A supervisor may already have restored the same endpoint. Otherwise
-                # replace only the daemon we just terminated using its verified argv.
-                stage = 'runtime'
+                    ownership = {'released': True, 'releaseState': 'takeover', 'takeoverThreadId': thread_id}
+                    if self.observations:
+                        self.observations.put(affected_id, 'ownership', '', ownership)
+                    self._observe(affected_id, 'ownership', '', ownership)
+                stage = 'terminate'
                 progress(stage)
-                if restart_args:
-                    try:
-                        connection.start()
-                    except CodexError:
-                        self.writers.restart(restart_args, self._handoff_log)
-                    deadline = time.monotonic() + 15
-                    while True:
+                try:
+                    self.writers.terminate(snapshot)
+                    early_response = None
+                    if acquire is not None:
+                        stage = 'acquire'
+                        progress(stage)
+                        params = {'threadId': thread_id, 'excludeTurns': True}
+                        if rebind_workspace is not None:
+                            params['cwd'] = rebind_workspace
+                        early_response = acquire(params)
+                    for affected_id in affected:
+                        with self._lock:
+                            self._joined.discard(affected_id)
+                            self._active.pop(affected_id, None)
+                            self._created.pop(affected_id, None)
+                            self._materializing.pop(affected_id, None)
+                            for key in [key for key in self._live if key[0] == affected_id]:
+                                self._live.pop(key, None)
+                                self._pending_terminal.discard(key)
+                    # A supervisor may already have restored the same endpoint. Otherwise
+                    # replace only the daemon we just terminated using its verified argv.
+                    stage = 'runtime'
+                    progress(stage)
+                    if restart_args:
                         try:
                             connection.start()
-                            break
                         except CodexError:
-                            if time.monotonic() >= deadline:
-                                raise CodexError('原持锁进程已结束，但原生运行时尚未恢复；不会重发任务', code='handoff_runtime_unavailable', http_status=503, request_sent=True)
-                            time.sleep(.2)
-                stage = 'resume'
-                progress(stage)
-                if action == 'takeover':
-                    self.start()
-                    if rebind_workspace is None:
-                        # Preserve the idle lock window after explicit takeover so
-                        # an orphan terminal record can be repaired before resume.
-                        self._native_history_state(thread_id)
-                    resume = {'threadId': thread_id, 'excludeTurns': True}
-                    if rebind_workspace is not None:
-                        resume['cwd'] = rebind_workspace
-                    response = self.connection.request('thread/resume', resume)
-                    if rebind_workspace is not None and (response.get('thread') or {}).get('cwd') != rebind_workspace:
-                        raise CodexError('原生未确认指定工作目录，接管结果待核对', code='workspace_rebind_unconfirmed', http_status=409, request_sent=True)
-                    stage = 'verify'
+                            self.writers.restart(restart_args, self._handoff_log)
+                        deadline = time.monotonic() + 15
+                        while True:
+                            try:
+                                connection.start()
+                                break
+                            except CodexError:
+                                if time.monotonic() >= deadline:
+                                    raise CodexError('原持锁进程已结束，但原生运行时尚未恢复；不会重发任务', code='handoff_runtime_unavailable', http_status=503, request_sent=True)
+                                time.sleep(.2)
+                    stage = 'resume'
                     progress(stage)
-                    acquired = self.writers.snapshot(thread_id)
-                    runtime_id = self._thread_connection(thread_id).status().get('runtimeId')
-                    if not acquired['holders'] or any(str(h['pid']) != str(runtime_id) for h in acquired['holders']):
-                        raise CodexError('原进程已结束，但未确认新运行时持锁', code='handoff_acquire_failed', http_status=409)
-                    if self.observations:
-                        self.observations.delete(thread_id, 'ownership')
-                    self._forget_observation(thread_id, 'ownership')
-                    with self._lock:
-                        self._joined.add(thread_id)
-                        self._settings[thread_id] = self._settings_from(response)
-                    if rebind_workspace is not None and self.workspaces:
-                        with self.workspaces.db.transaction() as c:
-                            # Keep the original worktree/archive record, but this
-                            # thread now executes in the verified original project.
-                            c.execute('UPDATE workspaces SET thread_id=NULL WHERE thread_id=?', (thread_id,))
-                elif self.writers.busy(thread_id):
-                    raise CodexError('会话被其他进程重新持有，未确认释放成功', code='writer_still_held', http_status=409)
-            except Exception as error:
-                for affected_id in affected:
-                    ownership = {'released': True, 'releaseState': 'takeover_failed',
-                                 'takeoverThreadId': thread_id, 'takeoverStage': stage,
-                                 'releaseError': str(error),
-                                 'errorCode': getattr(error, 'code', 'handoff_failed')}
-                    self._observe(affected_id, 'ownership', '', ownership)
-                    try:
-                        self.on_event({'method': 'relay/ownershipChanged', 'params': {'threadId': affected_id}})
-                    except Exception:
-                        logging.getLogger(__name__).warning('Handoff failure notification unavailable')
-                raise
+                    if action == 'takeover':
+                        self.start()
+                        if rebind_workspace is None and acquire is None:
+                            # Preserve the idle lock window after explicit takeover so
+                            # an orphan terminal record can be repaired before resume.
+                            self._native_history_state(thread_id)
+                        resume = {'threadId': thread_id, 'excludeTurns': True}
+                        if rebind_workspace is not None:
+                            resume['cwd'] = rebind_workspace
+                        response = early_response if acquire is not None else self.connection.request('thread/resume', resume)
+                        if rebind_workspace is not None and (response.get('thread') or {}).get('cwd') != rebind_workspace:
+                            raise CodexError('原生未确认指定工作目录，接管结果待核对', code='workspace_rebind_unconfirmed', http_status=409, request_sent=True)
+                        stage = 'verify'
+                        progress(stage)
+                        acquired = self.writers.snapshot(thread_id)
+                        runtime_id = self._thread_connection(thread_id).status().get('runtimeId')
+                        if not acquired['holders'] or any(str(h['pid']) != str(runtime_id) for h in acquired['holders']):
+                            raise CodexError('原进程已结束，但未确认新运行时持锁', code='handoff_acquire_failed', http_status=409)
+                        if self.observations:
+                            self.observations.delete(thread_id, 'ownership')
+                        self._forget_observation(thread_id, 'ownership')
+                        with self._lock:
+                            self._joined.add(thread_id)
+                            self._settings[thread_id] = self._settings_from(response)
+                        if rebind_workspace is not None and self.workspaces:
+                            with self.workspaces.db.transaction() as c:
+                                # Keep the original worktree/archive record, but this
+                                # thread now executes in the verified original project.
+                                c.execute('UPDATE workspaces SET thread_id=NULL WHERE thread_id=?', (thread_id,))
+                    elif self.writers.busy(thread_id):
+                        raise CodexError('会话被其他进程重新持有，未确认释放成功', code='writer_still_held', http_status=409)
+                except Exception as error:
+                    for affected_id in affected:
+                        ownership = {'released': True, 'releaseState': 'takeover_failed',
+                                     'takeoverThreadId': thread_id, 'takeoverStage': stage,
+                                     'releaseError': str(error),
+                                     'errorCode': getattr(error, 'code', 'handoff_failed')}
+                        self._observe(affected_id, 'ownership', '', ownership)
+                        try:
+                            self.on_event({'method': 'relay/ownershipChanged', 'params': {'threadId': affected_id}})
+                        except Exception:
+                            logging.getLogger(__name__).warning('Handoff failure notification unavailable')
+                    raise
             self.on_event({'method': 'relay/ownershipChanged', 'params': {'threadId': thread_id}})
             return {'threadId': thread_id}
 

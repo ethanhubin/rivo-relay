@@ -486,6 +486,31 @@ class SessionWriters:
             return result
 
     @contextmanager
+    def prepare_takeover(self, thread_id):
+        # Validate the local host and start the isolated transport while the
+        # previewed daemon is still alive. Do not acquire the thread yet.
+        with self._thread_lock(thread_id):
+            writer = self._new_writer()
+            adopted = False
+            def acquire(params):
+                nonlocal adopted
+                result = writer.request('thread/resume', params)
+                with self._lock:
+                    if (self._closed or not writer.status().get('connected')
+                            or self._retired.get(writer) == writer.generation
+                            or thread_id in self._writers
+                            or result.get('thread', {}).get('id') != thread_id):
+                        raise CodexError('接管 writer 已变化，请重新核验', code='handoff_changed', http_status=409)
+                    self._writers[thread_id] = writer
+                    adopted = True
+                return result
+            try:
+                yield acquire
+            finally:
+                if not adopted:
+                    self._close_writer(writer)
+
+    @contextmanager
     def auxiliary_connection(self):
         """One operation, one isolated helper; never borrow a session writer."""
         writer = self._new_writer()
