@@ -6,6 +6,9 @@ from .read_budget import ReadStopped, read_budget
 import base64
 import gzip
 import secrets
+import select
+import socket
+import ssl
 import json
 import os
 import time
@@ -894,6 +897,13 @@ class Handler(BaseHTTPRequestHandler):
             cursor = self.headers.get("Last-Event-ID")
             heartbeat = time.monotonic()
             while not self.app.events.closed:
+                # The connector closes this plaintext socket as soon as the
+                # phone leaves. Reclaim its slot without waiting for the next
+                # heartbeat write (which can itself succeed after a TCP FIN).
+                if not isinstance(self.connection, ssl.SSLSocket):
+                    if select.select([self.connection], [], [], 0)[0]:
+                        if not self.connection.recv(1, socket.MSG_PEEK):
+                            break
                 if self.app.pairing.authenticate(token) is None:
                     self.wfile.write(b'event: revoked\ndata: {}\n\n')
                     self.wfile.flush()

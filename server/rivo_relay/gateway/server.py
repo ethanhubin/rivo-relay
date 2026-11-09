@@ -88,13 +88,18 @@ class Gateway:
             raise web.HTTPNotFound()
         self.claimed.add(ticket)
         ws = web.WebSocketResponse(heartbeat=20, max_msg_size=CHUNK + 8192, compress=False)
-        await ws.prepare(request)
-        self.active.setdefault(slot, set()).add(ws)
-        pending[1].set_result(ws)
         try:
+            await ws.prepare(request)
+            # prepare() yields: the HTTP caller may cancel or time out while
+            # the data socket is handshaking. Never publish into a stale future.
+            if self.pending.get(ticket) is not pending or pending[1].done():
+                return ws
+            self.active.setdefault(slot, set()).add(ws)
+            pending[1].set_result(ws)
             await pending[2].wait()
         finally:
-            self.active[slot].discard(ws)
+            self.claimed.discard(ticket)
+            self.active.get(slot, set()).discard(ws)
             await ws.close()
         return ws
 
