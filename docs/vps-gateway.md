@@ -97,3 +97,22 @@ VPS 是可信中转端：手机到 VPS 为 HTTPS，桌面到 VPS 为固定证书
 Windows 节点已使用独立接入凭据连接现有 VPS。`Rivo Relay Gateway` 无窗口计划任务通过共用 `rivo_relay.gateway node --attach --no-pair` 接入既有 Relay，不重启原生运行时。配置位于 Windows workspace 的 `gateway-client.json`；后台包装配置及日志位于 `workspace/windows-gateway/`。使用同一命令加 `--pair-only` 生成包含直连、VPS 和证书指纹的 v2 二维码，不再使用仅直连的旧 `rivo_relay pair` 命令。
 
 验证：真实 VPS 配对及授权节点读取成功，临时手机令牌已撤销；进程 Session 0、窗口句柄为 0。网关原有 17 项测试及新增双通道二维码回归测试通过。用户随后确认 Android 真机扫描双通道二维码配对成功。
+
+## 公开受信任的 IP HTTPS 入口（2026-11-09）
+
+无域名部署可通过 Let's Encrypt 的 `shortlived` profile 签发 IP 证书。当前新增入口为 `https://134.175.156.219:8443`，用于浏览器与 App 普通文件链接；不需要安装私有 CA 或配置下载器指纹。原 `https://134.175.156.219:80` 仍使用原证书，兼容已配对手机和节点，不可直接替换其证书。
+
+VPS 使用 HAProxy：80/TCP 的 TLS 流量原样转发至原 Rivo 服务 18080；明文 HTTP 仅转发至 ACME standalone 验证器 `127.0.0.1:18888`。8443/TCP 终止公开 TLS 后，经验证旧证书的 HTTPS 上游转发至 `127.0.0.1:18080`。443 的其他业务保持原状。腾讯云防火墙需要允许 TCP 8443；不要额外开放后端 18080 或验证端口 18888。
+
+配置位置：
+
+- `/etc/haproxy/haproxy.cfg`，旧配置备份 `.before-rivo`。
+- `/etc/systemd/system/rivo-gateway.service.d/public-https.conf`，将原服务监听调整为 `--port 18080 --listen-host 127.0.0.1`。
+- `/opt/rivo-certbot`：独立 Certbot 虚拟环境。
+- `/etc/letsencrypt/live/rivo-public-ip/`：公开证书及私钥，不进入仓库。
+- `/etc/letsencrypt/renewal-hooks/deploy/rivo-haproxy`：更新 HAProxy 证书、检查配置后 reload，失败恢复旧文件。
+- `rivo-cert-renew.timer`：每 6 小时检查续期，随机延迟最多 15 分钟；IP 证书约 6 天有效，必须保持续期任务。
+
+验证续期：`/opt/rivo-certbot/bin/certbot renew --dry-run --no-random-sleep-on-renew`。公开接口验收必须使用系统默认信任，不使用 `curl -k`。共享文件链接只改变入口端口为 8443，路径和既有鉴权要求保持一致；未授权媒体仍不能匿名下载。
+
+回退时先停 HAProxy，再移除 `public-https.conf` 并 daemon-reload、重启 `rivo-gateway`，原服务将重新监听 80；如需回退代码，将 `/opt/rivo-relay/current` 恢复到部署前快照。不要删除原私有证书与节点密钥。
