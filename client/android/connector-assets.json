@@ -1,0 +1,17 @@
+{
+  "source": "ChatGPT Desktop 26.1103.41825 / webview/images/ecosystem/apps",
+  "files": {
+    "drawable-nodpi/connector_chatgpt_space.png": "f1f21759caaea7ca66c6ba46268f3a7b1576f0e26932926b0340183ba5b7d7c5",
+    "drawable-nodpi/connector_spreadsheets.png": "20e673fc8c3aaba9fae47dd08200034d93015ccb1a3c73e2965fb8d4035957a7",
+    "drawable-nodpi/connector_pdf.png": "b3f68a264388933205340ab07db00349d54f1e8eca4feb0c0747ed5b9425ddad",
+    "drawable-nodpi/connector_slack.png": "f8a2eacb344ff4eafc33449cbbbc256c5bcf19f04d21760f9beff1da498f0e31",
+    "drawable-nodpi/connector_documents.png": "28655fe441d709a895be11c10f5bfc3493d9aa552a2377e06cce8a2a50360dda",
+    "drawable-nodpi/connector_appgarden.png": "d0989379a91b2bcb8bf03e3bfcec2e4a0b559b1ae662cfc7a2ec4988ca21ceee",
+    "drawable-nodpi/connector_gmail.png": "eb574d08bd98975b4b9030a987cc327c7fed490af84a02f7ec764ea40e6d0f60",
+    "drawable-nodpi/connector_notion.png": "e20b9668553aeb46b55a366d0a8eddd9051b5ac55207ab067ed347029a53434e",
+    "drawable-nodpi/connector_github.png": "07e4d8c81c906dc6fffa42f2686f446724c86c2079b23aa6c77ab9dab782fdea",
+    "drawable-nodpi/connector_presentations.png": "5415195adb4b9314e9489be86ed1b476a445ca61009929f7da0d9b0c2e0de138",
+    "drawable-night-nodpi/connector_notion.png": "014ab1e20210938aea95d5b118eba970d7f4955068c9acc47223eb51ed79f74c",
+    "drawable-night-nodpi/connector_github.png": "13a6ccff76d70bf6010e9c6c8d90a8037376793e0c0791c137e756cd8c3de8e9"
+  }
+}

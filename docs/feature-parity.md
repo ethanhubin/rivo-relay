@@ -84,3 +84,11 @@ Codex 派发不属于此 outbox。它继续使用既有 submission ID 与结果�
 
 
 本轮自动化结果：服务端 437 项通过；独立源码快照 Android JVM 263 项通过，APK 构建与 lint 通过（43 warnings、3 hints，无 error）。验证日志与报告保存在 `workspace/artifacts/recovery-audit-20261107/`。独立快照避免与其他会话的设置页修改、Gradle 输出互相覆盖。
+
+## Sites 与结构化资源
+
+底部导航为 Codex、Sites、待办、设置。Sites 仅列出当前节点登录账号可见的站点，支持刷新和分页；点击在 App 内网页浏览页打开正式地址，没有详情页、搜索或写操作。未发布条目不可跳转。切换节点重新读取，刷新失败保留本次页面已加载列表；不持久化跨账号缓存。
+
+会话通过原始 MCP/dynamic tool JSON 提取 Sites 和 HTTP(S) `resource_link`，实时与历史使用相同解析器。成功工具结果不等于发布成功：区分发布中、失败、正式地址及预览地址。同轮同一站点在最后相关工具组显示，工具组折叠时仍可点击；不同轮次保留各自入口。仅供 assistant 的资源链接不生成用户卡片，不支持的 URI 保留原始工具详情。跳转不携带节点凭据。网页浏览页提供返回、关闭、重试与外部浏览器入口，支持 JavaScript/网页存储，不开放本地文件访问或原生 JS 桥接；SSL 错误不绕过。普通卡片不再重复显示“打开网站/打开链接”，预览及异常状态仍保留。
+
+Sites、Pages、文档、PDF、表格、演示文稿、GitHub、Slack、Gmail、Notion 使用本地图标，其余回退原有活动图标。图标资产来自本机 ChatGPT Desktop 26.1103.41825 的 `webview/images/ecosystem/apps/`，GitHub/Notion 包含深色版本；只提取资源，没有移植桌面执行代码。工具身份/已知图标元数据映射不触发网络加载，也不意味着连接器已经可用。完整 MCP widget、模板指令扩展、站点创建/编辑/发布不在此次范围。

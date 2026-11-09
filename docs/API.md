@@ -365,3 +365,10 @@ v1 配对保持兼容。`scripts/start-node.sh` 的 v2 二维码 fragment 增加
 请求 proof 为 `HMAC-SHA256(SHA256(token), "request\0" + code + "\0" + nodeId + "\0" + binding)`，结果为小写十六进制。有效一次性配对码和 proof 在同一事务里验证，只有未撤销的原连接可复用。复用响应返回原 `deviceId`、空 `token`，并提供相同算法、方向改为 `response` 的 `reuseProof`。手机校验响应 proof 后保留本地旧 token。正常新配对仍返回新 token；无效 proof 不会复用旧连接，也不会绕过配对码校验。
 
 网关对外路径 `/relay/{slot}/v1/...` 保留现有业务认证、请求体、响应及 SSE。完整传输与部署约定见 [VPS 双通道说明](vps-gateway.md)。
+
+### Sites（只读）
+
+`GET /v1/sites?cursor=…` 需要节点鉴权，返回 `{items:[{id,title,url,accessMode}],cursor}`。
+`url` 仅来自 `current_live_url`，未发布时为 null；分页 cursor 原样传递，客户端不解析。
+通过当前节点的辅助连接和临时会话调用固定的 `sites.list_sites`，结束时解除临时订阅并释放连接。
+不返回源码凭据、账号名单、截图签名 URL 或完整工具响应，不提供通用 MCP 分发、创建或发布接口。
