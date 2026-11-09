@@ -11,6 +11,8 @@ import datetime
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, unquote, urlsplit, quote
 
+from .observability import event, request_id
+
 from .app import public_submission, public_todo
 from .codex.files import MAX_TRANSFER_BYTES, native_path
 from .codex.native_download import byte_range
@@ -105,11 +107,11 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def log_request(self, code="-", size="-"):
-        # Deliberately omit URL, query, headers, body and remote identity.
-        print(json.dumps({"time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                          "event": "http_response", "method": self.command if self.command in
-                          {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"} else "OTHER",
-                          "status": code}), file=sys.stderr, flush=True)
+        self._response_status = code
+        event("http_response", request_id=getattr(self, "_request_id", None),
+              method=self.command if self.command in {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"} else "OTHER",
+              status=code)
+
 
     @property
     def app(self):
@@ -347,6 +349,21 @@ class Handler(BaseHTTPRequestHandler):
         self.handle_api()
 
     def handle_api(self):
+        self._request_id = request_id(self.headers.get("X-Rivo-Request-Id"))
+        self._response_status = None
+        started = time.monotonic()
+        outcome = "handler_returned"
+        try:
+            return self._handle_api()
+        except BaseException as error:
+            outcome = type(error).__name__
+            raise
+        finally:
+            event("node_request_finished", request_id=self._request_id,
+                  status=self._response_status, outcome=outcome,
+                  duration_ms=round((time.monotonic() - started) * 1000, 2))
+
+    def _handle_api(self):
         try:
             url = urlsplit(self.path)
             if url.scheme or url.netloc:

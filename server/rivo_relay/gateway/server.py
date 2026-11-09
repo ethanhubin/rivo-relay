@@ -7,6 +7,9 @@ import hmac
 import json
 from pathlib import Path
 import secrets
+import time
+
+from ..observability import event, request_id
 
 from aiohttp import WSMsgType, web
 
@@ -50,10 +53,12 @@ class Gateway:
         try:
             await ws.prepare(request)
             self.nodes[slot] = ws
+            event('gateway_node_connected', node=slot)
             await ws.send_json({'ready': True})
             async for _ in ws:
                 pass
         finally:
+            event('gateway_node_disconnected', node=slot)
             self.registering.discard(slot)
             if self.nodes.get(slot) is ws:
                 self.nodes.pop(slot, None)
@@ -85,6 +90,27 @@ class Gateway:
         return ws
 
     async def proxy(self, request):
+        started = time.monotonic()
+        request['trace_id'] = request_id()
+        request['outcome'] = 'rejected'
+        status = None
+        try:
+            response = await self._proxy(request)
+            status = response.status
+            return response
+        except web.HTTPException as error:
+            status = error.status
+            raise
+        except BaseException as error:
+            request['outcome'] = type(error).__name__
+            raise
+        finally:
+            event('gateway_request_finished', request_id=request['trace_id'],
+                  node=request.match_info['slot'], status=status,
+                  outcome=request['outcome'],
+                  duration_ms=round((time.monotonic() - started) * 1000, 2))
+
+    async def _proxy(self, request):
         slot = request.match_info['slot']
         control = self.nodes.get(slot)
         if control is None or control.closed:
@@ -114,7 +140,7 @@ class Gateway:
             # raw_path preserves encoded file names and query strings byte-for-byte.
             raw_path = request.raw_path.split('/relay/' + slot, 1)[1]
             await ws.send_json({'method': request.method, 'path': raw_path,
-                                'headers': headers(list(request.headers.items()))})
+                                'headers': headers([(k, v) for k, v in request.headers.items() if k.lower() != 'x-rivo-request-id']) + [('X-Rivo-Request-Id', request['trace_id'])]})
 
             async def send_body():
                 total = 0
@@ -141,11 +167,13 @@ class Gateway:
                     await response.write(message.data)
                 elif message.type == WSMsgType.TEXT and json.loads(message.data).get('eof'):
                     await response.write_eof()
+                    request['outcome'] = 'completed'
                     return response
                 else:
                     break
             raise ConnectionError('Incomplete upstream response')
-        except (ConnectionError, OSError, TimeoutError, ValueError, KeyError):
+        except (ConnectionError, OSError, TimeoutError, ValueError, KeyError) as error:
+            request['outcome'] = type(error).__name__
             if response is not None and response.prepared:
                 if request.transport:
                     request.transport.close()

@@ -11,6 +11,49 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ConnectionRecoveryTest {
+    @Test fun foregroundSynchronizesHealthyNodeWithoutResettingTransport() = runTest {
+        var probes = 0
+        var resets = 0
+        var refreshes = 0
+        val recovery = ConnectionRecovery(this, { probes++ }, { resets++ }, { refreshes++ }, { throw it })
+        recovery.foreground()
+        recovery.foreground()
+        advanceUntilIdle()
+        assertEquals(1, probes)
+        assertEquals(0, resets)
+        assertEquals(1, refreshes)
+        assertEquals(RecoveryState.CONNECTED, recovery.state.value)
+    }
+
+    @Test fun slowSessionReadsDoNotQueueCatalogReads(): Unit = runBlocking {
+        val server = MockWebServer()
+        val started = java.util.concurrent.CountDownLatch(5)
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                if (request.path!!.startsWith("/v1/threads/")) {
+                    started.countDown()
+                    return MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE)
+                }
+                return MockResponse().setBody("{}")
+            }
+        }
+        server.start()
+        val jobs = mutableListOf<Job>()
+        try {
+            val api = RelayApi(server.url("/").toString())
+            repeat(5) { index -> jobs += launch(Dispatchers.Default) { api.call("/v1/threads/$index") } }
+            assertTrue(withContext(Dispatchers.IO) { started.await(3, java.util.concurrent.TimeUnit.SECONDS) })
+            withTimeout(2000) {
+                api.call("/v1/projects")
+                api.call("/v1/threads?projectId=test")
+            }
+        } finally {
+            jobs.forEach { it.cancel() }
+            jobs.joinAll()
+            server.shutdown()
+        }
+    }
+
     @Test fun truncatedHistoryKeepsConcurrentRequestsAlive() = runBlocking {
         val server = MockWebServer()
         val probeStarted = CompletableDeferred<Unit>()

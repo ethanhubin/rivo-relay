@@ -528,8 +528,8 @@ class SessionControllerTest {
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     if (request.path!!.startsWith("/v1/events")) return MockResponse().setHeader("Content-Type", "text/event-stream")
-                        .setBodyDelay(600, TimeUnit.MILLISECONDS).setBody(event + ":".repeat(4096))
-                        .throttleBody(event.toByteArray().size.toLong(), 3, TimeUnit.SECONDS)
+                        .setBody(":" + " ".repeat(event.toByteArray().size - 3) + "\n\n" + event + ":".repeat(4096))
+                        .throttleBody(event.toByteArray().size.toLong(), 2, TimeUnit.SECONDS)
                     reads.incrementAndGet()
                     return snapshot("t", "head")
                 }
@@ -540,9 +540,9 @@ class SessionControllerTest {
             try {
                 controller.open("t")
                 withTimeout(5000) { controller.state.first { it.snapshot != null && !it.stale } }
-                delay(350)
+                delay(1000)
                 val before = reads.get()
-                delay(650)
+                delay(1500)
                 assertEquals(before, reads.get())
                 assertTrue(controller.state.value.control().canOperate)
                 assertNull(controller.state.value.controlNotice)

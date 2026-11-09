@@ -71,7 +71,9 @@ class RelayApi(private val base: String, private val token: String = "", private
     // Health checks must not queue behind large history bodies or reuse their sockets.
     private fun probeClient() = newClient().newBuilder().dispatcher(Dispatcher())
         .connectionPool(ConnectionPool()).callTimeout(12, TimeUnit.SECONDS).build()
-    private val probes by lazy { probeClient() }
+    private var probes = probeClient()
+    private fun catalogClient() = readClient().newBuilder().dispatcher(Dispatcher()).build()
+    private var catalogReader = catalogClient()
     // Bulk bodies occupy callback threads until fully consumed. Reserve a separate
     // bounded dispatcher so transfers cannot queue chat reads or submissions.
     private fun transferClient() = client.newBuilder()
@@ -95,8 +97,11 @@ class RelayApi(private val base: String, private val token: String = "", private
     suspend fun resetTransport() = withContext(Dispatchers.IO) {
         val (old, obsolete) = synchronized(transportLock) {
             val old = client
+            probes.connectionPool.evictAll()
+            probes = probeClient()
             client = newClient()
             reader = readClient()
+            catalogReader = catalogClient()
             transfers = transferClient()
             mediaReader = mediaClient()
             backgroundReader = backgroundClient()
@@ -114,11 +119,11 @@ class RelayApi(private val base: String, private val token: String = "", private
     }
     suspend fun call(path: String, method: String = "GET", body: JSONObject? = null, background: Boolean = false, reconnectProbe: Boolean = false): JSONObject = withContext(Dispatchers.Default) { suspendCancellableCoroutine { continuation ->
         val call = synchronized(transportLock) {
-            (if (reconnectProbe) probes else if (method != "GET") client else if (background) backgroundReader else reader).newCall(request(path, method, body).newBuilder().apply { if (reconnectProbe) tag(ReconnectProbe::class.java, ReconnectProbe()) }.build()).also { if (method == "GET") reads.add(it) }
+            (if (reconnectProbe) probes else if (method != "GET") client else if (background) backgroundReader else if (path.substringBefore('?') in setOf("/v1/projects", "/v1/threads")) catalogReader else reader).newCall(request(path, method, body).newBuilder().apply { if (reconnectProbe) tag(ReconnectProbe::class.java, ReconnectProbe()) }.build()).also { if (method == "GET") reads.add(it) }
         }
         continuation.invokeOnCancellation { call.cancel(); forgetRead(call) }
         call.enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) { forgetRead(call); if (!reconnectProbe && (!call.isCanceled() || e is InterruptedIOException)) recovery?.failed(e); if (continuation.isActive) continuation.resumeWithException(if (call.isCanceled() && e !is InterruptedIOException) CancellationException("Network route changed") else e) }
+            override fun onFailure(call: Call, e: IOException) { forgetRead(call); if (continuation.isActive && !reconnectProbe && (!call.isCanceled() || e is InterruptedIOException)) recovery?.failed(e); if (continuation.isActive) continuation.resumeWithException(if (call.isCanceled() && e !is InterruptedIOException) CancellationException("Network route changed") else e) }
             override fun onResponse(call: Call, response: Response) {
                 try {
                     response.use {
@@ -130,7 +135,7 @@ class RelayApi(private val base: String, private val token: String = "", private
                         }
                         if (continuation.isActive) continuation.resume(json)
                     }
-                } catch (e: Exception) { if (!reconnectProbe && (!call.isCanceled() || e is InterruptedIOException)) recovery?.failed(e); if (continuation.isActive) continuation.resumeWithException(if (call.isCanceled() && e !is InterruptedIOException) CancellationException("Network route changed") else e) }
+                } catch (e: Exception) { if (continuation.isActive && !reconnectProbe && (!call.isCanceled() || e is InterruptedIOException)) recovery?.failed(e); if (continuation.isActive) continuation.resumeWithException(if (call.isCanceled() && e !is InterruptedIOException) CancellationException("Network route changed") else e) }
                 finally { forgetRead(call) }
             }
         })

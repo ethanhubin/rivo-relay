@@ -119,12 +119,17 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
         probe = { api.call("/v1/node", reconnectProbe = true) },
         reset = { api.resetTransport() },
         restored = {
-            session.dismissReadError()
             session.refresh()
             catalog.reconnect()
             todos.refresh()
             reconcilePendingReceipts()
-        }, rejected = failure)
+        }, rejected = failure, synchronizedRead = {
+            session.refresh()
+            catalog.refreshProjects()
+            catalog.refreshThreads()
+            todos.refresh()
+            reconcilePendingReceipts()
+        })
     init { api.recovery = recovery }
     fun persistDraft(threadId: String, draft: ConversationDraft) {
         conversations.enqueueDraft(threadId, draft) { error ->
@@ -251,7 +256,7 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
     fun onForeground() {
         if (!wasBackgrounded) return
         wasBackgrounded = false
-        mutable.value.node?.recovery?.reconnect(manual = true)
+        mutable.value.node?.recovery?.foreground()
     }
     fun retryConnection() {
         mutable.update { it.copy(error = null) }

@@ -6,6 +6,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NativeSettingsPresentationTest {
+    @Test fun newSessionPermissionsUseDefaultsUnlessDraftHasAChoice() {
+        val defaults = JSONObject().put("approvalPolicy", "preset-full").put("sandbox", "danger-full-access")
+        assertEquals("preset-full", newSessionSetting(null, defaults, "approvalPolicy"))
+        assertEquals("danger-full-access", newSessionSetting(null, defaults, "sandbox"))
+        assertEquals("preset-request", newSessionSetting("preset-request", defaults, "approvalPolicy"))
+        assertEquals("inherit", newSessionSetting("inherit", defaults, "approvalPolicy"))
+        assertEquals("inherit", newSessionSetting(null, null, "approvalPolicy"))
+        assertEquals("inherit", newSessionSetting(null, JSONObject().put("approvalPolicy", ""), "approvalPolicy"))
+    }
+
     @Test fun missingSessionSettingsAreUnknownRatherThanCustomOrInherited() {
         for (settings in listOf(null, JSONObject(), JSONObject("""{"sandbox":null,"approvalPolicy":null}"""))) {
             assertEquals("尚未读取文件访问权限", sandboxSettingLabel(settings, false, null))

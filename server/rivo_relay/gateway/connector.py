@@ -9,6 +9,8 @@ import aiohttp
 from aiohttp import WSMsgType
 from yarl import URL
 
+from ..observability import event
+
 from .server import CHUNK, headers
 
 log = logging.getLogger(__name__)
@@ -86,7 +88,7 @@ class Connector:
             raise
         except Exception as error:
             # Never log request paths, headers, keys, pairing data, or message bodies.
-            log.warning('gateway_transfer_failed: %s', type(error).__name__)
+            event('gateway_transfer_failed', error=type(error).__name__)
 
     async def run(self):
         delay = 1
@@ -106,7 +108,7 @@ class Connector:
                             raise ValueError('Unexpected gateway handshake')
                         self.ready.set()
                         delay = 1
-                        log.info('gateway_connected')
+                        event('gateway_connected')
                         async for message in ws:
                             if message.type == WSMsgType.TEXT:
                                 ticket = json.loads(message.data).get('ticket')
@@ -117,8 +119,9 @@ class Connector:
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
-                    log.warning('gateway_reconnecting: %s', type(error).__name__)
+                    event('gateway_reconnecting', error=type(error).__name__, retry_seconds=delay)
                 finally:
+                    event('gateway_disconnected', retry_seconds=delay)
                     self.ready.clear()
                     active = list(self.tasks)
                     for task in active:

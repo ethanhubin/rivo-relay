@@ -362,7 +362,7 @@ fun MessageComposer(
                             else if ((mode == "plan") != discussionMode) onToggleMode()
                         }
                         Spacer(Modifier.weight(1f))
-                        if (enabled && settingsExpanded && settingsContent != null) Dialog(onDismissRequest = onDismissSettings) {
+                        if (settingsExpanded && settingsContent != null) Dialog(onDismissRequest = onDismissSettings) {
  dev.rivo.relay.ui.chat.ThemedTextContextMenu {
 
                             Surface(Modifier.fillMaxWidth().heightIn(max = 560.dp).testTag("composer_settings_panel"),

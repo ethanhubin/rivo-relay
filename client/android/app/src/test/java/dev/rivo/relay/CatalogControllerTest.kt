@@ -23,6 +23,50 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 class CatalogControllerTest {
+    @Test fun successfulSyncReplacesListAndNavigationRetainsLastResult() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setBody("""{"threads":[{"id":"a","name":"A"},{"id":"b","name":"B"}]}"""))
+        server.enqueue(MockResponse().setBody("""{"threads":[{"id":"a","name":"Updated"}]}"""))
+        server.enqueue(MockResponse().setBody("""{"threads":[]}"""))
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = CatalogController(api(server), scope, { throw it })
+        try {
+            controller.project(ProjectSummary("p", "P", "/p"))
+            controller.refreshThreads()?.join()
+            controller.refreshThreads()?.join()
+            assertEquals(setOf("a"), controller.state.value.threads.map { it.id }.toSet())
+            assertEquals("Updated", controller.state.value.threads.first { it.id == "a" }.name)
+            controller.project(ProjectSummary("q", "Q", "/q"))
+            controller.project(ProjectSummary("p", "P", "/p"))
+            assertEquals(setOf("a"), controller.state.value.threads.map { it.id }.toSet())
+            controller.refreshThreads()?.join()
+            assertTrue(controller.state.value.threads.isEmpty())
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun missingProjectAndMalformedListDoNotEraseExistingThreads() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setBody("""{"threads":[{"id":"old","name":"Old"}]}"""))
+        server.enqueue(MockResponse().setBody("""{"projects":[]}"""))
+        server.enqueue(MockResponse().setBody("""{}"""))
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val failures = mutableListOf<Throwable>()
+        val controller = CatalogController(api(server), scope, { failures.add(it) })
+        try {
+            controller.project(ProjectSummary("p", "P", "/p", 1))
+            controller.refreshThreads()?.join()
+            controller.refreshProjects().join()
+            assertEquals("p", controller.state.value.selectedProject?.id)
+            assertEquals(listOf("old"), controller.state.value.threads.map { it.id })
+            controller.refreshThreads()?.join()
+            assertEquals(listOf("old"), controller.state.value.threads.map { it.id })
+            assertFalse(controller.state.value.threadsFresh)
+            assertEquals(1, failures.size)
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
     @Test fun partialArchiveOnlyRetiresConfirmedProvisionalThread() = runBlocking {
         val server = MockWebServer()
         server.dispatcher = object : Dispatcher() {

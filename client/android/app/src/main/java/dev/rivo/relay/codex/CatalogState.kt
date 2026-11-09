@@ -26,6 +26,8 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
     private val monotonicMillis: () -> Long = { System.nanoTime() / 1_000_000 }) {
     private val mutable = MutableStateFlow(CatalogState(pinnedProjectIds = readProjectPins()))
     val state = mutable.asStateFlow()
+    private val runtimeThreads = mutableMapOf<Pair<String, Boolean>, List<ThreadSummary>>()
+    private fun scopeKey() = mutable.value.selectedProject?.id?.let { it to mutable.value.archived }
     private var projectsJob: Job? = null
     private var listJob: Job? = null
     private var listKey: String? = null
@@ -84,14 +86,16 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
     }
 
     private fun applyProjects(response: JSONObject, fresh: Boolean) {
-        val projects = response.objects("projects").map {
+        val projects = catalogRows(response, "projects").map {
             ProjectSummary(it.string("id"), it.string("name"), it.string("path"), it.optInt("threadCount"),
                 outstandingWorkCount = it.optInt("outstandingWorkCount", 0).coerceAtLeast(0),
                 runningTurnCount = it.optInt("runningTurnCount", 0).coerceAtLeast(0),
                 activeGoalCount = it.optInt("activeGoalCount", 0).coerceAtLeast(0))
         }
         val selectedId = mutable.value.selectedProject?.id ?: store?.getMetadata("selectedProjectId")
-        val selected = projects.firstOrNull { it.id == selectedId }
+        // A catalog refresh is not a navigation action. A temporarily missing
+        // project must not erase the selected conversation list or cancel its read.
+        val selected = projects.firstOrNull { it.id == selectedId } ?: mutable.value.selectedProject
         val changedProject = mutable.value.selectedProject?.id != selected?.id
         if (changedProject) { listJob?.cancel(); generation++ }
         mutable.update { current -> current.copy(projects = projects, selectedProject = selected, projectsFresh = fresh,
@@ -116,15 +120,15 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
             return
         }
         store?.putMetadata("selectedProjectId", project.id)
-        mutable.update { it.copy(selectedProject = project, threads = emptyList(), archived = false, unreadThreadIds = emptySet(), threadsFresh = false) }
-        applyThreads(emptyList(), fresh = false)
+        mutable.update { it.copy(selectedProject = project, threads = runtimeThreads[project.id to false].orEmpty(), archived = false, unreadThreadIds = emptySet(), threadsFresh = false) }
+        applyThreads(scopeKey()?.let { runtimeThreads[it] }.orEmpty(), fresh = false)
         refreshThreads(coalesceSwitch = true)
     }
 
     fun setArchived(archived: Boolean) {
         if (mutable.value.archived == archived) return
-        mutable.update { it.copy(archived = archived, threads = emptyList(), unreadThreadIds = emptySet(), threadsFresh = false) }
-        applyThreads(emptyList(), fresh = false)
+        mutable.update { it.copy(archived = archived, threads = runtimeThreads[it.selectedProject?.id to archived].orEmpty(), unreadThreadIds = emptySet(), threadsFresh = false) }
+        applyThreads(scopeKey()?.let { runtimeThreads[it] }.orEmpty(), fresh = false)
         refreshThreads(coalesceSwitch = true)
     }
 
@@ -142,12 +146,12 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
             try {
                 // Rapid project/filter navigation only sends the final selection.
                 if (coalesceSwitch) delay(120)
-                if (mutable.value.threads.isEmpty()) try { store?.loadCatalog(cacheKey)?.let {
+                if ((project.id to archived) !in runtimeThreads) try { store?.loadCatalog(cacheKey)?.let {
                     if (generation == targetGeneration) applyThreads(it.objects("threads").map(::threadSummary), fresh = false)
                 } } catch (e: Exception) { if (e is CancellationException) throw e }
                 val response = api.call(threadsPath(project.id, archived))
                 if (generation == targetGeneration) listReadPending = false
-                if (generation == targetGeneration) applyThreads(response.objects("threads").map(::threadSummary), fresh = true)
+                if (generation == targetGeneration) applyThreads(catalogRows(response, "threads").map(::threadSummary), fresh = true)
                 if (generation == targetGeneration) try { store?.saveCatalog(cacheKey, response) } catch (e: Exception) { if (e is CancellationException) throw e }
             } catch (e: Exception) { if (e !is CancellationException && generation == targetGeneration) {
                 mutable.update { it.copy(threadsFresh = false) }; failure(e)
@@ -183,7 +187,9 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
     }
 
     fun forgetCreatedThreads(ids: Collection<String>) {
-        val removed = ids.filter { createdThreads.remove(it) != null }.toSet()
+        val removed = ids.toSet()
+        removed.forEach { createdThreads.remove(it) }
+        runtimeThreads.replaceAll { _, rows -> rows.filterNot { it.id in removed } }
         if (removed.isEmpty()) return
         mutable.update { current ->
             val threads = current.threads.filterNot { it.id in removed }
@@ -196,11 +202,14 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
         val current = mutable.value
         val expired = createdThreads.filterValues { it.expiresAt <= monotonicMillis() }.keys.toSet()
         createdThreads.keys.removeAll(expired)
+        val key = scopeKey()
+        // A successful response is the complete list; failures never reach this path.
         val authoritative = if (fresh) threads else threads.filterNot { it.id in expired }
         val provisional = if (current.archived) emptyList() else createdThreads.values.map { it.summary }.filter {
             it.projectId == current.selectedProject?.id && authoritative.none { thread -> thread.id == it.id }
         }
         val merged = provisional + authoritative
+        if (key != null && (fresh || merged.isNotEmpty() || key in runtimeThreads)) runtimeThreads[key] = merged
         mutable.update { it.copy(threads = stableThreadOrder(merged, current.threads.map { t -> t.id }),
             unreadThreadIds = unread(merged), threadsFresh = fresh) }
     }
@@ -224,6 +233,7 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
         listJob = null
         listReadPending = false
         val threads = current.threads.map { if (it.id == updated.id) updated else it }
+        scopeKey()?.let { runtimeThreads[it] = threads }
         mutable.update { it.copy(threads = stableThreadOrder(threads, current.threads.map { t -> t.id }),
             threadsLoading = false, unreadThreadIds = unread(threads)) }
     }
@@ -252,6 +262,7 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
         val current = mutable.value
         if (current.selectedProject?.id == projectId && !current.archived && (current.threads.isNotEmpty() || current.threadsFresh))
             return current.threads
+        runtimeThreads[projectId to false]?.let { return it }
         val key = "threads:$projectId:false"
         store?.loadCatalog(key)?.let { return it.objects("threads").map(::threadSummary) }
         val response = api.call(threadsPath(projectId, false))
@@ -329,4 +340,14 @@ internal fun catalogCacheNoticeVisible(route: String, state: CatalogState, onlin
     "projects" -> state.projects.isNotEmpty() && !state.projectsFresh && (!online || !state.projectsLoading)
     "sessions" -> state.threads.isNotEmpty() && !state.threadsFresh && (!online || !state.threadsLoading)
     else -> false
+}
+
+/** Malformed successful responses are failures, never authoritative empty catalogs. */
+private fun catalogRows(response: JSONObject, key: String): List<JSONObject> {
+    val rows = response.optJSONArray(key) ?: throw java.io.IOException("列表响应缺少 $key")
+    return List(rows.length()) { index ->
+        val row = rows.optJSONObject(index) ?: throw java.io.IOException("列表响应包含无效条目")
+        if (row.string("id").isBlank()) throw java.io.IOException("列表响应缺少条目标识")
+        row
+    }
 }

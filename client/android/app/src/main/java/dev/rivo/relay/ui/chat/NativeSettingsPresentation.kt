@@ -86,3 +86,6 @@ internal fun nativeDefaultsUnavailableReason(settings: JSONObject?, newSession: 
     if (!serviceTier.isNullOrBlank() && serviceTier !in setOf("default", "priority")) return "当前服务等级无法保存为新会话默认。"
     return null
 }
+
+internal fun newSessionSetting(draft: String?, defaults: JSONObject?, key: String): String =
+    draft ?: defaults?.string(key)?.takeIf(String::isNotBlank) ?: "inherit"

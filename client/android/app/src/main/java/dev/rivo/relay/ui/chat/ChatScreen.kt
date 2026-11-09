@@ -158,9 +158,13 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val latestInputLocked by rememberUpdatedState(inputLocked)
     LaunchedEffect(inputLocked) {
         if (inputLocked) {
-            settingsOpen = false
             editingImage = null; workspaceFileDialog = false; removingQueue = null; stopConfirm = false
         }
+    }
+    val settingsUnavailable = blocked || writerBusy || pendingFirstTurnSent || pendingReceiptUnresolved ||
+        (pendingTitle == null && !state.canCompose()) || snapshot?.requests?.isNotEmpty() == true
+    LaunchedEffect(settingsUnavailable) {
+        if (settingsUnavailable) settingsOpen = false
     }
     fun openFile(path: String) { fileAction = null; filePath = path }
     fun addImages(uris: List<android.net.Uri>) {
@@ -196,8 +200,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             selectedSandbox = saved.sandbox; selectedApproval = saved.approvalPolicy
         }
         if (pendingTitle != null) {
-            selectedSandbox = selectedSandbox ?: "inherit"
-            selectedApproval = selectedApproval ?: "inherit"
+            selectedSandbox = newSessionSetting(selectedSandbox, defaultSettings, "sandbox")
+            selectedApproval = newSessionSetting(selectedApproval, defaultSettings, "approvalPolicy")
             selectedModel = selectedModel ?: defaultSettings?.string("model")?.takeIf(String::isNotBlank)
             selectedEffort = selectedEffort ?: defaultSettings?.string("effort")?.takeIf(String::isNotBlank)
             selectedServiceTier = selectedServiceTier ?: defaultSettings?.string("serviceTier")?.takeIf(String::isNotBlank)

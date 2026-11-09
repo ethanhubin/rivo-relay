@@ -17,12 +17,13 @@ fun isConnectionFailure(error: Throwable): Boolean =
 class ConnectionRecovery(private val scope: CoroutineScope, private val probe: suspend () -> Unit,
     private val reset: suspend () -> Unit, private val restored: suspend () -> Unit,
     private val rejected: (Throwable) -> Unit, private val timeoutMillis: Long = 12_000,
-    private val backoffMillis: Long = 1_000) {
+    private val backoffMillis: Long = 1_000,
+    private val synchronizedRead: suspend () -> Unit = restored) {
     private val mutable = MutableStateFlow(RecoveryState.CONNECTED)
     val state = mutable.asStateFlow()
     private var job: Job? = null
 
-    @Synchronized fun reconnect(manual: Boolean = false) {
+    @Synchronized fun reconnect(manual: Boolean = false, refreshOnHealthy: Boolean = false) {
         if (job?.isActive == true || (!manual && mutable.value == RecoveryState.DISCONNECTED)) return
         val verifyFirst = !manual && mutable.value == RecoveryState.CONNECTED
         if (!verifyFirst) mutable.value = RecoveryState.CONNECTING
@@ -34,7 +35,8 @@ class ConnectionRecovery(private val scope: CoroutineScope, private val probe: s
                 if (verifyFirst) {
                     try {
                         withTimeout(timeoutMillis) { probe() }
-                        return@launch // No reset, refresh, or replay of the failing read.
+                        if (refreshOnHealthy) synchronizedRead()
+                        return@launch // A business failure alone must not trigger global refresh.
                     } catch (_: TimeoutCancellationException) {
                         currentCoroutineContext().ensureActive()
                     } catch (_: CancellationException) {
@@ -73,6 +75,12 @@ class ConnectionRecovery(private val scope: CoroutineScope, private val probe: s
             }
         }
     }
+
+    /** Returning to the app should synchronize, not tear down healthy requests. */
+    fun foreground() = reconnect(
+        manual = state.value == RecoveryState.DISCONNECTED,
+        refreshOnHealthy = true,
+    )
 
     /** An explicit download/retry may recover its read, but never replay a mutation. */
     suspend fun awaitDownloadConnection() {
