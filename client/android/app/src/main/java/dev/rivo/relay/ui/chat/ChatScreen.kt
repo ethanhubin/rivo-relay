@@ -508,7 +508,12 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                             completionLabel = completionLabel.takeIf { message.id == completionReplyId })
                     }
                     else if (message.type == "imageGeneration" && (message.raw.string("savedPath").isNotBlank() || message.raw.string("result").isNotBlank())) {
-                        generatedImageSource(message, mediaIndex)?.let { NativeImage(it, readFile, downloadFile = downloadFile, identity = "${message.turnId}:${message.id}") }
+                        val source = generatedImageSource(message, mediaIndex)
+                        if (source != null) NativeImage(source, readFile, downloadFile = downloadFile, identity = "${message.turnId}:${message.id}")
+                        else if (message.raw.optBoolean("mediaRef")) {
+                            val failed = mediaIndex[NativeMediaIdentity(message.turnId, message.id)]?.string("status") in setOf("failed", "deleted")
+                            Text(if (failed) "图片暂时无法读取" else "图片正在准备…", style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                     else Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = MaterialTheme.shapes.small) {
                         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {

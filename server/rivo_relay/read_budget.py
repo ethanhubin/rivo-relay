@@ -16,6 +16,10 @@ class ReadStopped(RuntimeError):
     http_status = 504
     code = 'read_deadline'
 
+    def __init__(self, message, *, reason='deadline'):
+        super().__init__(message)
+        self.reason = reason if reason in ('deadline', 'client_disconnected', 'connection_closed') else 'unknown'
+
 
 @contextmanager
 def read_budget(connection=None, seconds=30):
@@ -39,9 +43,9 @@ def checkpoint():
     if connection is not None and not isinstance(connection, ssl.SSLSocket):
         try:
             if select.select([connection], [], [], 0)[0] and not connection.recv(1, socket.MSG_PEEK):
-                raise ReadStopped('Read client disconnected')
+                raise ReadStopped('Read client disconnected', reason='client_disconnected')
         except OSError as error:
-            raise ReadStopped('Read connection closed') from error
+            raise ReadStopped('Read connection closed', reason='connection_closed') from error
 
 
 @contextmanager

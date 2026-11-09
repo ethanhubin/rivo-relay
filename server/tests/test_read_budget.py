@@ -10,6 +10,21 @@ from rivo_relay.codex.connection import NativeConnection
 
 
 class ReadBudgetTests(unittest.TestCase):
+    def test_deadline_and_peer_disconnect_have_distinct_safe_reasons(self):
+        with self.assertRaises(ReadStopped) as stopped:
+            with read_budget(seconds=0):
+                pass
+        self.assertEqual('deadline', stopped.exception.reason)
+        server, client = socket.socketpair()
+        try:
+            client.close()
+            with self.assertRaises(ReadStopped) as stopped:
+                with read_budget(server):
+                    pass
+            self.assertEqual('client_disconnected', stopped.exception.reason)
+        finally:
+            server.close()
+            client.close()
     def test_disconnected_read_stops_waiting(self):
         server, client = socket.socketpair()
         try:

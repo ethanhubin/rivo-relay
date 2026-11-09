@@ -194,9 +194,10 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                     val response = supervisorScope {
                         val read = async {
                             // Keep control confirmation and live refresh independent of old context.
-                            // Older turns remain available through cursor pagination/viewport fill.
-                            withTimeout(readTimeoutMillis) { sync?.read(id, freshAfterNanos = readStarted, limit = 5, knownHeadRevision = knownHeadRevision)
-                                ?: api.call("/v1/threads/${encoded(id)}?limit=5" +
+                            // Two turns match the acknowledged-head protocol; unchanged polls
+                            // omit item payloads. Older turns use cursor pagination/viewport fill.
+                            withTimeout(readTimeoutMillis) { sync?.read(id, freshAfterNanos = readStarted, limit = 2, knownHeadRevision = knownHeadRevision)
+                                ?: api.call("/v1/threads/${encoded(id)}?limit=2" +
                                     knownHeadRevision?.let { "&knownHeadRevision=${encoded(it)}" }.orEmpty()) }
                         }
                         activeRead = read

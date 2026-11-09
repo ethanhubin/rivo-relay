@@ -42,6 +42,9 @@ internal fun generatedImageSource(message: NativeMessage, assets: Map<NativeMedi
     assets[NativeMediaIdentity(message.turnId, message.id)]?.takeIf { it.string("status") == "ready" }
         ?.string("originalUrl")?.takeIf(String::isNotBlank)?.let { return it }
     message.raw.string("savedPath").takeIf(String::isNotBlank)?.let { return it }
+    // Compact generation references exist before their replica is ready. Let
+    // library polling finish instead of issuing an image request that gets 409.
+    if (message.raw.optBoolean("mediaRef")) return null
     return message.raw.string("result").takeIf(String::isNotBlank)?.let { result ->
         if (result.startsWith("data:image/") || isHttpWebLink(result) || result.startsWith('/')) result else "data:image/png;base64,$result"
     }

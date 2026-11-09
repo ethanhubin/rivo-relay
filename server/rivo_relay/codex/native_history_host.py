@@ -294,6 +294,12 @@ def dispatch(request):
         known = request.get('known') or {}
         for thread_id in request['threadIds']:
             try:
+                # Catalog counters only need positive running evidence. Without
+                # a writer lock this thread cannot satisfy the running condition
+                # below, so avoid decoding its entire historical rollout. Do not
+                # invent an idle state or weaken the normal history inspection.
+                if request.get('runningOnly') is True and not writer_busy(home, thread_id):
+                    continue
                 inspected = inspect_journal(home, thread_id, known.get(thread_id))
             except (OSError, NativeHistoryReprojectionError):
                 # One missing/corrupt rollout must not discard healthy siblings.

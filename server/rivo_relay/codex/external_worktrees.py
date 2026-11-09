@@ -5,12 +5,19 @@ import time
 
 from .connection import CodexError
 from .host_commands import node_command
+from ..read_budget import checkpoint, read_lock
 
 
 _DISCOVER = r'''
 import json, os, subprocess, sys, tempfile
+from functools import lru_cache
 request=json.loads(sys.argv[1])
+# Reuse probes only inside this helper invocation, never across native scans.
+# Duplicate roots still append each project's membership below so ambiguity
+# cannot be hidden by sharing their filesystem/Git lookup results.
+@lru_cache(maxsize=None)
 def canonical(path): return os.path.normcase(os.path.realpath(path))
+@lru_cache(maxsize=None)
 def git(root, *args):
  with tempfile.TemporaryFile() as output:
   try:
@@ -55,7 +62,9 @@ class ExternalWorktrees:
             return {}
         request = {'projects': roots, 'paths': paths}
         key = (str(self.connection.generation), json.dumps(request, sort_keys=True))
-        with self._lock:
+        with read_lock(self._lock):
+            if str(self.connection.generation) != key[0]:
+                raise CodexError('原生运行时已变化，请重新读取工作区', code='history_changed', http_status=409)
             if self._cache and self._cache[0] == key and self._cache[1] > time.monotonic():
                 result = self._cache[2]
             else:
@@ -67,8 +76,13 @@ class ExternalWorktrees:
                         result = {}
                 except (CodexError, ValueError, TypeError):
                     result = {}
+                if str(self.connection.generation) != key[0]:
+                    raise CodexError('原生运行时已变化，请重新读取工作区', code='history_changed', http_status=409)
                 # Failed native inspection never invents membership or missing paths.
                 self._cache = (key, time.monotonic() + 15, result)
+        checkpoint()
+        if str(self.connection.generation) != key[0]:
+            raise CodexError('原生运行时已变化，请重新读取工作区', code='history_changed', http_status=409)
         project_roots = {project['id']: project['roots'] for project in roots}
         found = {}
         for thread in candidates:

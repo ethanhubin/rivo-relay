@@ -65,7 +65,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
     projectKey: String = projectName, initialCount: Int = 0,
     pendingConversations: List<PendingConversation> = emptyList(), canDiscardPending: Boolean = true,
     onResumePending: (String) -> Unit = {}, onDiscardPending: (String) -> Unit = {},
-    canManageThreads: Boolean = canCreate, showCreate: Boolean = true) {
+    canManageThreads: Boolean = canCreate, showCreate: Boolean = true, catalogComplete: Boolean = true) {
     val context = LocalContext.current
     var selectedIds by remember(projectKey, archived) { mutableStateOf(emptySet<String>()) }
     var search by rememberSaveable(projectKey) { mutableStateOf("") }
@@ -122,7 +122,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
             Column(Modifier.fillMaxWidth().weight(1f).padding(horizontal = RivoSpacing.Lg), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Sm)) {
                 SessionSearchField(search) { search = it }
                 Row(horizontalArrangement = Arrangement.spacedBy(RivoSpacing.Sm)) {
-                    SessionFilter(if (archived) "最近会话" else "最近会话 ${if (loading && threads.isEmpty()) initialCount + pendingConversations.size else threads.size + pendingConversations.size}", !archived, { onArchivedChanged?.invoke(false) }, "sessions_recent")
+                    SessionFilter(if (archived || !catalogComplete) "最近会话" else "最近会话 ${if (loading && threads.isEmpty()) initialCount + pendingConversations.size else threads.size + pendingConversations.size}", !archived, { onArchivedChanged?.invoke(false) }, "sessions_recent")
                     if (onArchivedChanged != null) SessionFilter("已归档", archived, { onArchivedChanged(true) }, "sessions_archived")
                 }
                 if (selectedIds.isNotEmpty()) Surface(Modifier.fillMaxWidth().testTag("sessions_selection"),
@@ -142,9 +142,10 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                         TextButton(onClick = { selectedIds = emptySet() }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("取消") }
                     }
                 }
+                if (!catalogComplete) Text(if (loading) "正在补全会话列表…" else "列表尚未补全，请刷新重试", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (loading && shown.isEmpty() && shownPending.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(28.dp)) }
                 else if (shown.isEmpty() && shownPending.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                    Text(when { search.isNotBlank() -> "没有匹配的会话"; archived -> "没有已归档会话"; !showCreate -> "暂无会话"; else -> "还没有 Codex 会话，点击右下角新建" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(when { !catalogComplete -> "列表尚未补全"; search.isNotBlank() -> "没有匹配的会话"; archived -> "没有已归档会话"; !showCreate -> "暂无会话"; else -> "还没有 Codex 会话，点击右下角新建" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else LazyColumn(Modifier.fillMaxWidth().weight(1f), state = listState, contentPadding = PaddingValues(bottom = 100.dp), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Xs)) {
                     items(shownPending, key = { "pending:${it.id}" }, contentType = { "pending" }) { pending ->
                         Surface(onClick = { onResumePending(pending.id) }, shape = MaterialTheme.shapes.large,

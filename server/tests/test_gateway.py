@@ -13,6 +13,80 @@ from rivo_relay.gateway.server import Gateway
 
 
 class GatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_request_log_has_route_category_without_path_or_query(self):
+        with patch('rivo_relay.gateway.server.event') as log:
+            async with self.client.get(self.url + '/v1/projects/private-id?secret=private-value') as response:
+                self.assertEqual(200, response.status)
+                await response.read()
+            for _ in range(20):
+                if any(c.args[0] == 'gateway_request_finished' for c in log.call_args_list):
+                    break
+                await asyncio.sleep(.01)
+            record = next(c.kwargs for c in log.call_args_list if c.args[0] == 'gateway_request_finished')
+            self.assertEqual('projects', record['route'])
+            self.assertEqual('GET', record['method'])
+            self.assertNotIn('private', str(log.call_args_list))
+
+    async def finished_record(self, log):
+        for _ in range(100):
+            records = [c.kwargs for c in log.call_args_list if c.args[0] == 'gateway_request_finished']
+            if records:
+                return records[-1]
+            await asyncio.sleep(.01)
+        self.fail('Gateway completion event was not emitted')
+
+    async def test_request_log_separates_tunnel_headers_and_downstream_body(self):
+        transfer = self.connector.transfer
+        original_write = web.StreamResponse.write
+        async def delayed_transfer(*args, **kwargs):
+            await asyncio.sleep(.04)
+            return await transfer(*args, **kwargs)
+        async def delayed_write(response, data):
+            if response._req and response._req.path.startswith('/relay/'):
+                await asyncio.sleep(.04)
+            return await original_write(response, data)
+        with patch.object(self.connector, 'transfer', delayed_transfer), \
+                patch.object(web.StreamResponse, 'write', delayed_write), \
+                patch('rivo_relay.gateway.server.event') as log:
+            async with self.client.post(self.url + '/v1/staged?private=secret', data=b'private-body',
+                                        headers={'Authorization': 'Bearer private-token'}) as response:
+                self.assertEqual(200, response.status)
+                self.assertEqual(b'private-response', await response.read())
+            record = await self.finished_record(log)
+            self.assertGreaterEqual(record['data_connect_ms'], 30)
+            self.assertGreaterEqual(record['response_headers_ms'], 30)
+            self.assertGreaterEqual(record['response_body_ms'], 60)
+            self.assertGreaterEqual(record['downstream_write_ms'], 30)
+            self.assertLessEqual(record['downstream_write_ms'], record['response_body_ms'] + .01)
+            self.assertEqual(len(b'private-body'), record['request_body_bytes'])
+            self.assertEqual(len(b'private-response'), record['response_body_bytes'])
+            self.assertEqual(record['response_body_bytes'], record['downstream_body_bytes'])
+            self.assertEqual('completed', record['outcome'])
+            self.assertNotIn('private', str(log.call_args_list))
+
+    async def test_offline_log_does_not_invent_unreached_stage_timings(self):
+        with patch('rivo_relay.gateway.server.event') as log:
+            async with self.client.get(self.base + '/relay/unknown/health') as response:
+                self.assertEqual(503, response.status)
+                await response.read()
+            record = await self.finished_record(log)
+            for field in ('data_connect_ms', 'response_headers_ms', 'response_body_ms', 'downstream_write_ms'):
+                self.assertIsNone(record[field])
+            self.assertEqual(0, record['request_body_bytes'])
+            self.assertEqual(0, record['response_body_bytes'])
+            self.assertEqual(0, record['downstream_body_bytes'])
+
+    async def test_cancelled_stream_logs_partial_body_and_elapsed_phase(self):
+        with patch('rivo_relay.gateway.server.event') as log:
+            async with self.client.get(self.url + '/v1/events') as response:
+                self.assertEqual(await response.content.readline(), b'data: 0\n')
+            record = await self.finished_record(log)
+            self.assertEqual('CancelledError', record['outcome'])
+            self.assertEqual(len(b'data: 0\n\n'), record['response_body_bytes'])
+            self.assertEqual(record['response_body_bytes'], record['downstream_body_bytes'])
+            self.assertGreaterEqual(record['response_body_ms'], 0)
+            self.assertGreaterEqual(record['downstream_write_ms'], 0)
+
     async def asyncSetUp(self):
         import ssl
         self.temp = tempfile.TemporaryDirectory()
@@ -22,6 +96,15 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.writes = 0
         self.cancelled = asyncio.Event()
         async def handler(request):
+            if request.path == '/v1/staged':
+                await request.read()
+                await asyncio.sleep(.04)
+                response = web.StreamResponse()
+                await response.prepare(request)
+                await asyncio.sleep(.04)
+                await response.write(b'private-response')
+                await response.write_eof()
+                return response
             if request.path == '/v1/echo':
                 data = await request.read()
                 self.writes += 1

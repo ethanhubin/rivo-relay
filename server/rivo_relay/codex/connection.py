@@ -17,6 +17,10 @@ from typing import Callable, Optional
 from .notifications import NotificationQueue
 from ..read_budget import checkpoint, read_reply
 
+# A single native image-generation turn can contain many inline images.
+# Keep a finite ceiling while allowing it to reach the media projection layer.
+MAX_NATIVE_MESSAGE_BYTES = 128 * 1024 * 1024
+
 
 class CodexError(RuntimeError):
     def __init__(self, message, *, code="native_unavailable", http_status=503,
@@ -65,7 +69,7 @@ class NativeConnection:
                 from websockets.sync.client import unix_connect
                 sock = unix_connect(self.socket_path, uri="ws://codex-app-server/rpc",
                                     open_timeout=5, close_timeout=2,
-                                    max_size=32 * 1024 * 1024)
+                                    max_size=MAX_NATIVE_MESSAGE_BYTES, max_queue=4)
             except Exception as error:
                 self._last_error = "无法连接已有 Codex 运行时"
                 raise CodexError(self._last_error) from error
@@ -181,6 +185,7 @@ class NativeConnection:
                 raise CodexError("Codex 响应发送中断，需刷新状态", request_sent=True) from error
 
     def _read(self, sock, generation):
+        oversized = False
         try:
             for raw in sock:
                 message = json.loads(raw)
@@ -193,8 +198,9 @@ class NativeConnection:
                         target.put_nowait(message)
                 elif "method" in message:
                     self._receive_event({**message, "connectionId": generation})
-        except Exception:
-            pass
+        except Exception as error:
+            oversized = any(getattr(getattr(error, field, None), 'code', None) == 1009
+                            for field in ('sent', 'rcvd'))
         finally:
             with self._lock:
                 self._readers.discard(threading.current_thread())
@@ -205,7 +211,10 @@ class NativeConnection:
                 self._last_error = None if self._closed else "Codex 连接已断开，请重新读取会话"
                 for target in self._pending.values():
                     try:
-                        target.put_nowait(CodexError("Codex 连接断开，需核对结果", request_sent=True))
+                        target.put_nowait(CodexError(
+                            "原生单条响应超过大小上限" if oversized else "Codex 连接断开，需核对结果",
+                            code='native_response_too_large' if oversized else 'native_unavailable',
+                            request_sent=True))
                     except queue.Full:
                         pass
             try:

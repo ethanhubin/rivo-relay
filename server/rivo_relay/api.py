@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from .read_budget import read_budget
+from .read_budget import ReadStopped, read_budget
 
 import base64
 import gzip
@@ -14,7 +14,7 @@ import datetime
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, unquote, urlsplit, quote
 
-from .observability import event, request_id, route_kind
+from .observability import error_code, event, request_id, request_trace, route_kind
 
 from .app import public_submission, public_todo
 from .codex.files import MAX_TRANSFER_BYTES, native_path
@@ -114,6 +114,8 @@ class Handler(BaseHTTPRequestHandler):
         event("http_response", request_id=getattr(self, "_request_id", None),
               method=self.command if self.command in {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"} else "OTHER",
               status=code,
+              error_code=getattr(self, '_error_code', None),
+              read_stop_reason=getattr(self, '_read_stop_reason', None),
               headers_ms=round((time.monotonic() - self._request_started) * 1000, 2) if hasattr(self, "_request_started") else None)
 
 
@@ -121,7 +123,20 @@ class Handler(BaseHTTPRequestHandler):
     def app(self):
         return self.server.app
 
+    def observe_history_media(self, thread):
+        if not isinstance(thread, dict):
+            return False
+        try:
+            self.app.media.observe_thread(thread)
+            return True
+        except Exception:
+            # Failed registration must retain inline bytes as the fallback.
+            return False
+
     def send_json(self, status: int, data: dict):
+        if status >= 400:
+            failure = data.get('error')
+            self._error_code = error_code(failure.get('code')) if isinstance(failure, dict) else 'other'
         raw = json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
         # Compress large read-only catalogs as well as history. Keep credentials,
         # mutation responses and streaming/binary endpoints out of this policy.
@@ -355,6 +370,8 @@ class Handler(BaseHTTPRequestHandler):
     def handle_api(self):
         self._request_id = request_id(self.headers.get("X-Rivo-Request-Id"))
         self._response_status = None
+        self._error_code = None
+        self._read_stop_reason = None
         started = time.monotonic()
         self._request_started = started
         outcome = "handler_returned"
@@ -365,15 +382,21 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(503, {'error': {'code': 'node_updating', 'message': '节点正在更新，请稍后重试'}})
             return
         try:
-            return self._handle_api()
+            with request_trace(self._request_id):
+                return self._handle_api()
         except BaseException as error:
             outcome = type(error).__name__
             raise
         finally:
             if gated:
                 self.app.update_gate.leave()
+            if self._read_stop_reason:
+                outcome = self._read_stop_reason
+            elif isinstance(self._response_status, int) and self._response_status >= 400:
+                outcome = 'http_error'
             event("node_request_finished", request_id=self._request_id,
                   status=self._response_status, outcome=outcome, route=route_kind(path),
+                  error_code=self._error_code, read_stop_reason=self._read_stop_reason,
                   duration_ms=round((time.monotonic() - started) * 1000, 2))
 
     def _handle_api(self):
@@ -511,15 +534,12 @@ class Handler(BaseHTTPRequestHandler):
             body = self.read_body() if self.command in {"POST", "PATCH"} else {}
             with read_budget(self.connection) if self.command == "GET" else nullcontext():
                 result = self.route(path, query, body, connection)
-            if self.command == 'GET' and isinstance(result, dict) and isinstance(result.get('thread'), dict):
-                try:
-                    self.app.media.observe_thread(result['thread'])
-                except Exception:
-                    pass  # Derived media state cannot prevent native history delivery.
             self.send_json(200, result)
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             self.close_connection = True
         except Exception as error:
+            if isinstance(error, ReadStopped):
+                self._read_stop_reason = error.reason
             if getattr(self, '_file_started', False):
                 self.close_connection = True
                 return
@@ -607,7 +627,10 @@ class Handler(BaseHTTPRequestHandler):
             return codex.upload_project_attachment(path[2], required(body, "name", 200), body.get("dataBase64"))
         if path == ["v1", "projects"]:
             if method == "GET":
-                return {"projects": codex.list_projects()}
+                view = query.get('view', ['full'])[0]
+                if view not in {'full', 'summary'}:
+                    raise ApiError(400, 'invalid_request', 'Unknown project view')
+                return {"projects": codex.list_projects(summary=True) if view == 'summary' else codex.list_projects()}
             if method == "POST":
                 project_path = required(body, "path", 4096)
                 sid = required(body, "submissionId")
@@ -624,7 +647,14 @@ class Handler(BaseHTTPRequestHandler):
                 archived = query.get('archived', ['false'])[0]
                 if archived not in ('true', 'false'):
                     raise ApiError(400, 'invalid_request', 'archived must be true or false')
-                return {"threads": codex.list_sessions(project, archived=True) if archived == 'true' else codex.list_sessions(project)}
+                view = query.get('view', ['full'])[0]
+                if view not in ('full', 'summary'):
+                    raise ApiError(400, 'invalid_request', 'Unknown thread view')
+                if view == 'summary':
+                    return {"threads": codex.list_sessions(project, archived=archived == 'true', summary=True),
+                            "catalogComplete": False}
+                return {"threads": codex.list_sessions(project, archived=True) if archived == 'true' else codex.list_sessions(project),
+                        "catalogComplete": True}
             if method == "POST":
                 project, sid = required(body, "projectId"), required(body, "submissionId")
                 options = permission_options(body)
@@ -642,12 +672,18 @@ class Handler(BaseHTTPRequestHandler):
                 cursor = query.get("cursor", [None])[0]
                 result = codex.get_session(thread_id, cursor=cursor, limit=limit, **options)
                 result["queue"] = self.app.queue.list(thread_id)
+                compact_images = self.observe_history_media(result.get('thread'))
                 return client_session(result, known_head_revision=query.get("knownHeadRevision", [None])[0],
-                                      limit=limit, cursor=cursor)
+                                      limit=limit, cursor=cursor, compact_images=compact_images)
             if len(path) == 4 and path[3] == "history" and method == "GET":
                 options = {'native_revision': query['nativeRevision'][0]} if query.get('nativeRevision') else {}
-                return client_history(codex.history(thread_id, cursor=query.get("cursor", [None])[0],
-                                     limit=int(query.get("limit", ["30"])[0]), **options))
+                result = codex.history(thread_id, cursor=query.get("cursor", [None])[0],
+                                       limit=int(query.get("limit", ["30"])[0]), **options)
+                compact_images = self.observe_history_media({'id': thread_id, **result})
+                projected = client_history({'threadId': thread_id, **result}, compact_images=compact_images)
+                if 'threadId' not in result:
+                    projected.pop('threadId', None)
+                return projected
             if len(path) == 4 and method == 'GET':
                 if path[3] == 'diff':
                     from .codex.diff_projection import diff_page

@@ -1,6 +1,11 @@
 package dev.rivo.relay
 
 import dev.rivo.relay.codex.TaskChangeTracker
+import dev.rivo.relay.codex.mergePinnedObservations
+import dev.rivo.relay.codex.TaskNotice
+import dev.rivo.relay.codex.fillObservedTurns
+import dev.rivo.relay.data.ApiException
+import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -71,5 +76,89 @@ class TaskChangeTrackerTest {
         tracker.observe(snapshot("old" to "inProgress"))
         assertTrue(tracker.observe(snapshot("old" to "interrupted")).isEmpty())
         assertTrue(tracker.observe(snapshot("unrelated" to "completed")).isEmpty())
+    }
+
+    @Test fun terminalEvidenceResolvesExpectedTurnOutsideHeadOnlyAfterFreshRead() {
+        val tracker = TaskChangeTracker()
+        tracker.expectTurn("a")
+        tracker.observe(snapshot("a" to "inProgress"))
+        val newer = snapshot("b" to "completed", "c" to "completed")
+        assertTrue(tracker.observe(newer).isEmpty()) // Disappearance alone is never completion.
+        assertTrue(tracker.hasUnresolvedTurns)
+        assertTrue(tracker.observeTurnEvent("turn/completed", JSONObject().put("id", "a").put("status", "completed"), 20))
+        assertTrue(tracker.observe(newer).isEmpty()) // Visible controller may publish an older in-flight read.
+        assertTrue(tracker.observe(newer, freshAfterNanos = 10).isEmpty())
+        assertTrue(tracker.hasPendingTerminals)
+        assertEquals(TaskNotice("turn:a:completed", "completed"), tracker.observe(newer, freshAfterNanos = 30).single())
+        assertFalse(tracker.hasPendingTerminals)
+        assertFalse(tracker.hasUnresolvedTurns)
+        assertFalse(tracker.observeTurnEvent("turn/completed", JSONObject().put("id", "a").put("status", "completed"), 40))
+        assertTrue(tracker.observe(newer, freshAfterNanos = 50).isEmpty())
+    }
+
+    @Test fun observedStartAndTerminalPreserveGoalOwnershipAndFailureSemantics() {
+        for (terminal in listOf("completed", "failed", "interrupted")) {
+            val tracker = TaskChangeTracker()
+            val active = JSONObject().put("createdAt", 1).put("status", "active")
+            tracker.observe(snapshot("baseline" to "completed").put("goal", active))
+            assertTrue(tracker.observeTurnEvent("turn/started", JSONObject().put("id", "a").put("status", "inProgress"), 10))
+            assertTrue(tracker.observeTurnEvent("turn/completed", JSONObject().put("id", "a").put("status", terminal), 20))
+            val notices = tracker.observe(snapshot("b" to "inProgress").put("goal", active), freshAfterNanos = 30)
+            if (terminal == "failed") assertEquals("failed", notices.single().kind) else assertTrue(notices.isEmpty())
+            val finished = active.put("status", "complete")
+            assertEquals("completed", tracker.observe(snapshot("b" to "completed").put("goal", finished)).single().kind)
+        }
+        assertFalse(TaskChangeTracker().observeTurnEvent("turn/completed", JSONObject().put("id", "historical").put("status", "completed"), 10))
+    }
+
+    @Test fun partialPinnedDiscoveryAddsWithoutRemovingUntilFullRead() {
+        val partial = mergePinnedObservations(setOf("existing"), setOf("new"), complete = false)
+        assertEquals(setOf("existing", "new"), partial)
+        assertEquals(partial, mergePinnedObservations(partial, emptySet(), complete = false))
+        assertEquals(setOf("new"), mergePinnedObservations(partial, setOf("new"), complete = true))
+        assertTrue(mergePinnedObservations(partial, emptySet(), complete = true).isEmpty())
+    }
+
+    @Test fun limitedHistoryCheckUsesRealTerminalEvidenceAndKeepsFreshHeadMetadata() = runBlocking {
+        val tracker = TaskChangeTracker().also { it.expectTurn("a") }
+        val head = snapshot("b" to "completed", "c" to "completed")
+            .put("nativeRevision", "r1").put("nextCursor", "older")
+            .put("goal", JSONObject().put("status", "paused")).put("recoveryRequired", true)
+        assertTrue(tracker.observe(head).isEmpty())
+        assertTrue(tracker.missingFromHead(head))
+        var reads = 0
+        val filled = fillObservedTurns(head, tracker.unresolvedTurns) { cursor, revision ->
+            reads++
+            assertEquals("older", cursor); assertEquals("r1", revision)
+            JSONObject().put("nativeRevision", "r1").put("turns", JSONArray().put(JSONObject().put("id", "a").put("status", "completed")))
+                .put("nextCursor", JSONObject.NULL).put("goal", JSONObject().put("status", "active"))
+        }
+        assertEquals(1, reads)
+        assertEquals("paused", filled.getJSONObject("goal").getString("status"))
+        assertTrue(filled.getBoolean("recoveryRequired"))
+        assertEquals(2, head.getJSONObject("thread").getJSONArray("turns").length())
+        assertEquals("completed", tracker.observe(filled).single().kind)
+        assertFalse(tracker.hasUnresolvedTurns)
+    }
+
+    @Test fun missingOrChangedHistoryRemainsUncertainAndNeverScansUnbounded() = runBlocking {
+        val tracker = TaskChangeTracker().also { it.expectTurn("missing") }
+        val head = snapshot("head" to "completed").put("nativeRevision", "r1").put("nextCursor", "older")
+        var pages = 0
+        val filled = fillObservedTurns(head, tracker.unresolvedTurns) { _, _ ->
+            pages++
+            JSONObject().put("nativeRevision", "r1").put("nextCursor", "page-$pages")
+                .put("turns", JSONArray().put(JSONObject().put("id", "old-$pages").put("status", "completed")))
+        }
+        assertEquals(3, pages)
+        assertTrue(tracker.observe(filled).isEmpty())
+        assertTrue(tracker.hasUnresolvedTurns)
+        val failure = runCatching { fillObservedTurns(head, tracker.unresolvedTurns) { _, _ -> JSONObject().put("nativeRevision", "changed") } }.exceptionOrNull()
+        assertTrue(failure is ApiException)
+        assertTrue(tracker.hasUnresolvedTurns)
+        val settled = TaskChangeTracker()
+        settled.observe(snapshot("old" to "completed"))
+        assertFalse(settled.observeTurnEvent("turn/started", JSONObject().put("id", "old").put("status", "inProgress"), 10))
+        assertFalse(settled.observeTurnEvent("turn/completed", JSONObject().put("id", "old").put("status", "completed"), 20))
     }
 }

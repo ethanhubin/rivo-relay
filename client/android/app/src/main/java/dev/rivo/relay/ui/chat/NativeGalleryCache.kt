@@ -23,7 +23,9 @@ internal fun nativeMediaSourceIndex(assets: List<JSONObject>): Map<String, JSONO
 
 internal data class GeneratedMediaRequest(val identity: NativeMediaIdentity, val status: String, val source: String)
 internal fun generatedMediaRequests(messages: List<NativeMessage>): List<GeneratedMediaRequest> = messages.mapNotNull { message ->
-    if (message.type != "imageGeneration") null else generatedImageSource(message, emptyMap())?.let {
+    if (message.type != "imageGeneration") null else
+        (if (message.raw.optBoolean("mediaRef")) message.raw.string("result").takeIf(String::isNotBlank)
+         else generatedImageSource(message, emptyMap()))?.let {
         GeneratedMediaRequest(NativeMediaIdentity(message.turnId, message.id), message.raw.string("status"), it)
     }
 }

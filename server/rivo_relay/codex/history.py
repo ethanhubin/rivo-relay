@@ -39,6 +39,9 @@ class NativeHistoryAdapter:
     """Versioned boundary around the experimental persisted-history RPCs."""
 
     protocol_version = 2
+    # Full tool output makes turn count a poor proxy for payload size. Bound
+    # batches and retain native cursors rather than assembling larger pages.
+    max_page_turns = 10
     # Known renderable types, not a rejection allowlist: native can add display
     # items without changing turn execution semantics. Preserve unknown items
     # losslessly so the client can show an explicit unsupported-item fallback.
@@ -108,6 +111,7 @@ class NativeHistoryAdapter:
         limit: int,
         cursor: Optional[str] = None,
     ) -> NativeTurnPage:
+        limit = min(limit, self.max_page_turns)
         scope = getattr(self._reads, 'scope', None)
         generation = getattr(connection, 'generation', None)
         key = (id(connection), str(generation), thread_id, cursor, limit)

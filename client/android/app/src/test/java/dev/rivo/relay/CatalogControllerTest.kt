@@ -23,6 +23,245 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 class CatalogControllerTest {
+    @Test fun desktopCreationAppearsWhileFullScanIsBlockedWithEventsOrMetadataPolling() = runBlocking {
+        for (withEvents in listOf(true, false)) {
+            val server = MockWebServer()
+            val fullStarted = CountDownLatch(1)
+            val releaseFull = CountDownLatch(1)
+            val summaries = AtomicInteger()
+            val fullReads = AtomicInteger()
+            val eventReads = AtomicInteger()
+            val initial = """{"threads":[{"id":"old","name":"Old","status":"unknown"}],"catalogComplete":false}"""
+            val added = """{"threads":[{"id":"old","name":"Old","status":"unknown"},{"id":"desktop-new","name":"Desktop new","status":"unknown","pinned":true}],"catalogComplete":false}"""
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    if (request.requestUrl?.encodedPath == "/v1/events") {
+                        eventReads.incrementAndGet(); fullStarted.await(5, TimeUnit.SECONDS)
+                        return MockResponse().setHeader("Content-Type", "text/event-stream")
+                            .setBody("event: native\ndata: {\"method\":\"thread/started\",\"params\":{\"threadId\":\"desktop-new\"}}\n\n" + ":".repeat(4096))
+                    }
+                    if (request.requestUrl?.queryParameter("view") == "summary")
+                        return MockResponse().setBody(if (summaries.incrementAndGet() == 1) initial else added)
+                    if (fullReads.incrementAndGet() == 1) {
+                        fullStarted.countDown(); releaseFull.await(5, TimeUnit.SECONDS)
+                        return MockResponse().setBody(initial.replace("false", "true"))
+                    }
+                    return MockResponse().setBody(added.replace("false", "true"))
+                }
+            }
+            server.start()
+            val scope = CoroutineScope(coroutineContext + SupervisorJob())
+            val api = api(server)
+            val sync = if (withEvents) dev.rivo.relay.codex.NodeSessionSync(api, scope) else null
+            val controller = CatalogController(api, scope, { throw it }, sync = sync)
+            controller.project(ProjectSummary("p", "P", "/p"))
+            val observer = scope.launch { controller.observeThreads(activeIntervalMillis = 10_000, idleIntervalMillis = 10_000,
+                summaryIntervalMillis = if (withEvents) 10_000 else 40) }
+            try {
+                await(fullStarted)
+                withTimeout(3000) { controller.state.first { it.threads.any { row -> row.id == "desktop-new" } } }
+                assertEquals(1L, releaseFull.count)
+                assertFalse(controller.state.value.threadsFresh)
+                assertTrue(controller.state.value.threadsSummaryFresh)
+                assertEquals(setOf("desktop-new"), pinnedThreadsToObserve(controller.state.value))
+                assertEquals(if (withEvents) 1 else 0, eventReads.get())
+                releaseFull.countDown()
+                withTimeout(3000) { controller.state.first { it.threadsFresh && it.threadsComplete } }
+                assertEquals(setOf("old", "desktop-new"), controller.state.value.threads.map { it.id }.toSet())
+                assertEquals(2, fullReads.get())
+            } finally { releaseFull.countDown(); observer.cancel(); scope.cancel(); server.shutdown() }
+        }
+    }
+
+    @Test fun runningCompletionRefreshesWithoutAnyNativeEvents() = runBlocking {
+        val server = MockWebServer()
+        repeat(2) { server.enqueue(MockResponse().setBody("""{"threads":[{"id":"t","status":"running","nativeExecution":"running"}]}""")) }
+        server.enqueue(MockResponse().setBody("""{"threads":[{"id":"t","status":"idle","nativeExecution":"idle"}]}"""))
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = CatalogController(api(server), scope, { throw it })
+        controller.project(ProjectSummary("p", "P", "/p"))
+        try {
+            withTimeout(3000) { controller.state.first { it.threadsFresh } }
+            assertEquals("running", controller.state.value.threads.single().nativeExecution)
+            val observer = scope.launch { controller.observeThreads(activeIntervalMillis = 40, idleIntervalMillis = 10_000) }
+            try {
+                withTimeout(3000) { controller.state.first { it.threads.singleOrNull()?.nativeExecution == "idle" } }
+                assertEquals(3, server.requestCount)
+            } finally { observer.cancel() }
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun onlyCatalogLifecycleEventsRequestRefresh() {
+        fun native(method: String) = dev.rivo.relay.data.RelayEvent("native", JSONObject().put("method", method))
+        for (method in listOf("thread/started", "thread/name/updated", "thread/goal/updated", "project/created", "turn/started", "turn/completed", "relay/queueChanged", "item/tool/requestUserInput"))
+            assertTrue(method, dev.rivo.relay.codex.catalogLifecycleEvent(native(method)))
+        for (method in listOf("thread/tokenUsage/updated", "item/agentMessage/delta", "item/reasoning/textDelta", "thread/realtime/outputAudio/delta"))
+            assertFalse(method, dev.rivo.relay.codex.catalogLifecycleEvent(native(method)))
+    }
+
+    @Test fun summaryPreservesExecutionAndLateFullCompletesOtherRowsWithoutUndoingDetails() = runBlocking {
+        val server = MockWebServer()
+        val fullStarted = CountDownLatch(1)
+        val releaseFull = CountDownLatch(1)
+        val reads = AtomicInteger()
+        val initial = """{"threads":[{"id":"r","name":"Running","status":"running","nativeExecution":"running","updatedAt":10},{"id":"q","name":"Waiting","status":"waiting","nativeExecution":"running","queueDepth":2,"deliveryState":"queued","displayState":"waiting","hasOutstandingWork":true,"updatedAt":10},{"id":"other","name":"Old metadata","updatedAt":1}],"catalogComplete":true}"""
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (reads.incrementAndGet()) {
+                1 -> MockResponse().setBody(initial)
+                2 -> MockResponse().setBody("""{"threads":[{"id":"r","name":"Renamed","status":"unknown","updatedAt":11},{"id":"q","name":"Queue renamed","status":"unknown","updatedAt":11},{"id":"other","name":"Recent metadata","updatedAt":20}],"catalogComplete":false}""")
+                3 -> {
+                    fullStarted.countDown(); releaseFull.await(10, TimeUnit.SECONDS)
+                    MockResponse().setBody("""{"threads":[{"id":"r","name":"Old full","status":"running","nativeExecution":"running","updatedAt":11},{"id":"q","name":"Old queue","status":"idle","nativeExecution":"idle","updatedAt":11},{"id":"other","name":"Discovered","status":"idle","updatedAt":10}],"catalogComplete":true}""")
+                }
+                else -> MockResponse().setBody("""{"threads":[{"id":"r","name":"Running again","status":"running","nativeExecution":"running","updatedAt":11},{"id":"q","name":"Finished","status":"idle","nativeExecution":"idle","updatedAt":11},{"id":"other","name":"Discovered","status":"idle","updatedAt":10}],"catalogComplete":true}""")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = CatalogController(api(server), scope, { throw it })
+        try {
+            controller.project(ProjectSummary("p", "P", "/p"))
+            withTimeout(3000) { controller.state.first { it.threadsFresh } }
+            val refresh = controller.refreshThreads()!!
+            await(fullStarted)
+            val partial = controller.state.value.threads.associateBy { it.id }
+            assertEquals("Renamed", partial.getValue("r").name)
+            assertEquals("running", partial.getValue("r").nativeExecution)
+            assertEquals("waiting", partial.getValue("q").status)
+            assertEquals(2, partial.getValue("q").queueDepth)
+            assertEquals("queued", partial.getValue("q").deliveryState)
+            val completed = dev.rivo.relay.data.SessionSnapshot("r", "Metadata older", "idle", "",
+                emptyList(), emptyList(), JSONObject(), updatedAt = 9, nativeExecution = "idle")
+            controller.reconcileSession(completed)
+            val queued = dev.rivo.relay.data.QueueTask("queue", "pending", "waiting", 1, "", JSONObject())
+            controller.reconcileSession(dev.rivo.relay.data.SessionSnapshot("q", "Queue renamed", "waiting", "",
+                emptyList(), emptyList(), JSONObject(), updatedAt = 11, nativeExecution = "running", queueDepth = 2,
+                queue = listOf(queued), deliveryState = "queued", displayState = "waiting"))
+            assertTrue(refresh.isActive)
+            assertTrue(controller.state.value.threadsLoading)
+            releaseFull.countDown(); withTimeout(3000) { refresh.join() }
+            val full = controller.state.value.threads.associateBy { it.id }
+            assertEquals(setOf("r", "q", "other"), full.keys)
+            assertEquals("Recent metadata", full.getValue("other").name)
+            assertEquals(20L, full.getValue("other").updatedAt)
+            assertEquals("idle", full.getValue("r").nativeExecution)
+            assertEquals("Renamed", full.getValue("r").name)
+            assertEquals("waiting", full.getValue("q").status)
+            assertEquals(2, full.getValue("q").queueDepth)
+            assertTrue(controller.state.value.threadsFresh)
+            assertTrue(controller.state.value.threadsComplete)
+            controller.refreshThreads()?.join()
+            assertEquals("running", controller.state.value.threads.first { it.id == "r" }.nativeExecution)
+            assertEquals("idle", controller.state.value.threads.first { it.id == "q" }.nativeExecution)
+            assertEquals(0, controller.state.value.threads.first { it.id == "q" }.queueDepth)
+        } finally { releaseFull.countDown(); scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun incompleteUnknownCatalogRetriesAtActiveIntervalAfterFullFailure() = runBlocking {
+        val server = MockWebServer()
+        val reads = AtomicInteger()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (reads.incrementAndGet()) {
+                1 -> MockResponse().setBody("""{"threads":[{"id":"t","name":"T","status":"unknown"}],"catalogComplete":false}""")
+                2 -> MockResponse().setResponseCode(503).setBody("""{"error":{"code":"native_unavailable","message":"retry"}}""")
+                else -> MockResponse().setBody("""{"threads":[{"id":"t","name":"T","status":"idle","nativeExecution":"idle"}],"catalogComplete":true}""")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val errors = mutableListOf<Throwable>()
+        val controller = CatalogController(api(server), scope, errors::add)
+        controller.project(ProjectSummary("p", "P", "/p"))
+        val observer = scope.launch { controller.observeThreads(activeIntervalMillis = 40, idleIntervalMillis = 10_000) }
+        try {
+            withTimeout(3000) { controller.state.first { it.threadsFresh && it.threadsComplete } }
+            assertEquals(3, reads.get())
+            assertEquals(1, errors.size)
+            assertEquals("idle", controller.state.value.threads.single().nativeExecution)
+            assertFalse(dev.rivo.relay.codex.threadCatalogNeedsFastRefresh(controller.state.value))
+            assertTrue(dev.rivo.relay.codex.threadCatalogNeedsFastRefresh(controller.state.value.copy(threadsFresh = false)))
+            assertTrue(dev.rivo.relay.codex.threadCatalogNeedsFastRefresh(controller.state.value.copy(threadsComplete = false)))
+            assertTrue(dev.rivo.relay.codex.threadCatalogNeedsFastRefresh(controller.state.value.copy(
+                threads = listOf(controller.state.value.threads.single().copy(status = "unknown", nativeExecution = "unknown")))))
+        } finally { observer.cancel(); scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun projectSummaryIsUsableBeforeStatsAndOldStatsCannotRenameNewMetadata() = runBlocking {
+        val server = MockWebServer()
+        val statsStarted = CountDownLatch(1)
+        val releaseStats = CountDownLatch(1)
+        val name = AtomicReference("Initial")
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when {
+                request.path == "/v1/projects?view=summary" -> MockResponse().setBody("""{"projects":[{"id":"p","name":"${name.get()}","path":"/p","statsReady":false}]}""")
+                request.path == "/v1/projects" -> {
+                    statsStarted.countDown(); releaseStats.await(10, TimeUnit.SECONDS)
+                    MockResponse().setBody("""{"projects":[{"id":"p","name":"Initial","path":"/p","threadCount":99}]}""")
+                }
+                else -> MockResponse().setBody("""{"threads":[{"id":"t","name":"T"}]}""")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val errors = mutableListOf<Throwable>()
+        val controller = CatalogController(api(server), scope, errors::add)
+        try {
+            withTimeout(3000) { controller.refreshProjects().join() }
+            await(statsStarted)
+            assertTrue(controller.state.value.projectsFresh)
+            assertFalse(controller.state.value.projectsLoading)
+            assertFalse(controller.state.value.projects.single().statsReady)
+            assertEquals("会话统计加载中…", dev.rivo.relay.ui.projects.projectCountLabel(controller.state.value.projects.single()))
+            controller.project(controller.state.value.projects.single())
+            withTimeout(3000) { controller.state.first { it.threadsFresh } }
+            assertEquals("t", controller.state.value.threads.single().id)
+            name.set("Renamed")
+            controller.refreshProjects().join()
+            releaseStats.countDown()
+            delay(100)
+            assertEquals("Renamed", controller.state.value.projects.single().name)
+            assertEquals("Renamed", controller.state.value.selectedProject?.name)
+            assertFalse(controller.state.value.projects.single().statsReady)
+            assertTrue(errors.isEmpty())
+        } finally { releaseStats.countDown(); scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun partialThreadsAppearBeforeFullAndCannotOverwriteNewSelection() = runBlocking {
+        val server = MockWebServer()
+        val fullStarted = CountDownLatch(1)
+        val releaseFull = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.requestUrl?.queryParameter("projectId") == "q")
+                    return MockResponse().setBody("""{"threads":[{"id":"q-thread","name":"Q"}],"catalogComplete":true}""")
+                if (request.requestUrl?.queryParameter("view") == "summary")
+                    return MockResponse().setBody("""{"threads":[{"id":"early","name":"Early","status":"unknown"}],"catalogComplete":false}""")
+                fullStarted.countDown(); releaseFull.await(10, TimeUnit.SECONDS)
+                return MockResponse().setBody("""{"threads":[{"id":"late","name":"Late"}],"catalogComplete":true}""")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = CatalogController(api(server), scope, { throw it })
+        try {
+            controller.project(ProjectSummary("p", "P", "/p"))
+            await(fullStarted)
+            assertEquals("early", controller.state.value.threads.single().id)
+            assertFalse(controller.state.value.threadsFresh)
+            assertFalse(controller.state.value.threadsComplete)
+            val partial = controller.state.value.copy(threadsLoading = false)
+            assertFalse(dev.rivo.relay.codex.catalogCacheNoticeVisible("sessions", partial, online = true))
+            assertTrue(dev.rivo.relay.codex.catalogCacheNoticeVisible("sessions", partial, online = false))
+            assertTrue(pinnedThreadsToObserve(controller.state.value).isEmpty())
+            controller.project(ProjectSummary("q", "Q", "/q"))
+            withTimeout(3000) { controller.state.first { it.threadsFresh } }
+            releaseFull.countDown(); delay(100)
+            assertEquals("q-thread", controller.state.value.threads.single().id)
+            assertTrue(controller.state.value.threadsComplete)
+        } finally { releaseFull.countDown(); scope.cancel(); server.shutdown() }
+    }
+
     @Test fun freshDetailUpdatesProvisionalTitleAndKeepsItDuringIndexing() = runBlocking {
         val server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
@@ -193,7 +432,8 @@ class CatalogControllerTest {
             val completed = dev.rivo.relay.data.SessionSnapshot("t", "T", "idle", "",
                 emptyList(), emptyList(), JSONObject(), updatedAt = 10, nativeExecution = "idle")
             controller.reconcileSession(completed.copy(updatedAt = 9))
-            assertTrue(dev.rivo.relay.codex.threadIsExecuting(controller.state.value.threads.single()))
+            // Metadata updatedAt does not order live execution observations.
+            assertFalse(dev.rivo.relay.codex.threadIsExecuting(controller.state.value.threads.single()))
             controller.reconcileSession(completed)
             oldRead?.join()
             assertFalse(dev.rivo.relay.codex.threadIsExecuting(controller.state.value.threads.single()))
@@ -294,7 +534,7 @@ class CatalogControllerTest {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when {
                 !healthy.get() -> MockResponse().setResponseCode(503).setBody("""{"error":{"message":"offline"}}""")
-                request.path == "/v1/projects" -> projects(0)
+                request.path == "/v1/projects?view=summary" -> projects(0)
                 else -> MockResponse().setBody("""{"threads":[{"id":"t","name":"Fresh thread","pinned":true}]}""")
             }
         }
@@ -356,7 +596,7 @@ class CatalogControllerTest {
             assertEquals(listOf(1, 0, 0), result.map { it.activeGoalCount })
             assertEquals(8, result.first().threadCount)
             assertNull(failure.get())
-            assertEquals("/v1/projects", server.takeRequest().path)
+            assertEquals("/v1/projects?view=summary", server.takeRequest().path)
         } finally { scope.cancel(); server.shutdown() }
     }
 
@@ -453,7 +693,7 @@ class CatalogControllerTest {
             repeat(2) {
                 val request = server.takeRequest()
                 assertEquals("GET", request.method)
-                assertEquals("/v1/projects", request.path)
+                assertEquals("/v1/projects?view=summary", request.path)
             }
             assertNull(failure.get())
         } finally { releaseSecond.countDown(); observer.cancel(); scope.cancel(); server.shutdown() }
@@ -485,8 +725,8 @@ class CatalogControllerTest {
             assertTrue(controller.state.value.archived)
             assertEquals("archived", controller.state.value.threads.single().id)
             assertNull(failure.get())
-            assertEquals("/v1/threads?projectId=p&archived=false", server.takeRequest().path)
-            assertEquals("/v1/threads?projectId=p&archived=true", server.takeRequest().path)
+            assertEquals("/v1/threads?projectId=p&archived=false&view=summary", server.takeRequest().path)
+            assertEquals("/v1/threads?projectId=p&archived=true&view=summary", server.takeRequest().path)
         } finally { releaseRecent.countDown(); scope.cancel(); server.shutdown() }
     }
 

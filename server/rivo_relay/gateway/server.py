@@ -9,7 +9,7 @@ from pathlib import Path
 import secrets
 import time
 
-from ..observability import event, request_id
+from ..observability import event, request_id, route_kind
 
 from aiohttp import WSMsgType, web
 
@@ -25,6 +25,15 @@ def headers(items):
         if name.lower() == 'connection':
             excluded.update(part.strip().lower() for part in value.split(','))
     return [(k, v) for k, v in items if k.lower() not in excluded and not k.lower().startswith('x-forwarded-')]
+
+
+@contextlib.contextmanager
+def _timed(metrics, field):
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        metrics[field] = (metrics[field] or 0) + (time.monotonic() - started) * 1000
 
 
 class Gateway:
@@ -93,6 +102,9 @@ class Gateway:
         started = time.monotonic()
         request['trace_id'] = request_id()
         request['outcome'] = 'rejected'
+        metrics = request['metrics'] = dict.fromkeys(
+            ('data_connect_ms', 'response_headers_ms', 'response_body_ms', 'downstream_write_ms'))
+        metrics.update(request_body_bytes=0, response_body_bytes=0, downstream_body_bytes=0)
         status = None
         try:
             response = await self._proxy(request)
@@ -107,7 +119,11 @@ class Gateway:
         finally:
             event('gateway_request_finished', request_id=request['trace_id'],
                   node=request.match_info['slot'], status=status,
+                  route=route_kind('/' + request.match_info.get('path', '')),
+                  method=request.method if request.method in {'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'} else 'OTHER',
                   outcome=request['outcome'],
+                  **{key: round(value, 2) if key.endswith('_ms') and value is not None else value
+                     for key, value in metrics.items()},
                   duration_ms=round((time.monotonic() - started) * 1000, 2))
 
     async def _proxy(self, request):
@@ -134,14 +150,13 @@ class Gateway:
         upload = None
         ws = None
         response = None
+        metrics = request['metrics']
         try:
-            await control.send_json({'ticket': ticket})
-            ws = await asyncio.wait_for(future, 10)
+            with _timed(metrics, 'data_connect_ms'):
+                await control.send_json({'ticket': ticket})
+                ws = await asyncio.wait_for(future, 10)
             # raw_path preserves encoded file names and query strings byte-for-byte.
             raw_path = request.raw_path.split('/relay/' + slot, 1)[1]
-            await ws.send_json({'method': request.method, 'path': raw_path,
-                                'headers': headers([(k, v) for k, v in request.headers.items() if k.lower() != 'x-rivo-request-id']) + [('X-Rivo-Request-Id', request['trace_id'])]})
-
             async def send_body():
                 total = 0
                 async for chunk in request.content.iter_chunked(CHUNK):
@@ -149,28 +164,38 @@ class Gateway:
                     if total > MAX_BODY:
                         raise ValueError('Upload too large')
                     await ws.send_bytes(chunk)
+                    metrics['request_body_bytes'] += len(chunk)
                 await ws.send_json({'eof': True})
 
-            upload = asyncio.create_task(send_body())
             async def close_failed(task):
                 if not task.cancelled() and task.exception() is not None:
                     await ws.close()
-            upload.add_done_callback(lambda task: asyncio.create_task(close_failed(task)))
-            message = await asyncio.wait_for(ws.receive(), 120)
+            with _timed(metrics, 'response_headers_ms'):
+                await ws.send_json({'method': request.method, 'path': raw_path,
+                                    'headers': headers([(k, v) for k, v in request.headers.items() if k.lower() != 'x-rivo-request-id']) + [('X-Rivo-Request-Id', request['trace_id'])]})
+                upload = asyncio.create_task(send_body())
+                upload.add_done_callback(lambda task: asyncio.create_task(close_failed(task)))
+                message = await asyncio.wait_for(ws.receive(), 120)
             if message.type != WSMsgType.TEXT:
                 raise ConnectionError('No response headers')
             head = json.loads(message.data)
             response = web.StreamResponse(status=head['status'], headers=headers(head['headers']))
-            await response.prepare(request)
-            async for message in ws:
-                if message.type == WSMsgType.BINARY:
-                    await response.write(message.data)
-                elif message.type == WSMsgType.TEXT and json.loads(message.data).get('eof'):
-                    await response.write_eof()
-                    request['outcome'] = 'completed'
-                    return response
-                else:
-                    break
+            with _timed(metrics, 'response_body_ms'):
+                with _timed(metrics, 'downstream_write_ms'):
+                    await response.prepare(request)
+                async for message in ws:
+                    if message.type == WSMsgType.BINARY:
+                        metrics['response_body_bytes'] += len(message.data)
+                        with _timed(metrics, 'downstream_write_ms'):
+                            await response.write(message.data)
+                        metrics['downstream_body_bytes'] += len(message.data)
+                    elif message.type == WSMsgType.TEXT and json.loads(message.data).get('eof'):
+                        with _timed(metrics, 'downstream_write_ms'):
+                            await response.write_eof()
+                        request['outcome'] = 'completed'
+                        return response
+                    else:
+                        break
             raise ConnectionError('Incomplete upstream response')
         except (ConnectionError, OSError, TimeoutError, ValueError, KeyError) as error:
             request['outcome'] = type(error).__name__

@@ -1,13 +1,31 @@
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from rivo_relay.codex.projects import ProjectCatalog
 from rivo_relay.codex.sessions import CodexService
 from test_codex import FakeNative
 
 
 class PerformanceTests(unittest.TestCase):
+    def test_usage_notifications_preserve_catalog_but_lifecycle_invalidates(self):
+        service = CodexService(connection=FakeNative())
+        service.projects.invalidate = Mock()
+        service._event({'method': 'thread/tokenUsage/updated', 'params': {
+            'threadId': 't', 'turnId': 'turn', 'tokenUsage': {'total': 10}}})
+        service.projects.invalidate.assert_not_called()
+        service._event({'method': 'thread/name/updated', 'params': {'threadId': 't', 'name': 'new'}})
+        service.projects.invalidate.assert_called_once()
+
+    def test_project_counters_use_running_probe_while_session_states_remain_complete(self):
+        service = CodexService(connection=FakeNative())
+        service.native_journal.execution_states = Mock(return_value={})
+        threads = [{'id': 'unloaded', 'status': {'type': 'notLoaded'}}]
+        service.projects.execution_provider(threads)
+        service.native_journal.execution_states.assert_called_once_with(['unloaded'], running_only=True)
+        service.native_journal.execution_states.reset_mock()
+        service._external_execution(threads)
+        service.native_journal.execution_states.assert_called_once_with(['unloaded'])
     def test_project_cache_expiry_invalidation_and_copy_isolation(self):
         native = FakeNative()
         def request(method, params):
@@ -27,7 +45,8 @@ class PerformanceTests(unittest.TestCase):
             self.assertEqual(6, len(native.calls))
         with patch('rivo_relay.codex.projects.time.monotonic', return_value=13):
             catalog.list()
-            self.assertEqual(9, len(native.calls))
+            # Project statistics expired, but the complete metadata scan is shared.
+            self.assertEqual(7, len(native.calls))
 
     def test_live_offsets_are_monotonic_and_native_event_is_unchanged(self):
         events = []
@@ -55,8 +74,9 @@ class PerformanceTests(unittest.TestCase):
             self.assertTrue(entered.wait(3))
             second = pool.submit(catalog.list)
             release.set()
-            self.assertEqual([], first.result(3))
-            self.assertEqual([], second.result(3))
+            rows = first.result(3)
+            self.assertEqual(['__rivo_recent__'], [row['id'] for row in rows])
+            self.assertEqual(rows, second.result(3))
         self.assertEqual(3, len(native.calls))
         catalog.invalidate()
         entered.clear()
@@ -68,7 +88,34 @@ class PerformanceTests(unittest.TestCase):
             release.set()
             pending.result(3)
         catalog.list()
-        self.assertEqual(9, len(native.calls))
+        self.assertEqual(7, len(native.calls))
+        self.assertEqual(3, native.calls.count('project/list'))
+
+    def test_catalog_waiter_can_cancel_without_blocking_refresh_owner(self):
+        from rivo_relay.read_budget import ReadStopped, read_budget
+        native = FakeNative()
+        catalog = ProjectCatalog(native)
+        entered, release = threading.Event(), threading.Event()
+        def request(method, params):
+            native.calls.append(method)
+            if method == 'project/list':
+                entered.set()
+                self.assertTrue(release.wait(3))
+            return {'data': []}
+        native.request = request
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            owner = pool.submit(catalog.list)
+            try:
+                self.assertTrue(entered.wait(1))
+                with self.assertRaises(ReadStopped), read_budget(seconds=.02):
+                    catalog.list()
+                self.assertFalse(owner.done())
+                self.assertEqual(['project/list'], native.calls)
+            finally:
+                release.set()
+            rows = owner.result(2)
+        self.assertEqual(rows, catalog.list())
+        self.assertEqual(3, len(native.calls))
 
     def test_notification_bursts_are_lossless_and_lifecycle_is_a_barrier(self):
         from rivo_relay.codex.notifications import NotificationQueue
