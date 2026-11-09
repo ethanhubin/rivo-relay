@@ -23,6 +23,33 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 class CatalogControllerTest {
+    @Test fun localPinSurvivesServerRefreshAndDoesNotInvalidateSummary() = runBlocking {
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = MockResponse().setBody(
+                """{"threads":[{"id":"t","name":"T","status":"idle","pinned":false}],"catalogComplete":true}""")
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = CatalogController(api(server), scope, { throw it })
+        try {
+            controller.project(ProjectSummary("p", "P", "/p"))
+            withTimeout(3000) { controller.state.first { it.threadsFresh } }
+            controller.setThreadPinned("t", true)
+            assertTrue(controller.state.value.threads.single().pinned)
+            controller.refreshThreads(force = true)?.join()
+            assertTrue(controller.state.value.threads.single().pinned)
+            val applySummary = CatalogController::class.java.getDeclaredMethod(
+                "applySummary", JSONObject::class.java, Boolean::class.javaPrimitiveType)
+            applySummary.isAccessible = true
+            assertEquals(false, applySummary.invoke(controller,
+                JSONObject("""{"threads":[{"id":"t","name":"T","status":"idle","pinned":false}]}"""), false))
+            assertTrue(controller.state.value.threadsFresh)
+            controller.setThreadPinned("t", false)
+            assertFalse(controller.state.value.threads.single().pinned)
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
     @Test fun desktopCreationAppearsWhileFullScanIsBlockedWithEventsOrMetadataPolling() = runBlocking {
         for (withEvents in listOf(true, false)) {
             val server = MockWebServer()

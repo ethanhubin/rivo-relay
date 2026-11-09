@@ -295,7 +295,7 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
     }
 
     private fun applySummary(response: JSONObject, incomplete: Boolean): Boolean {
-        val summary = catalogRows(response, "threads").map(::threadSummary)
+        val summary = catalogRows(response, "threads").map(::threadSummary).map(::localPin)
         val existing = mutable.value.threads.associateBy { it.id }
         val changed = summary.any { row -> existing[row.id]?.let { old ->
             row.updatedAt > old.updatedAt || row.pinned != old.pinned || (row.updatedAt >= old.updatedAt && row.name != old.name)
