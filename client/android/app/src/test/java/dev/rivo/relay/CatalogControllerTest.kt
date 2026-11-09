@@ -35,6 +35,8 @@ class CatalogControllerTest {
             val added = """{"threads":[{"id":"old","name":"Old","status":"unknown"},{"id":"desktop-new","name":"Desktop new","status":"unknown","pinned":true}],"catalogComplete":false}"""
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
+                    if (request.requestUrl?.encodedPath == "/v1/activity")
+                        return MockResponse().setBody("""{"complete":true,"generation":"test","tasks":[],"knownThreadIds":[],"unknownThreadIds":[]}""")
                     if (request.requestUrl?.encodedPath == "/v1/events") {
                         eventReads.incrementAndGet(); fullStarted.await(5, TimeUnit.SECONDS)
                         return MockResponse().setHeader("Content-Type", "text/event-stream")
@@ -187,7 +189,7 @@ class CatalogControllerTest {
         } finally { observer.cancel(); scope.cancel(); server.shutdown() }
     }
 
-    @Test fun projectSummaryIsUsableBeforeStatsAndOldStatsCannotRenameNewMetadata() = runBlocking {
+    @Test fun projectSummaryDoesNotRequestStatistics() = runBlocking {
         val server = MockWebServer()
         val statsStarted = CountDownLatch(1)
         val releaseStats = CountDownLatch(1)
@@ -208,11 +210,10 @@ class CatalogControllerTest {
         val controller = CatalogController(api(server), scope, errors::add)
         try {
             withTimeout(3000) { controller.refreshProjects().join() }
-            await(statsStarted)
+            assertEquals(1L, statsStarted.count)
             assertTrue(controller.state.value.projectsFresh)
             assertFalse(controller.state.value.projectsLoading)
             assertFalse(controller.state.value.projects.single().statsReady)
-            assertEquals("会话统计加载中…", dev.rivo.relay.ui.projects.projectCountLabel(controller.state.value.projects.single()))
             controller.project(controller.state.value.projects.single())
             withTimeout(3000) { controller.state.first { it.threadsFresh } }
             assertEquals("t", controller.state.value.threads.single().id)

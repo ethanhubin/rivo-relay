@@ -5,6 +5,7 @@ import dev.rivo.relay.data.*
 /** Content and execution belong to snapshot; synchronization never rewrites either. */
 data class SessionState(
     val id: String? = null,
+    val activityStatus: String? = null,
     val snapshot: SessionSnapshot? = null,
     val synchronization: SessionSynchronization = SessionSynchronization.confirmed(),
     val historyCursor: String? = null, val loadingEarlier: Boolean = false, val earlierLoaded: Boolean = false,
@@ -81,7 +82,9 @@ fun SessionState.syncStatusLabel(): String? = when {
     readError != null -> "同步失败，正在重试"
     loading || stale -> "同步中"
     snapshot?.requests?.isNotEmpty() == true -> "等待回应"
-    snapshot?.status == "waiting" -> "等待回应，请在原会话处理"
-    snapshot?.isOngoing == true -> "执行中"
+    activityStatus == "running" -> "执行中"
+    activityStatus == "waiting" -> "等待回应"
+    activityStatus == null && snapshot?.status == "waiting" -> "等待回应，请在原会话处理"
+    activityStatus == null && snapshot?.isOngoing == true -> "执行中"
     else -> null
 }
