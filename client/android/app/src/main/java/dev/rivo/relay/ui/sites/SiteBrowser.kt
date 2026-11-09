@@ -1,16 +1,13 @@
 package dev.rivo.relay.ui.sites
 
 import android.annotation.SuppressLint
-import android.content.Intent
 import android.net.Uri
 import android.webkit.*
 import android.graphics.Bitmap
-import android.widget.Toast
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -23,7 +20,6 @@ import dev.rivo.relay.data.resourceWebUrl
 @Composable
 fun SiteBrowser(initialUrl: String, title: String, onClose: () -> Unit) {
     val safeUrl = resourceWebUrl(initialUrl) ?: return
-    val context = LocalContext.current
     var webView by remember { mutableStateOf<WebView?>(null) }
     var currentUrl by remember(safeUrl) { mutableStateOf(safeUrl) }
     var loading by remember { mutableStateOf(true) }
@@ -39,11 +35,6 @@ fun SiteBrowser(initialUrl: String, title: String, onClose: () -> Unit) {
                         Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
                         Text(Uri.parse(currentUrl).host.orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
                     }
-                    TextButton(onClick = {
-                        try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(currentUrl)).addCategory(Intent.CATEGORY_BROWSABLE)) }
-                        catch (_: Exception) { Toast.makeText(context, "未找到浏览器", Toast.LENGTH_SHORT).show() }
-                    }) { Text("浏览器") }
-                    TextButton(onClick = onClose) { Text("关闭") }
                 }
                 if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
                 if (error) Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
