@@ -9,6 +9,19 @@ import org.junit.Test
 class MarkdownMessageBoundaryTest {
     private fun render(text: String) = renderChatMarkdown(text, Color.Blue, Color.Gray, Color.Gray)
 
+    @Test fun imageWordsInOrdinaryLinksDoNotCreateMediaPreviews() {
+        val target = "https://github.com/ethanhubin/MergeDemo/pull/810"
+        for (label in listOf("PR #810：整理图片目录和业务图集", "图像", "截图", "照片", "image", "photo", "screenshot")) {
+            val markdown = "[$label]($target)"
+            assertTrue(markdownImageSources(markdown).isEmpty())
+            val rendered = render(markdown)
+            assertEquals(listOf(target), rendered.getStringAnnotations(MARKDOWN_LINK_TAG, 0, rendered.length).map { it.item })
+        }
+        assertEquals(listOf(target), markdownImageSources("![预览]($target)"))
+        assertEquals(listOf("https://example.com/a.PNG?size=2#preview"),
+            markdownImageSources("[附件](https://example.com/a.PNG?size=2#preview)"))
+    }
+
     @Test fun balancedDestinationsAndAnglePathsKeepTheirCompleteTarget() {
         val text = render("[文档](https://example.com/a_(b).pdf \"说明\") ![图](</tmp/a (final).png> '标题')")
         assertEquals("文档 🖼 图", text.text)

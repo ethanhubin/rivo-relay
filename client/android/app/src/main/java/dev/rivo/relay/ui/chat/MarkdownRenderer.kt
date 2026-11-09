@@ -336,7 +336,7 @@ private fun AnnotatedString.Builder.appendInlineMarkdown(
     }
     val link = if (allowLinks) markdownInlineLinkAt(source, index, budget) else null
     if (link != null) {
-      val image = link.image || isLikelyImageLink(link.label, link.target)
+      val image = link.image || isLikelyImageLink(link.target)
       val label = link.label.ifBlank { if (image) "图片" else link.target }
       if (link.target.isNotEmpty()) pushStringAnnotation(if (image) MARKDOWN_IMAGE_LINK_TAG else MARKDOWN_LINK_TAG, link.target)
       withStyle(SpanStyle(color = linkColor, textDecoration = if (image) null else TextDecoration.Underline,
@@ -392,10 +392,9 @@ internal fun markdownImageLinkAt(rendered: AnnotatedString, offset: Int): String
   return rendered.getStringAnnotations(MARKDOWN_IMAGE_LINK_TAG, position, position).firstOrNull()?.item
 }
 
-private fun isLikelyImageLink(label: String, target: String): Boolean {
+private fun isLikelyImageLink(target: String): Boolean {
   val path = target.substringBefore('?').substringBefore('#')
-  return IMAGE_LINK_SUFFIXES.any { path.endsWith(it, ignoreCase = true) } ||
-    IMAGE_LINK_LABEL.containsMatchIn(label)
+  return IMAGE_LINK_SUFFIXES.any { path.endsWith(it, ignoreCase = true) }
 }
 
 private fun canStartItalic(source: String, index: Int): Boolean {
@@ -426,5 +425,3 @@ internal const val MARKDOWN_IMAGE_LINK_TAG = "chat-image-url"
 
 private val IMAGE_LINK_SUFFIXES =
   listOf(".avif", ".gif", ".heic", ".heif", ".jpeg", ".jpg", ".png", ".webp")
-private val IMAGE_LINK_LABEL =
-  Regex("图片|图像|截图|照片|image|photo|screenshot", RegexOption.IGNORE_CASE)
