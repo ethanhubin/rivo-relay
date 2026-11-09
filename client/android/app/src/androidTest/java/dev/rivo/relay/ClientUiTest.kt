@@ -47,7 +47,7 @@ class ClientUiTest {
     }
 
     @Test fun loggedInHomeIsProjectListAndOpensChosenProject() {
-        val project = ProjectSummary("p", "隔离项目", "/test/project", 2)
+        val project = ProjectSummary("p", "隔离项目", "/test/project")
         var chosen: ProjectSummary? = null
         compose.setContent { RivoTheme { ProjectsScreen(listOf(project), "测试节点", false, { chosen = it }, {}, {}) } }
         compose.onNodeWithText("Codex 项目").assertIsDisplayed()

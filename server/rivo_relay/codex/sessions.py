@@ -301,6 +301,7 @@ class CodexService:
         self.start()
         if summary:
             return self.projects.summary()
+        # Legacy full-view API for older clients; current Android navigation uses summary.
         self.projects.queue_provider = lambda: self.execution_queue.by_thread() if hasattr(self, 'execution_queue') else {}
         return self.projects.list()
 
@@ -1620,9 +1621,6 @@ class CodexService:
         return {'threadId': thread_id}
 
     def _event(self, event):
-        return self._apply_event(event)
-
-    def _apply_event(self, event):
         if not isinstance(event, dict) or not isinstance(event.get('method'), str) or not isinstance(event.get('params', {}), dict):
             return
         if event.get("connectionId", self.connection.generation) != self.connection.generation:

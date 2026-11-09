@@ -62,7 +62,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
     onArchive: ((List<ThreadSummary>, Boolean) -> Unit)? = null,
     unreadThreadIds: Set<String> = emptySet(), usage: CodexUsage? = null,
     usageLoading: Boolean = false, usageError: String? = null, onRefreshUsage: (() -> Unit)? = null,
-    projectKey: String = projectName, initialCount: Int = 0,
+    projectKey: String = projectName,
     pendingConversations: List<PendingConversation> = emptyList(), canDiscardPending: Boolean = true,
     onResumePending: (String) -> Unit = {}, onDiscardPending: (String) -> Unit = {},
     canManageThreads: Boolean = canCreate, showCreate: Boolean = true, catalogComplete: Boolean = true,
@@ -123,7 +123,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
             Column(Modifier.fillMaxWidth().weight(1f).padding(horizontal = RivoSpacing.Lg), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Sm)) {
                 SessionSearchField(search) { search = it }
                 Row(horizontalArrangement = Arrangement.spacedBy(RivoSpacing.Sm)) {
-                    SessionFilter(if (archived || !catalogComplete) "最近会话" else "最近会话 ${if (loading && threads.isEmpty()) initialCount + pendingConversations.size else threads.size + pendingConversations.size}", !archived, { onArchivedChanged?.invoke(false) }, "sessions_recent")
+                    SessionFilter(if (archived || !catalogComplete || (loading && threads.isEmpty())) "最近会话" else "最近会话 ${threads.size + pendingConversations.size}", !archived, { onArchivedChanged?.invoke(false) }, "sessions_recent")
                     if (onArchivedChanged != null) SessionFilter("已归档", archived, { onArchivedChanged(true) }, "sessions_archived")
                 }
                 if (selectedIds.isNotEmpty()) Surface(Modifier.fillMaxWidth().testTag("sessions_selection"),

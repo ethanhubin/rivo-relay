@@ -40,9 +40,9 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
-private val pendingProjectSaver = Saver<ProjectSummary?, ArrayList<String>>(
-    save = { project -> project?.let { arrayListOf(it.id, it.name, it.path, it.threadCount.toString(), it.outstandingWorkCount.toString()) } ?: arrayListOf() },
-    restore = { values -> if (values.size == 5) ProjectSummary(values[0], values[1], values[2], values[3].toInt(), values[4].toInt()) else null })
+internal val pendingProjectSaver = Saver<ProjectSummary?, ArrayList<String>>(
+    save = { project -> project?.let { arrayListOf(it.id, it.name, it.path) } ?: arrayListOf() },
+    restore = { values -> if (values.size == 3 || values.size == 5) ProjectSummary(values[0], values[1], values[2]) else null })
 
 @Composable
 fun RelayApp(vm: AppViewModel = viewModel()) {
@@ -315,7 +315,6 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         if (node.catalog.state.value.threadsFresh) node.submissions.submitBatch(threads.map { BatchSubmission("/v1/threads/${encoded(it.id)}/archive", JSONObject().put("archived", archived), if (archived) "归档会话" else "恢复会话") })
                     }, unreadThreadIds = catalog.unreadThreadIds, usage = catalog.usage, usageLoading = catalog.usageLoading,
                     usageError = catalog.usageError, onRefreshUsage = { node.catalog.refreshUsage(true) }, projectKey = catalog.selectedProject?.id.orEmpty(),
-                    initialCount = catalog.selectedProject?.threadCount ?: 0,
                     pendingConversations = visiblePending, canDiscardPending = writable,
                     onResumePending = { id -> node.catalog.state.value.selectedProject?.takeIf { selected -> visiblePending.any { it.id == id && it.projectId == selected.id } }?.let { openPending(it, id) } },
                     onDiscardPending = { id ->
