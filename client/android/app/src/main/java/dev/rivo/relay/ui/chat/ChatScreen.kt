@@ -336,11 +336,26 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             if (seen.add(turnId)) changes[turnId]?.let { row.key to it } else null
         }.toMap()
     }
+    val loadEarlierWithAnchor by rememberUpdatedState(newValue = {
+        if (!state.loading && !state.loadingEarlier && !state.stale &&
+            snapshot?.historyReady == true && state.historyCursor != null) {
+            followLatest = false
+            val keys = timeline.map { it.key }.toSet()
+            historyAnchor = list.layoutInfo.visibleItemsInfo.firstOrNull { it.key in keys }?.let {
+                HistoryScrollAnchor(it.key as String, it.offset, timeline.firstOrNull()?.key)
+            }
+            onEarlier()
+        }
+    })
     val scrollConnection = remember(list) { object : NestedScrollConnection {
         override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
             if (source == NestedScrollSource.UserInput) {
-                historyAnchor = null
-                if (available.y > 0f) followLatest = false
+                if (available.y < 0f || list.firstVisibleItemIndex > 0) historyAnchor = null
+                if (available.y > 0f) {
+                    followLatest = false
+                    // Continued upward input on the paging row loads the previous page.
+                    if (list.firstVisibleItemIndex == 0) loadEarlierWithAnchor()
+                }
             }
             return Offset.Zero
         }
@@ -407,12 +422,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 Text("今天想从哪里开始？", Modifier.padding(vertical = 24.dp), style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (state.historyCursor != null) item { TextButton(onClick = {
-                followLatest = false
-                val keys = timeline.map { it.key }.toSet()
-                historyAnchor = list.layoutInfo.visibleItemsInfo.firstOrNull { it.key in keys }?.let {
-                    HistoryScrollAnchor(it.key as String, it.offset, timeline.firstOrNull()?.key)
-                }
-                onEarlier()
+                loadEarlierWithAnchor()
             }, enabled = !state.loadingEarlier && snapshot?.historyReady == true, modifier = Modifier.fillMaxWidth().testTag("load_earlier")) { Text(if (snapshot?.historyReady != true) "历史同步中…" else if (state.loadingEarlier) "正在加载…" else "加载更早的消息") } }
             if (!state.loading && snapshot != null && timeline.isEmpty()) item {
                 Text("继续这个项目中的工作", Modifier.padding(vertical = 24.dp), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
