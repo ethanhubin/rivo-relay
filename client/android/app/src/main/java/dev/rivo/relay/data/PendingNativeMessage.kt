@@ -35,7 +35,7 @@ fun projectedSessionMessages(snapshot: SessionSnapshot?, pending: List<PendingNa
     val confirmed = native.asSequence().filter { it.type in setOf("userMessage", "user_message") }
         .map { it.raw.string("clientId") }.filter(String::isNotBlank).toSet()
     val result = native.toMutableList()
-    pending.filterNot { it.clientId in confirmed }.sortedBy { it.createdAt }.forEach { message ->
+    pending.filterNot { it.clientId in confirmed || (it.kind == "queue" && it.delivery != "failed") }.sortedBy { it.createdAt }.forEach { message ->
         val item = JSONObject().put("id", "pending:${message.clientId}").put("type", "userMessage")
             .put("clientId", message.clientId).put("content", JSONArray(message.input)).put("relayDelivery", message.delivery)
         val turn = JSONObject().put("id", message.nativeTurnId ?: "pending:${message.clientId}")
@@ -58,4 +58,15 @@ fun projectedSessionMessages(snapshot: SessionSnapshot?, pending: List<PendingNa
         result.add(index, projected)
     }
     return result
+}
+
+/** Display-only queue receipts; these do not grant queue operations. */
+fun projectedPendingQueue(snapshot: SessionSnapshot?, pending: List<PendingNativeMessage>): List<QueueTask> {
+    val known = snapshot?.queue.orEmpty().map { it.id }.toSet() +
+        snapshot?.messages.orEmpty().map { it.raw.string("clientId") }
+    return pending.filter { it.kind == "queue" && it.delivery != "failed" && it.clientId !in known }
+        .sortedBy { it.createdAt }.map {
+            QueueTask(it.clientId, it.input.mapNotNull { part -> part.optString("text").takeIf(String::isNotBlank) }.joinToString("\n"),
+                when (it.delivery) { "unknown" -> "pending_unknown"; "accepted" -> "pending_accepted"; else -> "submitting" }, 0, "", JSONObject())
+        }
 }
