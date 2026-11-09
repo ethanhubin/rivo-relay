@@ -27,6 +27,8 @@ Desktop 共享会话需要宿主桥接集成，接入方式及验证范围见[De
 
 源码目录：`server/` 为 Python 服务，`client/android/` 为 Kotlin/Compose 客户端，`scripts/` 为部署和验证工具。
 
+分支、提交、PR 正文及审核合并流程见 [GitHub PR 提交规范](docs/github-pr-workflow.md)。
+
 安装服务端依赖：
 
 ```sh
