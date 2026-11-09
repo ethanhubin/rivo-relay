@@ -128,6 +128,7 @@ def serve(config: Config, native_socket: Path | None):
                 native.start()
             except Exception:
                 print(json.dumps({"time": datetime.datetime.now(datetime.timezone.utc).isoformat(), "event": "native_unavailable"}), file=sys.stderr, flush=True)
+            native.activity.start()
             app.queue.start()
             tls = None
             if config.cert:

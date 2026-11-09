@@ -196,6 +196,7 @@ class CodexService:
 
     def close(self):
         # Close only Relay-owned session writers; never terminate the metadata daemon.
+        self.activity.close()
         self.connection.close()
 
     def idle_for_update(self):
@@ -304,33 +305,44 @@ class CodexService:
         return self.projects.list()
 
     def active_tasks(self):
-        self.start()
-        result = self.activity.snapshot()
-        if not result["complete"]:
-            self._activity_discovery = None
-        return result
+        self.activity.start()
+        return self.activity.snapshot()
 
     def _load_activity(self):
         generation = str(self.connection.generation)
+        with self.activity.lock:
+            activity_revision = self.activity.revision
+            active_ids = set(self.activity.tasks)
         discovered = self._activity_discovery
-        full = discovered is None or discovered[0] != generation or time.monotonic() >= discovered[1]
+        full = (discovered is None or discovered[0] != generation or time.monotonic() >= discovered[1]
+                or not active_ids.issubset({t['id'] for t in discovered[3]}))
         if not full:
             projects, all_threads, known = discovered[2:]
             threads = [self.connection.request('thread/read', {'threadId': t['id'], 'includeTurns': False})['thread']
-                       for t in all_threads if t['id'] in known]
+                       for t in all_threads if t['id'] in known or t['id'] in active_ids]
         else:
             projects = list(pages(self.connection, 'project/list'))
-            threads = self.projects.thread_catalog.list({"archived": False, "modelProviders": [],
-                    "sortKey": "updated_at", "sortDirection": "desc"})
+            threads = list(pages(self.connection, "thread/list", {"archived": False, "modelProviders": [],
+                    "sortKey": "updated_at", "sortDirection": "desc", "useStateDbOnly": True}))
+        # Index discovery may omit rollout-only or newly created active threads.
+        # Read those known live IDs directly before treating absence as completion.
+        indexed = {t['id'] for t in threads}
+        for tid in active_ids - indexed:
+            threads.append(self.connection.request('thread/read', {'threadId': tid, 'includeTurns': False})['thread'])
+        roots = {r['path']: p['id'] for p in projects for r in p.get('roots', []) if r.get('path')}
+        self.activity.observe_metadata(threads, roots, generation, activity_revision)
         associations = self.projects.external_worktrees.associations(
             [t for t in threads if not t.get('projectId')], projects)
-        roots = {r['path']: p['id'] for p in projects for r in p.get('roots', []) if r.get('path')}
-        external = self._external_execution(threads)
+        external = self._external_running(threads)
+        external.update(self._external_execution([t for t in threads if t['id'] in active_ids]))
         queues = self.execution_queue.by_thread() if hasattr(self, 'execution_queue') else {}
         tasks, unknown = [], []
         for thread in threads:
             tid = thread['id']
-            goal = self.read_goal(tid).get('goal')
+            # Unloaded threads without running evidence must not trigger a goal RPC
+            # for every historical conversation before publishing live activity.
+            goal = (self.read_goal(tid).get('goal') if thread_status(thread) != 'unknown'
+                    or external.get(tid) == 'running' else None)
             status = ('waiting' if self.interactions.list(tid) or thread_waiting(thread) else
                       'running' if goal_running(thread, goal, external) else
                       external.get(tid, thread_status(thread)))
@@ -340,13 +352,15 @@ class CodexService:
             if projection['hasOutstandingWork']:
                 tasks.append({'threadId': tid, 'projectId': associations.get(tid, {}).get('projectId') or
                               thread.get('projectId') or roots.get(thread.get('cwd'), RECENT_PROJECT_ID),
-                              'status': status, **projection})
+                              'status': status, 'goalActive': (goal or {}).get('status') == 'active', **projection})
         if generation != str(self.connection.generation):
             raise CodexError('原生运行时已变化，请重新同步任务', code='native_unavailable')
         self._activity_discovery = (generation, time.monotonic() + 60 if full else discovered[1],
                                     projects, threads if full else all_threads,
                                     {t['threadId'] for t in tasks} | set(unknown))
-        return {'tasks': tasks, 'unknownThreadIds': unknown, 'knownThreadIds': [t['id'] for t in (threads if full else all_threads)], 'generation': generation}
+        return {'tasks': tasks, 'unknownThreadIds': unknown, 'knownThreadIds': [t['id'] for t in (threads if full else all_threads)], 'generation': generation,
+                'projectByThread': {t['id']: associations.get(t['id'], {}).get('projectId') or t.get('projectId') or
+                    roots.get(t.get('cwd'), RECENT_PROJECT_ID) for t in (threads if full else all_threads)}}
 
     def add_project(self, path, name=None, idempotency_key=None, folder_name=None, trust_confirmed=False):
         self.start()
@@ -1615,17 +1629,6 @@ class CodexService:
         return {'threadId': thread_id}
 
     def _event(self, event):
-        method = event.get('method', '') if isinstance(event, dict) else ''
-        relevant = isinstance(method, str) and method != 'thread/tokenUsage/updated' and not method.endswith('/delta') and (
-            method.startswith(('thread/', 'project/', 'turn/', 'goal/', 'queue/', 'relay/'))
-            or method.endswith(('/requestApproval', '/requestUserInput')) or method == 'serverRequest/resolved')
-        if relevant and hasattr(self, 'activity'):
-            with self.activity.mutation():
-                self._activity_discovery = None
-                try:
-                    return self._apply_event(event)
-                finally:
-                    self._activity_discovery = None
         return self._apply_event(event)
 
     def _apply_event(self, event):
@@ -1725,6 +1728,10 @@ class CodexService:
                 key, _ = self._live.popitem(last=False)
                 self._pending_terminal.discard(key)
             self._completed_items = {key: value for key, value in self._completed_items.items() if key in self._live}
+        # Apply native interaction/live state before waking reconciliation, and
+        # update the table before publishing the event to HTTP subscribers.
+        if hasattr(self, 'activity'):
+            self.activity.receive(event)
         # Account / remote-control notifications can carry personal account
         # metadata and do not belong in a chat event stream.
         if ("id" in event or method.startswith(("thread/", "turn/", "item/", "serverRequest/", "relay/"))
