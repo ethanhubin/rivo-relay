@@ -25,6 +25,32 @@ class ConnectionRecoveryTest {
         assertEquals(RecoveryState.CONNECTED, recovery.state.value)
     }
 
+    @Test fun explicitRefreshKeepsHealthyTransportAndWaitsForSynchronization() = runTest {
+        var resets = 0
+        var refreshed = false
+        val recovery = ConnectionRecovery(this, {}, { resets++ }, {
+            delay(100)
+            refreshed = true
+        }, { throw it })
+        recovery.refresh()
+        assertTrue(refreshed)
+        assertEquals(0, resets)
+        assertEquals(RecoveryState.CONNECTED, recovery.state.value)
+    }
+
+    @Test fun explicitRefreshRecoversDisconnectedNode() = runTest {
+        var offline = true
+        var resets = 0
+        val recovery = ConnectionRecovery(this, { if (offline) throw IOException("offline") },
+            { resets++ }, {}, { throw it })
+        recovery.refresh()
+        assertEquals(RecoveryState.DISCONNECTED, recovery.state.value)
+        offline = false
+        recovery.refresh()
+        assertEquals(RecoveryState.CONNECTED, recovery.state.value)
+        assertEquals(2, resets)
+    }
+
     @Test fun slowSessionReadsDoNotQueueCatalogReads(): Unit = runBlocking {
         val server = MockWebServer()
         val started = java.util.concurrent.CountDownLatch(5)
