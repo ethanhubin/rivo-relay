@@ -21,6 +21,7 @@ import weakref
 
 from .connection import CodexError, NativeConnection
 from .writers import WriterProcesses
+from ..read_budget import read_lock
 
 
 class _ProcessSocket:
@@ -393,7 +394,7 @@ class SessionWriters:
             entry = self._thread_locks.setdefault(thread_id, [threading.RLock(), 0])
             entry[1] += 1
         try:
-            with entry[0]:
+            with read_lock(entry[0]):
                 yield
         finally:
             with self._lock:

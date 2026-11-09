@@ -3,9 +3,15 @@ import io
 import json
 import unittest
 from rivo_relay.api import Handler
+from rivo_relay.observability import route_kind
 
 
 class RequestLoggingTest(unittest.TestCase):
+    def test_categories_never_include_identifiers(self):
+        self.assertEqual(route_kind('/v1/threads/secret?token=private'), 'threads')
+        self.assertEqual(route_kind('/v1/private/secret'), 'other')
+        self.assertEqual(route_kind('/health?token=secret'), 'health')
+
     def test_request_log_omits_credentials_and_path(self):
         handler = object.__new__(Handler)
         handler.command = 'GET'

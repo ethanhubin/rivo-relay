@@ -144,6 +144,31 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(200, self.request('POST', '/internal/update-activate', {}, token='test-agent-only')[0])
             self.assertEqual(200, self.request('GET', '/v1/node', token=self.token)[0])
 
+    def test_update_status_requires_authentication_and_is_sanitized(self):
+        directory = self.config.workspace / 'auto-update'
+        directory.mkdir()
+        (directory / 'status.json').write_text(json.dumps({'phase': 'waiting_idle',
+            'reason': 'submission_pending_or_unknown', 'token': 'private', 'python': '/private'}))
+        self.assertEqual(self.request('GET', '/v1/node-updates/status')[0], 401)
+        status, data, _ = self.request('GET', '/v1/node-updates/status', token=self.token)
+        self.assertEqual(status, 200)
+        self.assertEqual(data['reason'], 'submission_pending_or_unknown')
+        self.assertNotIn('private', json.dumps(data))
+
+    def test_expired_stop_permit_does_not_shutdown(self):
+        self.app.codex.idle_for_update = lambda: True
+        with patch.dict('os.environ', {'RIVO_UPDATE_TOKEN': 'test-agent-only'}):
+            status, permit, _ = self.request('POST', '/internal/update-lease', {}, token='test-agent-only')
+            self.assertEqual(status, 200)
+            self.app.update_gate.until = 0
+            with patch.object(self.server, 'shutdown') as stop:
+                status, result, _ = self.request('POST', '/internal/update-stop',
+                    {'lease': permit['lease']}, token='test-agent-only')
+                self.assertEqual(status, 409)
+                self.assertEqual(result['reason'], 'lease_expired')
+                stop.assert_not_called()
+            self.assertEqual(self.request('GET', '/health')[0], 200)
+
     def test_node_rename_preserves_existing_authorization(self):
         self.assertEqual('test-machine', self.paired['node']['name'])
         with patch('rivo_relay.node_name.discover_name', return_value='renamed-tailnet-node'):
@@ -535,6 +560,36 @@ class ApiTests(unittest.TestCase):
         ticket = '/v1/download-links/' + link['url'].rsplit('/', 1)[-1]
         status, data, headers = download(ticket, {'Range': 'bytes=-3'})
         self.assertEqual((206, b'hij', 'bytes 7-9/10'), (status, data, headers['Content-Range']))
+
+    def test_disconnected_get_releases_waiting_handler(self):
+        import queue
+        from unittest.mock import patch
+        from rivo_relay.read_budget import read_reply
+        started, finished = threading.Event(), threading.Event()
+        def blocked(*args):
+            started.set()
+            try:
+                read_reply(queue.Queue(), 30)
+            finally:
+                finished.set()
+        with patch.object(Handler, 'route', blocked):
+            client = http.client.HTTPConnection('127.0.0.1', self.port, timeout=2)
+            client.request('GET', '/v1/projects', headers={'Authorization': 'Bearer ' + self.token})
+            self.assertTrue(started.wait(1))
+            client.close()
+            self.assertTrue(finished.wait(2))
+        status, _, _ = self.request('GET', '/health')
+        self.assertEqual(status, 200)
+
+    def test_read_deadline_returns_explicit_error(self):
+        import queue
+        from unittest.mock import patch
+        from rivo_relay.read_budget import read_budget, read_reply
+        with patch('rivo_relay.api.read_budget', lambda sock: read_budget(sock, seconds=.02)), \
+                patch.object(Handler, 'route', lambda *args: read_reply(queue.Queue(), 30)):
+            status, result, _ = self.request('GET', '/v1/projects', token=self.token)
+        self.assertEqual(status, 504)
+        self.assertEqual(result['error']['code'], 'read_deadline')
 
     def _start(self, bus=None):
         self.native = NativeStub()

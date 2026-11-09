@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
+from .read_budget import read_budget
+
 import base64
 import gzip
 import secrets
@@ -11,7 +14,7 @@ import datetime
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, unquote, urlsplit, quote
 
-from .observability import event, request_id
+from .observability import event, request_id, route_kind
 
 from .app import public_submission, public_todo
 from .codex.files import MAX_TRANSFER_BYTES, native_path
@@ -110,7 +113,8 @@ class Handler(BaseHTTPRequestHandler):
         self._response_status = code
         event("http_response", request_id=getattr(self, "_request_id", None),
               method=self.command if self.command in {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"} else "OTHER",
-              status=code)
+              status=code,
+              headers_ms=round((time.monotonic() - self._request_started) * 1000, 2) if hasattr(self, "_request_started") else None)
 
 
     @property
@@ -352,6 +356,7 @@ class Handler(BaseHTTPRequestHandler):
         self._request_id = request_id(self.headers.get("X-Rivo-Request-Id"))
         self._response_status = None
         started = time.monotonic()
+        self._request_started = started
         outcome = "handler_returned"
         path = urlsplit(self.path).path
         gated = path not in ('/health', '/internal/update-lease', '/internal/update-stop', '/internal/update-activate', '/v1/events')
@@ -368,7 +373,7 @@ class Handler(BaseHTTPRequestHandler):
             if gated:
                 self.app.update_gate.leave()
             event("node_request_finished", request_id=self._request_id,
-                  status=self._response_status, outcome=outcome,
+                  status=self._response_status, outcome=outcome, route=route_kind(path),
                   duration_ms=round((time.monotonic() - started) * 1000, 2))
 
     def _handle_api(self):
@@ -385,14 +390,31 @@ class Handler(BaseHTTPRequestHandler):
                 if (self.client_address[0] not in ('127.0.0.1', '::1') or not expected
                         or not secrets.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + expected)):
                     raise ApiError(403, 'forbidden', 'Local update agent required')
-                self.read_body(limit=4096)
+                update_body = self.read_body(limit=4096)
                 if path[-1] == 'update-activate':
                     with self.app.update_gate.lock:
                         self.app.update_gate.until = 0
+                        self.app.update_gate.lease = None
                     self.send_json(200, {'ready': True})
                     return
-                ready = self.app.update_gate.acquire(self.app)
-                self.send_json(200 if ready else 409, {'ready': ready})
+                gate = self.app.update_gate
+                if path[-1] == 'update-stop' and 'lease' in update_body:
+                    ready = gate.consume(update_body['lease'])
+                else:
+                    # Legacy agents may still use single-step stop. Preserve the
+                    # protocol while preventing an expired/failed write from stopping.
+                    ready = gate.acquire(self.app)
+                    if ready and path[-1] == 'update-stop':
+                        ready = gate.consume(gate.lease)
+                try:
+                    self.send_json(200 if ready else 409, {'ready': ready, 'reason': gate.reason,
+                                   'lease': gate.lease if ready else None})
+                except OSError:
+                    if ready:
+                        with gate.lock:
+                            gate.until = 0
+                            gate.lease = None
+                    raise
                 if ready and path[-1] == 'update-stop':
                     import threading
                     threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -441,6 +463,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {"todo": {"id": todo["id"], "completed": todo["completed"]}})
                 return
             token, connection = self.authenticate()
+            if self.command == 'GET' and path == ['v1', 'node-updates', 'status']:
+                from .gateway.update_status import public_status
+                self.send_json(200, public_status(self.app.config.workspace))
+                return
             if self.command == 'GET' and path == ['v1', 'media', 'versions']:
                 source = required({'source': query.get('source', [None])[0]}, 'source', 8192)
                 parts = source.strip('/').split('/')
@@ -483,7 +509,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.stream_events(token)
                 return
             body = self.read_body() if self.command in {"POST", "PATCH"} else {}
-            result = self.route(path, query, body, connection)
+            with read_budget(self.connection) if self.command == "GET" else nullcontext():
+                result = self.route(path, query, body, connection)
             if self.command == 'GET' and isinstance(result, dict) and isinstance(result.get('thread'), dict):
                 try:
                     self.app.media.observe_thread(result['thread'])
@@ -512,6 +539,8 @@ class Handler(BaseHTTPRequestHandler):
                 message = '无法核验接管所需的原生主机身份，请检查节点运行时连接'
             if code == 'handoff_desktop_shared':
                 message = '共享 Desktop 运行时不支持结束进程接管'
+            if code == 'read_deadline':
+                message = '读取等待超时或连接已断开，请稍后刷新'
             if code == 'native_history_unavailable':
                 message = '原生历史暂不可用，请稍后重试'
             if code == "file_too_large":
@@ -749,7 +778,7 @@ class Handler(BaseHTTPRequestHandler):
                     ticket = required(body, "ticket", 128)
                     options = {'rebind_workspace': required(body, 'rebindWorkspace', 4096)} if 'rebindWorkspace' in body else {}
                     def fn():
-                        result = codex.handoff(thread_id, operation, owner=connection_id, ticket=ticket, confirmed=body.get("confirmed") is True, **options)
+                        result = codex.handoff(thread_id, operation, request_id=self._request_id, owner=connection_id, ticket=ticket, confirmed=body.get("confirmed") is True, **options)
                         # Submission receipts contain identities only; release
                         # metadata belongs to the preview/control projection.
                         return {"threadId": result["threadId"]}

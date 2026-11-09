@@ -5,6 +5,19 @@ import sys
 import uuid
 
 
+def route_kind(path):
+    """Allowlisted categories only; never include identifiers or query values."""
+    parts = path.split('?', 1)[0].strip('/').split('/')
+    if parts == ['health']:
+        return 'health'
+    if len(parts) >= 2 and parts[0] == 'v1' and parts[1] in {
+        'threads', 'projects', 'events', 'files', 'media', 'app-updates',
+        'download-links', 'todos', 'submissions', 'models', 'usage', 'speech', 'pair',
+    }:
+        return parts[1]
+    return 'other'
+
+
 def request_id(value=None):
     # Only accept our opaque hex identifier; never echo arbitrary header values.
     if isinstance(value, str) and len(value) == 32 and all(c in "0123456789abcdef" for c in value):

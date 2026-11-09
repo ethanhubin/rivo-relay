@@ -105,6 +105,41 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(.1)
         self.assertEqual(len(self.gateway.pending), 0)
 
+    async def test_managed_readiness_tracks_disconnect_and_reconnect(self):
+        from rivo_relay.gateway.update_status import write_ready, is_ready
+        path = self.directory / 'connected.json'
+        changed = []
+        def state(value):
+            changed.append(value)
+            write_ready(path, 'generation', value)
+        self.connector.on_ready = state
+        self.connector.set_ready(True)
+        self.assertTrue(is_ready(path, 'generation'))
+        await self.gateway.nodes[self.key['slot']].close()
+        for _ in range(50):
+            if False in changed: break
+            await asyncio.sleep(.02)
+        self.assertIn(False, changed)
+        self.assertFalse(is_ready(path, 'generation'))
+        await asyncio.wait_for(self.connector.ready.wait(), 4)
+        self.assertTrue(is_ready(path, 'generation'))
+
+    async def test_many_live_transfers_do_not_starve_local_or_control_connections(self):
+        responses = []
+        try:
+            # 40 WS + 40 local HTTP + control exceeds the old shared pool of 64.
+            for _ in range(40):
+                response = await self.client.get(self.url + '/v1/events')
+                responses.append(response)
+                self.assertEqual(response.status, 200)
+                self.assertEqual(await response.content.readline(), b'data: 0\n')
+            async with self.client.get(self.url + '/health') as response:
+                self.assertEqual(response.status, 200)
+            self.assertTrue(self.connector.ready.is_set())
+        finally:
+            for response in responses:
+                response.close()
+
     async def test_slow_response_drain_does_not_start_sender_close_timeout(self):
         import aiohttp
         from unittest.mock import patch

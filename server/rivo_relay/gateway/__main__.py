@@ -167,14 +167,22 @@ async def node(args):
             else:
                 raise RuntimeError('Local Relay unavailable')
         if key and not args.pair_only:
-            connector = Connector(base, key, args.local_port)
+            def ready_changed(connected):
+                if os.environ.get('RIVO_MANAGED_READY'):
+                    from .update_status import write_ready
+                    write_ready(os.environ['RIVO_MANAGED_READY'], os.environ['RIVO_UPDATE_TOKEN'], connected)
+            connector = Connector(base, key, args.local_port, on_ready=ready_changed)
             connector_task = asyncio.create_task(connector.run())
             try:
                 await asyncio.wait_for(connector.ready.wait(), 15)
             except TimeoutError:
                 print('VPS 暂未连接，正在后台重试；可用直连入口不受影响。', flush=True)
-        if os.environ.get('RIVO_MANAGED_READY') and connector_task and connector.ready.is_set():
-            save_private(Path(os.environ['RIVO_MANAGED_READY']), {'token': os.environ['RIVO_UPDATE_TOKEN']})
+        def publish_readiness():
+            if os.environ.get('RIVO_MANAGED_READY'):
+                from .update_status import write_ready
+                write_ready(os.environ['RIVO_MANAGED_READY'], os.environ['RIVO_UPDATE_TOKEN'],
+                            connector_task is not None and connector.ready.is_set())
+        publish_readiness()
         if not args.no_pair:
             db = Database(config.database_path)
             try:
@@ -202,6 +210,7 @@ async def node(args):
             else:
                 loop.add_signal_handler(sig, stop.set)
         while not stop.is_set():
+            publish_readiness()
             if child and child.poll() is not None:
                 raise RuntimeError('Local Relay exited')
             try:
@@ -209,6 +218,9 @@ async def node(args):
             except TimeoutError:
                 pass
     finally:
+        if os.environ.get('RIVO_MANAGED_READY'):
+            from .update_status import write_ready
+            write_ready(os.environ['RIVO_MANAGED_READY'], os.environ['RIVO_UPDATE_TOKEN'], False)
         for sig, previous in previous_signals.items():
             signal.signal(sig, previous)
         if connector_task:

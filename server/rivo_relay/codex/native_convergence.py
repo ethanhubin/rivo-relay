@@ -11,6 +11,7 @@ import time
 from weakref import WeakValueDictionary
 from dataclasses import dataclass
 from typing import Callable, Optional
+from ..read_budget import read_lock, ReadStopped
 
 
 @dataclass(frozen=True)
@@ -95,7 +96,7 @@ class NativeHistoryConverger:
         expected_turn_id: Optional[str] = None,
     ) -> NativeConvergenceResult:
         lock = self._lock_for_thread(thread_id)
-        with lock:
+        with read_lock(lock):
             checked_at = int(self._clock())
             try:
                 journal = self._journal_watermark(thread_id)
@@ -152,6 +153,8 @@ class NativeHistoryConverger:
                     projection=projection,
                     reprojected=reprojected,
                 )
+            except ReadStopped:
+                raise
             except Exception as error:
                 return self._result(
                     thread_id,
