@@ -273,6 +273,13 @@ class ExecutionQueue:
         if changed:
             self._notify(thread_id)
 
+    def cancel_waiting(self, thread_id):
+        """Called after native archive succeeds, under the shared thread gate."""
+        with self._gate(thread_id):
+            with self.db.transaction() as c:
+                c.execute("UPDATE queued_tasks SET status='cancelled',revision=revision+1 WHERE thread_id=? AND status='waiting'", (thread_id,))
+        self._notify(thread_id)
+
     def signal(self):
         self._wake.set()
 

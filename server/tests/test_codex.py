@@ -193,23 +193,27 @@ class NativeSemanticsTests(unittest.TestCase):
                     self.assertEqual('waiting' if flags else 'executing', result['displayState'])
                     self.assertEqual('running', result['nativeExecution'])
 
-    def test_archive_checks_external_execution_and_active_goal(self):
-        for execution, goal, blocked in [('running', None, True), ('idle', 'active', True),
-                                         ('idle', 'paused', False), ('idle', None, False)]:
-            with self.subTest(execution=execution, goal=goal):
-                native = FakeNative()
-                native.thread['status'] = {'type': 'notLoaded'}
-                service = CodexService(connection=native)
-                with patch.object(service, '_external_execution', return_value={'thread': execution}), \
-                     patch.object(service, 'read_goal', return_value={'goal': {'status': goal}}):
-                    if blocked:
-                        with self.assertRaises(CodexError) as caught:
-                            service.archive_session('thread', True)
-                        self.assertEqual('thread_busy', caught.exception.code)
-                        self.assertFalse(any(method == 'thread/archive' for method, _ in native.calls))
-                    else:
-                        service.archive_session('thread', True)
-                        self.assertIn(('thread/archive', {'threadId': 'thread'}), native.calls)
+    def test_pin_delegates_to_native_and_preserves_rejection(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        with patch('rivo_relay.codex.sessions.pages', return_value=[{'id': 'pins', 'name': 'Pinned'}]):
+            service.pin_session('thread', True)
+        service.pin_session('thread', False)
+        moves = [params for method, params in native.calls if method == 'thread/section/move']
+        self.assertEqual(['pins', None], [params['sectionId'] for params in moves])
+        error = CodexError('native rejection')
+        with patch.object(native, 'request', side_effect=error):
+            with self.assertRaises(CodexError) as caught:
+                service.pin_session('thread', False)
+        self.assertIs(error, caught.exception)
+
+    def test_archive_delegates_without_execution_or_goal_checks(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        with patch.object(service, '_external_execution', side_effect=AssertionError('unneeded read')), \
+             patch.object(service, 'read_goal', side_effect=AssertionError('unneeded read')):
+            service.archive_session('thread', True)
+        self.assertIn(('thread/archive', {'threadId': 'thread'}), native.calls)
 
     def test_goal_unsupported_is_distinct_from_native_failure(self):
         native = FakeNative()

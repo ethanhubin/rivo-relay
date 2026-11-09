@@ -484,18 +484,9 @@ class CodexService:
     def archive_session(self, thread_id, archived):
         self.start()
         with self.operation_gate(thread_id):
-            if archived:
-                if self.workspaces:
-                    with self.workspaces.db.read() as c:
-                        queued = c.execute("SELECT 1 FROM queued_tasks WHERE thread_id=? AND status NOT IN ('done','cancelled') LIMIT 1", (thread_id,)).fetchone()
-                    if queued:
-                        raise CodexError('请先处理此会话的执行队列', code='thread_busy', http_status=409)
-                thread = self.connection.request('thread/read', {'threadId': thread_id, 'includeTurns': False})['thread']
-                execution = self._external_execution([thread]).get(thread_id, thread_status(thread))
-                goal_active = (self.read_goal(thread_id).get('goal') or {}).get('status') == 'active'
-                if execution == 'running' or goal_active or self.interactions.list(thread_id):
-                    raise CodexError('运行中或等待回答的会话不能归档', code='thread_busy', http_status=409)
             self.connection.request('thread/archive' if archived else 'thread/unarchive', {'threadId': thread_id})
+            if archived and hasattr(self, 'execution_queue'):
+                self.execution_queue.cancel_waiting(thread_id)
             self.projects.invalidate()
             with self._lock:
                 self._joined.discard(thread_id)
