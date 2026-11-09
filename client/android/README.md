@@ -1,128 +1,36 @@
 # Rivo Relay Android
 
-单个 `:app` 模块，包名 `dev.rivo.relay`，不会覆盖 QiGuang。采用 Kotlin、Compose、Moonlight 主题、StateFlow 和 OkHttp。QiGuang 的来源与调整记录见 [migration-sources.json](migration-sources.json)。
-
-2026-11-07 对照 QiGuang 最新本地发布版的 Codex 迁移见 [完整对照](../../docs/qiguang-codex-sync.md)。包括模型/快速模式与节点默认设置、写权限条、恢复面板、精确身份消息接管、草稿恢复、10 图附件、链接转发及结构化差异分页，以及 Desktop 运行时状态、原生历史失效、Coil 图片查看器、Media3 音视频和流式语音输入；验证以根目录 `docs/validation.md` 为准。
-
-当前安装包版本为 **0.2.55 / versionCode 67**，沿用此前签名，可覆盖升级并保留登录与本地数据。默认从主节点 `http://100.124.150.1:18767` 检查更新和下载，独立于会话所选节点；不自动回退 GitHub。构建与校验位于 `workspace/artifacts/release-0.2.55/`。详见 [节点发布流程](../../docs/node-updates.md)。
+Android 客户端使用 Kotlin、Compose、StateFlow 和 OkHttp，单个 `:app` 模块，包名 `dev.rivo.relay`，最低支持 Android API 26。
 
 ## 构建
 
-需要 JDK 17、Android SDK 37。设置 `JAVA_HOME` 和 `ANDROID_HOME` 后，在本目录执行：
+需要 JDK 17、Android SDK 37，配置 `JAVA_HOME` 和 `ANDROID_HOME` 后执行：
 
 ```sh
-./gradlew :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest
+./gradlew :app:assembleDebug
+./gradlew :app:testDebugUnitTest
 ```
 
-应用位于 `app/build/outputs/apk/debug/app-debug.apk`；测试包位于 `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk`。通常使用受信任 HTTPS；当前各构建仅为明确配置的本机 Tailscale IP 增加 HTTP 例外，Debug 另允许 localhost、127.0.0.1、10.0.2.2 的 HTTP，适用于本机模拟器联调。
+APK 位于 `app/build/outputs/apk/debug/`。设备测试包使用 `:app:assembleDebugAndroidTest` 构建，实际执行范围见[验证记录](../../docs/validation.md)。
 
-## 职责
+## 模块职责
 
-- `connection`：扫码/手动共用配对解析，Android Keystore AES-GCM 凭据存储。
-- `data`：无写入重试的可取消 HTTP、SSE 和原生数据投影。
-- `codex`：项目目录、会话订阅与历史分页、提交身份与结果核对。
-- `ui`：登录、项目、会话、聊天、原生审批/提问、待办；系统选图和节点文件只读预览。
-- `AppState`/`App`：节点生命周期和导航组合，不负责原生协议业务。
+- `connection`：扫码与手动配对、Android Keystore 凭据存储。
+- `data`：HTTP、SSE 和原生数据投影。
+- `codex`：项目、会话订阅、历史分页与提交结果核对。
+- `ui`：项目、聊天、审批、待办和文件交互。
+- `AppState` / `App`：节点生命周期和导航。
 
-扫码使用 ZXing 的真实相机帧解码。系统 Photo Picker 保留 JPEG/PNG/WebP 原始字节并按节点持久保存草稿；最多10张、单张20MiB、合计40MiB。编辑和预览按像素预算解码并处理EXIF，提交时由节点分块写入实际Codex主机并转为 `localImage`。媒体能力经认证代理访问；语音由可选既有ASR提供，未配置时禁用麦克风。未知原生消息保留内容，无法处理的请求明确提示在 Desktop 继续。
+## 会话与附件
 
-写入先保存提交 ID，再发送一次。断线后只核对原 ID，不自动重发。SSE 用来触发原生快照读取；暂停应用时保留会话身份与草稿，恢复后重新核对。文件引用通过节点原生文件接口读取，不将节点路径交给手机浏览器。
+首次发送时创建会话，草稿按节点保存。写入使用提交 ID，断线后核对原提交结果。会话权限根据节点最新状态显示，外部占用时可预览接管影响范围。
 
-聊天展示沿用 QiGuang 的消息规则：问答协议包装显示为问题和回答，同轮连续工具活动合并为可展开摘要，过程消息与最终回复保持顺序。输入区随草稿增长至三行，图片、手机文件和节点工作区文件从＋菜单添加；移除手填路径的“引用”入口。迁移来源、严格解析边界及保留差异见[消息展示对照](../../docs/qiguang-message-parity.md)。
+图片支持 JPEG、PNG、WebP，最多 10 张，单张 20 MiB、合计 40 MiB；可裁剪和标注。手机文件通过系统选择器上传，最多 16 个，单文件上限 1 GiB。工作区文件可直接浏览并引用。
 
-命令活动仅显示数量、运行状态和未完成数量，不提供命令详情展开。Relay 的会话及历史 HTTP 响应仅下发命令 ID、类型、状态、退出码和耗时；事件缓冲在入队前精简命令活动并过滤命令输出增量。原生历史和 Relay 内部执行视图仍保留完整内容，命令审批请求不裁剪；文件变更等其他活动仍可展开。此传输优化需要更新 Relay 服务端后生效。
+文本预览上限 4 MiB，界面最多显示 200,000 个字符；完整文件可保存到手机。语音输入使用节点配置的 ASR。
 
+## 权限与更新
 
-活动项目沿用 QiGuang 的环绕扫光，由节点返回的原生活动计数驱动；首页可见期间每 5 秒更新，离开或进入后台停止轮询。计数规则和动画来源见[项目扫光对照](../../docs/qiguang-project-activity.md)。
+新会话默认使用节点项目配置。权限菜单提供“请求审批”“自动审批”“完全访问”，所选预设作用于会话。项目自定义权限在节点 `.codex/config.toml` 中维护。
 
-待核对时冻结原草稿，核对成功才完成原提交。若长期无法确认，可先查看原会话，再明确确认“结束核对”：只解除本机等待，不取消、重发或删除节点记录；旧成功回调同时失效。`404` 仍表示暂未查询到记录，不能自动推断原请求未执行。
-
-## 验证
-
-`ClientUiTest` 是独立 UI/Keystore 验证，可直接运行整个类。`MessageComposerUiTest` 检查输入区高度、三行增长和窄屏操作；`ChatRenderingUiTest` 使用原生历史样例检查问答解析、命令分组和键盘布局，不连接节点。`LiveSmokeTest` 会连接真实节点和调用真实 Codex；各方法按前置状态单独执行：
-
-1. `qrCameraPairing`：未登录，节点二维码已摆在真实或模拟器相机前，验证扫码至项目列表。
-2. `nativeConversationRoundTrip`：已配对，节点存在 `Rivo Relay Validation` 项目，创建会话并等待真实回复。
-3. `todoCrudAndRealDispatch`：已配对，同一隔离项目，验证待办增改、交付、真实回复、完成与删除。
-4. `manualPairingFromInstrumentationArguments`：未登录，通过临时 `nodeAddress`、`pairingCode` 参数验证备用入口。
-5. `nativeFilePreview`：已配对，通过原生文件引用打开节点文件并断言真实内容；默认使用经原生接口确认的隔离项目 `preview.txt` 和 `RIVO_NATIVE_FILE_PREVIEW`，可用 `previewPath` / `previewExpected` 替换。
-6. `systemPhotoPickerAndNativeImageRoundTrip`：创建测试红图到 MediaStore，启动真实系统选图器，通过可见缩略图点选，验证待发预览并发送原生图片输入，等待 `RED` 回复；结束后删除本测试创建的媒体。
-7. `offlineHomeKeepsLogin`：宿主先停止隔离 Relay，再冷启动验证项目首页及离线提示，登录凭据保留。
-8. `revokedConnectionReturnsToLogin`：宿主先撤销该测试连接，再冷启动验证回到扫码登录及授权失效提示。
-9. `existingTodoAssociationAfterRestart`：宿主先重启自己的 Relay，通过 `todoTitle` 指定已有隔离关联待办；冷启动搜索并查看历史 `RIVO_TODO_OK`，不创建新模型任务。
-
-`CameraDeniedTest` 不使用自动权限授予规则。宿主先撤销测试包的相机权限，测试点击真实系统权限弹窗的拒绝按钮，验证错误提示及手动入口的输入回调；宿主随后恢复权限。
-
-`projectName` 可覆盖隔离项目名称；配对码不得写进源码或测试结果。二维码等待上限 300 秒，用于 headless 模拟器相机姿态调整；它没有接收预解码结果的测试入口。
-
-真实流程成功后，测试将截图保存到设备的 `/sdcard/Android/data/dev.rivo.relay/files/verification/`：项目、隔离测试会话、原生文件、系统选图器、离线状态及不含配对码的授权失效页面；不截图或输出节点令牌。截图不能代替原生端的共享会话与数据证据。
-
-## 当前协议边界
-
-已提供原生命令/文件修改审批、权限请求、密码遮蔽的问题输入、MCP 简单类型表单和 URL 交互。复杂嵌套 MCP / OpenAI 表单及 `openai/userVerification` 需要在 Desktop 完成；界面明确提示，不让用户填写协议 JSON。未知原生请求与未知历史 item 不会被当成已处理。
-
-文件预览通过原生节点 FS，只读，预览响应上限 4 MiB；独立下载支持 1 GiB，不受预览限制。手机显示文本前 200,000 个字符，并说明截断；不支持的二进制格式明确提示在 Desktop 查看。原生 `text`、`image`、`mention` 输入有正常 UI；历史 `skill` 输入仍可查看。麦克风经已配置的 ASR 转写文字后提交，音频文件可作为普通附件；图片草稿最多十张，保留 JPEG/PNG/WebP 原始字节，单张 20 MiB、合计 40 MiB。
-
-模拟器真实扫码、文本会话和待办交付已由实际节点执行并获得回复；测试是否整例通过及最终截图以根目录验收记录为准，不能把测试包成功构建记作流程已通过。
-
-## 附件更新（2026-10-29）
-
-待发送图片点击缩略图进入 QiGuang 编辑器，支持裁剪、箭头、矩形、圆形与颜色选择；完成替换草稿并更新缩略图，取消不修改原图。编辑仍在内存中完成，发送图片沿用 1 MiB JPEG 限制。
-
-手机文件使用系统文件选择器，支持任意文件类型，单个最多 1 GiB、最多 16 个文件附件。选择后通过认证接口上传至当前原生会话工作区 `.rivo-attachments/<随机 ID>/<文件名>`，不覆盖同名项目文件。文件以原生 mention 输入提交，不把二进制伪装成文本；实际解析能力取决于模型与节点工具。节点工作区文件直接浏览目录并选择，无需上传或手填路径。
-
-手机文件上传使用原生 `fs/createDirectory` / `fs/writeFile`，包括远端 daemon；不写 Relay 宿主来冒充节点文件。已上传文件保留以供历史和队列读取，移除草稿附件不会删除节点副本。上传不自动重试，失败可重新选择。节点接口需与客户端一并更新。
-
-新增 `AttachmentEditorUiTest` 和 `WorkspaceFilePickerUiTest` 覆盖编辑取消/完成、输出尺寸与目录选择。这次无连接设备，UI 测试仅编译，尚未执行真机验收。
-
-## 文件传输修正（0.1.9）
-
-文件弹窗增加“保存到手机”，使用系统保存位置选择器和带认证的流式下载，显示进度并在失败时清理不完整文件。APK、压缩包直接提供保存入口，不再尝试内联预览。其他文件预览超过 4 MiB 时提示保存，不再误报上传限制。
-
-手机文件经有界临时缓存流式上传，完成或失败清理缓存，单文件最大 100 MiB。节点文件下载最大 100 MiB。Relay 到原生主机的大文件上传以 4 MiB 分块写入随机附件目录，再通过原生 command/exec 在同一工作区合并；路径作为独立 argv 传入，无 shell 插值，无 sandbox 或 permission profile 覆盖。合并后清除分块，失败清理本次上传目录。Windows 的 PowerShell 合并分支未在设备验收，macOS 已实测 100 MiB。
-
-通过认证 POST /v1/download-links 可签发单文件、1 小时有效的浏览器下载链接，随机令牌仅授权该文件，不携带节点登录令牌。链接在服务重启或到期后失效，授权本身独立于签发时的登录会话；不应分享给无关人员。用于旧客户端更新的 APK 已验证可直接在浏览器下载。
-
-## 0.1.10：1 GiB 文件传输
-
-当前单文件上传、下载上限统一为 1 GiB（1,073,741,824 字节）。手机端采用缓存文件/输出流，节点 HTTP 上传流按块交给原生文件接口；不再先读完整请求和生成整份 Base64。下载通过原生默认权限的命令读取文件长度及 4 MiB 范围，再逐块发送 HTTP，预览也先检查大小，不会为预览小段内容读取整个大文件。POSIX 参数通过 argv 传入；Windows 路径经过 PowerShell 字符串转义并使用 EncodedCommand。未覆盖权限设置。Windows 分支暂无真实设备验证。
-
-取消传输总时长 10 分钟限制，保留连接及读写空闲超时，支持慢速持续传输。文件失败不自动重试；临时上传分块由现有清理逻辑回收。真实本机节点经 HTTPS 完成整整 1 GiB 上传/下载并校验 SHA-256 一致。Android 的手机文件选择和保存交互仍未在设备上实测。
-
-## 新会话交互
-
-会话列表的“＋”直接进入待发送会话页，工作区选择放在输入区上方。默认本地目录不请求 Git；选工作树后才读取来源分支，读取失败可重试或切回本地目录。发送第一条消息才创建原生会话，未发送即返回不会产生空会话。创建与首条发送分别沿用提交 ID 核对；首条发送失败时保留草稿并复用已创建的会话。首条支持文字、图片、手机文件、视频、工作区引用和模型/思考/模式设置。文件通过当前项目的原生 FS 暂存接口上传，选择附件不会提前创建空会话。
-
-`PendingConversationUiTest` 在模拟器覆盖本地目录无需 Git、工作树失败后切回，以及待发送页面的发送与草稿清除时机。真实节点的创建和发送联调仍由 `LiveSmokeTest.nativeConversationRoundTrip` 验收。
-
-## 设置与手动检查更新（0.2.11）
-
-底部导航新增“设置”，包含应用版本、手动检查更新、GitHub 发布页和当前节点信息；未配对时可从登录页的“设置与检查更新”进入。版本检查默认读取主节点的公共更新清单，不携带配对凭据，也不依赖当前会话节点；节点不可用时明确报错。下载校验长度和 SHA-256，不接受外站路径或 HTTP 重定向，不提示降级。GitHub 发布页保留为手动入口。
-
-检查中禁止重复点击；失败可重试，不会误报“已是最新版”。发现新版后可查看更新说明、用浏览器下载 APK，再由 Android 系统确认安装。本版未增加后台自动检查或静默安装。
-
-
-### 会话操作权限与同步
-
-进入会话即读取并核验 `control`，不获取空闲会话的写权限。只有新鲜状态确认外部占用时显示“强制接管”，确认本连接持有且支持释放时显示“释放权限”；已释放、释放待确认、工作目录不可用、权限未知或过期时不显示权限操作按钮。
-
-已释放且允许普通恢复的会话可编辑草稿、添加附件并发送消息；发送请求在服务端先通过普通 `thread/resume` 获取权限，再启动任务，不结束其他进程。没有单独的“恢复操作”入口。后台队列和历史读取不会撤销主动释放；外部占用仍需用户提前点击接管并确认影响范围。此发送行为需要配套更新 Relay 服务端。
-
-断网、同步失败、交接中、外部占用或提交结果待核对时继续锁定写操作并保留草稿与历史。权限变更使旧读取失效，必须取得新鲜快照才恢复操作；缓存状态不显示权限按钮。接管继续保留原有主机、持锁进程和影响范围核验。
-
-### 项目权限
-
-App 的权限菜单仅提供“请求审批”“自动审批”“完全访问”。新会话未选择预设时不发送权限覆盖，原生运行时按项目工作目录加载 `.codex/config.toml`；项目配置需要满足原生信任要求，未配置的字段继承节点默认。App 不编辑该文件。
-
-项目可在 `.codex/config.toml` 中配置，例如：
-
-```toml
-sandbox_mode = "workspace-write"
-approval_policy = "on-request"
-approvals_reviewer = "user"
-
-[sandbox_workspace_write]
-network_access = false
-```
-
-选择预设仅覆盖会话权限：请求审批使用工作区沙箱和人工审核，自动审批使用工作区沙箱和 `auto_review`，完全访问使用 `danger-full-access` 与 `never`。自动审批需要节点原生运行时支持；原生接口拒绝时显示错误，不降级为完全访问。自定义权限在会话内显示为“项目自定义”，没有 App 编辑入口。
+“设置 → 检查更新”使用主节点更新源，下载后校验大小与 SHA-256，再打开系统安装界面。发布流程见[节点更新](../../docs/node-updates.md)。

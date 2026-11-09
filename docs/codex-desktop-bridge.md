@@ -1,10 +1,7 @@
 # Codex Desktop bridge
 
 Relay supports `--codex-runtime auto|desktop|app_server` and
-`--desktop-bridge-dir PATH`. The default `auto` discovers the existing QiGuang
-protocol-1 endpoint at `~/Library/Application Support/QiGuang/codex-desktop-bridge`.
 `RIVO_CODEX_DESKTOP_BRIDGE_DIR` and the original
-`QIGUANG_CODEX_DESKTOP_BRIDGE_DIR` are also supported. Credentials must belong to
 the current OS user and have no group/world permissions.
 
 The bridge forwards native RPC through Desktop's already initialized
@@ -58,12 +55,9 @@ remote host's storage. Unverifiable identity fails closed.
 
 ## Source and static evidence
 
-Protocol and runtime boundaries were migrated from QiGuang-Next local revision
 `1642fc810f543a7995ca334e0e4916c20968d858`.
 
-The QiGuang repository contains its Python bridge client, not the Desktop host
 loader. A bounded read-only inspection of the installed ChatGPT main JavaScript
-bundles found the above connection hooks, and no `qiguang` or
 `codex-desktop-bridge` strings in `.vite/build/*.js`. This is not proof that all
 possible external loaders are absent. No installed app was modified or launched.
 

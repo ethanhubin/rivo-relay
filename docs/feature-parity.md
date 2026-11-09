@@ -1,10 +1,4 @@
-# Relay 与 QiGuang Codex 功能补齐记录
-
-2026-11-07 已按本地最新发布快照 `1642fc8` 再次迁移 Codex 主链路、设置、队列恢复、历史边界和界面交互。当前实现及明确保留差异以 [本次完整对照](qiguang-codex-sync.md) 为准；下方 0.2.1 等条目保留当时记录，不代表本次迁移后的全部状态。
-
-本次以 QiGuang-Next 的 Codex 模块为功能参照，扩展 Relay 现有 Android 客户端和 Python 节点接口。QiGuang Manager、通用助手、独立媒体生成服务、NAS 与设备管理不属于比较范围；原生 Codex 图片生成结果的展示、溯源与媒体副本管理已纳入。功能取舍以 Relay 自身的认证、原生 Codex 协议和节点权限边界为准。
-
-当前范围允许扩展 Relay API，并接入可选现有 ASR 服务；不自动部署模型、TTS或Manager。2026-11-07 后续迁移的完整状态以 [Codex 对照记录](qiguang-codex-sync.md) 为准，下方早期版本记录保留历史语境。本文记录代码行为与验证边界，部署及设备验收结果以[验证记录](validation.md)为准。
+# 功能说明
 
 ## 已实现的入口与行为
 
@@ -24,9 +18,7 @@
 
 Android 路径均位于 `client/android/app/src/main/java/dev/rivo/relay/`，服务路径均位于 `server/rivo_relay/`。完整 API 路由仍由 `server/rivo_relay/api.py` 定义。
 
-## 0.2.1：按栖光源码核对现有 UI
 
-0.2.0 的“功能入口具备”不能视为交互一致。0.2.1 以用户提供的 APK 弹窗、会话列表截图和 QiGuang-Next Android 源码逐项核对。所有修改位于 Relay 客户端，沿用已部署的 0.2.0 节点；没有新增服务、模型、客户端库或语音权限。源码参照位于 QiGuang-Next 的 `qiguang/app/app/src/main/java/com/example/qiguang/ui/main/`。
 
 | 已核对范围 | 源码参照 | 迁移或保留结果 |
 | --- | --- | --- |
@@ -38,9 +30,7 @@ Android 路径均位于 `client/android/app/src/main/java/dev/rivo/relay/`，服
 | 图片与附件 | `ChatTimelineContent`、`AttachmentSourcePicker`、`AttachmentImageEditor` | 本地/节点来源卡片、多选照片/文件、独立视频入口、全屏节点文件浏览；附件预览与移除分开。图片放大/缩放/保存/分享与长按复制。图片编辑工具、裁剪、标注、撤销主体已与源逐段核对，保留 Relay 的草稿字节适配。 |
 | 原生问答、计划与队列 | `CodexBottomPanelContent`、计划/队列组件 | 逐题 1/N 与选项卡，切题/折叠保留答案；输入区上方计划浮层、失败/中断状态；队列拖动反馈和分隔线，讨论/审查任务禁用不适用的引导。原生 request key、审批选项、scope、队列 revision 和提交核对不改变。 |
 | 待办 | `TodoPage`、`TodoCard`、`TodoEditorDialog`、`ReminderDialog` | 清单底部编辑、回车连续新增、Codex 底栏先保存再选择目标、日历/时间/重复的确定取消；搜索覆盖子任务/附件，完成区与清单展开收起，动画勾选/删除线，长按多选和批删确认。修复连续删除时前一项回调仍处于 mutating 导致下一项被丢弃。 |
-| 工具输出、连接与权限 | 工具活动组件、原生 approvals | 工具摘要、分组、等宽详情已核对，Relay 继续显示实际失败退出码。扫码连接、节点凭据、原生 writer/审批属于协议差异，未照搬栖光账户、Gateway/NAS 或强制接管控件。 |
 
-仍有明确的结构差异：Relay 新会话先创建原生 thread，再进入输入页；会话列表尚无栖光 source/worktree commit 标记所需的完整数据；待办没有分类、手机 URI 附件或关联任务运行扫光；源代码高亮使用现有 Compose 词法实现，媒体使用 Android 自带解码器。没有对应数据或协议的显示不伪造，不把这些边界称为逐像素一致。站内转发依赖栖光收件体系，Relay 使用系统分享。
 
 ## 待办同步与重复语义
 
@@ -58,13 +48,11 @@ Codex 派发不属于此 outbox。它继续使用既有 submission ID 与结果�
 
 - 语音输入及 ASR/TTS 相关服务、模型和依赖不在本次实现中。
 - 新的 Git、目录和工作树操作通过当前原生节点连接执行，沿用节点权限；不会把远端节点的项目误读为 Relay 宿主上的文件。
-- Diff 目前是有大小上限的统一 patch 和文件摘要，不等同于 QiGuang 的结构化 revision/hunk/line 分页接口。较大 diff 会提示截断。
 - Review 和 diff 页面没有暂存、撤销、自动应用修复、提交或推送按钮。
 - 通知使用客户端连接和本机通知能力，不宣称应用进程被系统终止后仍有独立远程推送保障。
 - 轮次模型依据 Relay 已接受发送的设置和原生 model/rerouted 通知记录。当前原生 Turn 没有 model 字段；没有观察记录的旧轮次不猜测模型，也不套用会话当前模型。
 - 待办附件是节点文件引用，不是新的媒体库或上传服务；移动或删除原文件会使引用失效。文件解析和播放能力受原生节点权限、Android 解码器与已安装应用限制。
 - macOS/POSIX 节点之外的 Git/工作树/目录流程需要单独设备验收；尚不能把编译或模拟响应检查算作 Windows 实机验证。
-- 手动改名、分叉会话、跨节点迁移、通用助手和其它 QiGuang 业务功能不因本次补齐而自动具备。
 
 ## 验证入口
 
@@ -82,20 +70,17 @@ Codex 派发不属于此 outbox。它继续使用既有 submission ID 与结果�
 
 ## 2026-11-07：连接与会话恢复复核（基于 0.2.21）
 
-本轮以状态转换而非功能入口为检查单位。自动化通过不等同于真机网络验收，也不代表所有 UI 与 QiGuang 逐像素一致。
 
 | 状态/边界 | 实现与回归证据 | 本轮结论 |
 | --- | --- | --- |
 | 前台恢复、手动重连、连接重置 | AppState / MainActivity；NetworkTransportTest、CatalogControllerTest | 0.2.21 已取消前置节点探测，重建只读传输并重开目录读取；后台读取与 SSE 独立调度，不取消或重放写入 |
 | 慢历史读取与兜底轮询 | SessionController；slowSnapshotDoesNotQueueAnotherPollWhileTransferIsRunning | 修复定时器在慢请求期间积压下一次全量读取，改为读取结束后计时；事件仍可触发刷新 |
 | 权限变化时旧请求阻塞 | SessionController；responseStartedBeforeInvalidationCannotRestorePermission | 取消已经失效的会话读取，并验证旧服务器响应仍阻塞时，新核验可以启动；保留权限代际检查 |
-| 首屏历史传输 | api.py；test_api、test_http_compression | 默认会话页由 30 改为 8 回合，对齐 QiGuang 服务默认值；保留 nextCursor 与显式 limit；大型会话 GET 协商 gzip，无内容裁剪 |
 | 离线缓存、切换会话、迟到响应 | SessionControllerTest、NodeSessionSyncTest | 缓存只读，新鲜核验前不恢复操作；旧会话/旧权限响应不得覆盖当前状态 |
 | 历史修复与分页竞态 | SessionControllerTest、test_native_runtime_identity | 历史深度恢复与当前权限读取分离；分页跨 revision 作废；保留现有 macOS 内核可执行路径身份修复 |
 | 独立 writer、释放与接管 | test_owned_writer、test_handoff、test_native_convergence | 回归覆盖单会话释放不影响其他 writer、锁未释放不能报成功、迟到审批失效、接管确认绑定身份 |
 | 请求结果未知、队列、审批 | SubmissionFailureTest、test_submissions、test_queue、test_owned_writer | 未知写入保留提交身份供核对；不自动重放；相同审批 ID 仍按 writer 区分 |
 | 消息、媒体、UI | 全部 Android JVM 与服务端回归 | 本轮未改媒体与 UI 展示协议；JVM/服务端测试不能替代播放器、系统弹窗和生命周期真机验证 |
 
-未完成的端到端验收：本轮修改尚未部署；没有连接中的 Android 设备，未完成新版本与 QiGuang 在同一设备/同一会话/同一弱网下的冷启动、后台恢复及断网重连对比。不能据此宣布恢复耗时已达标，或不存在其他遗漏。
 
 本轮自动化结果：服务端 437 项通过；独立源码快照 Android JVM 263 项通过，APK 构建与 lint 通过（43 warnings、3 hints，无 error）。验证日志与报告保存在 `workspace/artifacts/recovery-audit-20261107/`。独立快照避免与其他会话的设置页修改、Gradle 输出互相覆盖。

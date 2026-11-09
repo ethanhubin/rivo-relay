@@ -1,6 +1,5 @@
 # Codex voice input
 
-The composer follows QiGuang's microphone placement to the left of the text
 field, with idle, recording, transcribing, unavailable and retry states. It
 captures mono 16 kHz PCM16LE in half-second chunks and inserts the transcript at
 the current cursor. Appending to existing text inserts the source's newline.

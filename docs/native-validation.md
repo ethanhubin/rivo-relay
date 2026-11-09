@@ -26,7 +26,6 @@ ssh -o BatchMode=yes -o ExitOnForwardFailure=yes -N \
   e2-mac-mini
 ```
 
-QiGuang bridge 目录不存在，当前 Desktop bundle 也未发现 QiGuang bridge 宿主。Desktop 自身 `~/.codex/ipc/ipc.sock` 的只读 initialize 成功，源码包含 thread follower 协调接口；没有将其作为已完成的产品入口，也没有用它绕过 Desktop UI 自动化限制。
 
 当前安装包确实包含 `CODEX_APP_SERVER_USE_LOCAL_DAEMON=1` 条件：只在非 Windows、本地 host、没有额外启动参数、未强制 CLI、未配置 CLI override/custom command，且 daemon version 检查成功时选择本地 daemon WebSocket。该条件影响连接创建；本次未设置该变量、未重启当前 Desktop。
 
@@ -75,7 +74,6 @@ PYTHONPATH=server .venv/bin/python -m unittest discover -s server/tests -p test_
 
 测试位于 `server/tests/test_codex.py`。样例 `server/tests/fixtures/native-0.159.0.json` 包含隔离线程真实 `thread/turns/list` 响应、原生 ID 与设置摘要。`observedRequestShapes` 仅记录实测审批/提问字段形状与回答结构，不伪称完整原始通知抓包。
 
-历史适配器迁自 `QiGuang-Next/qiguang/server/qiguang_codex_native_history.py`；源仓库 HEAD 为 `f31333c248b862827a0179260ce5d9c571f441be`，采用文件 blob 为 `6b8df7f3d2b0b7f4f0b1ce278d854befd707eaa9`。迁移保留严格分页与 ID 校验，未迁 sidecar、队列或 writer 接管。
 
 ## 尚未完成的验收
 

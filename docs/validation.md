@@ -34,7 +34,6 @@ APK 0.2.20 / code 32 为 **18,889,236 字节**，SHA-256 为 `a657bb4aef14b56d23
 
 首轮 UI 暴露一个合并 semantics 选择器和一个缺失权限信息的旧设置 fixture，已修正测试定位与样本后复测；没有放宽默认设置保护。最终组合检查另修复 Notice 重排本地 overlay 的问题，保留 startsThread 和 item 锚点，并以 JVM 回归锁定；整屏测试确认空失败轮次不再出现空会话文案。之后重新构建、运行完整 JVM/lint 和上述整组 UI，均通过。
 
-日志位于 `workspace/artifacts/message-formats/`：`server-tests.log`、`android-checks-final.log`、`ui-tests-final.log`。实现细节见 [消息格式对照](qiguang-codex-sync.md)。保留此前状态/历史/媒体优化与原有会话目录修改；本轮未提交、推送、部署或发布，版本仍为 0.2.18。
 
 ## 2026-11-07：App Codex 状态、历史与媒体优化（未发布）
 
@@ -70,9 +69,7 @@ APK：[`rivo-relay-0.1.3-debug.apk`](../workspace/artifacts/rivo-relay-0.1.3-deb
 
 ## 0.1.1 真机反馈修复
 
-对照 QiGuang 当前源码迁移消息显示规则，见[逐项对照与边界](qiguang-message-parity.md)。完整问答包装显示为“问题／答”，有效回复不显示内部 ID；正常代码、畸形负载保留原文。同轮连续命令/工具活动折叠为摘要，展开查看各步输出；用户和助手使用 Markdown，过程与最终消息顺序不变。发送区改为单行起步、最多三行的输入区和单条工具栏，图片/引用进入＋菜单。
 
-活动项目增加 QiGuang 同款 1.8 秒、2dp 环绕扫光；空闲或任务结束后移除。节点从已有原生线程列表投影活动计数，包含等待审批/用户输入的 active 线程。首页可见时每次读取完成后间隔 5 秒更新，离开或后台停止轮询；并行刷新复用进行中的 GET。来源与计数边界见[项目扫光对照](qiguang-project-activity.md)。选图返回等正常恢复过程显示“正在同步会话”，保留历史，不把正在同步误报为连接中断。
 
 读取成功后清除该会话此前的读取错误，独立写入错误不被覆盖；旧连接或旧分页返回不能覆盖新状态。只用 `nextCursor` 加载更早历史。服务端每个连接代次首次 resume 建立订阅，后续用 read 获取元数据，消除了重复 resume 自己触发通知再读取的循环。真机截图中的 409 原始触发未复现，已确认并修复的是错误恢复后红条残留；没有添加写入重试或伪造空历史。原生证据见[复核记录](native-validation.md)。
 
@@ -179,11 +176,9 @@ cd client/android
 - 已登录模拟器通过真实 HTTPS 连接本机服务，1 项 nativePinRoundTrip 通过：长按置顶→列表显示置顶→取消置顶→打开原生队列执行历史。保留原手机连接，无需重新配对。
 - 本机既有 daemon 在隔离项目 `Relay 0.1.4 队列验证` 完成两项排队任务，依次回复 QUEUE_FIRST、QUEUE_SECOND；撤回项未创建 turn；原生 pin/unpin 均已核对。记录 `workspace/artifacts/native-queue-0.1.4.json`。
 - 部署后通过实际 HTTPS 入队重复提交，同一 submission 返回同一回执，只产生一次 QUEUE_HTTPS_OK，后台 worker 自动派发并清空队列；临时验证连接已撤销。
-- 本机 Relay LaunchAgent 已更新；数据库预先私有备份，schema 1→2 后原有两个有效连接保留。Codex daemon PID 906 未重启，未触碰 QiGuang/e2mac 服务。
 - APK：`workspace/artifacts/rivo-relay-0.1.4-debug.apk`（versionCode 5）。SHA-256：`9fa0153a42cfd8b913dff4abdb9b1cc0811a86803c1e6338a62a5e913aebadab`。
 - 截图：`native-pin-0.1.4.png`、`execution-queue-0.1.4.png`、`execution-queue-keyboard-0.1.4.png`，均在 workspace/artifacts。
 
-限制：其他运行时持有 writer 时队列等待，不抢占；本次没有完成 Desktop 独立 stdio 的执行接续。队列是 Relay 自有待发记录，未导入 QiGuang sidecar 的历史队列。
 
 ## 0.1.5 会话滚动（2026-10-29）
 
@@ -252,7 +247,6 @@ APK：[`rivo-relay-0.2.0-debug.apk`](../workspace/artifacts/rivo-relay-0.2.0-deb
 
 ## 0.2.1：同类 UI 源码核对与迁移（2026-10-29）
 
-- 按栖光实际源码和用户截图核对会话/项目、聊天/设置、正文选择/链接、APK/文件、附件、问答/计划/队列、diff、待办和目录流程。详细对应关系及结构差异见[核对记录](feature-parity.md#021按栖光源码核对现有-ui)。图片编辑器及工具活动主体已有同源实现，保留原生审批、writer、队列 revision 和未知提交核对。
 - Android 单元测试 **90/90** 通过；`assembleDebug`、`assembleDebugAndroidTest`、`lintDebug` 通过，lint **0 errors / 30 warnings / 1 hint**。构建日志见 `workspace/artifacts/ui-parity-0.2.1/build.log`。
 - 已运行的 `medium_phone` 模拟器覆盖安装 0.2.1（versionCode 13），保留 App 数据。**76 项不重复的 UI/集成回归最终通过**，分批日志、首次失败及修复后重跑均保留；不把单元测试类误记为设备测试。初次完整 74 项中发现设置跨窗口测试方式、历史跟随布局重入及附件节点合并问题；后续 23 项回归验证滚动崩溃修复、最新目录/待办及新增媒体失败重试、Markdown 内行号导航，最后 2 项以系统级实际触摸验证浮层关闭和发送参数/草稿清空。
 - 修复的实际问题还包括：取消后旧下载进度重建弹窗；Markdown 内文件行号混入节点路径；媒体初始化异常未释放、重试复用旧播放器及后台准备完成后继续播放；批删前一项完成时 mutating 未释放导致下一项被丢弃。
@@ -273,11 +267,8 @@ APK：[`rivo-relay-0.2.1-debug.apk`](../workspace/artifacts/rivo-relay-0.2.1-deb
 这轮证据说明减少了增量路径的历史请求及重复工作，不代表已测得端到端耗时改善百分比。
 
 
-## 0.2.2：部署、栖光性能对照与远程模拟器迭代（2026-10-29）
 
-- 本机 `local.rivo-relay` 已平滑重启加载服务端优化；原有 2 个授权连接保留，Codex runtime ID 仍为 906。部署前 SQLite 在线备份。只更新 Relay，没有更新或重启本机/远端原生 Codex 或栖光服务。
 - 本机 `emulator-5554`（API 37）和 Tailscale e2mac 的 `emulator-5582`（API 35）已安装最终 0.2.2 / versionCode 14。远端使用已有 `MergeDemoMinimalBase_API35` AVD，以 read-only/no-snapshot-save 启动，未操作已连接的实体手机；两个模拟器的网络开关已恢复。远端验证路径为 Android → e2mac 主机 Tailscale → 本机 HTTPS 18766 → Relay，没有 SSH 隧道代替这条应用网络路径。
-- 对照并适配了栖光的积压通知合并、150ms 展示批次、历史刷新合并和缓存边界；来源摘要和保留差异见 architecture.md。Python 定向 29 项通过（原生语义 24 + 性能 5），最终 Android 定向 23 项 JVM 测试通过。
 - 最终包本机 4 项设备回归通过：真实历史断网恢复 + 3 项长历史/流式滚动测试；远端 2 项真实设备流程通过：历史断网恢复，以及从 UI 新建会话、真实命令分段输出、40 段长回复、断网/重连和内容一致性。随后两端各 1 项最终接口延迟测试通过。先前真实配对和本机完整流式流程的日志也保留。
 - 远端完整流程收到 111 个带位置的增量事件，其中 19 个命令输出事件；2535 字符长回复完整显示。断网检测 94ms，恢复 702ms；独立历史流程断网检测 105ms，恢复 379ms，前后 message/turn ID 与文本一致。本机最终历史恢复 155ms。
 - 实际迭代修复：旧验收脚本遗漏新建确认弹窗及恢复页面导航；辅助 SSE 测量任务在断网前未结束；Android `onLost` 中同步查询旧 activeNetwork 的竞态；旧 HTTP/2 连接使恢复等待约 90.65 秒；主动取消只读请求误报错误横幅；TLS 连接清理在主线程触发异常。最终回归覆盖实际网络开关，而非仅模拟 callback。写请求不随连接池重建被取消或重发，专门测试保留一次 POST 的接受回执。
@@ -291,7 +282,6 @@ APK：[`rivo-relay-0.2.1-debug.apk`](../workspace/artifacts/rivo-relay-0.2.1-deb
 | 会话列表 | 535.87 | 559.4 |
 | 历史页（约 7.7KB） | 4.79 | 29.46 |
 
-Tailscale 本次探测走 peer relay，往返约 15–16ms。项目列表首次未命中时本机 HTTP 样本约 942ms；上表项目连续读取已预热，不能当作冷启动耗时。单独 RPC 诊断显示会话列表约 0.53 秒主要花在 `thread/list(cwd=...)` 的旧会话兼容查询，并行查询不能消除它。以上是两种网络位置的样本，不是栖光与 Relay 的端到端性能比赛，也不代表模型首字速度。
 
 证据目录：`workspace/artifacts/performance-0.2.2/`。最终日志为 `local-final-io.log`、`remote-final-io.log`、`local-latency-final.log`、`remote-latency-final.log`；原始失败和修复过程日志保留。测速 JSON 为 `local-network-final.json`、`remote-network-final.json`，截图 `remote-reconnected-final.png` 已视检。临时 host 验证凭据已撤销并确认 401，私密令牌文件已删除；保留两台模拟器的配对。
 
@@ -302,7 +292,6 @@ Tailscale 本次探测走 peer relay，往返约 15–16ms。项目列表首次�
 
 用户确认实体手机为 0.2.2，保存地址与现有 HTTPS 18766 入口一致，且手机浏览器 `/health` 返回 OK。此时本机与 e2mac 的 HTTPS 健康检查、临时授权的 `/v1/node` 与 `/v1/projects` 均返回 200；停止了此前留在前台的两个模拟器 App，避免测试连接持续占用。上述结果不能替代实体手机 App 的验证，事故的手机侧具体异常仍待新版本提示确认。
 
-对照栖光 `DataRepository.kt` 的 `retryOnConnectionFailure(true)`，发现 Relay 对 GET/SSE 也关闭了连接恢复。0.2.3 为这两种只读请求启用 OkHttp 连接恢复，允许失败地址回退和旧连接恢复；POST/上传仍使用禁止自动重试的客户端，不自动重发操作。新增回归以不可连接 IPv6 + 可连接 IPv4 的 DNS 顺序验证回退，并保留丢失写回执只发送一次的测试。
 
 通用错误改为不含敏感原始异常文本的 DNS/TLS/联网权限/超时/连接失败分类，并显示节点主机与端口；聊天读取也使用同一分类。错误横幅增加“重连”，只重建读取连接并验证节点，不清除登录或提交记录；节点设置显示版本号。最终 14 项定向 JVM 测试通过。设备验证日志在 `workspace/artifacts/connectivity-0.2.3/device-verified.log`，包含已配对真实节点读取及故障提示/重连界面测试（DNS 错误为明确注入的 UI fixture，不是手机事故根因）。
 
@@ -461,15 +450,11 @@ unchanged; only Relay was reloaded. APK download verified SHA-256
 项目页顶部节点名称打开锚定下拉菜单，列出已授权节点并为当前节点显示勾选；点击其他节点直接切换，不经过登录页。添加节点和节点详情保留在菜单中，点击当前节点仅收起菜单。APK / instrumentation APK 构建通过；模拟器覆盖安装并实际展开菜单、切换至 MacBook Pro，确认项目加载。截图 `workspace/deploy-multinode/dropdown-0.2.9.png` 已视检，APK 为 `workspace/artifacts/rivo-relay-0.2.9-debug.apk`（versionCode 21）。
 
 
-### 2026-11-07：QiGuang 最新 Codex 迁移
 
-来源为本地 `QiGuang-Next@1642fc810f543a7995ca334e0e4916c20968d858`（2026-11-04）；远端 dev 仍是较早的 `8e0e67e`。逐项实现和保留差异见 [Codex 实现对照](qiguang-codex-sync.md)，来源文件摘要追加在 `client/android/migration-sources.json`。
 
-服务端最终组合回归 173 项全部通过，另有 1 项真实临时进程/文件锁交接测试通过。覆盖队列、原生交互、附件上下文、模型目录、历史收敛、结构化 diff、精确身份核对、Review 指纹、外部工作树和 Range/ETag；文件与 Git 测试使用受控 RPC fixture 后面的真实临时文件，不读取用户项目。命令和输出见 `workspace/artifacts/qiguang-codex-sync-20261107/server-validation.txt`。
 
 Android 最终执行 `:app:testDebugUnitTest :app:assembleDebugAndroidTest :app:assembleDebug :app:lintDebug`，构建成功，141 项 JVM 测试全部通过（无失败、错误或跳过）。Lint 为 0 errors、30 warnings、2 hints；未把既有提示记为已修复。验证包括多个独立草稿、创建/发送 checkpoint、较新草稿保护、持久显示 receipt、ready 原生身份接管、跨页位置和顺序、缓存版本/节点隔离及下载取消。
 
-APK 保留当前项目版本 `0.2.9` / versionCode `21`，本次不发布版本。产物为 `workspace/artifacts/qiguang-codex-sync-20261107/rivo-relay-0.2.9-qiguang-codex-debug.apk`（14,146,923 bytes），SHA-256：`71ce839d969bfa3927425c382bf89b0d3f2e09e21e26f486296538268456832c`。构建日志、JSON 测试摘要和四张交互截图保存在同一忽略目录。
 
 本次没有部署或重启实际 Relay/Codex 节点、更新 LaunchAgent、安装到实体手机，也没有提交/推送 Git。真实 Desktop 双向接续、Windows 节点和多个真实设备的运行验收仍需实际环境验证；模拟器和受控 RPC 测试不替代这些结果。
 
@@ -480,7 +465,6 @@ APK 保留当前项目版本 `0.2.9` / versionCode `21`，本次不发布版本�
 
 ### 2026-11-07：Desktop、原生历史与媒体后续迁移
 
-继续对照同一 `QiGuang-Next@1642fc810f543a7995ca334e0e4916c20968d858`。Desktop protocol-1、按writer固定的断线/重连代数、实际host原生水位/重投影/备份回滚、原生历史失效、媒体代理/缓存/Range/溯源/墓碑、20/40MiB图片分块落盘、语音流及图片/音视频组件均已接入。此次源文件摘要36项追加到migration manifest，不覆盖上轮记录。实现和实际启用条件见 [完整对照](qiguang-codex-sync.md)、[Desktop桥接](codex-desktop-bridge.md)、[语音输入](codex-voice-input.md)。
 
 服务端全量 **308/308**，零失败、零跳过；实际进程身份/锁/交接只针对临时编译的惰性进程和隔离CODEX_HOME。补充视频扩展名后相关5项再次通过。修复覆盖并发rollout追加、锁inode替换、代数切换、发布失败回滚、不复制auth/config、不自动重放、Desktop仅释放当前订阅及错误runtime不清理另一writer状态。
 
@@ -490,7 +474,6 @@ Android `assembleDebug` / `assembleDebugAndroidTest` / `testDebugUnitTest` / `li
 
 大图显示解码被限制到屏幕2倍且每边至多4096px，内存缓存32MiB，保存仍使用原始字节。检查中发现禁用图像内存缓存造成两项缩放中间帧回归，改为有容量上限的缓存后，相关6项图片手势及2项音频复测通过，再完整执行64项通过。未删除或放宽像素/缩放断言。
 
-产物目录：`workspace/artifacts/qiguang-codex-completion-20261107/`。APK `rivo-relay-0.2.9-codex-parity-debug.apk` 保留 versionName0.2.9 / code21；20,346,080 bytes，SHA-256 `3d0e75c73e77e17295c8696e9516e4f06c2faff59ebcc33347cfdc03f907b00c`。目录内包含server/build/UI原始日志和JSON摘要，截图采用受控媒体fixture。
 
 本次未提交/推送Git，未部署节点、修改/重启真实Desktop、注入宿主加载器、写用户真实历史或安装实体手机。真实Desktop共享需要宿主加载适配模块；语音需要配置已有ASR；真实设备/Windows/跨节点运行仍需环境验收，不由模拟器和fixtures替代。
 

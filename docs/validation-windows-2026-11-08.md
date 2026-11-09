@@ -102,7 +102,6 @@ Tailscale Serve 配置 `https://ethan-home-9550.tail791ea5.ts.net:18443` → `12
 
 ## 完全访问模式：真实编码验收通过
 
-用户明确授权按 QiGuang-Next 的完全访问方式验证后，在已部署的后台节点创建独立测试项目及新会话。没有修改其他会话、节点默认权限或 Codex 全局配置。
 
 - 官方 CLI：0.167.0；有效会话设置已从 API 核对：`sandbox.type=dangerFullAccess`，`approvalPolicy=never`。
 - 故意构造 `add(a,b)` 返回 `a-b` 的错误实现，两个单元测试初始均失败。
