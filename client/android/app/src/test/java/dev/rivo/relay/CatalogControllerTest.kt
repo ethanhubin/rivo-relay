@@ -728,6 +728,35 @@ class CatalogControllerTest {
         } finally { releaseRecent.countDown(); scope.cancel(); server.shutdown() }
     }
 
+    @Test fun activityCompletionRevealsUnreadAndDisplayedHistoryClearsIt() = runBlocking {
+        val server = MockWebServer()
+        val version = java.util.concurrent.atomic.AtomicLong(100)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.requestUrl?.encodedPath) {
+                "/v1/activity" -> MockResponse().setBody("""{"complete":true,"generation":"g","tasks":[],"knownThreadIds":["t"],"unknownThreadIds":[]}""")
+                "/v1/events" -> MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE)
+                else -> MockResponse().setBody("""{"threads":[{"id":"t","status":"running","updatedAt":${version.get()}}]}""")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val api = api(server)
+        val controller = CatalogController(api, scope, { throw it }, sync = dev.rivo.relay.codex.NodeSessionSync(api, scope))
+        val collector = scope.launch { controller.state.collect {} }
+        try {
+            controller.project(ProjectSummary("p", "Project", "/project"))
+            withTimeout(5_000) { controller.state.first { it.threadsFresh && !it.loading && it.threads.singleOrNull()?.status == "idle" } }
+            version.set(200)
+            controller.refreshThreads()?.join()
+            withTimeout(5_000) { controller.state.first { "t" in it.unreadThreadIds } }
+            controller.markRead("t", 100)
+            assertEquals(setOf("t"), controller.state.value.unreadThreadIds)
+            controller.markRead("t", 200)
+            withTimeout(5_000) { controller.state.first { it.unreadThreadIds.isEmpty() } }
+            Unit
+        } finally { collector.cancel(); scope.cancel(); server.shutdown() }
+    }
+
     @Test fun historicalBaselineSurvivesRestartAndKeepsLaterUpdatesUnread() = runBlocking {
         val directory = java.nio.file.Files.createTempDirectory("relay-read-baseline").toFile()
         val server = MockWebServer()
@@ -766,6 +795,8 @@ class CatalogControllerTest {
             assertTrue(controller.state.value.unreadThreadIds.isEmpty())
             controller.refreshThreads()
             withTimeout(5_000) { controller.state.first { it.threads.firstOrNull()?.updatedAt == 201L } }
+            assertEquals(setOf("t"), controller.state.value.unreadThreadIds)
+            controller.markRead("t", 100)
             assertEquals(setOf("t"), controller.state.value.unreadThreadIds)
             controller.markRead("t", 201)
             controller.markRead("t", 100)
