@@ -214,3 +214,21 @@ class ActivityTests(unittest.TestCase):
         registry.reconcile()
         registry.observe_metadata([{'id': 't', 'cwd': '/worktree', 'status': {'type': 'active'}}], {}, 'g', registry.revision)
         self.assertEqual(registry.snapshot()['tasks'][0]['projectId'], 'p')
+
+    def test_failed_reconciliation_does_not_make_confirmed_completion_unknown(self):
+        failed = threading.Event()
+        def load():
+            failed.set()
+            raise RuntimeError('offline')
+        registry = self.registry(load)
+        registry.receive(event('turn/started', projectId='p'))
+        registry.receive(event('turn/completed'))
+        registry.start()
+        self.assertTrue(failed.wait(1))
+        registry.close()
+        registry.worker.join(1)
+        result = registry.snapshot()
+        self.assertEqual(result['tasks'], [])
+        self.assertNotIn('t', result['unknownThreadIds'])
+        registry.receive(event('turn/started', 'two'))
+        self.assertEqual(registry.snapshot()['tasks'][0]['turnId'], 'two')

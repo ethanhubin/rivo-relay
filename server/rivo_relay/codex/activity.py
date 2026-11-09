@@ -20,6 +20,7 @@ class ActivityRegistry:
         self.known, self.unknown = set(), set()
         self.terminal = OrderedDict()
         self.excluded = set()
+        self.confirmed_idle = set()
         self.ready = False
         self.last_sync = None
         self.error = None
@@ -35,6 +36,7 @@ class ActivityRegistry:
             self.turns.clear()
             self.terminal.clear()
             self.excluded.clear()
+            self.confirmed_idle.clear()
             self.known.clear()
             self.unknown.clear()
             self.ready = False
@@ -61,7 +63,7 @@ class ActivityRegistry:
             except Exception:
                 with self.lock:
                     self.error = 'reconciliation_failed'
-                    self.unknown.update(self.known)
+                    self.unknown.update(self.known - self.confirmed_idle)
                     self.ready = False
             self.wake.wait(5)
 
@@ -75,11 +77,12 @@ class ActivityRegistry:
             if revision != self.revision or epoch != self.epoch or self.stopped.is_set():
                 return False
             tasks = {row['threadId']: row for row in result['tasks'] if row['threadId'] not in self.excluded}
-            unknown = set(result['unknownThreadIds']) - self.excluded
+            unknown = set(result['unknownThreadIds']) - self.excluded - (self.confirmed_idle - tasks.keys())
             for tid in unknown:
                 if tid in self.tasks:
                     tasks.setdefault(tid, self.tasks[tid])
             self.turns = {tid: turn for tid, turn in self.turns.items() if tid in tasks or tid in unknown}
+            self.confirmed_idle.difference_update(tasks)
             self.tasks = copy.deepcopy(tasks)
             self.membership.update(result.get('projectByThread', {}))
             self.known = set(result['knownThreadIds']) | self.excluded
@@ -108,6 +111,7 @@ class ActivityRegistry:
                 if isinstance(native, dict) and native.get('type') == 'active' and tid not in self.turns:
                     waiting = any(flag in ('waitingOnApproval', 'waitingOnUserInput') for flag in native.get('activeFlags', []))
                     status = 'waiting' if waiting else 'running'
+                    self.confirmed_idle.discard(tid)
                     self.tasks[tid] = {**self.tasks.get(tid, {}), 'threadId': tid, 'projectId': project or '', 'status': status,
                                        **execution_projection(status)}
                     self.known.add(tid)
@@ -160,6 +164,7 @@ class ActivityRegistry:
                                                    **execution_projection('running'))
                         else:
                             self.tasks.pop(tid, None)
+                            self.confirmed_idle.add(tid)
                         self.known.add(tid)
                         self.unknown.discard(tid)
                 elif method.endswith(('/requestApproval', '/requestUserInput')):
@@ -176,17 +181,19 @@ class ActivityRegistry:
                         self.unknown.add(tid)
                 elif method in ('thread/deleted', 'thread/archived'):
                     self.excluded.add(tid)
+                    self.confirmed_idle.add(tid)
                     self.tasks.pop(tid, None)
                     self.turns.pop(tid, None)
                     self.known.add(tid)
                     self.unknown.discard(tid)
                 if status:
+                    self.confirmed_idle.discard(tid)
                     self.tasks[tid] = {**self.tasks.get(tid, {}), 'threadId': tid, 'projectId': project or '',
                                        'turnId': turn_id, 'status': status, **execution_projection(status)}
                     self.known.add(tid)
                     self.unknown.discard(tid)
             if method == 'relay/nativeDisconnected':
-                self.unknown.update(self.known)
+                self.unknown.update(self.known - self.confirmed_idle)
                 self.ready = False
         self.wake.set()
 
