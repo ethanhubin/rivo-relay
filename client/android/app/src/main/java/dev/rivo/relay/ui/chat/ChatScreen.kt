@@ -168,6 +168,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         if (settingsUnavailable) settingsOpen = false
     }
     fun openFile(path: String) { fileAction = null; filePath = path }
+    var pendingImageUris by androidx.compose.runtime.saveable.rememberSaveable(state.id) { mutableStateOf(arrayListOf<String>()) }
     fun addImages(uris: List<android.net.Uri>) {
         val targetId = state.id
         if (preparing || !draftLoaded || busy || inputLocked) return
@@ -183,6 +184,13 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) { if (currentSessionId == targetId) attachmentError = e.message ?: "无法添加图片" }
             finally { if (currentSessionId == targetId) preparing = false }
+        }
+    }
+    LaunchedEffect(pendingImageUris, preparing, draftLoaded, busy, inputLocked) {
+        if (pendingImageUris.isNotEmpty() && !preparing && draftLoaded && !busy && !inputLocked) {
+            val uris = pendingImageUris.map(android.net.Uri::parse)
+            pendingImageUris = arrayListOf()
+            addImages(uris)
         }
     }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { uris ->
@@ -650,7 +658,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     else if (displayedGoal?.string("status") == "active") onGoal(JSONObject().put("operation", "pause"))
                 }
             },
-            focusRequest = inputFocusRequest, onPasteImages = ::addImages,
+            focusRequest = inputFocusRequest, onPasteImages = { uris ->
+                pendingImageUris = ArrayList((pendingImageUris + uris.map { it.toString() }).take(10))
+            },
             settingsExpanded = settingsOpen, onDismissSettings = { settingsOpen = false }, settingsContent = {
                 NativeComposerSettings(snapshot?.settings, models, selectedModel, selectedEffort, selectedMode, !pendingReceiptUnresolved && !pendingFirstTurnSent && !busy && !blocked && !state.stale && (state.canCompose() || pendingTitle != null && pendingReady) && draftLoaded,
                     onModel = { modelId ->
