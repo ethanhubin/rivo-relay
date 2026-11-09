@@ -7,6 +7,7 @@ import org.json.JSONObject
 
 /** One node event subscription; shared reads are only concurrent, never a stale-response cache. */
 class NodeSessionSync(private val api: RelayApi, private val scope: CoroutineScope) {
+    val activity by lazy { nodeActivity(api, this, scope) }
     private data class Observation(val event: RelayEvent? = null, val error: Throwable? = null)
     private data class Read(val result: Deferred<JSONObject>, val startedNanos: Long, var users: Int = 0)
     private val lock = Any()

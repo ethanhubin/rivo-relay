@@ -19,7 +19,9 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
     private val failure: (Throwable) -> Unit) {
     private val eventSource = sync ?: NodeSessionSync(api, scope)
     private val mutable = MutableStateFlow(SessionState())
-    val state = mutable.asStateFlow()
+    val state: StateFlow<SessionState> = if (sync == null) mutable.asStateFlow() else
+        combine(mutable, sync.activity) { current, activity -> current.copy(activityStatus = current.id?.let { activity.status(it) ?: activity.tasks[it]?.status })
+        }.stateIn(scope, SharingStarted.WhileSubscribed(0), mutable.value)
     // Node-owned recent views avoid disk IO and reparsing on A/B/A switches.
     // These are presentation snapshots only; every open still verifies control.
     private val recentViews = linkedMapOf<String, SessionState>()

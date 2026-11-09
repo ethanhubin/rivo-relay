@@ -119,6 +119,9 @@ class CodexService:
         self.history_adapter = NativeHistoryAdapter()
         self.native_journal = NativeJournal(self.connection, self.history_adapter, self._history_repaired)
         self.projects.execution_provider = self._external_running
+        from .activity import ActivityRegistry
+        self._activity_discovery = None
+        self.activity = ActivityRegistry(self._load_activity, lambda: str(self.connection.generation))
         self.model_catalog = ModelCatalog(self._load_models, lambda: str(self.connection.generation))
 
     def _history_repaired(self, thread_id, result):
@@ -300,6 +303,51 @@ class CodexService:
         self.projects.queue_provider = lambda: self.execution_queue.by_thread() if hasattr(self, 'execution_queue') else {}
         return self.projects.list()
 
+    def active_tasks(self):
+        self.start()
+        result = self.activity.snapshot()
+        if not result["complete"]:
+            self._activity_discovery = None
+        return result
+
+    def _load_activity(self):
+        generation = str(self.connection.generation)
+        discovered = self._activity_discovery
+        full = discovered is None or discovered[0] != generation or time.monotonic() >= discovered[1]
+        if not full:
+            projects, all_threads, known = discovered[2:]
+            threads = [self.connection.request('thread/read', {'threadId': t['id'], 'includeTurns': False})['thread']
+                       for t in all_threads if t['id'] in known]
+        else:
+            projects = list(pages(self.connection, 'project/list'))
+            threads = self.projects.thread_catalog.list({"archived": False, "modelProviders": [],
+                    "sortKey": "updated_at", "sortDirection": "desc"})
+        associations = self.projects.external_worktrees.associations(
+            [t for t in threads if not t.get('projectId')], projects)
+        roots = {r['path']: p['id'] for p in projects for r in p.get('roots', []) if r.get('path')}
+        external = self._external_execution(threads)
+        queues = self.execution_queue.by_thread() if hasattr(self, 'execution_queue') else {}
+        tasks, unknown = [], []
+        for thread in threads:
+            tid = thread['id']
+            goal = self.read_goal(tid).get('goal')
+            status = ('waiting' if self.interactions.list(tid) or thread_waiting(thread) else
+                      'running' if goal_running(thread, goal, external) else
+                      external.get(tid, thread_status(thread)))
+            projection = execution_projection(status, queues.get(tid, []))
+            if status == 'unknown':
+                unknown.append(tid)
+            if projection['hasOutstandingWork']:
+                tasks.append({'threadId': tid, 'projectId': associations.get(tid, {}).get('projectId') or
+                              thread.get('projectId') or roots.get(thread.get('cwd'), RECENT_PROJECT_ID),
+                              'status': status, **projection})
+        if generation != str(self.connection.generation):
+            raise CodexError('原生运行时已变化，请重新同步任务', code='native_unavailable')
+        self._activity_discovery = (generation, time.monotonic() + 60 if full else discovered[1],
+                                    projects, threads if full else all_threads,
+                                    {t['threadId'] for t in tasks} | set(unknown))
+        return {'tasks': tasks, 'unknownThreadIds': unknown, 'knownThreadIds': [t['id'] for t in (threads if full else all_threads)], 'generation': generation}
+
     def add_project(self, path, name=None, idempotency_key=None, folder_name=None, trust_confirmed=False):
         self.start()
         if not isinstance(trust_confirmed, bool):
@@ -381,8 +429,15 @@ class CodexService:
         if self.workspaces:
             with self.workspaces.db.read() as c:
                 managed = {row['thread_id']: dict(row) for row in c.execute('SELECT * FROM workspaces WHERE project_id=?', (project_id,))}
-        external = {} if summary else self._external_execution(list(by_id.values()))
-        statuses = {t["id"]: ("waiting" if self.interactions.list(t["id"]) or thread_waiting(t) else
+        shared = self.activity.current() if not summary and not archived else None
+        if shared and shared.get('generation') != str(self.connection.generation):
+            shared = None
+        active = {t['threadId']: t for t in (shared or {}).get('tasks', [])}
+        unknown = set((shared or {}).get('unknownThreadIds', []))
+        external = {} if summary or shared else self._external_execution(list(by_id.values()))
+        statuses = {t["id"]: (active[t['id']]['status'] if t['id'] in active else
+                    'unknown' if shared and (t['id'] in unknown or t['id'] not in shared.get('knownThreadIds', [])) else 'idle' if shared else
+                    "waiting" if self.interactions.list(t["id"]) or thread_waiting(t) else
                     "running" if goal_running(t, None if summary else self.read_goal(t["id"]).get("goal"), external)
                     else external.get(t['id'], thread_status(t))) for t in by_id.values()}
         return [{"id": t["id"], "name": t.get("name") or t.get("preview") or "新会话",
@@ -1548,6 +1603,20 @@ class CodexService:
         return {'threadId': thread_id}
 
     def _event(self, event):
+        method = event.get('method', '') if isinstance(event, dict) else ''
+        relevant = isinstance(method, str) and method != 'thread/tokenUsage/updated' and not method.endswith('/delta') and (
+            method.startswith(('thread/', 'project/', 'turn/', 'goal/', 'queue/', 'relay/'))
+            or method.endswith(('/requestApproval', '/requestUserInput')) or method == 'serverRequest/resolved')
+        if relevant and hasattr(self, 'activity'):
+            with self.activity.mutation():
+                self._activity_discovery = None
+                try:
+                    return self._apply_event(event)
+                finally:
+                    self._activity_discovery = None
+        return self._apply_event(event)
+
+    def _apply_event(self, event):
         if not isinstance(event, dict) or not isinstance(event.get('method'), str) or not isinstance(event.get('params', {}), dict):
             return
         if event.get("connectionId", self.connection.generation) != self.connection.generation:

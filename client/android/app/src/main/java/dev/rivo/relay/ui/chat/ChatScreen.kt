@@ -322,7 +322,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             historyAnchor = null
         }
     }
-    val executionActive = snapshot?.isOngoing == true && snapshot.status != "waiting" && snapshot.requests.isEmpty()
+    val executionActive = (state.activityStatus?.let { it == "running" }
+        ?: (snapshot?.isOngoing == true && snapshot.status != "waiting")) && snapshot?.requests.orEmpty().isEmpty()
     val currentActivity = (timeline.lastOrNull() as? NativeTimelineRow.Activities)
         ?.takeIf { executionActive && it.messages.lastOrNull()?.turnId == snapshot?.activeTurnId }
     val modelChangeRows = remember(timeline, snapshot?.turnSettings) {

@@ -27,11 +27,23 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
     private val monotonicMillis: () -> Long = { System.nanoTime() / 1_000_000 },
     private val sync: NodeSessionSync? = null) {
     private val mutable = MutableStateFlow(CatalogState(pinnedProjectIds = readProjectPins()))
-    val state = mutable.asStateFlow()
+    val state: StateFlow<CatalogState> = if (sync == null) mutable.asStateFlow() else
+        combine(mutable, sync.activity) { current, activity ->
+            current.copy(projects = current.projects.map { project -> project.copy(
+                runningTurnCount = if (activity.tasks.values.any { it.projectId == project.id && threadIsExecuting(it) }) 1 else 0, activeGoalCount = 0) },
+                threads = current.threads.map { thread ->
+                    val task = activity.tasks[thread.id]
+                    val status = activity.status(thread.id) ?: task?.status
+                    if (status == null || current.archived) thread else thread.copy(status = status,
+                        nativeExecution = task?.nativeExecution ?: "idle",
+                        hasOutstandingWork = task?.hasOutstandingWork ?: false, queueDepth = task?.queueDepth ?: 0,
+                        deliveryState = task?.deliveryState ?: "idle", displayState = task?.displayState ?: "idle",
+                        recoveryRequired = task?.recoveryRequired ?: false)
+                })
+        }.stateIn(scope, SharingStarted.WhileSubscribed(0), mutable.value)
     private val runtimeThreads = mutableMapOf<Pair<String, Boolean>, List<ThreadSummary>>()
     private fun scopeKey() = mutable.value.selectedProject?.id?.let { it to mutable.value.archived }
     private var projectsJob: Job? = null
-    private var projectStatsJob: Job? = null
     private var listJob: Job? = null
     private var listKey: String? = null
     private var listReadPending = false
@@ -76,7 +88,6 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
                 } catch (e: Exception) { if (e is CancellationException) throw e }
                 val response = api.call("/v1/projects?view=summary")
                 applyProjects(response, fresh = true)
-                if (catalogRows(response, "projects").any { !it.optBoolean("statsReady", true) }) refreshProjectStats()
                 try { store?.saveCatalog("projects", response) } catch (e: Exception) { if (e is CancellationException) throw e }
             } catch (e: Exception) {
                 if (e !is CancellationException) { mutable.update { it.copy(projectsFresh = false) }; failure(e) }
@@ -91,7 +102,6 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
         // A transport cancellation can still be unwinding when refresh is called.
         // Do not join/reuse that obsolete job as the new foreground refresh.
         projectsJob?.cancelAndJoin()
-        projectStatsJob?.cancelAndJoin()
         listJob?.cancelAndJoin()
         refreshProjects()
         refreshThreads()
@@ -124,33 +134,6 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
             threadsSummaryFresh = if (changedProject) false else current.threadsSummaryFresh,
             threadsLoading = if (changedProject) false else current.threadsLoading,
             unreadThreadIds = if (changedProject) emptySet() else current.unreadThreadIds) }
-    }
-
-    /** Optional statistics cannot hold navigation metadata or a thread read open. */
-    private fun refreshProjectStats() {
-        projectStatsJob?.takeUnless { it.isCompleted }?.let { return }
-        val expected = mutable.value.projects.associate { it.id to (it.name to it.path) }
-        projectStatsJob = scope.launch {
-            try {
-                val response = api.call("/v1/projects")
-                val stats = catalogRows(response, "projects").associateBy { it.string("id") }
-                mutable.update { current ->
-                    val projects = current.projects.map { project ->
-                        val row = stats[project.id]
-                        if (row == null || expected[project.id] != (project.name to project.path) ||
-                            row.string("name") != project.name || row.string("path") != project.path) project
-                        else project.copy(threadCount = row.optInt("threadCount"),
-                            outstandingWorkCount = row.optInt("outstandingWorkCount", 0).coerceAtLeast(0),
-                            runningTurnCount = row.optInt("runningTurnCount", 0).coerceAtLeast(0),
-                            activeGoalCount = row.optInt("activeGoalCount", 0).coerceAtLeast(0),
-                            statsReady = row.optBoolean("statsReady", true))
-                    }
-                    current.copy(projects = projects,
-                        selectedProject = projects.firstOrNull { it.id == current.selectedProject?.id } ?: current.selectedProject)
-                }
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { if (e is ApiException && e.status == 401) failure(e) }
-        }
     }
 
     /** Call only while the project home is STARTED; cancellation ends polling. */
@@ -233,7 +216,7 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
                     // this full scan started. Keep them until the dirty follow-up.
                     val ids = merged.mapTo(mutableSetOf()) { it.id }
                     val extras = if (listReadDirty) mutable.value.threads.filterNot { it.id in ids } else emptyList()
-                    applyThreads(merged + extras, fresh = !listReadDirty)
+                    applyThreads(merged + extras, fresh = false)
                     // Persist reconciled fields rather than the stale full response
                     // that lost a race to a detail or metadata observation.
                     val reconciled = merged.associateBy { it.id }
@@ -244,7 +227,7 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
                             .put("queueDepth", live.queueDepth).put("recoveryRequired", live.recoveryRequired)
                             .put("hasOutstandingWork", live.hasOutstandingWork).put("writerOwner", live.writerOwner)
                     } }
-                    mutable.update { it.copy(threadsComplete = !listReadDirty, threadsSummaryFresh = listReadDirty) }
+                    mutable.update { it.copy(threadsFresh = !listReadDirty, threadsComplete = !listReadDirty, threadsSummaryFresh = listReadDirty) }
                 }
                 if (generation == targetGeneration && !listReadDirty) try { store?.saveCatalog(cacheKey, response) } catch (e: Exception) { if (e is CancellationException) throw e }
             } catch (e: Exception) { if (e !is CancellationException && generation == targetGeneration) {

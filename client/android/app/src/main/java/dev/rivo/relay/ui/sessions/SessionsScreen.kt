@@ -86,8 +86,8 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
         if (pendingIds.isNotEmpty()) listState.requestScrollToItem(0)
     }
     val ordered = remember(threads) {
-        threads.sortedWith(compareByDescending<ThreadSummary> { it.pinned }
-            .thenByDescending { threadIsActive(it) }.thenByDescending { if (threadIsActive(it)) 0 else it.updatedAt })
+        threads.sortedWith(compareByDescending<ThreadSummary> { threadIsExecuting(it) }
+            .thenByDescending { it.pinned }.thenByDescending { threadIsActive(it) }.thenByDescending { if (threadIsActive(it)) 0 else it.updatedAt })
     }
     val shown = remember(ordered, query) {
         if (query.isBlank()) ordered else ordered.filter { it.name.contains(query, true) || it.preview.contains(query, true) }

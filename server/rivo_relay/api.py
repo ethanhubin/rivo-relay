@@ -143,7 +143,7 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         compressible = (
             self.command == "GET" and status == 200
-            and (path in {"/v1/projects", "/v1/threads", "/v1/models", "/v1/todos"}
+            and (path in {"/v1/projects", "/v1/threads", "/v1/models", "/v1/todos", "/v1/activity"}
                  or path.startswith(("/v1/threads/", "/v1/projects/")))
         )
         compressed = False
@@ -630,6 +630,8 @@ class Handler(BaseHTTPRequestHandler):
             return codex.upload_attachment(path[2], required(body, "name", 200), body.get("dataBase64"))
         if len(path) == 4 and path[:2] == ["v1", "projects"] and path[3] == "attachments" and method == "POST":
             return codex.upload_project_attachment(path[2], required(body, "name", 200), body.get("dataBase64"))
+        if path == ["v1", "activity"] and method == "GET":
+            return codex.active_tasks()
         if path == ["v1", "projects"]:
             if method == "GET":
                 view = query.get('view', ['full'])[0]
