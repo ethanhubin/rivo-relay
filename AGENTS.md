@@ -1,3 +1,9 @@
+# Git 与 PR
+
+- 日常需求从最新 `origin/main` 创建 `codex/<需求名>` 分支，PR 目标为 `main`；不直接在 `main` 提交日常改动。
+- 提交、推送、创建/更新 PR、审核和合并的授权及流程统一见 [GitHub PR 提交规范](docs/github-pr-workflow.md)，正文使用 [PR 模板](.github/PULL_REQUEST_TEMPLATE.md)。
+- 创建 PR 与发布是独立操作；PR 合并不自动发布，普通 VPS 发布仍不推送远端、不创建 Git tag 或 GitHub Release。
+
 # 发布约定
 
 - 用户说“发布”“发布新版”时，默认通过主节点发布 CLI 发布到 VPS 统一更新中心 `https://134.175.156.219:80`，同时保留主节点 Tailscale HTTP 更新源 `http://100.124.150.1:18767` 兼容入口；不创建 GitHub Release、不推送远端或 Git tag。统一更新迁移及磁盘策略见 `docs/central-updates.md`。
