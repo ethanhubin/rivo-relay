@@ -82,6 +82,12 @@ class ConnectionRecovery(private val scope: CoroutineScope, private val probe: s
         refreshOnHealthy = true,
     )
 
+    /** Explicit refresh shares foreground recovery and waits for synchronization. */
+    suspend fun refresh() {
+        foreground()
+        job?.join()
+    }
+
     /** An explicit download/retry may recover its read, but never replay a mutation. */
     suspend fun awaitDownloadConnection() {
         if (state.value == RecoveryState.DISCONNECTED) reconnect(manual = true)

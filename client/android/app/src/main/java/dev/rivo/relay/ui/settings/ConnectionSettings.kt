@@ -106,17 +106,18 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            OutlinedButton(enabled = api != null && !checking && !reconnecting, modifier = Modifier.testTag("settings_reconnect"), onClick = {
-                if (api?.recovery != null) api.recovery?.reconnect(manual = true)
-                else
+            OutlinedButton(enabled = api != null && !checking && !reconnecting, modifier = Modifier.testTag("settings_refresh"), onClick = {
                 scope.launch {
                     checking = true
-                    try { api?.call("/v1/node") }
+                    try {
+                        val controller = api?.recovery
+                        if (controller != null) controller.refresh() else api?.call("/v1/node")
+                    }
                     catch (error: CancellationException) { throw error }
                     catch (_: Exception) { /* Transport status is reported by the observer. */ }
                     finally { checking = false }
                 }
-            }) { Text(if (reconnecting) "正在重连…" else if (checking) "正在检测…" else if (api?.recovery != null) "重连" else "检测连接") }
+            }) { Text(if (checking || reconnecting) "正在刷新…" else "刷新") }
         }
     }
 }
