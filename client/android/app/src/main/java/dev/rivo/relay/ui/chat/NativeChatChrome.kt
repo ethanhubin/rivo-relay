@@ -25,6 +25,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.rivo.relay.codex.syncStatusLabel
 import dev.rivo.relay.codex.SessionState
 import dev.rivo.relay.codex.control
 import dev.rivo.relay.codex.displayControl
@@ -49,7 +50,7 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
     val takeover = state.takeoverControl(blockedReason ?: if (busy) "有操作正在处理或等待核对，完成后可接管" else if (onAction == null) "当前页面暂不支持接管" else null)
     val external = control.state == ControlState.EXTERNAL
     val releaseReason = releaseUnavailableReason(runtime)
-    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).testTag("writer_status"),
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).heightIn(min = 48.dp).testTag("writer_status"),
         verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.weight(1f).testTag("writer_status_details").clickable { runtimeDetails = true }) {
             Text("$nodeName · " + when (control.state) {
@@ -116,14 +117,7 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
     val model = activeSettings?.model ?: snapshot?.settings?.string("model").orEmpty()
     val effort = activeSettings?.effort ?: snapshot?.settings?.string("reasoningEffort").orEmpty()
     val configuration = listOf(model, effort).filter(String::isNotBlank).joinToString(" · ").ifBlank { "Codex" }
-    val status = when {
-        state.loading -> "同步中"
-        state.stale -> if (snapshot != null) "离线缓存" else "连接中断"
-        snapshot?.requests?.isNotEmpty() == true -> "等待回应"
-        snapshot?.status == "waiting" -> "等待回应，请在原会话处理"
-        snapshot?.isOngoing == true -> "执行中"
-        else -> null
-    }
+    val status = state.syncStatusLabel()
     Box(Modifier.fillMaxWidth().height(64.dp).testTag("conversation_header")) {
         Row(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -149,7 +143,8 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
                         recoveryState == RecoveryState.DISCONNECTED -> false
                         recoveryState == RecoveryState.CONNECTED -> true
                         state.loading -> null
-                        state.stale || state.readError != null -> false
+                        state.offline || state.readError != null -> false
+                        state.stale -> null
                         snapshot == null -> null
                         else -> true
                     }, Modifier.testTag("conversation_connection_status"))

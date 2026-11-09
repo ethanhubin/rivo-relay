@@ -12,6 +12,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
+import dev.rivo.relay.codex.SessionSynchronization
 import dev.rivo.relay.codex.SessionState
 import dev.rivo.relay.data.*
 import dev.rivo.relay.ui.chat.ChatScreen
@@ -65,12 +66,12 @@ class ExecutionShimmerUiTest {
         // Inspect the text node itself so both presence and absence checks are real.
         compose.onNodeWithTag("activity_group_shimmer", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithTag("execution_stage_shimmer").assertDoesNotExist()
-        compose.runOnIdle { state.value = state.value.copy(stale = true) }
+        compose.runOnIdle { state.value = state.value.copy(synchronization = SessionSynchronization.pending()) }
         compose.mainClock.advanceTimeBy(64)
         compose.waitForIdle()
         compose.onNodeWithTag("activity_group_shimmer", useUnmergedTree = true).assertDoesNotExist()
         compose.onNodeWithTag("activity_group_summary", useUnmergedTree = true).assertIsDisplayed()
-        compose.runOnIdle { state.value = state.value.copy(stale = false,
+        compose.runOnIdle { state.value = state.value.copy(synchronization = SessionSynchronization.confirmed(),
             snapshot = snapshot.copy(status = "idle", activeTurnId = "", messages = listOf(activity))) }
         compose.mainClock.advanceTimeBy(64)
         compose.waitForIdle()

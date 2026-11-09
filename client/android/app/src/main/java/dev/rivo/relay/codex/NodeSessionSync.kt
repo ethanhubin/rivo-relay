@@ -51,9 +51,10 @@ class NodeSessionSync(private val api: RelayApi, private val scope: CoroutineSco
         }
     }.shareIn(scope, SharingStarted.WhileSubscribed(stopTimeoutMillis = 0), replay = 0)
 
-    fun events(): Flow<RelayEvent> = observations.map { observation ->
-        observation.error?.let { throw it }
-        checkNotNull(observation.event)
+    /** Subscribers that handle interruption stay attached while this owner reconnects with its cursor. */
+    fun events(onInterrupted: suspend (Throwable) -> Unit = { throw it }): Flow<RelayEvent> = observations.transform { observation ->
+        val error = observation.error
+        if (error != null) onInterrupted(error) else emit(checkNotNull(observation.event))
     }
 
     suspend fun read(threadId: String, freshAfterNanos: Long? = null, limit: Int = 30, knownHeadRevision: String? = null): JSONObject {
