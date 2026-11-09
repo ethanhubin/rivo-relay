@@ -98,6 +98,8 @@ fun MessageComposer(
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
     queueing: Boolean = false,
+    canContinue: Boolean = false,
+    onContinue: () -> Unit = {},
     onEditImage: (DraftImage) -> Unit = {},
     onAddFile: () -> Unit = {},
     onAddVideo: () -> Unit = onAddFile,
@@ -376,6 +378,11 @@ fun MessageComposer(
                             onClick = onStop, enabled = canStop,
                             modifier = Modifier.width(80.dp).height(44.dp).testTag("stop_turn"), shape = RoundedCornerShape(22.dp),
                             contentPadding = PaddingValues(horizontal = 10.dp)) { Text("■ 停止", style = MaterialTheme.typography.labelLarge) }
+                        else if (canContinue && text.isBlank() && images.isEmpty() && files.isEmpty() && !voice.transcribing && !recording) Button(
+                            onClick = onContinue, enabled = enabled && !busy && !preparing,
+                            modifier = Modifier.width(80.dp).height(44.dp).testTag("continue_turn"),
+                            shape = RoundedCornerShape(22.dp), contentPadding = PaddingValues(horizontal = 10.dp)
+                        ) { Text("▶ 继续", style = MaterialTheme.typography.labelLarge) }
                         else Button(
                             onClick = {
                                 if (voice.transcribing) {

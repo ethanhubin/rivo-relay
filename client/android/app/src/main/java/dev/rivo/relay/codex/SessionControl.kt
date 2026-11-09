@@ -81,3 +81,9 @@ fun SessionState.canQueueOperation(operation: String): Boolean =
 fun SessionState.canResumeQueue(): Boolean = canManageQueue() &&
     control().let { it.state == ControlState.RELEASED && it.action == "resume" } &&
     snapshot?.queue?.any { it.status == "waiting" } == true
+
+/** Only a fresh, idle interrupted turn can be explicitly continued. */
+fun SessionState.canContinueTask(): Boolean = canCompose() && snapshot?.let {
+    it.id == id && it.resumeTurnId.isNotBlank() && it.activeTurnId.isBlank() &&
+        it.status == "idle" && it.requests.isEmpty()
+} == true

@@ -11,6 +11,17 @@ class SessionControlTest {
         JSONObject().put("thread", JSONObject().put("id", "thread")).put("readOnly", !writable)
             .put("control", JSONObject().put("state", state).put("canOperate", writable).put("action", "resume"))))
 
+    @Test fun continueRequiresFreshIdleInterruptedSnapshot() {
+        val base = session("writable", true)
+        val ready = base.copy(snapshot = base.snapshot!!.copy(status = "idle", resumeTurnId = "old"))
+        assertTrue(ready.canContinueTask())
+        assertFalse(base.canContinueTask())
+        assertFalse(ready.copy(synchronization = SessionSynchronization.pending()).canContinueTask())
+        assertFalse(ready.copy(snapshot = ready.snapshot!!.copy(activeTurnId = "new")).canContinueTask())
+        assertFalse(ready.copy(snapshot = ready.snapshot!!.copy(status = "running")).canContinueTask())
+        assertFalse(ready.copy(id = "another").canContinueTask())
+    }
+
     @Test fun unavailableStatesNeverEnableInput() {
         for (state in listOf("external", "released", "release_pending", "workspace_unavailable", "future_state"))
             assertFalse(session(state).control().canOperate)
