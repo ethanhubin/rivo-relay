@@ -24,6 +24,18 @@ import kotlinx.coroutines.launch
 fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (ConnectionMode) -> Unit,
     savedNodes: List<SavedNode> = emptyList(), onSelectNode: (String) -> Unit = {},
     onAddNode: () -> Unit = {}, canAddNode: Boolean = true) {
+    var version by remember(connection, api) { mutableStateOf("正在获取…") }
+    var versionRefresh by remember(connection, api) { mutableIntStateOf(0) }
+    LaunchedEffect(connection, api, versionRefresh) {
+        version = try {
+            val code = api?.call("/v1/node")?.optInt("releaseCode", 0) ?: 0
+            if (code > 0) code.toString() else "未提供"
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            "暂不可用"
+        }
+    }
     val routes = connection.routes
     val scope = rememberCoroutineScope()
     var checking by remember(connection) { mutableStateOf(false) }
@@ -61,6 +73,8 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
                     Text("+", style = MaterialTheme.typography.headlineSmall)
                 }
             }
+            Text("节点版本：$version", Modifier.testTag("settings_node_version"),
+                style = MaterialTheme.typography.bodySmall)
             Column(Modifier.selectableGroup()) {
                 ConnectionMode.entries.forEach { mode ->
                     val available = when (mode) {
@@ -115,7 +129,7 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
                     }
                     catch (error: CancellationException) { throw error }
                     catch (_: Exception) { /* Transport status is reported by the observer. */ }
-                    finally { checking = false }
+                    finally { checking = false; versionRefresh++ }
                 }
             }) { Text(if (checking || reconnecting) "正在刷新…" else "刷新") }
         }

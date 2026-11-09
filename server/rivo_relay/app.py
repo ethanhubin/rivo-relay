@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from collections.abc import Callable
 import threading
 import shlex
@@ -78,6 +80,7 @@ class RelayApp:
     def node(self) -> dict:
         native = self.codex.status()
         return {"id": self.config.node_id, "name": self.node_name.get(),
+                "releaseCode": int(os.environ.get("RIVO_RELEASE_CODE", "0")),
                 "connected": bool(native.get("connected")),
                 "capabilities": {**native.get("capabilities", {}), **self.media_capabilities(),
                              "todoAttachmentUpload": True}, "runtime": native}
