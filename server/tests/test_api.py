@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -1008,6 +1009,23 @@ class ApiTests(unittest.TestCase):
         bus.publish({"method": "synthetic/private-after-revocation"})
         bus.resume.set()
         self.assertEqual(self.event(stream)["event"], "revoked")
+
+    def test_idle_sse_disconnect_releases_slot_before_next_heartbeat(self):
+        first = self.open_stream()
+        self.assertEqual(self.event(first)["event"], "reset")
+        first.close()
+        deadline = time.monotonic() + 3
+        released = False
+        while time.monotonic() < deadline:
+            if self.server.stream_slots.acquire(blocking=False):
+                self.server.stream_slots.release()
+                released = True
+                break
+            time.sleep(0.02)
+        self.assertTrue(released, "Disconnected idle stream retained its slot")
+        second = self.open_stream()
+        self.assertEqual(second.status, 200)
+        self.assertEqual(self.event(second)["event"], "reset")
 
     def test_sse_limit_reserves_capacity_for_ordinary_requests(self):
         first = self.open_stream()

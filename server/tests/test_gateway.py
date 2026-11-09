@@ -416,3 +416,37 @@ class NodePairingCliTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(fields['direct'], ['https://example.ts.net'])
             finally:
                 await runner.cleanup()
+
+
+class DataHandshakeRaceTests(unittest.IsolatedAsyncioTestCase):
+    async def check_cleanup(self, fail_prepare=False):
+        from unittest.mock import AsyncMock, Mock
+        gateway = Gateway(Path("unused"))
+        future = asyncio.get_running_loop().create_future()
+        done = asyncio.Event()
+        gateway.pending["ticket"] = ("slot", future, done)
+        request = Mock(headers={"X-Rivo-Ticket": "ticket"})
+        ws = Mock(close=AsyncMock())
+        async def prepare(_):
+            if fail_prepare:
+                raise ConnectionResetError()
+            future.cancel()  # Phone cancels while the WS handshake yields.
+            gateway.pending.pop("ticket")
+            done.set()
+        ws.prepare = prepare
+        with patch.object(gateway, "authorize", return_value="slot"), \
+                patch("rivo_relay.gateway.server.web.WebSocketResponse", return_value=ws):
+            if fail_prepare:
+                with self.assertRaises(ConnectionResetError):
+                    await gateway.data(request)
+            else:
+                await gateway.data(request)
+        self.assertNotIn("ticket", gateway.claimed)
+        self.assertFalse(gateway.active.get("slot"))
+        ws.close.assert_awaited()
+
+    async def test_request_cancelled_during_data_handshake(self):
+        await self.check_cleanup()
+
+    async def test_failed_data_handshake_releases_claim(self):
+        await self.check_cleanup(fail_prepare=True)
