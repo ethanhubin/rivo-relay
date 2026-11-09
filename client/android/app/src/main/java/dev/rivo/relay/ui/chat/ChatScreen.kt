@@ -290,6 +290,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val timeline = remember(state.id, snapshot?.messages, snapshot?.turnSettings, state.pendingMessages, snapshot?.activeTurnId, pendingTitle) {
         timelineCache.project(projectedSessionMessages(snapshot, if (pendingTitle == null) state.pendingMessages else emptyList()), snapshot?.activeTurnId, snapshot?.turnSettings.orEmpty())
     }
+    val resourceRows = remember(timeline) { nativeResourceRows(timeline) }
     // Preserve lastOrNull semantics, including review replies and empty turn IDs.
     val lastReplyIds = remember(snapshot?.messages) {
         snapshot?.messages.orEmpty()
@@ -417,7 +418,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 modelChange?.let { label -> Text(label,
                     Modifier.fillMaxWidth().padding(bottom = chatActivitySpacing).testTag("model_change_notice"),
                     style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                if (row is NativeTimelineRow.Activities) NativeActivityGroup(row, isCurrent = row.key == currentActivity?.key && !state.stale) { path -> nativeFilePath(path, cwd)?.let(::openFile) }
+                if (row is NativeTimelineRow.Activities) NativeActivityGroup(row, isCurrent = row.key == currentActivity?.key && !state.stale, resourceItems = resourceRows[row.key].orEmpty()) { path -> nativeFilePath(path, cwd)?.let(::openFile) }
                 else if (row is NativeTimelineRow.Notice) NativeTurnNotice(row.turn)
                 else if (row is NativeTimelineRow.Message) {
                 val message = row.message

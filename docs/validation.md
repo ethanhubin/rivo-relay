@@ -502,3 +502,19 @@ Android `assembleDebug` / `assembleDebugAndroidTest` / `testDebugUnitTest` / `li
 - 两台各 5 个有效授权与备份逐项一致；临时验证授权已撤销。MacBook 原生连接正常，读取 5 个项目；e2 原有 Relay 连接断开，更新后重新连接既有 Codex PID 30257（11 月 5 日启动），读取 8 个项目。没有重启 Codex。
 - 本机经 Tailscale HTTPS 访问两台 /health 均成功；认证 node/projects 在节点 loopback 验证通过。节点自身 HTTPS 回环探测遇到 TLS 错误，未关闭证书校验；不将其记为认证 HTTPS 验证通过。未进行手机 UI 或真实会话写入测试。
 - 脱敏复核产物：workspace/deploy-multinode-20261107/。
+
+## Sites 列表与会话资源（2026-11-09）
+
+隔离分支 `codex/sites-mobile` 实现只读 Sites 列表、浏览器跳转、结构化 Sites/resource_link 卡片与本地连接器图标。Android debug 编译通过，定向 JVM 测试 29 项通过（NativeResourcesTest 7、NativeActivityProjectionTest 14、NativeMessageFormatsTest 8）。服务端定向回归 4 项通过，覆盖节点鉴权、固定只读工具分发、凭据字段裁剪、异常时租约关闭及 URL/游标校验；`git diff --check` 通过。
+
+真实 Mac 主节点 Codex 0.167.0 使用本分支 `list_sites` 与 Rivo OwnedWriter 临时连接，读取 4 个站点、4 个正式地址，无下一页；仅打印条目数与返回字段校验，不保存账号数据。临时会话解除订阅后关闭探测进程，未重启现有原生运行时、未创建或发布站点。
+
+本轮无已连接真机/模拟器，未做设备端页面显示、浏览器跳转或私有站点登录验收。未构建发布 APK、未运行 lint、未提交推送或部署。静态图标来源与 SHA-256 见 `client/android/connector-assets.json`。
+
+### Sites 截图补充
+
+Android 36 `medium_phone` 模拟器通过 SitesScreenshotTest 两项 UI 测试：列表读取展示、折叠工具组之外的 Sites/资源链接可见性。截图使用真实 SitesScreen / NativeActivityGroup 组件与固定示例数据；导航及会话外围是测试夹具，不是生产账号完整端到端会话。截图为 Compose 根组件捕获，保存在 `workspace/artifacts/screenshots/sites-{list,conversation}.png`。首次模拟器 System UI 卡顿、测试夹具主线程地址解析失败，改用软件渲染并修正夹具后重跑通过。未验证浏览器跳转或私有站点登录。
+
+### App 内浏览调整
+
+删除截图夹具上下两段示例说明，真实会话消息不受影响；普通资源行移除“打开网站/打开链接”。Sites 列表和会话资源统一进入 App 内 WebView，提供网页返回、关闭、重试及外部浏览器入口。Android debug 与 androidTest Kotlin 编译通过，NativeResourcesTest 7 项通过，diff 检查通过。本次未重跑设备截图测试，尚未验证公开站点实际加载、私有站点登录或网页回退；前次两项 UI 测试不代表本次 WebView 验收。未发布。

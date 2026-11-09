@@ -18,12 +18,14 @@ import dev.rivo.relay.data.*
 
 /** QiGuang CodexActivityGroup: one compact summary row; only non-command details expand on demand. */
 @Composable
-internal fun NativeActivityGroup(row: NativeTimelineRow.Activities, isCurrent: Boolean = false, onFile: (String) -> Unit) {
+internal fun NativeActivityGroup(row: NativeTimelineRow.Activities, isCurrent: Boolean = false, resourceItems: List<NativeResource>? = null, onFile: (String) -> Unit) {
     var expanded by rememberSaveable(row.key) { mutableStateOf(false) }
     var visibleDetails by rememberSaveable(row.key) { mutableIntStateOf(NATIVE_ACTIVITY_BATCH_SIZE) }
     val clipboard = LocalClipboardManager.current
     val detailMessages = remember(row.messages) { row.messages.filter { it.activity?.kind != "command" } }
     val canExpand = detailMessages.isNotEmpty()
+    val resources = resourceItems ?: remember(row.messages) { nativeResources(row.messages) }
+    val connector = remember(row.messages) { row.messages.mapNotNull { nativeConnector(it.raw) }.distinct().singleOrNull() }
     val failedCount = remember(detailMessages) { detailMessages.count { it.activity?.status == "failed" } }
     val unknownCount = remember(detailMessages) { detailMessages.count { it.activity?.status == "unknown" } }
     val label = remember(row.messages) { nativeActivityGroupLabel(row.messages) }
@@ -34,7 +36,7 @@ internal fun NativeActivityGroup(row: NativeTimelineRow.Activities, isCurrent: B
             onClick = if (canExpand) ({ if (imagePath != null) onFile(imagePath) else expanded = !expanded }) else null,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            NativeActivityGlyph(row.messages.mapNotNull { it.activity?.kind }.distinct().singleOrNull() ?: "turn")
+            if (connector != null) dev.rivo.relay.ui.sites.ConnectorIcon(connector) else NativeActivityGlyph(row.messages.mapNotNull { it.activity?.kind }.distinct().singleOrNull() ?: "turn")
             if (canExpand) Text(if (expanded) "▾" else "›", color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (isCurrent) ShimmeringStageText(label,
                 modifier = Modifier.weight(1f).testTag("activity_group_shimmer"), maxLines = if (canExpand) 1 else Int.MAX_VALUE, overflow = TextOverflow.Ellipsis)
@@ -45,6 +47,7 @@ internal fun NativeActivityGroup(row: NativeTimelineRow.Activities, isCurrent: B
             if (unknownCount > 0) Text("${unknownCount} 项状态待核验", style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("activity_unknown_count"))
         }
+        resources.forEach { resource -> dev.rivo.relay.ui.sites.ResourceRow(resource) }
         if (expanded && canExpand) {
         detailMessages.take(visibleDetails).forEach { message -> key(message.turnId, message.id) { message.activity?.let { activity ->
             var visibleOutput by rememberSaveable { mutableIntStateOf(MARKDOWN_PREVIEW_MAX_CHARS) }
