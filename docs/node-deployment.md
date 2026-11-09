@@ -17,7 +17,7 @@ sudo -u rivo-gateway .venv/bin/python -m rivo_relay.gateway issue-key \
   --workspace /var/lib/rivo-gateway --ip 134.175.156.219 --port 80
 ```
 
-从 `/var/lib/rivo-gateway/access-key.json` 安全读取本次凭据。此命令不撤销已有节点。新 CLI 的 `rivo2.…` 已包含入口；旧部署签发的 `rivo1.…` 在首次配置时还需输入 `134.175.156.219:80`。80 端口运行 HTTPS，保留证书指纹验证。
+从 `/var/lib/rivo-gateway/access-key.json` 安全读取凭证，并确认以 `rivo2.` 开头；若不是，先更新 VPS 签发程序，不能继续分发旧格式。此命令不撤销已有节点。凭证已包含地址与端口，80 端口运行 TLS，保留证书指纹验证。
 
 ## Windows：无窗口后台服务
 

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from aiohttp import ClientSession, ClientTimeout, web
-from rivo_relay.gateway.config import decode_key, gateway_url, initialize, issue_key, access_credential, node_gateway, encode_key
+from rivo_relay.gateway.config import decode_key, gateway_url, initialize, issue_key, node_gateway, encode_key
 from unittest.mock import patch
 from rivo_relay.gateway.connector import Connector
 from rivo_relay.gateway.server import Gateway
@@ -18,7 +18,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.directory = Path(self.temp.name)
         pin = initialize(self.directory, '127.0.0.1')
-        self.key = decode_key(issue_key(self.directory, pin))
+        self.key = decode_key(issue_key(self.directory, pin, "127.0.0.1:80"))
         self.writes = 0
         self.cancelled = asyncio.Event()
         async def handler(request):
@@ -157,7 +157,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.writes, 1)
 
     async def test_ticket_cannot_be_claimed_by_another_node(self):
-        other = decode_key(issue_key(self.directory, self.key['pin']))
+        other = decode_key(issue_key(self.directory, self.key['pin'], '127.0.0.1:80'))
         ticket = 'private-test-ticket'
         future = asyncio.get_running_loop().create_future()
         self.gateway.pending[ticket] = (self.key['slot'], future, asyncio.Event())
@@ -199,8 +199,8 @@ class GatewayConfigTests(unittest.TestCase):
 
 class GatewayCredentialTests(unittest.TestCase):
     def setUp(self):
-        self.legacy = encode_key({'v': 1, 'slot': 'a' * 32, 'secret': 's' * 43, 'pin': 'b' * 64})
-        self.credential = access_credential(self.legacy, '134.175.156.219:80')
+        self.bundle = {'v': 2, 'slot': 'a' * 32, 'secret': 's' * 43, 'pin': 'b' * 64, 'gateway': 'https://134.175.156.219:80'}
+        self.credential = encode_key(self.bundle)
 
     def test_single_paste_never_prompts_for_ip(self):
         with patch('getpass.getpass', return_value=self.credential) as prompt, patch('builtins.input', side_effect=AssertionError('Unexpected IP prompt')):
@@ -209,27 +209,25 @@ class GatewayCredentialTests(unittest.TestCase):
         self.assertEqual(base, 'https://134.175.156.219:80')
         self.assertEqual(saved, self.credential)
         for field in ('slot', 'secret', 'pin'):
-            self.assertEqual(key[field], decode_key(self.legacy)[field])
+            self.assertEqual(key[field], self.bundle[field])
 
     def test_existing_configs_do_not_prompt(self):
         with patch('getpass.getpass', side_effect=AssertionError()), patch('builtins.input', side_effect=AssertionError()):
-            for stored in ({'key': self.legacy, 'gateway': '134.175.156.219'}, {'key': self.credential}):
+            for stored in ({'key': self.credential},):
                 self.assertEqual(node_gateway(stored)[0], 'https://134.175.156.219:80')
 
-    def test_legacy_key_can_still_request_ip(self):
-        with patch('getpass.getpass', return_value=self.legacy), patch('builtins.input', return_value='134.175.156.219:8443'):
-            self.assertEqual(node_gateway({})[0], 'https://134.175.156.219:8443')
-
-    def test_conflicting_explicit_ip_is_rejected(self):
-        with self.assertRaises(ValueError):
-            node_gateway({'key': self.credential}, '1.2.3.4')
+    def test_legacy_key_is_rejected_without_ip_prompt(self):
+        import base64
+        legacy = 'rivo1.' + base64.urlsafe_b64encode(json.dumps(dict(self.bundle, v=1)).encode()).decode()
+        with patch('builtins.input', side_effect=AssertionError()), self.assertRaises(ValueError):
+            node_gateway({'key': legacy, 'gateway': '134.175.156.219'})
 
     def test_ipv6_and_custom_port(self):
-        key = decode_key(access_credential(self.legacy, 'https://[2001:db8::1]:8443'))
+        key = decode_key(encode_key(dict(self.bundle, gateway='https://[2001:db8::1]:8443')))
         self.assertEqual(key['gateway'], 'https://[2001:db8::1]:8443')
 
     def test_invalid_bundle_is_rejected_without_echoing_secret(self):
-        for value in ['rivo2.!!!!', 'rivo2.W10', self.legacy.replace('rivo1.', 'rivo2.'),
+        for value in ['rivo2.!!!!', 'rivo2.W10', self.credential.replace('rivo2.', 'rivo1.'),
                       encode_key(dict(decode_key(self.credential), gateway='http://1.2.3.4'))]:
             with self.subTest(value=value[:6]), self.assertRaisesRegex(ValueError, '^Invalid gateway access credential$'):
                 decode_key(value)

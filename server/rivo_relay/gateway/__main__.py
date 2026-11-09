@@ -34,6 +34,8 @@ def main():
     parser.add_argument('--codex-home', type=Path)
     parser.add_argument('--no-pair', action='store_true', help='Background reconnect without creating a new pairing code')
     args = parser.parse_args()
+    if args.command == 'node' and args.ip is not None:
+        parser.error('Node setup accepts only a rivo2 credential; --ip is for gateway administration')
     os.umask(0o077)
     logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
     if args.command in {'gateway', 'issue-key', 'revoke-key'}:
@@ -92,7 +94,7 @@ async def node(args):
     if args.configure:
         stored.pop('key', None); stored.pop('gateway', None)
     if mode != 'direct':
-        base, key, credential = node_gateway(stored, args.ip)
+        base, key, credential = node_gateway(stored)
         stored.update(gateway=base, key=credential)
     if mode == 'direct' and not direct:
         raise ValueError('Direct mode requires a Tailscale URL')
