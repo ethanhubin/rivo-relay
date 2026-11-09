@@ -772,4 +772,40 @@ class CatalogControllerTest {
             assertTrue(controller.state.value.unreadThreadIds.isEmpty())
         } finally { scope.cancel(); server.shutdown() }
     }
+    @Test fun executionEventsDoNotInvalidateListMembership() {
+        fun event(method: String) = dev.rivo.relay.data.RelayEvent("native", JSONObject().put("method", method))
+        for (method in listOf("turn/started", "turn/completed", "thread/status/changed", "thread/name/updated", "thread/goal/updated"))
+            assertFalse(method, dev.rivo.relay.codex.catalogMembershipEvent(event(method)))
+        for (method in listOf("thread/started", "thread/deleted", "thread/archived", "thread/unarchived"))
+            assertTrue(method, dev.rivo.relay.codex.catalogMembershipEvent(event(method)))
+    }
+
+    @Test fun completedListStaysCompleteDuringMetadataRefresh() = runBlocking {
+        val server = MockWebServer()
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val reads = AtomicInteger()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val index = reads.incrementAndGet()
+                if (index == 3) { started.countDown(); release.await(5, TimeUnit.SECONDS) }
+                return MockResponse().setBody("""{"threads":[{"id":"t","name":"${if (index == 1) "Old" else "Renamed"}","updatedAt":$index}],"catalogComplete":${index != 2}}""")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = CatalogController(api(server), scope, { throw it })
+        try {
+            controller.project(ProjectSummary("p", "P", "/p"))
+            withTimeout(3000) { controller.state.first { it.threadsFresh && it.threadsComplete } }
+            val refresh = controller.refreshThreads(force = true)
+            await(started)
+            assertTrue(controller.state.value.threadsComplete)
+            assertEquals("Renamed", controller.state.value.threads.single().name)
+            release.countDown()
+            refresh?.join()
+            assertTrue(controller.state.value.threadsComplete)
+        } finally { release.countDown(); scope.cancel(); server.shutdown() }
+    }
+
 }

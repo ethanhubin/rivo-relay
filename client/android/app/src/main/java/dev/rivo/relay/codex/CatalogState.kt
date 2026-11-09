@@ -191,7 +191,7 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
                 if (summarySupported == true) {
                     if (generation == targetGeneration && summaryVersion >= appliedSummarySequence) {
                         appliedSummarySequence = summaryVersion
-                        applySummary(response, incomplete = true)
+                        applySummary(response)
                     }
                     readDetailVersions = detailVersions.toMap()
                     response = api.call(threadsPath(project.id, archived))
@@ -250,7 +250,7 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
             source.events(onInterrupted = { signals.trySend(Unit) }).collect { event ->
                 if (catalogLifecycleEvent(event)) {
                     if (listReadPending) {
-                        listReadDirty = true
+                        if (catalogMembershipEvent(event)) listReadDirty = true
                         refreshThreadSummary()
                     } else signals.trySend(Unit)
                 }
@@ -272,12 +272,10 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
         } finally { events?.cancel(); metadata.cancel(); signals.close() }
     }
 
-    private fun applySummary(response: JSONObject, incomplete: Boolean): Boolean {
+    private fun applySummary(response: JSONObject): Boolean {
         val summary = catalogRows(response, "threads").map(::threadSummary)
         val existing = mutable.value.threads.associateBy { it.id }
-        val changed = summary.any { row -> existing[row.id]?.let { old ->
-            row.updatedAt > old.updatedAt || row.pinned != old.pinned || (row.updatedAt >= old.updatedAt && row.name != old.name)
-        } ?: true }
+        val changed = summary.any { it.id !in existing }
         val metadata = summary.map { row -> existing[row.id]?.let { old ->
             row.withExecution(old).copy(executionMode = old.executionMode, workspace = old.workspace,
                 externalWorkspace = old.externalWorkspace,
@@ -285,8 +283,8 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
                 updatedAt = maxOf(row.updatedAt, old.updatedAt))
         } ?: row }
         val combined = (mutable.value.threads + metadata).associateBy { it.id }.values.toList()
-        applyThreads(combined, fresh = mutable.value.threadsFresh && !incomplete && !changed, confirmCreated = false)
-        mutable.update { it.copy(threadsComplete = it.threadsComplete && !incomplete && !changed, threadsSummaryFresh = true) }
+        applyThreads(combined, fresh = mutable.value.threadsFresh && !changed, confirmCreated = false)
+        mutable.update { it.copy(threadsComplete = it.threadsComplete && !changed, threadsSummaryFresh = true) }
         return changed
     }
 
@@ -305,7 +303,7 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
                 summarySupported = !response.optBoolean("catalogComplete", true)
                 if (summarySupported == true) {
                     appliedSummarySequence = version
-                    val changed = applySummary(response, incomplete = false)
+                    val changed = applySummary(response)
                     if (changed) {
                         if (listReadPending) listReadDirty = true else refreshThreads()
                     }
@@ -457,9 +455,6 @@ fun threadIsExecuting(thread: ThreadSummary): Boolean =
     thread.status != "waiting" && (thread.nativeExecution == "running" ||
         (thread.nativeExecution.isBlank() && thread.status in setOf("running", "inProgress", "active", "starting")))
 
-fun threadPendingLabel(thread: ThreadSummary): String? =
-    if (threadIsExecuting(thread)) null else "已停止"
-
 /** QiGuang ordering: pinned/active groups, stable active ranks, newest completed first. */
 fun stableThreadOrder(threads: List<ThreadSummary>, previousIds: List<String> = emptyList()): List<ThreadSummary> {
     val ranks = previousIds.withIndex().associate { it.value to it.index }
@@ -510,4 +505,12 @@ internal fun catalogLifecycleEvent(event: RelayEvent): Boolean {
         method in setOf("turn/started", "turn/completed", "turn/failed", "turn/interrupted", "serverRequest/resolved",
             "relay/queueUpdated", "relay/queueChanged", "relay/historyInvalidated", "relay/ownershipChanged", "relay/writerDisconnected", "relay/nativeDisconnected") ||
         (method.startsWith("item/") && (method.endsWith("/requestApproval") || method.endsWith("/requestUserInput")))
+}
+
+/** Execution notifications do not invalidate the membership of an in-flight list. */
+internal fun catalogMembershipEvent(event: RelayEvent): Boolean {
+    if (event.type in setOf("reset", "connected", "revoked")) return true
+    if (event.type != "native") return false
+    val method = event.payload.string("method")
+    return method.startsWith("project/") || method in setOf("thread/started", "thread/deleted", "thread/archived", "thread/unarchived")
 }
