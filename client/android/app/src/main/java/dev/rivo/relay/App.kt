@@ -304,11 +304,10 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     onAddNode = { setError(null); addNode = true }, canAddNode = !submission.busy && !handoffLoading)
                 "sessions" -> SessionsScreen(catalog.selectedProject?.name ?: "会话", catalog.threads.filterNot { thread -> visiblePending.any { node.conversations.pendingThreadId(it.id) == thread.id } }, catalog.loading, writable && catalog.selectedProject != null && catalog.selectedProject?.id != "__rivo_recent__",
                     ::back, { openChat(it.id, "sessions") }, { if (writable) node.catalog.state.value.selectedProject?.let { openPending(it) } }, { node.catalog.refreshThreads(force = true) },
+                    loadDraftText = { id -> node.conversations.loadDraft(id).text },
                     canManageThreads = threadsWritable, showCreate = catalog.selectedProject?.id != "__rivo_recent__", catalogComplete = catalog.threadsComplete,
                     onPin = { thread, pinned ->
-                        if (node.catalog.state.value.threadsFresh) node.submissions.submit("/v1/threads/${encoded(thread.id)}/pin", JSONObject().put("pinned", pinned), if (pinned) "置顶会话" else "取消置顶") {
-                            node.catalog.refreshThreads(force = true)
-                        }
+                        node.catalog.setThreadPinned(thread.id, pinned)
                     }, archived = catalog.archived, onArchivedChanged = node.catalog::setArchived,
                     onArchive = { threads, archived ->
                         if (node.catalog.state.value.threadsFresh) node.submissions.submitBatch(threads.map { BatchSubmission("/v1/threads/${encoded(it.id)}/archive", JSONObject().put("archived", archived), if (archived) "归档会话" else "恢复会话") })
@@ -529,12 +528,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     }, pinned = catalog.threads.firstOrNull { it.id == threadId }?.pinned == true,
                     canManage = !session.stale && session.id == threadId && session.snapshot?.id == threadId && session.control().canOperate && writable,
                     onPin = { pinned ->
-                        val current = node.session.state.value
-                        val id = threadId
-                        if (id != null && !current.stale && current.id == id && current.snapshot?.id == id && writable && current.control().canOperate)
-                            node.submissions.submit("/v1/threads/${encoded(id)}/pin", JSONObject().put("pinned", pinned), if (pinned) "置顶会话" else "取消置顶") {
-                                node.catalog.refreshThreads(force = true)
-                            }
+                        threadId?.let { node.catalog.setThreadPinned(it, pinned) }
                     }, onArchive = {
                         val current = node.session.state.value
                         val id = threadId

@@ -67,6 +67,23 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
         return List(ids.length()) { ids.optString(it) }.filter { it.isNotBlank() }.distinct()
     }
 
+    private val threadPins = mutableMapOf<String, Boolean>()
+
+    private fun localPin(thread: ThreadSummary): ThreadSummary {
+        val pinned = threadPins[thread.id]
+            ?: store?.getMetadata("threadPin:${thread.id}")?.toBooleanStrictOrNull()
+        return if (pinned == null) thread else thread.copy(pinned = pinned)
+    }
+
+    fun setThreadPinned(threadId: String, pinned: Boolean) {
+        store?.putMetadata("threadPin:$threadId", pinned.toString())
+        threadPins[threadId] = pinned
+        runtimeThreads.replaceAll { _, threads -> threads.map(::localPin) }
+        mutable.update { current ->
+            current.copy(threads = stableThreadOrder(current.threads.map(::localPin), current.threads.map { it.id }))
+        }
+    }
+
     fun setProjectPinned(projectId: String, pinned: Boolean) {
         val current = mutable.value
         val ids = current.pinnedProjectIds
@@ -361,7 +378,7 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
         val provisional = if (current.archived) emptyList() else createdThreads.values.map { it.summary }.filter {
             it.projectId == current.selectedProject?.id && authoritative.none { thread -> thread.id == it.id }
         }
-        val merged = provisional + authoritative
+        val merged = (provisional + authoritative).map(::localPin)
         if (key != null && (fresh || merged.isNotEmpty() || key in runtimeThreads)) runtimeThreads[key] = merged
         mutable.update { it.copy(threads = stableThreadOrder(merged, current.threads.map { t -> t.id }),
             unreadThreadIds = unread(merged), threadsFresh = fresh) }
