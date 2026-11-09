@@ -1,6 +1,6 @@
 # Tailscale 节点更新与发布
 
-默认更新源为 `http://100.124.150.1:18767`。0.2.43 起，扫描主发布节点带更新源声明的 v2 二维码后，可同时保存 VPS 更新路径；切换会话节点不改变更新源。未配置 VPS 时仍使用默认发布节点，无网络时明确报错，不自动访问 GitHub。
+统一更新的新流程见[ VPS 统一更新](central-updates.md)：迁移后的手机使用所配对节点的 VPS 统一更新源，节点由代理自动升级；发布 CLI 在本地主节点发布后同步 VPS 并验收。以下主节点更新机制作为兼容入口，地址为 `http://100.124.150.1:18767`。0.2.43 起，扫描主发布节点带更新源声明的 v2 二维码后，可同时保存 VPS 更新路径；切换会话节点不改变更新源。未配置 VPS 时仍使用默认发布节点，无网络时明确报错，不自动访问 GitHub。
 
 - `GET /v1/app-updates/latest`：公共版本清单，包含 version、versionCode、notes、size、sha256、apkPath；禁止缓存。
 - `GET /v1/app-updates/apks/<sha256>.apk`：仅公开发布目录中的安装包，支持单 Range 下载。无配对令牌，不经过 Codex 文件读取，不提供任意文件路径。
@@ -38,7 +38,7 @@ python3 scripts/release.py resume 0.2.28
 
 恢复会重新确认源码、清单和产物，不能拿修改过的源码继续旧计划；需要新建版本计划。服务切换已完成时直接继续验收，不重复重启。若日志确认回滚完成，排查原因后可显式运行 `resume <版本> --retry-deploy`；若切换结果未知，CLI 继续等待并报出状态，不盲目卸载服务。`prepare` 只改版本/说明和计划，不会构建、提交或上线。
 
-当前 CLI 面向本机主节点 `workspace/local-node` 和 macOS LaunchAgent，需要已有上一版清单/APK、仓库 `.venv` 和 Android SDK/JDK；不负责首次部署、其他节点同步或 GitHub 发布。旧版本若由手工流程发布，没有 `release-state.json`，继续查看其原有发布验收文件，不使用 `resume` 接管。
+当前 CLI 的本机部署步骤面向本机主节点 `workspace/local-node` 和 macOS LaunchAgent，需要已有上一版清单/APK、仓库 `.venv` 和 Android SDK/JDK；不负责首次部署或 GitHub 发布；已迁移的其他节点通过 VPS 更新代理获取本次统一发布。旧版本若由手工流程发布，没有 `release-state.json`，继续查看其原有发布验收文件，不使用 `resume` 接管。
 
 ## 发布
 

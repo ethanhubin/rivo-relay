@@ -1,8 +1,8 @@
 # 发布约定
 
-- 用户说“发布”“发布新版”时，默认只发布到主节点 Tailscale HTTP 更新源 `http://100.124.150.1:18767`，不创建 GitHub Release、不推送远端或 Git tag。
+- 用户说“发布”“发布新版”时，默认通过主节点发布 CLI 发布到 VPS 统一更新中心 `https://134.175.156.219:80`，同时保留主节点 Tailscale HTTP 更新源 `http://100.124.150.1:18767` 兼容入口；不创建 GitHub Release、不推送远端或 Git tag。统一更新迁移及磁盘策略见 `docs/central-updates.md`。
 - 仅当用户明确要求“发布 Release / GitHub Release”时，才同步到 GitHub。用户单独明确要求提交或推送时，按其具体指令执行。
-- 默认发布使用 `scripts/publish-update.py`，更新源位于 Relay workspace 的 `updates/`；先发布以 SHA-256 命名的 APK，再原子更新 `latest.json`。不覆盖同 versionCode 的不同 APK，不降级。
+- 默认使用 `scripts/release.py`，底层 `scripts/publish-update.py` 发布本地 APK，`scripts/publish-gateway-update.py` 将同一发布提交的节点包及 APK 上传 VPS；先发布以 SHA-256 命名的文件，再原子更新清单。不覆盖同 versionCode 的不同内容，不降级。VPS 保留最新 3 版及 24 小时下载缓冲，更新文件限额 512 MiB，预留至少 1 GiB。
 - 发布前递增 Android versionName / versionCode，按下方验证约定运行相关回归测试并构建发布 APK，确认签名与上一版一致。需要服务端改动时更新主节点并验证 HTTP 清单与 APK；不重启 Codex 原生运行时。
 - GitHub 发布只在显式授权时使用 `--github-release`。发布说明标明真机/模拟器验证范围。
 
@@ -14,3 +14,9 @@
 - 同一份代码已通过的检查复用结果；仅在相关代码、依赖或配置变化，或发现新问题时重跑。扩大验证范围应有具体原因，不为等待期间填充工作而增加检查。
 - 启动耗时检查前确认是否已有可复用的同类检查，避免同一工作区重复并行构建。检查明显超出本次需要时停止自己启动的任务，不影响其他任务。
 - 提交或交付时简要注明实际完成的检查、未完成的检查及真机/模拟器验证范围，不将未运行或中断的检查表述为通过。
+
+# 设备管理入口
+
+- 远程操作前先读取 `/Users/ethan/Documents/系统管理/家庭局域网设备清单.md` 和对应设备详情；不要重复向用户询问已有连接信息。
+- 当前 VPS：`root@134.175.156.219`，SSH 密钥 `/Users/ethan/Documents/QiGuangBot.pem`，使用 `-o IdentitiesOnly=yes`。详情见 `/Users/ethan/Documents/系统管理/设备详情/网络与路由.md`。
+- 实时磁盘用量写入本项目验证记录，不写入设备身份清单；只清理 Rivo 自己的可回收更新文件，不清理其他服务。

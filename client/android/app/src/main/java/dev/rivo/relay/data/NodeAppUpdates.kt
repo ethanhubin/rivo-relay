@@ -5,6 +5,7 @@ import dev.rivo.relay.connection.NodeRoutes
 import dev.rivo.relay.connection.NodeRouteInterceptor
 import dev.rivo.relay.connection.gatewayTrust
 import dev.rivo.relay.connection.CredentialStore
+import dev.rivo.relay.connection.PairingRepository
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.delay
 import okhttp3.*
@@ -28,7 +29,14 @@ class NodeAppUpdates(
 ) {
     companion object {
         fun configured(context: android.content.Context): NodeAppUpdates {
-            val routes = CredentialStore(context).read("update-routes")?.let { runCatching { NodeRoutes.from(JSONObject(it)) }.getOrNull() }
+            val credentials = CredentialStore(context)
+            // Existing paired phones migrate without scanning another QR. Use the
+            // active node's trusted gateway origin, independent of its slot/uptime.
+            val active = PairingRepository(credentials).restore()?.routes
+            if (active != null && active.relay.isNotBlank()) {
+                return gateway(active)
+            }
+            val routes = credentials.read("update-routes")?.let { runCatching { NodeRoutes.from(JSONObject(it)) }.getOrNull() }
                 ?: return NodeAppUpdates()
             val base = routes.direct.ifBlank { routes.relay }
             val probe = OkHttpClient.Builder().dns(TailnetDns()).followRedirects(false).followSslRedirects(false)
@@ -36,6 +44,14 @@ class NodeAppUpdates(
             val client = probe.newBuilder().addInterceptor(NodeRouteInterceptor(base, routes, probe))
                 .readTimeout(30, TimeUnit.SECONDS).callTimeout(180, TimeUnit.SECONDS).build()
             return NodeAppUpdates(base, client)
+        }
+        internal fun gateway(routes: NodeRoutes): NodeAppUpdates {
+            routes.validated()
+            val origin = routes.relay.toHttpUrl().newBuilder().encodedPath("/").build().toString().trimEnd('/')
+            val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
+                .gatewayTrust(routes).connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS).callTimeout(180, TimeUnit.SECONDS).build()
+            return NodeAppUpdates(origin, client)
         }
     }
     suspend fun check(currentVersion: String): AppRelease? {

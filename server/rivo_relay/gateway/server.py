@@ -203,6 +203,8 @@ class Gateway:
 
     def application(self):
         app = web.Application(client_max_size=MAX_BODY)
+        from .update_store import routes
+        routes(app, self.keys_file.parent)
         app.router.add_get('/gateway/control/{slot}', self.control)
         app.router.add_get('/gateway/data/{slot}', self.data)
         app.router.add_route('*', '/relay/{slot}/{path:.*}', self.proxy)

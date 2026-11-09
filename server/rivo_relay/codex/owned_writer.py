@@ -351,6 +351,10 @@ class SessionWriters:
             # An existing session keeps its own transport. Never move/replay it.
             pass
 
+    def update_threads(self):
+        with self._lock:
+            return set(self._writers)
+
     def status(self):
         result = self.metadata.status()
         with self._lock:

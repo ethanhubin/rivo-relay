@@ -50,6 +50,23 @@ class ReleaseCliTest(unittest.TestCase):
         note.write_text(note.read_text().replace('TODO：填写本次变更。', '会话同步优化。'))
         return w.Release(self.root, state['version'])
 
+    def test_central_publication_failure_is_not_complete_and_can_resume(self):
+        release = self.ready()
+        release.state['apk'] = self.previous
+        release.state['commit'] = c.git(self.root, 'rev-parse', 'HEAD')
+        def command(args, log, **kwargs):
+            if log == 'gateway-publication.log': raise RuntimeError('VPS unavailable')
+        with patch.object(release, 'source_unchanged'), patch.object(w, 'verify_http', return_value={}), \
+                patch.object(release, 'command', side_effect=command):
+            with self.assertRaisesRegex(RuntimeError, 'VPS unavailable'): release.publish()
+        self.assertEqual(release.state['phase'], 'publishing-gateway')
+        self.assertNotIn('gateway', release.state['steps'])
+        with patch.object(release, 'source_unchanged'), patch.object(w, 'verify_http', return_value={}), \
+                patch.object(release, 'command'):
+            release.publish()
+        self.assertEqual(release.state['phase'], 'complete')
+        self.assertTrue(release.state['steps']['gateway']['verified'])
+
     def test_retry_recovers_crash_after_log_rename(self):
         release = self.ready()
         release.state['deploymentRequested'] = True

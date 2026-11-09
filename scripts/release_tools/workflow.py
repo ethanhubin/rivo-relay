@@ -269,6 +269,11 @@ class Release:
         report = verify_http(expected)
         save(self.directory / 'http-verification.json', report)
         self.state['steps']['http'] = report
+        self.record('publishing-gateway')
+        self.command([self.python, self.root / 'scripts/publish-gateway-update.py',
+                      '--workspace', self.root / 'workspace/local-node', '--commit', self.state['commit']],
+                     'gateway-publication.log')
+        self.state['steps']['gateway'] = {'verified': True}
         self.record('complete', error=None, failedPhase=None)
 
     def run(self, commit=False):

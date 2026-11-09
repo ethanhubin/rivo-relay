@@ -17,7 +17,7 @@ from .config import initialize, issue_key, save_private, discover_direct_url, no
 
 def main():
     parser = argparse.ArgumentParser(description='Rivo IP gateway and desktop setup')
-    parser.add_argument('command', choices=['gateway', 'node', 'issue-key', 'revoke-key'])
+    parser.add_argument('command', choices=['gateway', 'node', 'managed-node', 'issue-key', 'revoke-key'])
     parser.add_argument('--workspace', type=Path, default=Path('workspace/gateway'))
     parser.add_argument('--ip')
     parser.add_argument('--port', type=int, default=80)
@@ -32,12 +32,19 @@ def main():
     parser.add_argument('--codex-runtime', choices=['auto', 'desktop', 'app_server', 'stdio'], default=None)
     parser.add_argument('--codex-executable', type=Path)
     parser.add_argument('--codex-home', type=Path)
+    parser.add_argument('--native-socket', type=Path)
     parser.add_argument('--no-pair', action='store_true', help='Background reconnect without creating a new pairing code')
     args = parser.parse_args()
     if args.command == 'node' and args.ip is not None:
         parser.error('Node setup accepts only a rivo2 credential; --ip is for gateway administration')
     os.umask(0o077)
-    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
+    handlers = None
+    if args.command == 'managed-node':
+        from logging.handlers import RotatingFileHandler
+        logs = args.workspace.resolve() / 'auto-update'
+        logs.mkdir(parents=True, exist_ok=True)
+        handlers = [RotatingFileHandler(logs / 'agent.log', maxBytes=2 * 1024 * 1024, backupCount=2)]
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s', handlers=handlers)
     if args.command in {'gateway', 'issue-key', 'revoke-key'}:
         from aiohttp import web
         from .server import Gateway
@@ -67,6 +74,9 @@ def main():
         context.load_cert_chain(args.workspace / 'server.pem', args.workspace / 'server.key')
         web.run_app(Gateway(args.workspace / 'keys.json').application(), host='0.0.0.0', port=args.port,
                     ssl_context=context, access_log=None, handler_cancellation=True)
+    elif args.command == 'managed-node':
+        from .updater import run
+        asyncio.run(run(args))
     else:
         asyncio.run(node(args))
 
@@ -98,7 +108,7 @@ async def node(args):
         stored.update(gateway=base, key=credential)
     if mode == 'direct' and not direct:
         raise ValueError('Direct mode requires a Tailscale URL')
-    for option in ('codex_runtime', 'codex_executable', 'codex_home'):
+    for option in ('codex_runtime', 'codex_executable', 'codex_home', 'native_socket'):
         value = getattr(args, option, None)
         if value is not None:
             stored[option] = str(value)
@@ -119,6 +129,8 @@ async def node(args):
                     identity = await response.json()
                     if identity.get('nodeId') != config.node_id:
                         raise ValueError('Local port belongs to another/older Relay; use its workspace or update that service first')
+                    if os.environ.get('RIVO_MANAGED_NODE') == '1':
+                        raise ValueError('Managed node requires exclusive ownership; stop the old Relay service first')
                     args.attach = True
             except (OSError, asyncio.TimeoutError):
                 if args.attach:
@@ -128,7 +140,7 @@ async def node(args):
         if not args.attach:
             command = [sys.executable, '-m', 'rivo_relay', 'serve', '--workspace', str(workspace),
                        '--host', '127.0.0.1', '--port', str(args.local_port), '--url', public]
-            for option in ('codex_runtime', 'codex_executable', 'codex_home'):
+            for option in ('codex_runtime', 'codex_executable', 'codex_home', 'native_socket'):
                 if stored.get(option):
                     command.extend(['--' + option.replace('_', '-'), stored[option]])
             if os.name == 'nt':
@@ -161,6 +173,8 @@ async def node(args):
                 await asyncio.wait_for(connector.ready.wait(), 15)
             except TimeoutError:
                 print('VPS 暂未连接，正在后台重试；可用直连入口不受影响。', flush=True)
+        if os.environ.get('RIVO_MANAGED_READY') and connector_task and connector.ready.is_set():
+            save_private(Path(os.environ['RIVO_MANAGED_READY']), {'token': os.environ['RIVO_UPDATE_TOKEN']})
         if not args.no_pair:
             db = Database(config.database_path)
             try:

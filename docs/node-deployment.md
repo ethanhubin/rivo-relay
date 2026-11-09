@@ -1,5 +1,7 @@
 # 在其他电脑部署节点
 
+支持 VPS 自动更新的新部署及现有节点迁移见[统一更新](central-updates.md)。下方描述原有手工启动方式；迁移到代理后不要同时启动这些旧服务。
+
 Windows、macOS 和 Linux 使用同一份 Python 服务端、VPS 连接器和 v2 配对协议。只有后台进程管理方式不同。每台机器保留自己的 Codex 登录、workspace、节点身份和独立 VPS 接入凭据；不要复制其他机器的数据库或 `.codex` 登录文件。
 
 ## 准备
@@ -106,6 +108,6 @@ Linux 可使用用户 systemd 服务，`ExecStart` 使用上述绝对路径参�
 4. `connection closed` 先检查二维码是否含 VPS 路由、连接器是否记录 `gateway_connected`。`node_offline` 检查电脑服务和连接器；配对码过期则重新生成。浏览器直接访问自签名 VPS 不等价于 App 的指纹校验测试，不要关闭 TLS 校验。
 5. 备份同一机器的 workspace（包含数据库及私有配置）。升级保留 workspace 和接入凭据，停止本机对应服务、更新源码及虚拟环境依赖，再启动并复验；不要删除原生 Codex 数据或顺手重启其他节点。
 
-发布 APK 只更新手机 App，不会自动分发服务端源码到其他电脑。当前发布约定不推送 GitHub；将本地已发布提交的源码安全复制到目标机器，再按本指南安装。源码中不应包含 workspace、凭据或配对图。
+未迁移的旧节点仍需单独复制源码升级；迁移到[统一更新代理](central-updates.md)后，日常发布会由 VPS 分发节点程序和 APK。当前发布约定不推送 GitHub；首次迁移将本版源码安全复制到目标机器，再按统一更新指南安装。源码中不应包含 workspace、凭据或配对图。
 
 验证依据：[Windows 实机记录](validation-windows-2026-11-08.md)、[VPS 通道说明](vps-gateway.md)。2026-11-08 用户已确认 Windows 双通道二维码手机配对成功；不把此结果扩大为其他机器或全部功能已验收。

@@ -32,6 +32,8 @@ class RelayApp:
     def __init__(self, config: Config, codex, events: EventBus | None = None):
         config.prepare()
         self.config = config
+        from .update_gate import UpdateGate
+        self.update_gate = UpdateGate()
         self.node_name = NodeName()
         self.codex = codex
         self.events = events or EventBus()

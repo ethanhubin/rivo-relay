@@ -17,6 +17,35 @@ class NodeAppUpdatesTest {
     private val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     private fun manifest() = JSONObject().put("version", "0.2.13").put("versionCode", 25).put("sha256", hash)
         .put("size", bytes.size).put("apkPath", "/v1/app-updates/apks/$hash.apk").put("notes", "node update")
+    @Test fun gatewayUpdatesUseOriginWithoutNodeProbeOrCredentials() = runBlocking {
+        val store = java.security.KeyStore.getInstance("PKCS12").apply {
+            load(NodeAppUpdatesTest::class.java.getResourceAsStream("/gateway-test.p12"), "test-only".toCharArray())
+        }
+        val manager = javax.net.ssl.KeyManagerFactory.getInstance(javax.net.ssl.KeyManagerFactory.getDefaultAlgorithm()).apply {
+            init(store, "test-only".toCharArray())
+        }
+        val tls = javax.net.ssl.SSLContext.getInstance("TLS").apply { init(manager.keyManagers, null, null) }
+        val pin = MessageDigest.getInstance("SHA-256").digest(store.getCertificate(store.aliases().nextElement()).encoded)
+            .joinToString("") { "%02x".format(it) }
+        MockWebServer().use { gateway ->
+            gateway.useHttps(tls.socketFactory, false)
+            val routes = dev.rivo.relay.connection.NodeRoutes(
+                relay = gateway.url("/relay/" + "a".repeat(32)).toString(), pin = pin)
+            gateway.enqueue(MockResponse().setBody(manifest().toString()))
+            val updates = NodeAppUpdates.gateway(routes)
+            val release = updates.check("0.2.12")!!
+            assertEquals(gateway.url("/v1/app-updates/apks/$hash.apk").toString(), release.apkUrl)
+            val request = gateway.takeRequest()
+            assertEquals("/v1/app-updates/latest", request.path)
+            assertNull(request.getHeader("Authorization"))
+            assertEquals(1, gateway.requestCount)
+            try {
+                NodeAppUpdates.gateway(routes.copy(pin = "0".repeat(64))).check("0.2.12")
+                fail("Wrong gateway certificate must fail")
+            } catch (_: java.io.IOException) { }
+        }
+        Unit
+    }
     @Test fun interruptedDownloadResumesFromReceivedBytes() = runBlocking {
         val server = MockWebServer(); server.start()
         val dir = Files.createTempDirectory("updates").toFile()

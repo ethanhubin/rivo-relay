@@ -19,7 +19,7 @@ Codex 在节点电脑运行，复用节点的登录、项目和运行配置。�
 3. 安装 Android App，扫描节点生成的配对二维码。
 4. 选择项目，开始或继续会话。
 
-默认更新源为主节点 `http://100.124.150.1:18767`，在 App“设置 → 检查更新”安装新版。发布操作见[节点更新与发布](docs/node-updates.md)。
+支持[通过 VPS 统一更新节点和 App](docs/central-updates.md)，现有设备需一次性迁移；手机在“设置 → 检查更新”安装新版。原主节点 `http://100.124.150.1:18767` 保留兼容更新入口。发布操作见[节点更新与发布](docs/node-updates.md)。
 
 Desktop 共享会话需要宿主桥接集成，接入方式及验证范围见[Desktop 桥接](docs/codex-desktop-bridge.md)。Windows 部署要求及运行限制见[节点部署指南](docs/node-deployment.md)。
 

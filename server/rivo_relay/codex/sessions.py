@@ -194,6 +194,23 @@ class CodexService:
         # Close only Relay-owned session writers; never terminate the metadata daemon.
         self.connection.close()
 
+    def idle_for_update(self):
+        if not self.status().get('connected'):
+            return False
+        with self._lock:
+            threads = set(self._joined) | set(self._active) | {tid for tid, _ in self._live} | set(self._unmaterialized)
+        threads.update(getattr(self.connection, 'update_threads', lambda: [])())
+        try:
+            for thread_id in threads:
+                state = self.get_session(thread_id)
+                if (state.get('status') != 'idle' or state.get('activeTurnId') or state.get('requests')
+                        or (state.get('goal') or {}).get('status') == 'active'
+                        or (state.get('nativeSync') or {}).get('state', 'ready') != 'ready'):
+                    return False
+            return True
+        except Exception:
+            return False
+
     def status(self):
         return self.connection.status()
 

@@ -133,6 +133,17 @@ class ApiTests(unittest.TestCase):
         self.paired = self._pair()
         self.token = self.paired["token"]
 
+    def test_update_lease_requires_local_agent_and_blocks_new_requests(self):
+        self.assertEqual(403, self.request('POST', '/internal/update-lease', {})[0])
+        self.app.codex.idle_for_update = lambda: True
+        with patch.dict('os.environ', {'RIVO_UPDATE_TOKEN': 'test-agent-only'}):
+            self.assertEqual(403, self.request('POST', '/internal/update-lease', {}, token=self.token)[0])
+            self.assertEqual(200, self.request('POST', '/internal/update-lease', {}, token='test-agent-only')[0])
+            self.assertEqual(503, self.request('GET', '/v1/node', token=self.token)[0])
+            self.assertEqual(200, self.request('GET', '/health')[0])
+            self.assertEqual(200, self.request('POST', '/internal/update-activate', {}, token='test-agent-only')[0])
+            self.assertEqual(200, self.request('GET', '/v1/node', token=self.token)[0])
+
     def test_node_rename_preserves_existing_authorization(self):
         self.assertEqual('test-machine', self.paired['node']['name'])
         with patch('rivo_relay.node_name.discover_name', return_value='renamed-tailnet-node'):

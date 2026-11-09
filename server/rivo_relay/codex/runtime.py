@@ -149,6 +149,12 @@ class RuntimeConnection:
             self._candidate_since = None
             self._preferred = 'app_server'
 
+    def update_threads(self):
+        with self._lock:
+            result = set(self._pins)
+        result.update(getattr(self.native, 'update_threads', lambda: [])())
+        return result
+
     def status(self):
         with self._lock:
             result = dict(self._backend(self._preferred).status())

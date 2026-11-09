@@ -353,12 +353,20 @@ class Handler(BaseHTTPRequestHandler):
         self._response_status = None
         started = time.monotonic()
         outcome = "handler_returned"
+        path = urlsplit(self.path).path
+        gated = path not in ('/health', '/internal/update-lease', '/internal/update-stop', '/internal/update-activate', '/v1/events')
+        if gated and not self.app.update_gate.enter():
+            self.close_connection = True
+            self.send_json(503, {'error': {'code': 'node_updating', 'message': '节点正在更新，请稍后重试'}})
+            return
         try:
             return self._handle_api()
         except BaseException as error:
             outcome = type(error).__name__
             raise
         finally:
+            if gated:
+                self.app.update_gate.leave()
             event("node_request_finished", request_id=self._request_id,
                   status=self._response_status, outcome=outcome,
                   duration_ms=round((time.monotonic() - started) * 1000, 2))
@@ -372,8 +380,25 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(url.query)
             if any("/" in part or "\x00" in part for part in path):
                 raise ApiError(400, "invalid_request", "Invalid path")
+            if self.command == 'POST' and path in (['internal', 'update-lease'], ['internal', 'update-stop'], ['internal', 'update-activate']):
+                expected = os.environ.get('RIVO_UPDATE_TOKEN', '')
+                if (self.client_address[0] not in ('127.0.0.1', '::1') or not expected
+                        or not secrets.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + expected)):
+                    raise ApiError(403, 'forbidden', 'Local update agent required')
+                self.read_body(limit=4096)
+                if path[-1] == 'update-activate':
+                    with self.app.update_gate.lock:
+                        self.app.update_gate.until = 0
+                    self.send_json(200, {'ready': True})
+                    return
+                ready = self.app.update_gate.acquire(self.app)
+                self.send_json(200 if ready else 409, {'ready': ready})
+                if ready and path[-1] == 'update-stop':
+                    import threading
+                    threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
             if self.command == "GET" and path == ["health"]:
-                self.send_json(200, {"status": "ok", "nodeId": self.app.config.node_id})
+                self.send_json(200, {"status": "ok", "nodeId": self.app.config.node_id, "releaseCode": int(os.environ.get("RIVO_RELEASE_CODE", "0")), "nativeConnected": bool(self.app.codex.status().get("connected"))})
                 return
             if self.command == 'GET' and path == ['v1', 'app-updates', 'latest']:
                 try:
