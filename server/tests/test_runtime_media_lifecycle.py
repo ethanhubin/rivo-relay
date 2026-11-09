@@ -15,6 +15,23 @@ from test_owned_writer import Backend
 
 
 class RuntimeLifecycleTests(unittest.TestCase):
+    def test_history_routing_does_not_block_update_but_subscriptions_do(self):
+        native, desktop = Backend(), Backend()
+        runtime = RuntimeConnection(native=native, desktop=desktop, mode='app_server')
+        runtime.start()
+        try:
+            for i in range(200):
+                runtime.history_host_connection('history-' + str(i))
+            self.assertEqual(set(), runtime.update_threads())
+            runtime.request('thread/resume', {'threadId': 'live'})
+            self.assertIn('live', runtime.update_threads())
+            runtime.request('thread/unsubscribe', {'threadId': 'live'})
+            self.assertNotIn('live', runtime.update_threads())
+            native.update_threads = lambda: {'owned'}
+            self.assertIn('owned', runtime.update_threads())
+        finally:
+            runtime.close()
+
     @staticmethod
     def closing_gate(runtime):
         waiting = threading.Event()

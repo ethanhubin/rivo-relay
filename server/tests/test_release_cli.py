@@ -330,11 +330,19 @@ class ReleaseCliTest(unittest.TestCase):
         (release.directory / 'candidate.plist').write_bytes(plist.read_bytes())
         (release.directory / 'deployment.log').write_text('{"event":"complete"}\n')
         with patch.object(d.Path, 'home', return_value=home), patch.object(d, 'native_identity', return_value={'pid': 123, 'processStart': 'original'}), \
-                patch.object(d, 'get_json', return_value={'status': 'ok'}), patch.object(d, 'preserved_connections', return_value=7), \
+                patch.object(d, 'get_json', return_value={'status': 'ok', 'releaseCode': release.state['versionCode']}), patch.object(d, 'preserved_connections', return_value=7), \
                 patch.object(release, 'command') as command:
             d.deploy(release)
             command.assert_not_called()
         self.assertEqual(7, release.state['steps']['deployment']['existingAuthorizationsPreserved'])
+
+    def test_release_health_rejects_missing_and_stale_version(self):
+        for code in (None, 0, 104):
+            with self.subTest(code=code), patch.object(d, 'get_json', return_value={'status': 'ok', 'releaseCode': code}):
+                with self.assertRaisesRegex(RuntimeError, '运行版本'):
+                    d.verify_release_health({'versionCode': 105})
+        with patch.object(d, 'get_json', return_value={'status': 'ok', 'releaseCode': 105}):
+            d.verify_release_health({'versionCode': 105})
 
     def test_native_identity_uses_configured_socket_and_ignores_connection_generation(self):
         config = {'ProgramArguments': ['/python', '--native-socket', '/chosen.sock',

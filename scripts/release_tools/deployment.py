@@ -142,6 +142,12 @@ def prepare_retry(release, plist, log):
     release.record('deployment-prepared', deploymentRequested=False, deploymentRetryArchive=None)
 
 
+def verify_release_health(state):
+    health = get_json(BASE + '/health')
+    require(health.get('status') == 'ok', '主节点健康检查失败')
+    require(health.get('releaseCode') == state['versionCode'], '主节点运行版本与发布版本不一致')
+
+
 def deploy(release):
     root, directory, state = release.root, release.directory, release.state
     target = root / 'workspace/deployments' / state['commit']
@@ -170,10 +176,11 @@ def deploy(release):
     already_verified = state['steps'].get('deployment')
     if already_verified:
         require(tree_digest(source) == expected, '已部署服务被其他版本替换，停止发布')
-        require(get_json(BASE + '/health').get('status') == 'ok', '主节点健康检查失败')
+        verify_release_health(state)
         return
-    if not state.get('deploymentRequested') and tree_digest(source) == expected:
-        require(get_json(BASE + '/health').get('status') == 'ok', '主节点健康检查失败')
+    if (not state.get('deploymentRequested') and tree_digest(source) == expected
+            and configuration.get('EnvironmentVariables', {}).get('RIVO_RELEASE_CODE') == str(state['versionCode'])):
+        verify_release_health(state)
         state['steps']['deployment'] = {'skipped': True, 'reason': 'server content unchanged'}
         release.record('deployed')
         return
@@ -186,6 +193,7 @@ def deploy(release):
             require(backup.execute('PRAGMA integrity_check').fetchone()[0] == 'ok', '数据库备份完整性检查失败')
         atomic(directory / 'launchagent-before.plist', plist.read_bytes())
         configuration.setdefault('EnvironmentVariables', {})['PYTHONPATH'] = str(target / 'server')
+        configuration['EnvironmentVariables']['RIVO_RELEASE_CODE'] = str(state['versionCode'])
         atomic(directory / 'candidate.plist', plistlib.dumps(configuration))
         release.record('deployment-prepared', deploymentBefore={'nativeHost': native})
     log = directory / 'deployment.log'
@@ -204,7 +212,7 @@ def deploy(release):
     wait_deployment(log)
     require(plist.read_bytes() == (directory / 'candidate.plist').read_bytes(), '实际部署配置与候选配置不同')
     verify_native_identity(plistlib.loads(plist.read_bytes()), state['deploymentBefore'])
-    require(get_json(BASE + '/health').get('status') == 'ok', '主节点健康检查失败')
+    verify_release_health(state)
     count = preserved_connections(directory / 'relay-before-update.sqlite3', database)
     report = {'commit': state['commit'], 'serverSha256': expected, 'nativeIdentityUnchanged': True, 'nativeHost': state['deploymentBefore']['nativeHost'],
               'existingAuthorizationsPreserved': count, 'backupIntegrity': 'ok'}
