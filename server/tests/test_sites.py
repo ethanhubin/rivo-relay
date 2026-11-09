@@ -2,6 +2,10 @@ import unittest
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import Mock
+import io
+import json
+from contextlib import redirect_stderr
+from rivo_relay.observability import request_trace
 from rivo_relay.codex.sites import list_sites, public_url
 from rivo_relay.codex.connection import CodexError
 
@@ -39,3 +43,25 @@ class SitesTest(unittest.TestCase):
         c, helper, _ = self.connection({})
         with self.assertRaises(ValueError): list_sites(c, 'x'*16385)
         helper.request.assert_not_called()
+
+    def test_trace_stages_and_no_private_payload(self):
+        output = io.StringIO()
+        c, _, _ = self.connection({'structuredContent': {'items': [{'id':'private-id','title':'secret-title','current_live_url':'https://private.example'}]}})
+        with redirect_stderr(output), request_trace('a' * 32):
+            list_sites(c, 'private-cursor')
+        rows = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertTrue(all(row['request_id'] == 'a' * 32 for row in rows))
+        self.assertEqual({'total','connect','thread_start','tool_call','unsubscribe','decode','release'}, {r['stage'] for r in rows if 'stage' in r})
+        for secret in ('private-id','secret-title','private.example','private-cursor'):
+            self.assertNotIn(secret, output.getvalue())
+
+    def test_timeout_and_cleanup_failures_are_visible_without_messages(self):
+        c, helper, closed = self.connection({})
+        helper.request.side_effect = [{'thread':{'id':'temp'}}, CodexError('secret-token', code='native_timeout'), RuntimeError('secret-cleanup')]
+        output = io.StringIO()
+        with redirect_stderr(output), self.assertRaises(CodexError): list_sites(c)
+        rows = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertTrue(any(r.get('stage') == 'tool_call' and r.get('error_code') == 'native_timeout' for r in rows))
+        self.assertTrue(any(r.get('stage') == 'unsubscribe' and r.get('outcome') == 'failed' for r in rows))
+        self.assertTrue(closed)
+        self.assertNotIn('secret', output.getvalue())

@@ -100,7 +100,7 @@ class Gateway:
 
     async def proxy(self, request):
         started = time.monotonic()
-        request['trace_id'] = request_id()
+        request['trace_id'] = request_id(request.headers.get('X-Rivo-Request-Id'))
         request['outcome'] = 'rejected'
         metrics = request['metrics'] = dict.fromkeys(
             ('data_connect_ms', 'response_headers_ms', 'response_body_ms', 'downstream_write_ms'))

@@ -25,9 +25,15 @@ fun SitesScreen(api: RelayApi, nodeName: String) {
     suspend fun load(more: Boolean) {
         if (loading) return
         loading = true; error = null
+        val trace = java.util.UUID.randomUUID().toString().replace("-", "")
+        val start = System.nanoTime()
+        fun log(outcome: String, failure: Throwable? = null) {
+            android.util.Log.i("RivoSites", sitesDiagnostic(trace, outcome, (System.nanoTime() - start) / 1_000_000, failure))
+        }
+        log("started")
         try {
             val previousCursor = if (more) cursor else null
-            val response = api.call("/v1/sites" + (previousCursor?.let { "?cursor=" + URLEncoder.encode(it, "UTF-8") } ?: ""))
+            val response = api.call("/v1/sites" + (previousCursor?.let { "?cursor=" + URLEncoder.encode(it, "UTF-8") } ?: ""), diagnosticRequestId = trace)
             val page = response.objects("items").map { item ->
                 val url = resourceWebUrl(item.optString("url", ""))
                 val access = when(item.optString("accessMode")) { "public" -> "公开"; "private" -> "私有"; "workspace" -> "工作区"; "restricted" -> "受限访问"; else -> "" }
@@ -37,8 +43,9 @@ fun SitesScreen(api: RelayApi, nodeName: String) {
             sites = (if (more) sites + page else page).distinctBy { it.key }
             cursor = (response.opt("cursor") as? String)?.takeIf { it.isNotBlank() && it != previousCursor }
             loaded = true
-        } catch (e: CancellationException) { throw e }
-        catch (e: Exception) { error = if (e is ApiException && e.status == 404) "当前节点尚不支持 Sites，请更新节点" else "无法读取 Sites，请检查节点连接及 ChatGPT 登录后重试" }
+            log("completed")
+        } catch (e: CancellationException) { log("cancelled"); throw e }
+        catch (e: Exception) { log("failed", e); error = "暂时无法加载，点击刷新重试" }
         finally { loading = false }
     }
     LaunchedEffect(api) { load(false) }
@@ -49,7 +56,7 @@ fun SitesScreen(api: RelayApi, nodeName: String) {
         }
         PullToRefreshBox(isRefreshing = loading, onRefresh = { scope.launch { load(false) } }, modifier = Modifier.weight(1f)) {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) {
-                error?.let { notice -> item { Text(notice, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.error) } }
+                error?.let { notice -> item { Text(notice, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) } }
                 if (loaded && sites.isEmpty() && error == null) item { Text("当前账号暂无站点", Modifier.padding(20.dp)) }
                 items(sites, key = { it.key }) { ResourceRow(it); HorizontalDivider() }
                 if (cursor != null) item { TextButton(onClick = { scope.launch { load(true) } }, enabled = !loading, modifier = Modifier.fillMaxWidth()) { Text("加载更多") } }

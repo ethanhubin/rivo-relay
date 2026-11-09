@@ -117,9 +117,9 @@ class RelayApi(private val base: String, private val token: String = "", private
         if (method != "GET") builder.method(method, (body ?: JSONObject()).toString().toRequestBody("application/json".toMediaType()))
         return builder.build()
     }
-    suspend fun call(path: String, method: String = "GET", body: JSONObject? = null, background: Boolean = false, reconnectProbe: Boolean = false): JSONObject = withContext(Dispatchers.Default) { suspendCancellableCoroutine { continuation ->
+    suspend fun call(path: String, method: String = "GET", body: JSONObject? = null, background: Boolean = false, reconnectProbe: Boolean = false, diagnosticRequestId: String? = null): JSONObject = withContext(Dispatchers.Default) { suspendCancellableCoroutine { continuation ->
         val call = synchronized(transportLock) {
-            (if (reconnectProbe) probes else if (method != "GET") client else if (background) backgroundReader else if (path.substringBefore('?') in setOf("/v1/projects", "/v1/threads")) catalogReader else reader).newCall(request(path, method, body).newBuilder().apply { if (reconnectProbe) tag(ReconnectProbe::class.java, ReconnectProbe()) }.build()).also { if (method == "GET") reads.add(it) }
+            (if (reconnectProbe) probes else if (method != "GET") client else if (background) backgroundReader else if (path.substringBefore('?') in setOf("/v1/projects", "/v1/threads")) catalogReader else reader).newCall(request(path, method, body).newBuilder().apply { if (reconnectProbe) tag(ReconnectProbe::class.java, ReconnectProbe()); diagnosticRequestId?.takeIf { it.matches(Regex("[0-9a-f]{32}")) }?.let { header("X-Rivo-Request-Id", it) } }.build()).also { if (method == "GET") reads.add(it) }
         }
         continuation.invokeOnCancellation { call.cancel(); forgetRead(call) }
         call.enqueue(object : Callback {

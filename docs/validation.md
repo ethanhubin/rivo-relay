@@ -518,3 +518,11 @@ Android 36 `medium_phone` 模拟器通过 SitesScreenshotTest 两项 UI 测试�
 ### App 内浏览调整
 
 删除截图夹具上下两段示例说明，真实会话消息不受影响；普通资源行移除“打开网站/打开链接”。Sites 列表和会话资源统一进入 App 内 WebView，提供网页返回、关闭、重试及外部浏览器入口。Android debug 与 androidTest Kotlin 编译通过，NativeResourcesTest 7 项通过，diff 检查通过。本次未重跑设备截图测试，尚未验证公开站点实际加载、私有站点登录或网页回退；前次两项 UI 测试不代表本次 WebView 验收。未发布。
+
+### Sites 诊断日志与刷新（2026-11-09）
+
+Sites 页面保留右上角刷新按钮和下拉刷新，失败文案改为中性色“暂时无法加载，点击刷新重试”。每次加载生成请求 ID，通过 `X-Rivo-Request-Id` 关联手机、中转和节点日志。节点记录 `sites_stage` 的连接、临时会话、工具调用、解除订阅、解析及释放阶段、耗时和固定错误分类；`sites_result` 仅记录条目数量和分页状态。不记录站点内容、URL、游标、凭据或异常原文。
+
+排查入口：手机连接 adb 后运行 `adb logcat -s RivoSites:I`，查找失败记录的 `request_id`、`error_code` 和 HTTP `status`；主节点日志位于 `workspace/local-node/logs/relay-error.log`，用同一 `request_id` 搜索 `sites_stage` 及请求完成记录。若手机为 `connection_paused`，请求可能尚未发到节点，因此没有对应节点记录。日志增强需要更新相应 App 和节点后生效，不能补回此前失败的阶段信息。
+
+服务端 Sites、observability、gateway 共 32 项回归通过，随后新增的网关请求 ID 透传测试单独通过（共 33 项不同测试）。Android 定向 JVM 测试 9 项通过（SitesDiagnosticsTest 2、NativeResourcesTest 7），包含实际 HTTP 请求头及日志脱敏验证，debug Kotlin 编译通过。未运行 lint，未做本轮真机或模拟器 UI 验证，未构建发布 APK、未部署或发布。此次补充诊断能力，不据此认定此前加载失败的根因已解决。
