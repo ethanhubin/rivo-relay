@@ -588,20 +588,6 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             "目标设置已提交到会话；首条任务尚待发送。重试不会重复提交相同目标。",
             modifier = Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall)
         NativePlan(snapshot?.plan)
-        snapshot?.recoveryTask?.let { task ->
-            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp).testTag("queue_recovery_panel")) {
-                Text("任务待恢复", style = MaterialTheme.typography.titleSmall)
-                Text(task.text, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
-                Text("检查后继续会先核对历史和当前状态；忽略仅移除此待处理记录。", style = MaterialTheme.typography.bodySmall)
-                Row {
-                    TextButton(onClick = { onQueue(JSONObject().put("operation", "recover").put("itemId", task.id).put("revision", task.revision), {}) },
-                        enabled = !busy && !blocked && !state.stale && canOperate && snapshot.status == "idle" && !snapshot.isOngoing && snapshot.requests.isEmpty(),
-                        modifier = Modifier.testTag("recover_queue_task")) { Text("检查后继续") }
-                    TextButton(onClick = { removingQueue = task }, enabled = !busy && !blocked && !state.stale,
-                        modifier = Modifier.testTag("dismiss_recovery_task")) { Text("忽略记录") }
-                }
-            }
-        }
         if (state.canResumeQueue() && onWriterAction != null) {
             TextButton(onClick = { onWriterAction("resume") },
                 enabled = !busy && !blocked && !writerBusy,
