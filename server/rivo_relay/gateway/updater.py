@@ -35,7 +35,7 @@ def unpack(package, target):
         if len(entries) > 10000 or sum(i.file_size for i in entries) > MAX_PACKAGE:
             raise ValueError('Expanded package too large')
         if shutil.disk_usage(Path(package).parent).free < sum(i.file_size for i in entries) + 1024 ** 3:
-            raise ValueError('Insufficient disk space for expanded package')
+            raise UpdateFailure('insufficient_disk_space')
         names = set()
         for item in entries:
             path = PurePosixPath(item.filename)

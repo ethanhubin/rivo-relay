@@ -17,6 +17,32 @@ class NodeSessionSyncTest {
     private fun api(server: MockWebServer) = RelayApi(server.url("/").newBuilder().host("127.0.0.1").build().toString())
     private suspend fun await(latch: CountDownLatch) = withContext(Dispatchers.IO) { assertTrue(latch.await(5, TimeUnit.SECONDS)) }
 
+    @Test fun handledInterruptionKeepsSubscriberAndReconnectCursor() = runBlocking {
+        val server = MockWebServer()
+        val requests = java.util.Collections.synchronizedList(mutableListOf<RecordedRequest>())
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                requests += request
+                val cursor = if (requests.size == 1) "before-disconnect" else "after-reconnect"
+                return MockResponse().setHeader("Content-Type", "text/event-stream")
+                    .setBody("event: native\nid: $cursor\ndata: {}\n\n")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        try {
+            val sync = NodeSessionSync(api(server), scope)
+            var interruptions = 0
+            val event = withTimeout(6000) {
+                sync.events(onInterrupted = { interruptions++ }).first { it.cursor == "after-reconnect" }
+            }
+            assertEquals("after-reconnect", event.cursor)
+            assertEquals(1, interruptions)
+            assertEquals(2, requests.size)
+            assertEquals("before-disconnect", requests[1].getHeader("Last-Event-ID"))
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
     @Test fun concurrentReadersShareOnlyInFlightResponseAndOneCancellationDoesNotCancelAnother() = runBlocking {
         val server = MockWebServer()
         val count = AtomicInteger()

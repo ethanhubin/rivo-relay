@@ -8,10 +8,11 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
+import zipfile
 from unittest.mock import AsyncMock, Mock, patch
 
 from rivo_relay.gateway.config import encode_key
-from rivo_relay.gateway.updater import Supervisor, UpdateFailure, UpdateDeferred
+from rivo_relay.gateway.updater import Supervisor, UpdateFailure, UpdateDeferred, unpack
 from rivo_relay.gateway.update_status import write_ready, is_ready, public_status
 from rivo_relay.gateway.agent_maintenance import retry_candidate, upgrade_bootstrap, restore_bootstrap, python_at
 from rivo_relay.update_gate import UpdateGate
@@ -27,6 +28,18 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.agent = Supervisor(self.args)
         self.candidate = {'python': '/candidate/python', 'versionCode': 96, 'sha256': 'a'*64, 'readyProtocol': 2}
         self.item = {'versionCode': 96, 'node': {'sha256': 'a'*64}}
+
+    def test_unpack_disk_pressure_is_retryable(self):
+        package = self.workspace / 'package.zip'
+        with zipfile.ZipFile(package, 'w') as archive:
+            archive.writestr('server/pyproject.toml', '')
+        with patch('rivo_relay.gateway.updater.shutil.disk_usage', return_value=SimpleNamespace(free=0)):
+            with self.assertRaises(UpdateFailure) as caught:
+                unpack(package, self.workspace / 'expanded')
+        self.assertFalse(caught.exception.permanent)
+        self.agent.failed_candidate(self.candidate, caught.exception)
+        self.assertNotIn('a'*64, self.agent.state['quarantine'])
+        self.assertEqual('retry_wait', self.agent.phase)
 
     def test_transient_failure_retries_then_stops_without_quarantine(self):
         with patch('rivo_relay.gateway.updater.time.time', return_value=100):

@@ -81,15 +81,3 @@ fun SessionState.canQueueOperation(operation: String): Boolean =
 fun SessionState.canResumeQueue(): Boolean = canManageQueue() &&
     control().let { it.state == ControlState.RELEASED && it.action == "resume" } &&
     snapshot?.queue?.any { it.status == "waiting" } == true
-
-/** Permission revalidation is not evidence that the transport is offline. */
-fun SessionState.syncStatusLabel(): String? = when {
-    offline -> if (snapshot != null) "离线缓存" else "连接中断"
-    loading -> "同步中"
-    readError != null -> "同步失败，正在重试"
-    stale -> "同步中"
-    snapshot?.requests?.isNotEmpty() == true -> "等待回应"
-    snapshot?.status == "waiting" -> "等待回应，请在原会话处理"
-    snapshot?.isOngoing == true -> "执行中"
-    else -> null
-}

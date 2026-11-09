@@ -11,15 +11,6 @@ class SessionControlTest {
         JSONObject().put("thread", JSONObject().put("id", "thread")).put("readOnly", !writable)
             .put("control", JSONObject().put("state", state).put("canOperate", writable).put("action", "resume"))))
 
-    @Test fun revalidationAndReadFailureAreNotOfflineCache() {
-        val ready = session("writable", true)
-        assertEquals("同步中", ready.copy(stale = true).syncStatusLabel())
-        assertEquals("同步失败，正在重试", ready.copy(stale = true, readError = "timeout").syncStatusLabel())
-        assertEquals("离线缓存", ready.copy(stale = true, offline = true).syncStatusLabel())
-        assertEquals("连接中断", SessionState(offline = true).syncStatusLabel())
-        assertFalse(ready.copy(stale = true).control().canOperate)
-    }
-
     @Test fun unavailableStatesNeverEnableInput() {
         for (state in listOf("external", "released", "release_pending", "workspace_unavailable", "future_state"))
             assertFalse(session(state).control().canOperate)
@@ -29,9 +20,9 @@ class SessionControlTest {
     @Test fun staleAndLoadingOverrideWritableSnapshot() {
         val ready = session("writable", true)
         assertTrue(ready.control().canOperate)
-        assertFalse(ready.copy(stale = true).control().canOperate)
-        assertFalse(ready.copy(loading = true).control().canOperate)
-        assertNull(ready.copy(stale = true).control().action)
+        assertFalse(ready.copy(synchronization = SessionSynchronization.pending()).control().canOperate)
+        assertFalse(ready.copy(synchronization = SessionSynchronization.opening()).control().canOperate)
+        assertNull(ready.copy(synchronization = SessionSynchronization.pending()).control().action)
         assertFalse(SessionState().control().canOperate)
     }
     @Test fun legacyReleasedIsNotIdleOrWritable() {
@@ -41,7 +32,7 @@ class SessionControlTest {
         assertFalse(SessionState(snapshot = snapshot).control().canOperate)
     }
     @Test fun staleHistoryCanPreviewTakeoverButCannotEnableInput() {
-        val stale = session("external").copy(stale = true)
+        val stale = session("external").copy(synchronization = SessionSynchronization.pending())
         assertFalse(stale.control().canOperate)
         assertTrue(stale.takeoverControl().enabled)
         assertFalse(stale.takeoverControl("网络不可用").enabled)
@@ -61,21 +52,21 @@ class SessionControlTest {
         assertTrue(desktop.takeoverControl().reason.contains("Desktop"))
     }
     @Test fun initialLoadingAndCachedHistoryDoNotSuggestTakeover() {
-        assertFalse(SessionState(id = "t", loading = true).showTakeover())
-        val cached = session("external").copy(stale = true, loading = true)
+        assertFalse(SessionState(id = "t", synchronization = SessionSynchronization.opening()).showTakeover())
+        val cached = session("external").copy(synchronization = SessionSynchronization.opening())
         assertFalse(cached.showTakeover())
-        assertFalse(cached.copy(loading = false).showTakeover())
+        assertFalse(cached.copy(synchronization = SessionSynchronization.pending()).showTakeover())
         assertEquals(ControlState.UNKNOWN, cached.displayControl().state)
     }
     @Test fun refreshKeepsConfirmedOwnershipWithoutUnlockingMutations() {
         val writable = session("writable", true)
-        val refreshing = writable.copy(stale = true, lastConfirmedControl = writable.control())
+        val refreshing = writable.copy(synchronization = SessionSynchronization.pending(), lastConfirmedControl = writable.control())
         assertEquals(ControlState.WRITABLE, refreshing.displayControl().state)
         assertFalse(refreshing.showTakeover())
         assertFalse(refreshing.control().canOperate)
         val external = session("external")
         assertTrue(external.showTakeover())
-        assertFalse(external.copy(stale = true, lastConfirmedControl = external.control()).showTakeover())
+        assertFalse(external.copy(synchronization = SessionSynchronization.pending(), lastConfirmedControl = external.control()).showTakeover())
         assertFalse(writable.copy(lastConfirmedControl = external.control()).showTakeover())
     }
     @Test fun pendingReleaseIsNotReportedAsReleased() {
@@ -104,16 +95,16 @@ class SessionControlTest {
         val own = session("writable", true).let { it.copy(snapshot = it.snapshot!!.copy(
             control = JSONObject().put("state", "writable").put("canOperate", true).put("action", "release"))) }
         assertTrue(own.showRelease())
-        assertFalse(own.copy(stale = true, lastConfirmedControl = own.control()).showRelease())
-        assertFalse(own.copy(loading = true).showRelease())
+        assertFalse(own.copy(synchronization = SessionSynchronization.pending(), lastConfirmedControl = own.control()).showRelease())
+        assertFalse(own.copy(synchronization = SessionSynchronization.opening()).showRelease())
     }
 
     @Test fun releasedCanComposeWithoutClaimingOwnership() {
         val released = session("released")
         assertTrue(released.canCompose())
         assertFalse(released.control().canOperate)
-        assertFalse(released.copy(stale = true).canCompose())
-        assertFalse(released.copy(loading = true).canCompose())
+        assertFalse(released.copy(synchronization = SessionSynchronization.pending()).canCompose())
+        assertFalse(released.copy(synchronization = SessionSynchronization.opening()).canCompose())
         for (name in listOf("external", "release_pending", "workspace_unavailable", "ownership_unverified"))
             assertFalse(session(name).canCompose())
     }
@@ -123,8 +114,8 @@ class SessionControlTest {
             val current = session(name)
             for (operation in listOf("remove", "edit", "reorder", "dismiss")) {
                 assertTrue(current.canQueueOperation(operation))
-                assertFalse(current.copy(stale = true).canQueueOperation(operation))
-                assertFalse(current.copy(loading = true).canQueueOperation(operation))
+                assertFalse(current.copy(synchronization = SessionSynchronization.pending()).canQueueOperation(operation))
+                assertFalse(current.copy(synchronization = SessionSynchronization.opening()).canQueueOperation(operation))
                 assertFalse(current.copy(id = "other").canQueueOperation(operation))
             }
             for (operation in listOf("steer", "recover", "enqueue"))
@@ -140,8 +131,8 @@ class SessionControlTest {
             .put("queue", org.json.JSONArray().put(JSONObject().put("id", "q").put("status", "waiting"))))
         val released = base.copy(snapshot = base.snapshot!!.copy(queue = waiting.queue))
         assertTrue(released.canResumeQueue())
-        assertFalse(released.copy(stale = true).canResumeQueue())
-        assertFalse(released.copy(loading = true).canResumeQueue())
+        assertFalse(released.copy(synchronization = SessionSynchronization.pending()).canResumeQueue())
+        assertFalse(released.copy(synchronization = SessionSynchronization.opening()).canResumeQueue())
         assertFalse(base.canResumeQueue())
         assertFalse(session("external").let { it.copy(snapshot = it.snapshot!!.copy(queue = waiting.queue)) }.canResumeQueue())
     }

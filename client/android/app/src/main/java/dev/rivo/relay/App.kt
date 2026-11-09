@@ -20,6 +20,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.rivo.relay.data.*
 import dev.rivo.relay.codex.BatchSubmission
 import dev.rivo.relay.codex.PendingSubmission
+import dev.rivo.relay.codex.SessionSynchronization
+import dev.rivo.relay.codex.SessionSyncEvent
 import dev.rivo.relay.codex.SessionState
 import dev.rivo.relay.codex.control
 import dev.rivo.relay.codex.catalogCacheNoticeVisible
@@ -453,7 +455,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             }
                         })
                 }
-                "chat" -> ChatScreen(session.takeIf { it.id == threadId }?.let { if (network == null) it.copy(stale = true, controlNotice = "网络不可用，恢复连接并同步后才能操作") else it } ?: SessionState(id = threadId, loading = true, stale = true), submission.busy, submission.pending != null || handoffLoading || network == null, catalog.models, ::back,
+                "chat" -> ChatScreen(session.takeIf { it.id == threadId }?.let { if (network == null) it.transition(SessionSyncEvent.RouteUnavailable) else it } ?: SessionState(id = threadId, synchronization = SessionSynchronization.opening()), submission.busy, submission.pending != null || handoffLoading || network == null, catalog.models, ::back,
                     recoveryState = connectionIndicator, nodeName = node.connection.name, writerBusy = handoffLoading, onWriterAction = ::requestHandoff,
                     takeoverBlockedReason = when {
                         network == null -> "网络不可用，请恢复节点连接后接管"

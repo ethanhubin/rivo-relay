@@ -107,6 +107,7 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
     private val nodeBase: String, var nodeName: String, private val requestPermission: () -> Unit,
     private val failure: (Throwable) -> Unit, private val sync: NodeSessionSync? = null) {
     private data class Watch(val tracker: TaskChangeTracker, val job: Job, val signal: Channel<Unit>, var busy: Boolean = false, var lastReadNanos: Long = 0, var regular: Boolean = true)
+    private val eventSource = sync ?: NodeSessionSync(api, scope)
     private val watches = linkedMapOf<String, Watch>()
     private val pinnedByProject = mutableMapOf<String, Set<String>>()
     private val preferences = notificationPreferences(context)
@@ -193,32 +194,25 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
     private fun ensureSharedStream() {
         if (streamJob?.isActive == true) return
         streamJob = scope.launch {
-            var eventCursor: String? = null
-            while (isActive) {
-                try {
-                    // Relay currently broadcasts the node event bus; one socket serves every watched thread.
-                    (sync?.events() ?: api.events("", eventCursor)).collect { event ->
-                        event.cursor?.let { eventCursor = it.takeIf(String::isNotBlank) }
-                        if (event.type == "revoked") {
-                            failure(ApiException(401, "revoked", "节点授权已失效"))
-                            return@collect
-                        }
-                        val method = event.payload.string("method")
-                        // Text/tool output deltas cannot complete a turn or create a user request.
-                        if (event.type == "native" && method.startsWith("item/") && !event.payload.has("id")) return@collect
-                        val params = event.payload.optJSONObject("params")
-                        val id = params?.string("threadId").orEmpty().ifBlank { params?.string("conversationId").orEmpty() }
-                        if (event.type in setOf("reset", "connected") || id.isBlank()) watches.values.forEach { it.signal.trySend(Unit) }
-                        else watches[id]?.signal?.trySend(Unit)
-                    }
-                } catch (e: Exception) {
-                    if (e is CancellationException) currentCoroutineContext().ensureActive()
-                    if (e is ApiException && e.status == 401) failure(e)
+            // The node transport owns reconnection; keep this subscriber and its cursor alive.
+            eventSource.events(onInterrupted = { error ->
+                if (error is ApiException && error.status == 401) failure(error)
+            }).collect { event ->
+                if (event.type == "revoked") {
+                    failure(ApiException(401, "revoked", "节点授权已失效"))
+                    return@collect
                 }
-                delay(3_000)
+                val method = event.payload.string("method")
+                // Text/tool output deltas cannot complete a turn or create a user request.
+                if (event.type == "native" && method.startsWith("item/") && !event.payload.has("id")) return@collect
+                val params = event.payload.optJSONObject("params")
+                val id = params?.string("threadId").orEmpty().ifBlank { params?.string("conversationId").orEmpty() }
+                if (event.type in setOf("reset", "connected") || id.isBlank()) watches.values.forEach { it.signal.trySend(Unit) }
+                else watches[id]?.signal?.trySend(Unit)
             }
         }
     }
+
     fun observe(id: String, json: JSONObject) {
         val watch = watches[id] ?: return
         if (json.optJSONObject("thread")?.string("id") != id) return

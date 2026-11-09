@@ -5,6 +5,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import dev.rivo.relay.codex.SessionSynchronization
 import dev.rivo.relay.codex.SessionState
 import dev.rivo.relay.data.sessionSnapshot
 import dev.rivo.relay.ui.chat.NativeComposerSettings
@@ -62,7 +63,7 @@ class NativeSettingsAvailabilityUiTest {
         val release = "持锁进程尚未退出，释放尚未完成"
         val ownership = "当前会话仍在等待写锁核验结果"
         val handoff = "节点暂不能核验接管条件，请稍后重试"
-        val state = SessionState(id = "t", controlNotice = notice, snapshot = sessionSnapshot(JSONObject()
+        val state = SessionState(id = "t", synchronization = SessionSynchronization.confirmed().copy(notice = notice), snapshot = sessionSnapshot(JSONObject()
             .put("thread", JSONObject().put("id", "t")).put("readOnly", true)
             .put("control", JSONObject().put("state", "release_pending").put("action", "release")
                 .put("unavailableReason", ownership))
@@ -93,7 +94,8 @@ class NativeSettingsAvailabilityUiTest {
             NativeComposerSettings(JSONObject(), emptyList(), null, null, null, true,
                 {}, {}, {}, savesToSession = true, onSaveDefaults = { error("unknown defaults must not save") })
         } } }
-        compose.onNodeWithTag("composer_sandbox").performScrollTo().assertTextContains("尚未读取文件访问权限", substring = true)
+        // File access is represented by the unified permission selector.
+        compose.onNodeWithTag("composer_sandbox").assertDoesNotExist()
         compose.onNodeWithTag("composer_approval").performScrollTo().assertTextContains("尚未读取审批策略", substring = true)
         compose.onNodeWithText("当前自定义权限").assertDoesNotExist()
         compose.onNodeWithText("当前自定义审批").assertDoesNotExist()

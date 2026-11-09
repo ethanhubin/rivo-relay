@@ -31,7 +31,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.codex.SessionState
 import dev.rivo.relay.codex.control
-import dev.rivo.relay.codex.showTakeover
+import dev.rivo.relay.codex.displayControl
+import dev.rivo.relay.codex.ControlState
 import dev.rivo.relay.codex.canManageQueue
 import dev.rivo.relay.codex.canResumeQueue
 import dev.rivo.relay.codex.canCompose
@@ -380,8 +381,11 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         } else NativeChatHeader(state, usage, onBack, ::openSettings, onRefresh, { developerOpen = true }, { stopConfirm = true },
             !busy && !blocked && !state.stale && canOperate, pinned, canManage, onPin, onArchive,
             onWriterAction, writerBusy || busy || blocked, takeoverBlockedReason, recoveryState)
-        if (pendingTitle == null && state.showTakeover()) NativeWriterStatus(state, nodeName, writerBusy || busy || blocked, onWriterAction, takeoverBlockedReason, onRefresh)
-        if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (pendingTitle == null && state.displayControl().state == ControlState.EXTERNAL) NativeWriterStatus(state, nodeName, writerBusy || busy || blocked, onWriterAction, takeoverBlockedReason, onRefresh)
+        // Reserve the loading strip so revalidation never changes the viewport height.
+        Box(Modifier.fillMaxWidth().height(4.dp)) {
+            if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+        }
         var bottomOverlayHeight by remember { mutableIntStateOf(0) }
         val bottomOverlayPadding = with(LocalDensity.current) { bottomOverlayHeight.toDp() }
         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -413,7 +417,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 modelChange?.let { label -> Text(label,
                     Modifier.fillMaxWidth().padding(bottom = chatActivitySpacing).testTag("model_change_notice"),
                     style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                if (row is NativeTimelineRow.Activities) NativeActivityGroup(row, isCurrent = row.key == currentActivity?.key) { path -> nativeFilePath(path, cwd)?.let(::openFile) }
+                if (row is NativeTimelineRow.Activities) NativeActivityGroup(row, isCurrent = row.key == currentActivity?.key && !state.stale) { path -> nativeFilePath(path, cwd)?.let(::openFile) }
                 else if (row is NativeTimelineRow.Notice) NativeTurnNotice(row.turn)
                 else if (row is NativeTimelineRow.Message) {
                 val message = row.message
@@ -526,7 +530,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             }?.forEach { diagnostic -> item(key = "review-diagnostic:${diagnostic.string("turnId")}") { ReviewDiagnostic(diagnostic) } }
             if (executionActive && currentActivity == null) item(key = "execution_stage") {
                 ChatTimelineSummaryRow {
-                    ShimmeringStageText("正在处理…", Modifier.testTag("execution_stage_shimmer"))
+                    if (state.stale) Text("正在处理…", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("execution_stage_pending"))
+                    else ShimmeringStageText("正在处理…", Modifier.testTag("execution_stage_shimmer"))
                 }
             }
             if (completionLabel != null && completionReplyId == null) item(key = "session_completion") {
