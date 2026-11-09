@@ -165,7 +165,7 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
                         modifier = Modifier.testTag("open_codex_review"))
                     ConversationMenuItem(icon = "refresh", text = { Text("刷新会话") }, onClick = { menu = false; onRefresh() }, modifier = Modifier.testTag("refresh_conversation"))
                     if (onPin != null) ConversationMenuItem(icon = "pin", text = { Text(if (pinned) "取消置顶" else "置顶") },
-                        onClick = { menu = false; onPin(!pinned) }, enabled = canManage, modifier = Modifier.testTag("set_session_pinned"))
+                        onClick = { menu = false; onPin(!pinned) }, enabled = true, modifier = Modifier.testTag("set_session_pinned"))
                     if (onArchive != null) ConversationMenuItem(icon = "archive", text = { Text("归档") }, onClick = { menu = false; onArchive() },
                         enabled = canManage && snapshot != null && snapshot.activeTurnId.isBlank() && snapshot.requests.isEmpty() && snapshot.queue.isEmpty(),
                         modifier = Modifier.testTag("archive_session"))

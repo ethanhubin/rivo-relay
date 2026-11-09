@@ -68,7 +68,7 @@ class ParityFeaturesUiTest {
         compose.onNodeWithText("第二轮结果").assertExists()
     }
 
-    @Test fun cachedCatalogControlsEnableOnlyAfterTheirFreshRead() {
+    @Test fun cachedCatalogAllowsPinBeforeFreshRead() {
         var showProjects by mutableStateOf(true)
         var fresh by mutableStateOf(false)
         var writes = 0
@@ -85,7 +85,7 @@ class ParityFeaturesUiTest {
         compose.runOnIdle { showProjects = false; fresh = false }
         compose.onNodeWithTag("new_thread").assertIsNotEnabled()
         compose.onNodeWithTag("thread_t").performTouchInput { longClick() }
-        compose.onNodeWithTag("pin_session").assertIsNotEnabled()
+        compose.onNodeWithTag("pin_session").assertIsEnabled()
         compose.onNodeWithTag("archive_sessions").assertIsNotEnabled()
         evidence("cached-catalog-controls")
         compose.runOnIdle { assertEquals(0, writes); fresh = true }

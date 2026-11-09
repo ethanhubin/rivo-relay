@@ -65,7 +65,8 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
     projectKey: String = projectName, initialCount: Int = 0,
     pendingConversations: List<PendingConversation> = emptyList(), canDiscardPending: Boolean = true,
     onResumePending: (String) -> Unit = {}, onDiscardPending: (String) -> Unit = {},
-    canManageThreads: Boolean = canCreate, showCreate: Boolean = true, catalogComplete: Boolean = true) {
+    canManageThreads: Boolean = canCreate, showCreate: Boolean = true, catalogComplete: Boolean = true,
+    loadDraftText: suspend (String) -> String = { "" }) {
     val context = LocalContext.current
     var selectedIds by remember(projectKey, archived) { mutableStateOf(emptySet<String>()) }
     var search by rememberSaveable(projectKey) { mutableStateOf("") }
@@ -134,7 +135,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                         if (!archived && singleSelected != null) TextButton(onClick = {
                             onPin(singleSelected, !singleSelected.pinned)
                             selectedIds = emptySet()
-                        }, enabled = canManageThreads, modifier = Modifier.testTag("pin_session"),
+                        }, enabled = true, modifier = Modifier.testTag("pin_session"),
                             contentPadding = PaddingValues(horizontal = 6.dp)) { Text(if (singleSelected.pinned) "取消置顶" else "置顶") }
                         if (onArchive != null) TextButton(onClick = { onArchive(selected, !archived); selectedIds = emptySet() },
                             enabled = canManageThreads && selected.isNotEmpty() && (archived || selected.none(::threadIsActive)), modifier = Modifier.testTag("archive_sessions"),
@@ -204,6 +205,14 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                                 if (thread.id in unreadThreadIds) Box(Modifier.padding(start = 7.dp).size(7.dp).background(MaterialTheme.colorScheme.primary, CircleShape)
                                     .testTag("unread_thread_${thread.id}").semantics { contentDescription = "有未读更新" })
                                 if (thread.pinned) PinIcon(Modifier.padding(start = 8.dp).testTag("session_pin_${thread.id}").semantics { contentDescription = "已置顶" })
+                                val hasDraft by androidx.compose.runtime.produceState(false, thread.id, loadDraftText) {
+                                    value = loadDraftText(thread.id).isNotBlank()
+                                }
+                                if (!threadIsActive(thread) && hasDraft) Icon(
+                                    painterResource(android.R.drawable.ic_menu_edit), "有未发送的文字",
+                                    Modifier.padding(start = 8.dp).size(18.dp).testTag("session_draft_${thread.id}"),
+                                    tint = MaterialTheme.colorScheme.secondary)
+
                             }
                         }
                     }
