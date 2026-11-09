@@ -307,7 +307,9 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     loadDraftText = { id -> node.conversations.loadDraft(id).text },
                     canManageThreads = threadsWritable, showCreate = catalog.selectedProject?.id != "__rivo_recent__", catalogComplete = catalog.threadsComplete,
                     onPin = { thread, pinned ->
-                        node.catalog.setThreadPinned(thread.id, pinned)
+                        node.submissions.submit("/v1/threads/${encoded(thread.id)}/pin", JSONObject().put("pinned", pinned), if (pinned) "置顶会话" else "取消置顶") {
+                            node.catalog.refreshThreads(force = true)
+                        }
                     }, archived = catalog.archived, onArchivedChanged = node.catalog::setArchived,
                     onArchive = { threads, archived ->
                         if (node.catalog.state.value.threadsFresh) node.submissions.submitBatch(threads.map { BatchSubmission("/v1/threads/${encoded(it.id)}/archive", JSONObject().put("archived", archived), if (archived) "归档会话" else "恢复会话") })
@@ -528,7 +530,11 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     }, pinned = catalog.threads.firstOrNull { it.id == threadId }?.pinned == true,
                     canManage = !session.stale && session.id == threadId && session.snapshot?.id == threadId && session.control().canOperate && writable,
                     onPin = { pinned ->
-                        threadId?.let { node.catalog.setThreadPinned(it, pinned) }
+                        threadId?.let { id ->
+                            node.submissions.submit("/v1/threads/${encoded(id)}/pin", JSONObject().put("pinned", pinned), if (pinned) "置顶会话" else "取消置顶") {
+                                node.catalog.refreshThreads(force = true)
+                            }
+                        }
                     }, onArchive = {
                         val current = node.session.state.value
                         val id = threadId
