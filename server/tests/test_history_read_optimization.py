@@ -146,13 +146,15 @@ class IncrementalJournalTests(unittest.TestCase):
         with patch('rivo_relay.codex.native_history_host.verify_runtime', return_value=self.home), patch(
                 'rivo_relay.codex.native_history_host.writer_busy', return_value=True) as busy:
             first = dispatch(request)
+            self.assertEqual(1, busy.call_count)
             request['known'] = first['inspections']
             with patch('rivo_relay.codex.native_history_host._rollout_reader', side_effect=AssertionError('unchanged body reread')):
                 second = dispatch(request)
             self.assertEqual({THREAD: 'running'}, second['states'])
-            self.assertEqual(4, busy.call_count)
+            self.assertEqual(2, busy.call_count)
             busy.return_value = False
             self.assertEqual({}, dispatch(request)['states'])
+            self.assertEqual(3, busy.call_count)
 
 
 class ReadScopeTests(unittest.TestCase):
@@ -183,10 +185,10 @@ class ReadScopeTests(unittest.TestCase):
     def test_convergence_uses_returned_head_page_once_on_pinned_host(self):
         native, service = self.service(pinned=True)
         first = service.history('thread')
-        self.assertEqual([30], [params['limit'] for method, params in native.calls if method == 'thread/turns/list'])
+        self.assertEqual([10], [params['limit'] for method, params in native.calls if method == 'thread/turns/list'])
         native.calls.clear()
         service.history('thread', cursor='older', native_revision=first['nativeRevision'])
-        self.assertEqual([2, 30], [params['limit'] for method, params in native.calls if method == 'thread/turns/list'])
+        self.assertEqual([2, 10], [params['limit'] for method, params in native.calls if method == 'thread/turns/list'])
         service.history('thread')
         self.assertEqual(3, len([1 for method, _ in native.calls if method == 'thread/turns/list']))
 

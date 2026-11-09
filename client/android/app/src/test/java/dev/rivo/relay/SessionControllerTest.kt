@@ -36,20 +36,32 @@ class SessionControllerTest {
         MockResponse().setHeader("Content-Type", "application/json").setBody(JSONObject("""{"thread":{"id":"t","name":"$name","turns":[{"id":"turn-$item","items":[{"id":"$item","type":"agentMessage","text":"$name"}]}]},"requests":[],"settings":{},"status":"idle"}""")
             .put("nativeRevision", revision).put("nextCursor", cursor ?: JSONObject.NULL).put("readOnly", readOnly).toString())
 
-    @Test fun openingAndRefreshingKeepsFiveTurnsWithoutUsingTwoTurnCache() = runBlocking {
+    @Test fun twoTurnHeadFillsViewportAndUnchangedRefreshKeepsEarlierHistory() = runBlocking {
         for (shared in listOf(false, true)) {
             val server = MockWebServer()
             val reads = Collections.synchronizedList(mutableListOf<RecordedRequest>())
+            val headReads = AtomicInteger()
+            val pageStarted = CountDownLatch(1)
+            val releasePage = CountDownLatch(1)
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
                     reads += request
-                    val turns = org.json.JSONArray()
-                    repeat(5) { index -> turns.put(JSONObject().put("id", "turn-$index").put("items", org.json.JSONArray()
-                        .put(JSONObject().put("id", "message-$index").put("type", "agentMessage").put("text", "reply $index")))) }
-                    return MockResponse().setBody(JSONObject().put("thread", JSONObject().put("id", "t").put("name", "read-${reads.size}").put("turns", turns))
+                    val page = request.requestUrl!!.queryParameter("cursor") != null
+                    if (page) { pageStarted.countDown(); releasePage.await(5, TimeUnit.SECONDS) }
+                    val count = if (page) headReads.get() else headReads.incrementAndGet()
+                    val thread = JSONObject().put("id", "t").put("name", "head-$count")
+                    val unchanged = !page && request.requestUrl!!.queryParameter("knownHeadRevision") != null
+                    if (!unchanged) {
+                        val turns = org.json.JSONArray()
+                        for (index in if (page) 0..0 else 1..2) turns.put(JSONObject().put("id", "turn-$index").put("status", "completed")
+                            .put("items", org.json.JSONArray().put(JSONObject().put("id", "message-$index").put("type", "agentMessage").put("text", "reply $index"))))
+                        thread.put("turns", turns)
+                    }
+                    return MockResponse().setBody(JSONObject().put("thread", thread)
                         .put("nativeHeadRevision", "same-two-turn-head").put("nativeRevision", "revision")
-                        .put("nativeSync", JSONObject().put("state", "ready")).put("nextCursor", "older").toString())
+                        .put("nativeSync", JSONObject().put("state", "ready")).put("historyUnchanged", unchanged)
+                        .put("nextCursor", if (page) JSONObject.NULL else "older").toString())
                 }
             }
             server.start()
@@ -60,14 +72,25 @@ class SessionControllerTest {
             try {
                 controller.open("t")
                 val initial = withTimeout(3000) { controller.state.first { it.snapshot != null && !it.stale } }
-                assertEquals(5, initial.snapshot!!.messages.size)
+                assertEquals(listOf("message-1", "message-2"), initial.snapshot!!.messages.map { it.id })
+                assertEquals("2", reads.first().requestUrl!!.queryParameter("limit"))
+                assertNull(reads.first().requestUrl!!.queryParameter("knownHeadRevision"))
+                controller.ensureVisibleHistory()
+                await(pageStarted)
+                controller.ensureVisibleHistory() // Repeated layout signals must not duplicate the page.
+                releasePage.countDown()
+                val filled = withTimeout(3000) { controller.state.first { it.earlierLoaded && !it.loadingEarlier } }
+                assertEquals(listOf("message-0", "message-1", "message-2"), filled.snapshot!!.messages.map { it.id })
+                assertNull(filled.historyCursor)
                 controller.invalidateControl()
-                val fresh = withTimeout(3000) { controller.state.first { it.snapshot?.name == "read-2" && !it.stale } }
-                assertEquals(5, fresh.snapshot!!.messages.size)
-                assertEquals("older", fresh.historyCursor)
-                assertTrue(reads.all { it.requestUrl!!.queryParameter("limit") == "5" })
-                assertTrue(reads.all { it.requestUrl!!.queryParameter("knownHeadRevision") == null })
-            } finally { controller.close(); scope.cancel(); server.shutdown() }
+                val fresh = withTimeout(3000) { controller.state.first { it.snapshot?.name == "head-2" && !it.stale } }
+                assertEquals(listOf("message-0", "message-1", "message-2"), fresh.snapshot!!.messages.map { it.id })
+                assertNull(fresh.historyCursor)
+                val heads = reads.filter { it.requestUrl!!.queryParameter("cursor") == null }
+                assertTrue(heads.all { it.requestUrl!!.queryParameter("limit") == "2" })
+                assertEquals("same-two-turn-head", heads.last().requestUrl!!.queryParameter("knownHeadRevision"))
+                assertEquals(1, reads.count { it.requestUrl!!.queryParameter("cursor") == "older" })
+            } finally { releasePage.countDown(); controller.close(); scope.cancel(); server.shutdown() }
         }
     }
 
@@ -119,7 +142,7 @@ class SessionControllerTest {
                     val url = request.requestUrl!!
                     if (url.queryParameter("cursor") != null)
                         return revisionSnapshot("older", "r1", null, "older")
-                    if (url.queryParameter("limit") != "5") return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                    if (url.queryParameter("limit") != "2") return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
                     return revisionSnapshot("head", "r1", "older", "latest")
                 }
             }
@@ -161,7 +184,7 @@ class SessionControllerTest {
                     val url = request.requestUrl!!
                     if (url.queryParameter("cursor") != null)
                         return lagging(revisionSnapshot("older", "r1", null, "older"))
-                    if (url.queryParameter("limit") != "5") return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                    if (url.queryParameter("limit") != "2") return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
                     return lagging(revisionSnapshot("head", "r1", "older", "latest"))
                 }
             }

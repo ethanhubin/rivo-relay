@@ -154,9 +154,9 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     val visiblePending = listedPending.filter { it.projectId == catalog.selectedProject?.id }
     // Use only the pinned IDs as the effect key: periodic timestamp refreshes retain tracker baselines.
     val pinnedThreads = pinnedThreadsToObserve(catalog)
-    LaunchedEffect(node, catalog.selectedProject?.id, catalog.threadsFresh, catalog.archived, pinnedThreads) {
-        if (catalog.threadsFresh && !catalog.archived) {
-            catalog.selectedProject?.id?.let { node.notifications.updatePinned(it, pinnedThreads) }
+    LaunchedEffect(node, catalog.selectedProject?.id, catalog.threadsFresh, catalog.threadsSummaryFresh, catalog.archived, pinnedThreads) {
+        if ((catalog.threadsFresh || catalog.threadsSummaryFresh) && !catalog.archived) {
+            catalog.selectedProject?.id?.let { node.notifications.updatePinned(it, pinnedThreads, complete = catalog.threadsFresh) }
         }
     }
     val currentError = error ?: if (route == "chat" && session.id == threadId) session.readError ?: session.historyError else null
@@ -303,7 +303,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     onAddNode = { setError(null); addNode = true }, canAddNode = !submission.busy && !handoffLoading)
                 "sessions" -> SessionsScreen(catalog.selectedProject?.name ?: "会话", catalog.threads.filterNot { thread -> visiblePending.any { node.conversations.pendingThreadId(it.id) == thread.id } }, catalog.loading, writable && catalog.selectedProject != null && catalog.selectedProject?.id != "__rivo_recent__",
                     ::back, { openChat(it.id, "sessions") }, { if (writable) node.catalog.state.value.selectedProject?.let { openPending(it) } }, { node.catalog.refreshThreads(force = true) },
-                    canManageThreads = threadsWritable, showCreate = catalog.selectedProject?.id != "__rivo_recent__",
+                    canManageThreads = threadsWritable, showCreate = catalog.selectedProject?.id != "__rivo_recent__", catalogComplete = catalog.threadsComplete,
                     onPin = { thread, pinned ->
                         if (node.catalog.state.value.threadsFresh) node.submissions.submit("/v1/threads/${encoded(thread.id)}/pin", JSONObject().put("pinned", pinned), if (pinned) "置顶会话" else "取消置顶") {
                             node.catalog.refreshThreads(force = true)

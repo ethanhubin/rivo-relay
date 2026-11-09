@@ -60,6 +60,7 @@ data class ProjectSummary(
     val outstandingWorkCount: Int = 0,
     val runningTurnCount: Int = 0,
     val activeGoalCount: Int = 0,
+    val statsReady: Boolean = true,
 )
 
 /** Project row geometry migrated from QiGuang HomeScreen.CodexProjectRow; no Agent or node registry coupling. */
@@ -145,7 +146,7 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                         }
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text(project.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text("${project.threadCount} 个会话" + if (project.outstandingWorkCount > 0 && project.runningTurnCount == 0 && project.activeGoalCount == 0) " · 有待处理任务" else "", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(projectCountLabel(project), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         if (pinned) PinIcon(Modifier.testTag("project_pin_${project.id}").semantics { contentDescription = "已置顶" })
                         Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -206,3 +207,6 @@ private fun ProjectRunningBorder(modifier: Modifier = Modifier) {
         )
     }
 }
+
+internal fun projectCountLabel(project: ProjectSummary): String = if (!project.statsReady) "会话统计加载中…"
+    else "${project.threadCount} 个会话" + if (project.outstandingWorkCount > 0 && project.runningTurnCount == 0 && project.activeGoalCount == 0) " · 有待处理任务" else ""

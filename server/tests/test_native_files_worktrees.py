@@ -145,6 +145,8 @@ class ExternalWorktreeTests(unittest.TestCase):
         self.assertEqual({'path': str(self.repo), 'missingPath': str(self.worktree)},
                          restored._workspace_rebind(self.native.threads[0]))
         self.native.threads[0]['cwd'] = str(self.root / 'different missing path')
+        # Native metadata changes invalidate the shared directory via events.
+        restored._event({'method': 'thread/updated', 'params': {'threadId': 'legacy'}})
         self.assertEqual([], restored.list_sessions('project'))
         self.assertIsNone(restored._workspace_rebind(self.native.threads[0]))
 

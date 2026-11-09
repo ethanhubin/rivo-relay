@@ -11,6 +11,9 @@ import os
 import uuid
 
 from .connection import CodexError
+from .thread_catalog import ThreadCatalog
+from ..observability import event
+from ..read_budget import checkpoint, read_lock
 
 
 RECENT_PROJECT_ID = "__rivo_recent__"
@@ -54,8 +57,9 @@ def thread_pages(connection, params):
 
 
 class ProjectCatalog:
-    def __init__(self, connection):
+    def __init__(self, connection, *, thread_reader=None):
         self.connection = connection
+        self.thread_catalog = ThreadCatalog(connection, thread_reader or (lambda params: thread_pages(connection, params)))
         self._read_lock = threading.Lock()
         self._cache_lock = threading.Lock()
         self._revision = 0
@@ -71,10 +75,11 @@ class ProjectCatalog:
         with self._cache_lock:
             self._revision += 1
             self._cached = None
+        self.thread_catalog.invalidate()
 
     def list(self):
         # Share concurrent reads; lifecycle events invalidate without waiting on RPCs.
-        with self._read_lock:
+        with read_lock(self._read_lock):
             with self._cache_lock:
                 if self._cached is not None and time.monotonic() < self._expires:
                     return copy.deepcopy(self._cached)
@@ -86,14 +91,26 @@ class ProjectCatalog:
                     self._expires = time.monotonic() + 2.0
             return result
 
+    def summary(self):
+        """Navigation metadata never waits for thread scans or counter refreshes."""
+        projects = self._stage('project_summary', lambda: list(pages(self.connection, 'project/list')))
+        result = []
+        for project in projects:
+            roots = [root['path'] for root in project.get('roots', []) if root.get('path')]
+            result.append({'id': project['id'], 'name': project.get('name', ''),
+                           'path': roots[0] if roots else '', 'roots': roots, 'statsReady': False})
+        result.append({'id': RECENT_PROJECT_ID, 'name': '最近', 'path': '', 'roots': [], 'statsReady': False})
+        return result
+
     def _list(self):
-        projects = list(pages(self.connection, "project/list"))
-        threads = list(thread_pages(self.connection, {"archived": False,
+        projects = self._stage('projects', lambda: list(pages(self.connection, "project/list")))
+        threads = self._stage('threads', lambda: self.thread_catalog.list({"archived": False,
                             "modelProviders": [], "sortKey": "updated_at", "sortDirection": "desc"}))
         by_project, by_root = defaultdict(list), defaultdict(list)
         # Native project IDs already establish catalog membership; only legacy
         # unassigned threads need additional read-only Git discovery here.
-        associations = self.external_worktrees.associations([thread for thread in threads if not thread.get('projectId')], projects) if self.external_worktrees else {}
+        associations = self._stage('worktrees', lambda: self.external_worktrees.associations(
+            [thread for thread in threads if not thread.get('projectId')], projects)) if self.external_worktrees else {}
         for thread in threads:
             if thread['id'] in associations:
                 by_project[associations[thread['id']]['projectId']].append(thread)
@@ -103,11 +120,11 @@ class ProjectCatalog:
                 by_project[thread["projectId"]].append(thread)
         result = []
         queues = self.queue_provider()
-        execution = self.execution_provider(threads)
+        execution = self._stage('execution', lambda: self.execution_provider(threads))
         # Goals continue between turns and can belong to another native writer.
         # Query native goal state independently of thread/list's loaded status.
-        active_goals = {thread['id'] for thread in threads
-                        if (self.goal_provider(thread['id']) or {}).get('status') == 'active'}
+        active_goals = self._stage('goals', lambda: {thread['id'] for thread in threads
+                        if (self.goal_provider(thread['id']) or {}).get('status') == 'active'})
         for project in projects:
             roots = [r.get("path") for r in project.get("roots", []) if r.get("path")]
             matches = by_project[project["id"]] + [t for root in set(roots) for t in by_root[root]]
@@ -128,6 +145,20 @@ class ProjectCatalog:
                        "runningTurnCount": sum(1 for t in recent if execution.get(t["id"]) == "running" or (isinstance(t.get("status"), dict) and t["status"].get("type") == "active")),
                        "activeGoalCount": sum(t["id"] in active_goals for t in recent)})
         return result
+
+    def _stage(self, stage, read):
+        started = time.monotonic()
+        outcome, count = 'interrupted', None
+        try:
+            checkpoint()
+            result = read()
+            count = len(result)
+            checkpoint()
+            outcome = 'completed'
+            return result
+        finally:
+            event('project_catalog_stage', stage=stage, outcome=outcome, count=count,
+                  duration_ms=round((time.monotonic() - started) * 1000, 2))
 
     def get(self, project_id):
         result = self.connection.request("project/read", {"projectId": project_id})

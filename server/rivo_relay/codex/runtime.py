@@ -252,6 +252,18 @@ class RuntimeConnection:
             return inspect(thread_id) if inspect else None
         return None
 
+    @contextmanager
+    def prepare_takeover(self, thread_id):
+        if self._pins.get(thread_id, self._preferred) != 'app_server':
+            raise CodexError('所选运行时不支持独立接管', code='handoff_desktop_shared', http_status=409)
+        with self.native.prepare_takeover(thread_id) as acquire:
+            def resume(params):
+                result = acquire(params)
+                with self._lock:
+                    self._pins[thread_id] = 'app_server'
+                return result
+            yield resume
+
     def release_writer(self, thread_id, expected):
         return self.native.release(thread_id, expected)
 

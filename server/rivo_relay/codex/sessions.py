@@ -111,14 +111,14 @@ class CodexService:
             connection.on_event = self._event
         self.writers = WriterProcesses(getattr(self.connection, 'codex_home', codex_home or Path.home() / '.codex'))
         self._handoff_log = self.writers.home / 'rivo-handoff-runtime.log'
-        self.projects = ProjectCatalog(self.connection)
+        self.projects = ProjectCatalog(self.connection, thread_reader=lambda params: thread_pages(self.connection, params))
         self.projects.goal_provider = lambda thread_id: self.read_goal(thread_id).get('goal')
         self.projects.external_worktrees = ExternalWorktrees(self.connection, self._observe, self.observations_for)
         self.review_guard = ReviewGuard(self.connection, self._observe, self.observations_for, self._forget_observation)
         self.interactions = Interactions(self.connection)
         self.history_adapter = NativeHistoryAdapter()
         self.native_journal = NativeJournal(self.connection, self.history_adapter, self._history_repaired)
-        self.projects.execution_provider = self._external_execution
+        self.projects.execution_provider = self._external_running
         self.model_catalog = ModelCatalog(self._load_models, lambda: str(self.connection.generation))
 
     def _history_repaired(self, thread_id, result):
@@ -293,8 +293,10 @@ class CodexService:
         self.writers.verify_native_host(descriptor, status.get('runtimeId'), getattr(connection, 'socket_path', None))
         return connection, descriptor
 
-    def list_projects(self):
+    def list_projects(self, *, summary=False):
         self.start()
+        if summary:
+            return self.projects.summary()
         self.projects.queue_provider = lambda: self.execution_queue.by_thread() if hasattr(self, 'execution_queue') else {}
         return self.projects.list()
 
@@ -314,11 +316,43 @@ class CodexService:
     def _external_execution(self, threads):
         return self.native_journal.execution_states([t['id'] for t in threads if thread_status(t) == 'unknown'])
 
-    def list_sessions(self, project_id, archived=False):
+    def _external_running(self, threads):
+        # Project counters need running evidence only; session detail/list keeps
+        # the complete idle/unknown semantics of _external_execution.
+        return self.native_journal.execution_states(
+            [t['id'] for t in threads if thread_status(t) == 'unknown'], running_only=True)
+
+    def list_sessions(self, project_id, archived=False, *, summary=False):
         self.start()
-        if project_id == RECENT_PROJECT_ID:
+        if summary:
+            # A provisional metadata view: complete rollout reconciliation, Git
+            # discovery and execution inspection remain in the full response.
+            generation = self.connection.generation
+            params = {"archived": archived, "modelProviders": [], "sortKey": "updated_at",
+                      "sortDirection": "desc", "useStateDbOnly": True}
+            threads = list(pages(self.connection, 'thread/list', params))
+            # Desktop creation may arrive through the state DB without an SSE
+            # event. Do not let the subsequent full read reuse a pre-create scan.
+            if self.projects.thread_catalog.metadata_changed(
+                    {key: value for key, value in params.items() if key != 'useStateDbOnly'}, threads):
+                self.projects.invalidate()
+            associations = {}
+            if project_id == RECENT_PROJECT_ID:
+                projects = list(pages(self.connection, 'project/list'))
+                by_id = {t['id']: t for t in unlisted_threads(threads, projects, {})}
+            else:
+                project = self.projects.get(project_id)
+                roots = {r['path'] for r in project.get('roots', [])}
+                by_id = {t['id']: t for t in threads if t.get('projectId') == project_id or
+                         (not t.get('projectId') and t.get('cwd') in roots)}
+                # Native filters may carry membership not represented by cwd.
+                for thread in pages(self.connection, 'thread/list', {**params, 'projectId': project_id}):
+                    by_id[thread['id']] = thread
+            if generation != self.connection.generation:
+                raise CodexError('目录读取时运行时已变化，请刷新', code='native_unavailable')
+        elif project_id == RECENT_PROJECT_ID:
             projects = list(pages(self.connection, "project/list"))
-            threads = thread_pages(self.connection, {
+            threads = self.projects.thread_catalog.list({
                 "archived": archived, "modelProviders": [],
                 "sortKey": "updated_at", "sortDirection": "desc",
             })
@@ -329,7 +363,7 @@ class CodexService:
             project = self.projects.get(project_id)
             roots = [r["path"] for r in project.get("roots", [])]
             # Include legacy threads associated by root or Git worktree.
-            threads = list(thread_pages(self.connection, {
+            threads = list(self.projects.thread_catalog.list({
                 "archived": archived, "modelProviders": [],
                 "sortKey": "updated_at", "sortDirection": "desc",
             })) if roots else []
@@ -337,7 +371,7 @@ class CodexService:
             by_id = {t["id"]: t for t in threads
                      if t.get("projectId") == project_id or (not t.get('projectId') and
                          (t.get('cwd') in roots or t['id'] in associations))}
-            for thread in thread_pages(self.connection, {
+            for thread in self.projects.thread_catalog.list({
                 "projectId": project_id, "archived": archived, "modelProviders": [],
                 "sortKey": "updated_at", "sortDirection": "desc",
             }):
@@ -347,9 +381,9 @@ class CodexService:
         if self.workspaces:
             with self.workspaces.db.read() as c:
                 managed = {row['thread_id']: dict(row) for row in c.execute('SELECT * FROM workspaces WHERE project_id=?', (project_id,))}
-        external = self._external_execution(list(by_id.values()))
+        external = {} if summary else self._external_execution(list(by_id.values()))
         statuses = {t["id"]: ("waiting" if self.interactions.list(t["id"]) or thread_waiting(t) else
-                    "running" if goal_running(t, self.read_goal(t["id"]).get("goal"), external)
+                    "running" if goal_running(t, None if summary else self.read_goal(t["id"]).get("goal"), external)
                     else external.get(t['id'], thread_status(t))) for t in by_id.values()}
         return [{"id": t["id"], "name": t.get("name") or t.get("preview") or "新会话",
                  "preview": t.get("preview", ""), "status": statuses[t["id"]],
@@ -375,6 +409,7 @@ class CodexService:
                 raise CodexError("Native Pinned section missing", code="native_protocol")
         self.connection.request("thread/section/move", {"threadId": thread_id,
             "sectionId": section_id, "beforeThreadId": None})
+        self.projects.invalidate()
         return {"threadId": thread_id}
 
     def archive_session(self, thread_id, archived):
@@ -392,6 +427,7 @@ class CodexService:
                 if execution == 'running' or goal_active or self.interactions.list(thread_id):
                     raise CodexError('运行中或等待回答的会话不能归档', code='thread_busy', http_status=409)
             self.connection.request('thread/archive' if archived else 'thread/unarchive', {'threadId': thread_id})
+            self.projects.invalidate()
             with self._lock:
                 self._joined.discard(thread_id)
             return {'threadId': thread_id}
@@ -735,6 +771,7 @@ class CodexService:
                     # The thread exists. A title failure must never imply it is
                     # safe to issue another thread/start.
                     self.on_event({"method": "relay/titlePending", "params": {"threadId": thread_id}})
+            self.projects.invalidate()
             return receipt
 
     @staticmethod
@@ -1195,89 +1232,101 @@ class CodexService:
             if action == 'release':
                 progress('release')
                 return self._release_process_writer(thread_id, snapshot, affected)
-            # Pause all affected Relay queues/automatic subscriptions before killing
-            # the writer. Interrupted instructions are never resumed or replayed.
-            for affected_id in affected:
-                ownership = {'released': True, 'releaseState': 'takeover', 'takeoverThreadId': thread_id}
-                if self.observations:
-                    self.observations.put(affected_id, 'ownership', '', ownership)
-                self._observe(affected_id, 'ownership', '', ownership)
-            stage = 'terminate'
-            progress(stage)
-            try:
-                self.writers.terminate(snapshot)
+            prepare = getattr(self.connection, 'prepare_takeover', None)
+            lease = prepare(thread_id) if prepare and restart_args else nullcontext(None)
+            progress('prepare')
+            with lease as acquire:
+                # Pause all affected Relay queues/automatic subscriptions before killing
+                # the writer. Interrupted instructions are never resumed or replayed.
                 for affected_id in affected:
-                    with self._lock:
-                        self._joined.discard(affected_id)
-                        self._active.pop(affected_id, None)
-                        self._created.pop(affected_id, None)
-                        self._materializing.pop(affected_id, None)
-                        for key in [key for key in self._live if key[0] == affected_id]:
-                            self._live.pop(key, None)
-                            self._pending_terminal.discard(key)
-                # A supervisor may already have restored the same endpoint. Otherwise
-                # replace only the daemon we just terminated using its verified argv.
-                stage = 'runtime'
+                    ownership = {'released': True, 'releaseState': 'takeover', 'takeoverThreadId': thread_id}
+                    if self.observations:
+                        self.observations.put(affected_id, 'ownership', '', ownership)
+                    self._observe(affected_id, 'ownership', '', ownership)
+                stage = 'terminate'
                 progress(stage)
-                if restart_args:
-                    try:
-                        connection.start()
-                    except CodexError:
-                        self.writers.restart(restart_args, self._handoff_log)
-                    deadline = time.monotonic() + 15
-                    while True:
+                try:
+                    self.writers.terminate(snapshot)
+                    early_response = None
+                    if acquire is not None:
+                        stage = 'acquire'
+                        progress(stage)
+                        params = {'threadId': thread_id, 'excludeTurns': True}
+                        if rebind_workspace is not None:
+                            params['cwd'] = rebind_workspace
+                        early_response = acquire(params)
+                    for affected_id in affected:
+                        with self._lock:
+                            self._joined.discard(affected_id)
+                            self._active.pop(affected_id, None)
+                            self._created.pop(affected_id, None)
+                            self._materializing.pop(affected_id, None)
+                            for key in [key for key in self._live if key[0] == affected_id]:
+                                self._live.pop(key, None)
+                                self._pending_terminal.discard(key)
+                    # A supervisor may already have restored the same endpoint. Otherwise
+                    # replace only the daemon we just terminated using its verified argv.
+                    stage = 'runtime'
+                    progress(stage)
+                    if restart_args:
                         try:
                             connection.start()
-                            break
                         except CodexError:
-                            if time.monotonic() >= deadline:
-                                raise CodexError('原持锁进程已结束，但原生运行时尚未恢复；不会重发任务', code='handoff_runtime_unavailable', http_status=503, request_sent=True)
-                            time.sleep(.2)
-                stage = 'resume'
-                progress(stage)
-                if action == 'takeover':
-                    self.start()
-                    if rebind_workspace is None:
-                        # Preserve the idle lock window after explicit takeover so
-                        # an orphan terminal record can be repaired before resume.
-                        self._native_history_state(thread_id)
-                    resume = {'threadId': thread_id, 'excludeTurns': True}
-                    if rebind_workspace is not None:
-                        resume['cwd'] = rebind_workspace
-                    response = self.connection.request('thread/resume', resume)
-                    if rebind_workspace is not None and (response.get('thread') or {}).get('cwd') != rebind_workspace:
-                        raise CodexError('原生未确认指定工作目录，接管结果待核对', code='workspace_rebind_unconfirmed', http_status=409, request_sent=True)
-                    stage = 'verify'
+                            self.writers.restart(restart_args, self._handoff_log)
+                        deadline = time.monotonic() + 15
+                        while True:
+                            try:
+                                connection.start()
+                                break
+                            except CodexError:
+                                if time.monotonic() >= deadline:
+                                    raise CodexError('原持锁进程已结束，但原生运行时尚未恢复；不会重发任务', code='handoff_runtime_unavailable', http_status=503, request_sent=True)
+                                time.sleep(.2)
+                    stage = 'resume'
                     progress(stage)
-                    acquired = self.writers.snapshot(thread_id)
-                    runtime_id = self._thread_connection(thread_id).status().get('runtimeId')
-                    if not acquired['holders'] or any(str(h['pid']) != str(runtime_id) for h in acquired['holders']):
-                        raise CodexError('原进程已结束，但未确认新运行时持锁', code='handoff_acquire_failed', http_status=409)
-                    if self.observations:
-                        self.observations.delete(thread_id, 'ownership')
-                    self._forget_observation(thread_id, 'ownership')
-                    with self._lock:
-                        self._joined.add(thread_id)
-                        self._settings[thread_id] = self._settings_from(response)
-                    if rebind_workspace is not None and self.workspaces:
-                        with self.workspaces.db.transaction() as c:
-                            # Keep the original worktree/archive record, but this
-                            # thread now executes in the verified original project.
-                            c.execute('UPDATE workspaces SET thread_id=NULL WHERE thread_id=?', (thread_id,))
-                elif self.writers.busy(thread_id):
-                    raise CodexError('会话被其他进程重新持有，未确认释放成功', code='writer_still_held', http_status=409)
-            except Exception as error:
-                for affected_id in affected:
-                    ownership = {'released': True, 'releaseState': 'takeover_failed',
-                                 'takeoverThreadId': thread_id, 'takeoverStage': stage,
-                                 'releaseError': str(error),
-                                 'errorCode': getattr(error, 'code', 'handoff_failed')}
-                    self._observe(affected_id, 'ownership', '', ownership)
-                    try:
-                        self.on_event({'method': 'relay/ownershipChanged', 'params': {'threadId': affected_id}})
-                    except Exception:
-                        logging.getLogger(__name__).warning('Handoff failure notification unavailable')
-                raise
+                    if action == 'takeover':
+                        self.start()
+                        if rebind_workspace is None and acquire is None:
+                            # Preserve the idle lock window after explicit takeover so
+                            # an orphan terminal record can be repaired before resume.
+                            self._native_history_state(thread_id)
+                        resume = {'threadId': thread_id, 'excludeTurns': True}
+                        if rebind_workspace is not None:
+                            resume['cwd'] = rebind_workspace
+                        response = early_response if acquire is not None else self.connection.request('thread/resume', resume)
+                        if rebind_workspace is not None and (response.get('thread') or {}).get('cwd') != rebind_workspace:
+                            raise CodexError('原生未确认指定工作目录，接管结果待核对', code='workspace_rebind_unconfirmed', http_status=409, request_sent=True)
+                        stage = 'verify'
+                        progress(stage)
+                        acquired = self.writers.snapshot(thread_id)
+                        runtime_id = self._thread_connection(thread_id).status().get('runtimeId')
+                        if not acquired['holders'] or any(str(h['pid']) != str(runtime_id) for h in acquired['holders']):
+                            raise CodexError('原进程已结束，但未确认新运行时持锁', code='handoff_acquire_failed', http_status=409)
+                        if self.observations:
+                            self.observations.delete(thread_id, 'ownership')
+                        self._forget_observation(thread_id, 'ownership')
+                        with self._lock:
+                            self._joined.add(thread_id)
+                            self._settings[thread_id] = self._settings_from(response)
+                        if rebind_workspace is not None and self.workspaces:
+                            with self.workspaces.db.transaction() as c:
+                                # Keep the original worktree/archive record, but this
+                                # thread now executes in the verified original project.
+                                c.execute('UPDATE workspaces SET thread_id=NULL WHERE thread_id=?', (thread_id,))
+                    elif self.writers.busy(thread_id):
+                        raise CodexError('会话被其他进程重新持有，未确认释放成功', code='writer_still_held', http_status=409)
+                except Exception as error:
+                    for affected_id in affected:
+                        ownership = {'released': True, 'releaseState': 'takeover_failed',
+                                     'takeoverThreadId': thread_id, 'takeoverStage': stage,
+                                     'releaseError': str(error),
+                                     'errorCode': getattr(error, 'code', 'handoff_failed')}
+                        self._observe(affected_id, 'ownership', '', ownership)
+                        try:
+                            self.on_event({'method': 'relay/ownershipChanged', 'params': {'threadId': affected_id}})
+                        except Exception:
+                            logging.getLogger(__name__).warning('Handoff failure notification unavailable')
+                    raise
             self.on_event({'method': 'relay/ownershipChanged', 'params': {'threadId': thread_id}})
             return {'threadId': thread_id}
 
@@ -1508,7 +1557,10 @@ class CodexService:
         thread_id, turn_id = params.get("threadId", params.get('conversationId')), params.get("turnId")
         if (thread_id is not None and not isinstance(thread_id, str)) or (turn_id is not None and not isinstance(turn_id, str)):
             return
-        if method.startswith(("thread/", "project/")) or method in {
+        # Token usage does not change project membership or activity counters.
+        # Invalidating on every usage notification discards expensive in-flight
+        # catalog refreshes while an unrelated chat is generating.
+        if (method.startswith(("thread/", "project/")) and method != 'thread/tokenUsage/updated') or method in {
                 "turn/started", "turn/completed", "relay/nativeDisconnected", "relay/writerDisconnected"}:
             self.projects.invalidate()
         with self._lock:

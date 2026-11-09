@@ -117,6 +117,22 @@ class NativeActivityProjectionTest {
         assertEquals("web-latest", (rows[3] as NativeTimelineRow.Activities).messages.single().id)
     }
 
+    @Test fun longActiveCommandRunsKeepOrderAndSeparateNoncommandBoundaries() {
+        val first = (0 until 4000).map { command("before-$it", "read $it") }
+        val second = (0 until 4000).map { command("after-$it", "check $it") }
+        val web = JSONObject().put("id", "web").put("type", "webSearch").put("query", "test")
+        val image = JSONObject().put("id", "image").put("type", "imageView").put("path", "/tmp/test.png")
+        val messages = snapshot(turn("active", *(first + web + image + second).toTypedArray())).messages
+        val rows = nativeTimelineRows(messages, activeTurnId = "active").map { it as NativeTimelineRow.Activities }
+        assertEquals(listOf(4000, 1, 1, 4000), rows.map { it.messages.size })
+        assertEquals(listOf("web", "image"), rows.subList(1, 3).map { it.messages.single().id })
+        val projected = rows.flatMap { it.messages }
+        assertEquals(messages.map { it.id }, projected.map { it.id })
+        messages.zip(projected).forEach { (original, visible) -> assertSame(original, visible) }
+        // An inactive turn remains one collapsed segment, including mixed tools.
+        assertEquals(messages, (nativeTimelineRows(messages).single() as NativeTimelineRow.Activities).messages)
+    }
+
     @Test fun terminalNativeTurnStopsPersistedToolSpinnerWithoutChangingRawHistory() {
         val item = command("a", "read").put("status", "inProgress")
         val message = snapshot(turn("done", item).put("status", "interrupted")).messages.single()

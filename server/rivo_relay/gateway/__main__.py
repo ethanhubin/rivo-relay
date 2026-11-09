@@ -21,6 +21,7 @@ def main():
     parser.add_argument('--workspace', type=Path, default=Path('workspace/gateway'))
     parser.add_argument('--ip')
     parser.add_argument('--port', type=int, default=80)
+    parser.add_argument('--listen-host', default='0.0.0.0', help='Gateway bind address (use 127.0.0.1 behind a local proxy)')
     parser.add_argument('--slot')
     parser.add_argument('--local-port', type=int, default=18765)
     parser.add_argument('--direct-url', default=None)
@@ -72,7 +73,7 @@ def main():
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(args.workspace / 'server.pem', args.workspace / 'server.key')
-        web.run_app(Gateway(args.workspace / 'keys.json').application(), host='0.0.0.0', port=args.port,
+        web.run_app(Gateway(args.workspace / 'keys.json').application(), host=args.listen_host, port=args.port,
                     ssl_context=context, access_log=None, handler_cancellation=True)
     elif args.command == 'managed-node':
         from .updater import run

@@ -72,6 +72,30 @@ class JournalHostTests(unittest.TestCase):
                 stream.write(b'{')
             self.assertEqual({}, dispatch(request)['states'])
 
+    def test_catalog_activity_skips_unowned_history_without_inventing_idle(self):
+        request = {'runtime': {}, 'operation': 'activity', 'threadIds': [THREAD], 'runningOnly': True}
+        lock = self.home / 'thread-writer-locks' / f'{THREAD}.lock'
+        lock.parent.mkdir(exist_ok=True)
+        with patch('rivo_relay.codex.native_history_host.verify_runtime', return_value=self.home), \
+                patch('rivo_relay.codex.native_history_host.inspect_journal', wraps=inspect_journal) as inspect:
+            result = dispatch(request)
+            self.assertEqual({}, result['states'])
+            self.assertEqual({}, result['inspections'])
+            inspect.assert_not_called()
+            with lock.open('a+b') as writer:
+                flock(writer.fileno(), LOCK_EX | LOCK_NB)
+                try:
+                    # Holding a writer alone is insufficient: terminal remains idle.
+                    self.assertEqual({THREAD: 'idle'}, dispatch(request)['states'])
+                    self.records.pop()
+                    self.write()
+                    self.assertEqual({THREAD: 'running'}, dispatch(request)['states'])
+                    with self.path.open('ab') as stream:
+                        stream.write(b'{')
+                    self.assertEqual({}, dispatch(request)['states'])
+                finally:
+                    flock(writer.fileno(), LOCK_UN)
+
     def test_activity_isolates_missing_and_corrupt_rollouts(self):
         broken = '01a04609-7917-7c73-ad6d-cae86ce70da9'
         missing = self.home / 'sessions' / f'rollout-{broken}.jsonl'

@@ -213,6 +213,27 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(command["command"], "private command")
         self.assertEqual(len(command["aggregatedOutput"]), 100000)
 
+    def test_generated_image_registered_before_compaction_and_failed_registration_keeps_bytes(self):
+        item = {'id': 'image', 'type': 'imageGeneration', 'status': 'completed', 'result': 'A' * 10000}
+        turn = {'id': 'turn', 'status': 'completed', 'items': [item]}
+        self.app.codex.get_session = lambda *args, **kwargs: {'thread': {'id': 'thread-1', 'turns': [turn]}}
+        self.app.codex.history = lambda *args, **kwargs: {'turns': [turn], 'nextCursor': 'next'}
+        def observe(thread):
+            self.assertEqual('thread-1', thread['id'])
+            self.assertEqual('A' * 10000, thread['turns'][0]['items'][0]['result'])
+        for suffix in ('', '/history'):
+            with patch.object(self.app.media, 'observe_thread', side_effect=observe) as registered:
+                status, result, _ = self.request('GET', '/v1/threads/thread-1' + suffix, token=self.token)
+            self.assertEqual(200, status)
+            registered.assert_called_once()
+            projected = (result if suffix else result['thread'])['turns'][0]['items'][0]
+            self.assertTrue(projected['mediaRef'])
+            self.assertTrue(projected['result'].startswith('/v1/media/library/'))
+            with patch.object(self.app.media, 'observe_thread', side_effect=OSError('fixture')):
+                status, result, _ = self.request('GET', '/v1/threads/thread-1' + suffix, token=self.token)
+            self.assertEqual(200, status)
+            self.assertEqual(item, (result if suffix else result['thread'])['turns'][0]['items'][0])
+
     def test_unchanged_head_omits_large_history_but_rechecks_control(self):
         calls = []
         source = {"thread": {"id": "thread-1", "turns": [{"id": "turn", "items": [
@@ -597,11 +618,27 @@ class ApiTests(unittest.TestCase):
         import queue
         from unittest.mock import patch
         from rivo_relay.read_budget import read_budget, read_reply
-        with patch('rivo_relay.api.read_budget', lambda sock: read_budget(sock, seconds=.02)), \
+        with patch('rivo_relay.api.event') as log, \
+                patch('rivo_relay.api.read_budget', lambda sock: read_budget(sock, seconds=.02)), \
                 patch.object(Handler, 'route', lambda *args: read_reply(queue.Queue(), 30)):
             status, result, _ = self.request('GET', '/v1/projects', token=self.token)
         self.assertEqual(status, 504)
         self.assertEqual(result['error']['code'], 'read_deadline')
+        response = next(call.kwargs for call in log.call_args_list if call.args[0] == 'http_response')
+        self.assertEqual('read_deadline', response['error_code'])
+        self.assertEqual('deadline', response['read_stop_reason'])
+
+    def test_error_diagnostics_keep_conflict_code_but_not_private_details(self):
+        from unittest.mock import patch
+        from rivo_relay.api import ApiError
+        for code, expected in [('workspace_busy', 'workspace_busy'), ('private_secret', 'other')]:
+            with patch('rivo_relay.api.event') as log, \
+                    patch.object(Handler, 'route', side_effect=ApiError(409, code, 'private message')):
+                status, _, _ = self.request('GET', '/v1/projects', token=self.token)
+            self.assertEqual(409, status)
+            response = next(call.kwargs for call in log.call_args_list if call.args[0] == 'http_response')
+            self.assertEqual(expected, response['error_code'])
+            self.assertNotIn('private', str(log.call_args_list))
 
     def _start(self, bus=None):
         self.native = NativeStub()
@@ -687,6 +724,23 @@ class ApiTests(unittest.TestCase):
         self.assertEqual("queued", self.app.queue.list("thread-1")[0]["text"])
         self.assertEqual(1, len(self.request("GET", "/v1/threads/thread-1", token=self.token)[1]["queue"]))
         self.assertFalse(self.native.sent)
+
+    def test_catalog_summary_is_explicit_and_keeps_default_full_contract(self):
+        self.native.list_projects = Mock(return_value=[{'id': 'p', 'statsReady': False}])
+        self.native.list_sessions = Mock(return_value=[{'id': 't', 'status': 'unknown'}])
+        status, data, _ = self.request('GET', '/v1/projects?view=summary', token=self.token)
+        self.assertEqual(200, status)
+        self.assertFalse(data['projects'][0]['statsReady'])
+        self.native.list_projects.assert_called_once_with(summary=True)
+        status, data, _ = self.request('GET', '/v1/threads?projectId=p&archived=true&view=summary', token=self.token)
+        self.assertEqual(200, status)
+        self.assertFalse(data['catalogComplete'])
+        self.native.list_sessions.assert_called_once_with('p', archived=True, summary=True)
+        self.native.list_sessions.reset_mock()
+        self.assertTrue(self.request('GET', '/v1/threads?projectId=p', token=self.token)[1]['catalogComplete'])
+        self.native.list_sessions.assert_called_once_with('p')
+        for url in ('/v1/projects?view=unknown', '/v1/threads?projectId=p&view=unknown'):
+            self.assertEqual(400, self.request('GET', url, token=self.token)[0])
 
     def test_health_is_public_but_project_data_requires_valid_token(self):
         self.assertEqual(self.request("GET", "/health")[0], 200)

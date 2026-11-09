@@ -159,7 +159,9 @@ fun nativeTimelineRows(messages: List<NativeMessage>, activeTurnId: String? = nu
             val groups = mutableListOf<MutableList<NativeMessage>>()
             row.messages.forEach { message ->
                 val current = groups.lastOrNull()
-                if (message.activity?.kind == "command" && current?.all { it.activity?.kind == "command" } == true) current += message
+                // Only command groups ever grow; other activities stay singletons.
+                // Checking their first item avoids rescanning long command runs.
+                if (message.activity?.kind == "command" && current?.firstOrNull()?.activity?.kind == "command") current += message
                 else groups += mutableListOf(message)
             }
             groups.map { NativeTimelineRow.Activities(it.toList()) }

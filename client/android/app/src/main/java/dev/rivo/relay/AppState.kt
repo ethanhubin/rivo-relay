@@ -36,7 +36,7 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
     }.stateIn(scope, SharingStarted.Eagerly, transportNetwork)
     private val sync = NodeSessionSync(api, scope)
     val notifications = TaskNotifications(context.applicationContext, api, scope, connection.base, connection.name, requestNotificationPermission, failure, sync)
-    val catalog = CatalogController(api, scope, failure, store = conversations)
+    val catalog = CatalogController(api, scope, failure, store = conversations, sync = sync)
     val session = SessionController(api, scope, conversations, notifications::observe, notifications::setVisibleThread, sync = sync, failure = failure)
     private val pendingRevisionMutable = MutableStateFlow(0L)
     val pendingRevision = pendingRevisionMutable.asStateFlow()

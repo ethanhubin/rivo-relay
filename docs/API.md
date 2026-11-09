@@ -56,6 +56,10 @@
 
 原生历史适配协议 v2 保留未知 item 类型的完整字段，客户端以未知活动展示，不因新增展示类型拒绝整页。turn 的 ID、status、完整 items、重复身份及分页游标仍严格校验；显式 `itemsView` 必须为 `full`，未知 turn status 不推断执行权限。`thread.turns[].status/error` 是轮次结果来源；失败或中断的空轮次同样展示诊断，不生成助手消息或自动重试。
 
+历史 `limit` 为返回轮数上限；原生 full-items 请求每页最多 10 轮，继续使用原生游标，不为填满请求数量拼接大页。单轮图片较多时，原生连接允许最多 128 MiB 的单条消息，并限制接收队列；超过上限会返回明确大小错误，不自动重放请求。
+
+完成的图片生成项在服务端媒体登记成功后，可返回 `mediaRef: true` 和媒体内容 URL 形式的 `result`，替代内嵌图片数据；原生记录保持完整。媒体尚未 ready 时客户端继续查询媒体库，登记失败则保留原内嵌数据。
+
 流式投影支持助手正文、命令输出、文件输出、计划和按索引分段的 reasoning 增量。item 完成时保留原位置；迟到 start/delta 不重新打开已完成项或轮次，较短实时缓存不覆盖较长原生输出。助手正文和命令输出事件的 `params.relayOffset` 按 Unicode code point 计数，客户端仅在已有基线匹配时直接追加，否则重新读取快照。其他观察事件不会凭空创建进行中的轮次。
 
 纯文本限制 200,000 字符。传 `input` 时它必须包含 1–64 个原生项，文本也作为数组项传入；外层 `text` 不会再拼进 input。当前 HTTP 校验支持：
@@ -365,6 +369,12 @@ v1 配对保持兼容。`scripts/start-node.sh` 的 v2 二维码 fragment 增加
 请求 proof 为 `HMAC-SHA256(SHA256(token), "request\0" + code + "\0" + nodeId + "\0" + binding)`，结果为小写十六进制。有效一次性配对码和 proof 在同一事务里验证，只有未撤销的原连接可复用。复用响应返回原 `deviceId`、空 `token`，并提供相同算法、方向改为 `response` 的 `reuseProof`。手机校验响应 proof 后保留本地旧 token。正常新配对仍返回新 token；无效 proof 不会复用旧连接，也不会绕过配对码校验。
 
 网关对外路径 `/relay/{slot}/v1/...` 保留现有业务认证、请求体、响应及 SSE。完整传输与部署约定见 [VPS 双通道说明](vps-gateway.md)。
+
+### 目录摘要
+
+`GET /v1/projects?view=summary` 只返回项目身份、名称和根路径，`statsReady:false` 表示计数尚未加载，不应显示为零。默认 `view=full` 保留完整统计。
+
+`GET /v1/threads?projectId=…&view=summary` 返回状态库中的轻量会话元数据，顶层 `catalogComplete:false`。它是可展示的暂时结果，不包含完整 rollout/工作区归属与运行状态校准；不能据此断言不存在其他会话。客户端随后请求默认完整列表（`catalogComplete:true`）替换，且应在补全期间保留此前发现的会话。`archived` 过滤对两种视图均生效。摘要结果不用于执行准入或确认批量操作对象。
 
 ### Sites（只读）
 

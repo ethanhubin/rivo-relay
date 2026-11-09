@@ -3,6 +3,33 @@ import datetime
 import json
 import sys
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
+
+_request_trace = ContextVar('request_trace', default=None)
+
+# Only application-defined categories; never log arbitrary upstream error text/codes.
+_ERROR_CODES = frozenset('''read_deadline native_timeout native_unavailable native_rejected
+native_history_unavailable native_response_too_large native_protocol native_method_unsupported node_updating
+workspace_busy workspace_changed workspace_dirty thread_busy writer_unavailable
+writer_still_held handoff_changed handoff_host_changed handoff_host_mismatch
+handoff_host_unverified native_host_unverified interaction_expired interaction_changed
+history_changed project_trust_unconfirmed not_managed_worktree invalid_worktree_ref
+git_operation_failed not_git_repository invalid_project review_fingerprint_unavailable
+unauthorized invalid_request forbidden'''.split())
+
+
+def error_code(value):
+    return value if isinstance(value, str) and value in _ERROR_CODES else 'other'
+
+
+@contextmanager
+def request_trace(value):
+    token = _request_trace.set(request_id(value))
+    try:
+        yield
+    finally:
+        _request_trace.reset(token)
 
 
 def route_kind(path):
@@ -26,6 +53,8 @@ def request_id(value=None):
 
 
 def event(name, **fields):
+    if _request_trace.get() is not None:
+        fields.setdefault('request_id', _request_trace.get())
     record = {"time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "event": name, **fields}
     try:

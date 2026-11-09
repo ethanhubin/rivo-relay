@@ -20,11 +20,36 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collect
 import org.json.JSONObject
+import org.json.JSONArray
 
 internal const val PINNED_COMPLETION = "pinnedCompletion"
 internal const val PINNED_SOUND = "pinnedCompletionSound"
 internal const val PINNED_VIBRATION = "pinnedCompletionVibration"
 internal fun notificationPreferences(context: Context) = context.getSharedPreferences("notifications", Context.MODE_PRIVATE)
+
+internal fun mergePinnedObservations(previous: Set<String>, incoming: Set<String>, complete: Boolean): Set<String> =
+    if (complete) incoming else previous + incoming
+
+/** Bounded verification for expected turns that have fallen outside a small head. */
+internal suspend fun fillObservedTurns(head: JSONObject, expected: Set<String>, readPage: suspend (String, String) -> JSONObject): JSONObject {
+    val revision = head.string("nativeRevision").takeIf(String::isNotBlank) ?: return head
+    val thread = head.optJSONObject("thread") ?: return head
+    val turns = thread.objects("turns").toMutableList()
+    var cursor = head.string("nextCursor")
+    val cursors = mutableSetOf<String>()
+    repeat(3) {
+        if (expected.all { id -> turns.any { it.string("id") == id } } || cursor.isBlank() || !cursors.add(cursor)) return@repeat
+        val page = readPage(cursor, revision)
+        val sync = page.optJSONObject("nativeSync")
+        if (page.string("nativeRevision") != revision || sync != null && sync.string("state") != "ready" && !sync.optBoolean("historyReady"))
+            throw ApiException(409, "history_changed", "历史已变化，继续核对任务结果")
+        val known = turns.mapTo(hashSetOf()) { it.string("id") }
+        turns.addAll(0, page.objects("turns").filter { it.string("id") !in known })
+        cursor = page.string("nextCursor")
+    }
+    fun shallow(value: JSONObject) = JSONObject().also { copy -> value.keys().forEach { key -> copy.put(key, value.opt(key)) } }
+    return shallow(head).put("thread", shallow(thread).put("turns", JSONArray(turns)))
+}
 
 internal data class TaskNotice(val key: String, val kind: String)
 
@@ -34,12 +59,35 @@ internal class TaskChangeTracker {
     private val known = linkedSetOf<String>()
     private val running = linkedSetOf<String>()
     private val announced = linkedSetOf<String>()
+    private val settled = linkedSetOf<String>()
     private var requests = emptySet<String>()
     private var goalState: String? = null
     private val goalOwnedTurns = linkedSetOf<String>()
+    private data class Terminal(val status: String, val receivedNanos: Long)
+    private val terminals = linkedMapOf<String, Terminal>()
+    val hasPendingTerminals: Boolean get() = terminals.isNotEmpty()
+    val hasUnresolvedTurns: Boolean get() = running.isNotEmpty()
+    val unresolvedTurns: Set<String> get() = running.toSet()
+    fun missingFromHead(json: JSONObject): Boolean = running.any { id -> json.optJSONObject("thread")?.objects("turns").orEmpty().none { it.string("id") == id } }
     fun expectTurn(id: String) { if (id.isNotBlank()) running += id }
-    fun observe(json: JSONObject): List<TaskNotice> {
-        val turns = json.optJSONObject("thread")?.objects("turns").orEmpty()
+    fun observeTurnEvent(method: String, turn: JSONObject, receivedNanos: Long): Boolean {
+        val id = turn.string("id")
+        if (id.isBlank()) return false
+        if (method == "turn/started" && turn.string("status") == "inProgress" && id !in settled) {
+            running += id
+            return true
+        }
+        val status = turn.string("status")
+        if (method != "turn/completed" || id !in running || status !in setOf("completed", "failed", "interrupted", "canceled", "cancelled")) return false
+        terminals[id] = Terminal(status, receivedNanos)
+        return true
+    }
+    fun observe(json: JSONObject, freshAfterNanos: Long = Long.MIN_VALUE): List<TaskNotice> {
+        val confirmed = terminals.filterValues { it.receivedNanos <= freshAfterNanos }
+        // Explicit terminal evidence can have scrolled out of the two-turn head.
+        // Resolve it only with goal/control read after that event, never an old in-flight snapshot.
+        val turns = confirmed.map { (id, terminal) -> JSONObject().put("id", id).put("status", terminal.status) } +
+            json.optJSONObject("thread")?.objects("turns").orEmpty().filterNot { it.string("id") in confirmed }
         val nextRequests = json.objects("requests").map { it.string("key") }.filter(String::isNotBlank).toSet()
         val result = mutableListOf<TaskNotice>()
         val goal = json.optJSONObject("goal")
@@ -67,18 +115,20 @@ internal class TaskChangeTracker {
             val id = turn.string("id")
             val status = turn.string("status")
             if (id.isNotBlank()) {
-                if (status == "inProgress") running += id
+                if (status == "inProgress") { running += id; settled -= id }
                 else if (status in setOf("completed", "failed")) {
                     if (((!goalOwnsCompletion && id !in goalOwnedTurns) || status == "failed") && (id in running || (initialized && overlap && id == latest && id !in known)))
                         result += TaskNotice("turn:$id:$status", if (status == "failed") "failed" else "completed")
-                    running -= id; goalOwnedTurns -= id
-                } else if (status in setOf("interrupted", "canceled", "cancelled")) { running -= id; goalOwnedTurns -= id }
+                    running -= id; goalOwnedTurns -= id; settled += id
+                } else if (status in setOf("interrupted", "canceled", "cancelled")) { running -= id; goalOwnedTurns -= id; settled += id }
                 known += id
             }
         }
         json.string("activeTurnId").takeIf(String::isNotBlank)?.let { running += it }
+        confirmed.keys.forEach { terminals.remove(it) }
         initialized = true
         requests = nextRequests
+        while (settled.size > 256) settled.remove(settled.first())
         while (goalOwnedTurns.size > 256) goalOwnedTurns.remove(goalOwnedTurns.first())
         while (known.size > 256) known.remove(known.first())
         return result.filter { announced.add(it.key) }.also { while (announced.size > 256) announced.remove(announced.first()) }
@@ -106,14 +156,15 @@ data class TaskNotificationTarget(val base: String, val threadId: String) {
 class TaskNotifications(private val context: Context, private val api: RelayApi, private val scope: CoroutineScope,
     private val nodeBase: String, var nodeName: String, private val requestPermission: () -> Unit,
     private val failure: (Throwable) -> Unit, private val sync: NodeSessionSync? = null) {
-    private data class Watch(val tracker: TaskChangeTracker, val job: Job, val signal: Channel<Unit>, var busy: Boolean = false, var lastReadNanos: Long = 0, var regular: Boolean = true)
+    private data class Watch(val tracker: TaskChangeTracker, val job: Job, val signal: Channel<Unit>, var busy: Boolean = false, var lastReadNanos: Long = 0, var regular: Boolean = true, var needsHistoryCheck: Boolean = false, var lastHistoryCheckNanos: Long = 0)
     private val eventSource = sync ?: NodeSessionSync(api, scope)
     private val watches = linkedMapOf<String, Watch>()
     private val pinnedByProject = mutableMapOf<String, Set<String>>()
     private val preferences = notificationPreferences(context)
 
-    fun updatePinned(projectId: String, ids: Set<String>) {
-        val removed = pinnedByProject.put(projectId, ids).orEmpty() - ids
+    fun updatePinned(projectId: String, ids: Set<String>, complete: Boolean = true) {
+        val next = mergePinnedObservations(pinnedByProject[projectId].orEmpty(), ids, complete)
+        val removed = pinnedByProject.put(projectId, next).orEmpty() - next
         removed.forEach { id ->
             val watch = watches[id] ?: return@forEach
             if (!watch.regular && !isPinned(id)) {
@@ -172,9 +223,23 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
             for (ignored in signals) {
                 // The visible controller supplies authoritative snapshots through observe().
                 // Resume independent observation immediately when that controller pauses.
-                if (visibleThread == id) continue
-                try { observe(id, withTimeout(JSON_READ_TIMEOUT_MILLIS) { sync?.read(id) ?: api.call("/v1/threads/${encoded(id)}") }) }
+                val watch = watches[id] ?: continue
+                val historyCheck = watch.needsHistoryCheck
+                if (visibleThread == id && !tracker.hasPendingTerminals && !historyCheck) continue
+                val terminalRead = tracker.hasPendingTerminals
+                val readStarted = System.nanoTime()
+                val requireFresh = terminalRead || historyCheck
+                if (historyCheck) { watch.needsHistoryCheck = false; watch.lastHistoryCheckNanos = readStarted }
+                try { observe(id, withTimeout(JSON_READ_TIMEOUT_MILLIS) {
+                    val limit = if (terminalRead && !historyCheck) 2 else 30
+                    val head = sync?.read(id, freshAfterNanos = readStarted.takeIf { requireFresh }, limit = limit)
+                        ?: api.call("/v1/threads/${encoded(id)}?limit=$limit")
+                    if (historyCheck) fillObservedTurns(head, tracker.unresolvedTurns) { cursor, revision ->
+                        api.call("/v1/threads/${encoded(id)}/history?cursor=${encoded(cursor)}&limit=10&nativeRevision=${encoded(revision)}", background = true)
+                    } else head
+                }, freshAfterNanos = if (requireFresh) readStarted else Long.MIN_VALUE) }
                 catch (e: Exception) {
+                    if (historyCheck) watch.needsHistoryCheck = true
                     if (e is CancellationException) currentCoroutineContext().ensureActive()
                     if (e is ApiException && e.status == 401) failure(e)
                 }
@@ -207,20 +272,34 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
                 if (event.type == "native" && method.startsWith("item/") && !event.payload.has("id")) return@collect
                 val params = event.payload.optJSONObject("params")
                 val id = params?.string("threadId").orEmpty().ifBlank { params?.string("conversationId").orEmpty() }
-                if (event.type in setOf("reset", "connected") || id.isBlank()) watches.values.forEach { it.signal.trySend(Unit) }
-                else watches[id]?.signal?.trySend(Unit)
+                if (event.type in setOf("reset", "connected") || id.isBlank()) watches.values.forEach {
+                    if (event.type in setOf("reset", "connected") && it.tracker.hasUnresolvedTurns) it.needsHistoryCheck = true
+                    it.signal.trySend(Unit)
+                }
+                else watches[id]?.let { watch ->
+                    val turn = params?.optJSONObject("turn")
+                    if (turn != null && watch.tracker.observeTurnEvent(method, turn, System.nanoTime())) watch.busy = true
+                    watch.signal.trySend(Unit)
+                }
             }
         }
     }
 
-    fun observe(id: String, json: JSONObject) {
+    fun observe(id: String, json: JSONObject) = observe(id, json, Long.MIN_VALUE)
+
+    private fun observe(id: String, json: JSONObject, freshAfterNanos: Long) {
         val watch = watches[id] ?: return
         if (json.optJSONObject("thread")?.string("id") != id) return
         watch.lastReadNanos = System.nanoTime()
-        watch.busy = json.optJSONObject("goal")?.string("status") == "active" || json.string("activeTurnId").isNotBlank() || json.string("status") in setOf("running", "waiting") ||
+        val notices = watch.tracker.observe(json, freshAfterNanos)
+        watch.busy = watch.tracker.hasUnresolvedTurns || watch.tracker.hasPendingTerminals || json.optJSONObject("goal")?.string("status") == "active" || json.string("activeTurnId").isNotBlank() || json.string("status") in setOf("running", "waiting") ||
             json.objects("requests").isNotEmpty() || json.objects("queue").any { it.string("status") in setOf("queued", "pending", "waiting", "running") }
+        if (watch.tracker.missingFromHead(json) && System.nanoTime() - watch.lastHistoryCheckNanos >= 8_000_000_000L) {
+            watch.needsHistoryCheck = true
+            watch.signal.trySend(Unit)
+        }
         val title = sessionTitle(json.getJSONObject("thread"))
-        watch.tracker.observe(json).forEach { notice ->
+        notices.forEach { notice ->
             if (notice.kind == "completed" && isPinned(id)) {
                 if (preferences.getBoolean(PINNED_COMPLETION, false)) notify(id, title, notice, pinned = true)
             } else if (watch.regular && visibleThread != id) {

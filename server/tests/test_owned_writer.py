@@ -50,6 +50,21 @@ class OwnedRoutingTests(unittest.TestCase):
         self.busy = patch('rivo_relay.codex.owned_writer.WriterProcesses.busy', return_value=False).start()
         self.addCleanup(patch.stopall)
         self.addCleanup(self.pool.close)
+    def test_prepared_takeover_acquires_without_metadata_and_adopts_writer(self):
+        with self.pool.prepare_takeover('target') as acquire:
+            self.assertFalse(self.pool.owns('target'))
+            self.metadata.closed = True
+            result = acquire({'threadId': 'target', 'excludeTurns': True})
+        self.assertEqual('target', result['thread']['id'])
+        self.assertTrue(self.pool.owns('target'))
+        self.assertFalse(self.created[-1].closed)
+
+    def test_prepared_takeover_closes_unused_writer(self):
+        with self.pool.prepare_takeover('target'):
+            pass
+        self.assertTrue(self.created[-1].closed)
+        self.assertFalse(self.pool.owns('target'))
+
     def test_unmaterialized_release_preserves_writer_and_queue_state(self):
         runtime = RuntimeConnection(native=self.pool, desktop=Backend(), mode='app_server')
         service = CodexService(connection=runtime)

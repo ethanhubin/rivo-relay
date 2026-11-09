@@ -30,6 +30,18 @@ class CodexMediaProjectionTest {
             assertEquals(value, generatedImageSource(item, emptyList()))
         }
     }
+    @Test fun compactReferencePollsLibraryButWaitsForMatchingReadyImage() {
+        val source = "/v1/media/library/id/content"
+        val item = NativeMessage("image", "turn", "imageGeneration", "", JSONObject().put("result", source).put("mediaRef", true))
+        assertEquals(source, generatedMediaRequests(listOf(item)).single().source)
+        assertNull(generatedImageSource(item, emptyList()))
+        val asset = JSONObject().put("itemId", "image").put("turnId", "turn").put("status", "pending").put("originalUrl", source)
+        assertNull(generatedImageSource(item, listOf(asset)))
+        asset.put("status", "ready").put("turnId", "other")
+        assertNull(generatedImageSource(item, listOf(asset)))
+        asset.put("turnId", "turn")
+        assertEquals(source, generatedImageSource(item, listOf(asset)))
+    }
     @Test fun pendingOrWrongTurnReplicaCannotReplaceNativeImage() {
         val item = NativeMessage("image", "turn", "imageGeneration", "", JSONObject().put("savedPath", "/native/result.png"))
         val asset = JSONObject().put("itemId", "image").put("turnId", "turn").put("status", "pending").put("originalUrl", "/v1/media/library/id/content")

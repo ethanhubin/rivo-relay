@@ -11,6 +11,8 @@ import threading
 import time
 
 from .connection import CodexError
+from .host_probe import read_identity
+from ..read_budget import checkpoint
 from .native_convergence import (NativeHistoryConverger, NativeJournalWatermark,
                                  NativeProjectionWatermark, NativeConvergenceResult)
 
@@ -132,7 +134,8 @@ class NativeJournal:
                 return dict(descriptor)
         return None
 
-    def execution_states(self, thread_ids):
+    @read_identity
+    def execution_states(self, thread_ids, *, running_only=False):
         if not self.supported or not thread_ids:
             return {}
         binder = getattr(self._connection, 'history_host_connection', None)
@@ -141,16 +144,23 @@ class NativeJournal:
             connection = binder(thread_id) if binder else self._connection
             groups.setdefault(connection, []).append(thread_id)
         states = {}
+        local_proofs = {}
         batches = ((connection, ids[index:index + 32]) for connection, ids in groups.items()
                    for index in range(0, len(ids), 32))
         for connection, ids in batches:
+            checkpoint()
             try:
                 self._local.connection = connection
                 generation = str(connection.generation)
                 with self._inspection_lock:
                     known = {tid: self._inspections[(generation, tid)] for tid in ids
                              if (generation, tid) in self._inspections}
-                result = self._call(ids[0], 'activity', threadIds=ids, known=known)
+                result = self._call(ids[0], 'activity', threadIds=ids, known=known,
+                                    **({'runningOnly': True} if running_only else {}))
+                with self._descriptor_lock:
+                    runtime = self._hosts.get(generation)
+                    if runtime and runtime.get('identityMethod') == 'local-socket-and-open-state-database':
+                        local_proofs[connection] = dict(runtime)
                 states.update(result.get('states', {}))
                 for tid, inspection in result.get('inspections', {}).items():
                     if tid in ids:
@@ -160,6 +170,20 @@ class NativeJournal:
                 pass
             finally:
                 self._local.__dict__.pop('connection', None)
+        # Batch helpers still verify the process before/after each dispatch and
+        # recheck every writer lock. Only socket/lsof locality proof is shared
+        # within this read. Re-attest it before returning any collected states;
+        # a changed/denied proof must not publish stale running/idle evidence.
+        from .host_probe import local_native_host_info
+        for connection, runtime in local_proofs.items():
+            checkpoint()
+            try:
+                if local_native_host_info(connection, refresh=True) != runtime:
+                    raise CodexError('原生主机身份已变化', code='native_host_unverified')
+            except CodexError:
+                with self._descriptor_lock:
+                    self._hosts.pop(str(runtime.get('generation')), None)
+                return {}
         return states
 
     def _host(self):
@@ -179,8 +203,9 @@ class NativeJournal:
         request = {'runtime': runtime, 'threadId': thread_id, 'operation': operation, **extra}
         if runtime.get('identityMethod') in {'local-socket-and-open-state-database', 'relay-owned-child'}:
             # A sandboxed command cannot inspect ps even after the transport
-            # proved this is a local socket. Re-attest locality for every call;
-            # cached descriptors alone never authorize local filesystem access.
+            # proved this is a local socket. Re-attest locality independently or
+            # within the current read's proof scope; cached host descriptors alone
+            # never authorize local filesystem access.
             from .host_probe import local_native_host_info
             from .native_history_host import dispatch
             from .native_reprojection import NativeHistoryReprojectionError
@@ -259,7 +284,11 @@ class NativeJournal:
             return True
         cursor = None
         seen = set()
-        for _ in range(100):
+        # Preserve the former 100 pages * 100 turns search allowance when the
+        # adapter uses smaller full-history pages. Cancellation remains live.
+        page_limit = self.history_adapter.max_page_turns
+        for _ in range((10000 + page_limit - 1) // page_limit):
+            checkpoint()
             page = self.history_adapter.read_page(self.connection, thread_id, limit=100, cursor=cursor)
             if any(turn['id'] == turn_id for turn in page.turns):
                 return True

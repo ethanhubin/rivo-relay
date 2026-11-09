@@ -9,6 +9,7 @@ from .config import Config
 from .queue import ExecutionQueue
 from .database import Database
 from .events import EventBus
+from .client_projection import client_event
 from .pairing import PairingStore
 from .submissions import SubmissionStore, SubmissionConflict, SubmissionNotFound
 from .todos import TodoStore
@@ -57,6 +58,14 @@ class RelayApp:
                     self.queue.signal()
                 try:
                     self.media.observe_event(event)
+                    params = event.get('params') or {}
+                    method = event.get('method')
+                    if method in {'turn/started', 'turn/completed'} and isinstance(params.get('turn'), dict):
+                        self.media.observe_thread({'id': params.get('threadId'), 'turns': [params['turn']]})
+                    elif method == 'thread/started' and isinstance(params.get('thread'), dict):
+                        self.media.observe_thread(params['thread'])
+                    if method in {'item/completed', 'turn/started', 'turn/completed', 'thread/started'}:
+                        event = client_event(event, compact_images=True)
                 except Exception:
                     # A derived media receipt cannot block canonical event delivery.
                     pass

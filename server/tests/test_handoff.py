@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 import copy
 import unittest
 import socket
@@ -95,6 +96,30 @@ class HandoffTests(unittest.TestCase):
         self.assertNotIn('secret-native-text', str(records))
         self.assertNotIn('secret-owner', str(records))
         self.assertNotIn('ticket', str(records))
+
+    def test_takeover_acquires_before_restarting_shared_daemon(self):
+        service, native, writers = self.service(restart=True)
+        steps = []
+        @contextmanager
+        def prepare(thread_id):
+            steps.append('prepare')
+            def acquire(params):
+                steps.append('acquire')
+                return {'thread': {'id': thread_id}}
+            yield acquire
+        native.prepare_takeover = prepare
+        writers.terminate.side_effect = lambda _: steps.append('terminate')
+        original_start = native.start
+        def start():
+            steps.append('start')
+            return original_start()
+        native.start = start
+        service.handoff(TID, 'takeover', owner='phone', ticket='ticket', confirmed=True)
+        self.assertLess(steps.index('prepare'), steps.index('terminate'))
+        self.assertLess(steps.index('terminate'), steps.index('acquire'))
+        self.assertIn('start', steps[steps.index('acquire') + 1:])
+        self.assertNotIn('thread/resume', [method for method, _ in native.calls])
+        self.assertNotIn(('ownership', ''), service.observations_for(TID))
 
     def test_missing_history_host_cache_can_request_live_handoff_preview(self):
         service, native, writers = self.service()
