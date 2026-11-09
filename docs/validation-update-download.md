@@ -30,3 +30,12 @@
 - 新版本保留线上 0.2.86 提交 `3c4d0a2` 的接管修复；Android 递增至 0.2.87 / versionCode 99。
 - VPS `/var/lib/rivo-gateway` 所在磁盘可用 37,959,106,560 字节，更新目录 78,128,603 字节；满足至少 1 GiB 预留及 512 MiB 更新限额，无需清理其他服务。
 - 上述“未部署”是开发阶段验证边界；本次发布进度及最终签名、主节点/VPS 验收记录保存在 `workspace/artifacts/release-0.2.87/`，以发布 CLI 的 `complete` 状态及网关部署验收结果为准。
+
+## 0.2.87 发布完成（2026-11-09 20:12，北京时间）
+
+- 发布源码提交：`42e011e7b68eddde71c66019d0e47d914cc48745`，功能分支已推送；发布 CLI 状态为 `complete`。构建最终 APK，版本 0.2.87 / versionCode 99，大小 19,186,694 字节，SHA-256 `a3c9e9601662aacce38066d10f794a0c2f8e4576bc75c8e39a748668e6645c18`；签名与上一版一致。
+- 主节点服务切换完成，8 个已有授权保留、数据库备份完整性通过，Codex 原生运行时身份未变化。Tailscale HTTP 更新源与 VPS 更新中心均完成清单及文件完整性验收。
+- VPS 运行快照切换至 `/opt/rivo-relay/deployments/42e011e7b68eddde71c66019d0e47d914cc48745`，仅重启 Rivo 网关；健康检查通过，观察到 4 次节点连接恢复事件。保留上一运行快照用于回退。
+- `/etc/modules-load.d/rivo-update-bbr.conf` 已写入一行 `tcp_bbr`，使模块重启后加载；主机默认算法仍为 CUBIC，仅更新下载连接选择 BBR。
+- 使用已信任证书指纹重新从生产接口完整下载 APK 和节点包，大小/SHA-256 均匹配发布清单，64 KiB Range 内容验证通过。响应关联日志确认两次请求分别为 `selected_bbr` / `already_bbr`、`outcome=sent`，本次观测重传 0；未将本机短时下载速度作为手机提速证据。
+- 运行验收记录：`workspace/artifacts/release-0.2.87/gateway-deployment.json`、`gateway-live-verification.json`、`gateway-log-verification.json`。发布过程中复用此前适用回归，不重复运行全量测试或 lint；未新增真机/模拟器测试，手机速度仍待用户实测。
