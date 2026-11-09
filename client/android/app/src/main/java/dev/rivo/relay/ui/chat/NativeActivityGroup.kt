@@ -16,13 +16,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.data.*
 
-/** QiGuang CodexActivityGroup: one compact summary row; only non-command details expand on demand. */
+/** QiGuang CodexActivityGroup: one compact summary row; commands and context compaction stay summary-only. */
 @Composable
 internal fun NativeActivityGroup(row: NativeTimelineRow.Activities, isCurrent: Boolean = false, resourceItems: List<NativeResource>? = null, onFile: (String) -> Unit) {
     var expanded by rememberSaveable(row.key) { mutableStateOf(false) }
     var visibleDetails by rememberSaveable(row.key) { mutableIntStateOf(NATIVE_ACTIVITY_BATCH_SIZE) }
     val clipboard = LocalClipboardManager.current
-    val detailMessages = remember(row.messages) { row.messages.filter { it.activity?.kind != "command" } }
+    val detailMessages = remember(row.messages) { row.messages.filter { it.activity?.kind !in setOf("command", "context") } }
     val canExpand = detailMessages.isNotEmpty()
     val resources = resourceItems ?: remember(row.messages) { nativeResources(row.messages) }
     val connector = remember(row.messages) { row.messages.mapNotNull { nativeConnector(it.raw) }.distinct().singleOrNull() }
