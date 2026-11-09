@@ -28,7 +28,9 @@ class MarkdownMessageBoundaryTest {
     @Test fun mismatchedFencesAndLongCodeSpansNeverCreateImagesOrTables() {
         val source = "````markdown\n```\n![literal](/tmp/a.png)\n| a | b |\n|---|---|\n````\n~~~\n![other](/tmp/b.png)\n~~~\n``a ` | ![last](/tmp/c.png)``"
         assertTrue(markdownImageSources(source).isEmpty())
-        assertEquals(1, parseChatMarkdownBlocks(source).size)
+        val blocks = parseChatMarkdownBlocks(source)
+        assertEquals(2, blocks.filterIsInstance<ChatMarkdownBlock.Code>().size)
+        assertTrue(blocks.none { it is ChatMarkdownBlock.Table })
         val text = render(source)
         assertTrue(text.text.contains("```"))
         assertTrue(text.text.contains("![literal](/tmp/a.png)"))

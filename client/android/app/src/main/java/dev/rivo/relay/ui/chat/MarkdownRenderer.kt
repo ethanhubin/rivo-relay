@@ -46,6 +46,7 @@ internal fun renderMarkdownSyntax(markdown: String, budget: MarkdownScanBudget):
 
 internal sealed interface ChatMarkdownBlock {
   data class Text(val markdown: String) : ChatMarkdownBlock
+  data class Code(val content: String) : ChatMarkdownBlock
 
   data class Table(
     val headers: List<String>,
@@ -86,7 +87,6 @@ internal fun splitChatMarkdownBlocks(markdown: String): List<ChatMarkdownBlock> 
   val blocks = mutableListOf<ChatMarkdownBlock>()
   var textStart = 0
   var index = 0
-  var fence: MarkdownFence? = null
 
   fun appendText(endExclusive: Int) {
     val text = lines.subList(textStart, endExclusive).joinToString("\n").trim('\n')
@@ -94,13 +94,17 @@ internal fun splitChatMarkdownBlocks(markdown: String): List<ChatMarkdownBlock> 
   }
 
   while (index < lines.size) {
-    if (fence != null) {
-      if (fence!!.closes(lines[index])) fence = null
-      index += 1
+    val opening = markdownFenceAt(lines[index])
+    if (opening != null) {
+      appendText(index)
+      val start = index + 1
+      var end = start
+      while (end < lines.size && !opening.closes(lines[end])) end += 1
+      blocks += ChatMarkdownBlock.Code(lines.subList(start, end).joinToString("\n"))
+      index = if (end < lines.size) end + 1 else end
+      textStart = index
       continue
     }
-    markdownFenceAt(lines[index])?.let { fence = it }
-    if (fence != null) { index += 1; continue }
     if (index + 1 < lines.size) {
       val headers = parseMarkdownTableRow(lines[index])
       val alignments = headers?.let { parseMarkdownTableSeparator(lines[index + 1], it.size) }

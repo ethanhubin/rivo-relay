@@ -48,6 +48,7 @@ fun MessageContent(
                             parsed.imageSources.forEach { source -> key(source) { inlineImage(source) } }
                         }
                     }
+                    is ChatMarkdownBlock.Code -> MessageCodeBlock(block.content, onCopyText, onQuoteText)
                     is ChatMarkdownBlock.Table -> ChatMarkdownTable(block, "message_$partIndex", blockIndex, onCopyText, onQuoteText, openRegularLink, openImage)
                 } } }
             }
@@ -131,3 +132,31 @@ internal fun messageFileTarget(target: String, cwd: String): String? {
 /** QiGuang resolves file links before offering the external webpage menu. */
 internal fun isMessageFileWebLink(target: String): Boolean =
     isHttpWebLink(target) && fileMimeType(target) !in setOf("application/octet-stream", "text/html")
+
+@Composable
+private fun MessageCodeBlock(content: String, onCopyText: (String) -> Unit, onQuoteText: ((String) -> Unit)?) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = { onCopyText(markdownCopyPlainText(content)) }) { Text("复制纯文本") }
+                TextButton(onClick = { onCopyText(content) }) { Text("复制原文") }
+            }
+            SelectableReadOnlyText(
+                rendered = AnnotatedString(content),
+                modifier = Modifier.fillMaxWidth(),
+                testTag = "message_code",
+                onCopyText = onCopyText,
+                onQuoteText = onQuoteText,
+                textStyle = MaterialTheme.typography.bodyLarge.copy(
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    color = LocalContentColor.current,
+                ),
+            )
+        }
+    }
+}
