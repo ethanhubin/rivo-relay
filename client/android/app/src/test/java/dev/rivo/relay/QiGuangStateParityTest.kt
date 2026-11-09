@@ -33,19 +33,13 @@ class QiGuangStateParityTest {
             nativeExecution = "idle", deliveryState = "recovery", recoveryRequired = true, hasOutstandingWork = true)
         assertFalse(threadIsActive(idle))
         assertFalse(threadIsExecuting(idle))
-        assertEquals("已停止", threadPendingLabel(idle))
         assertTrue(threadIsExecuting(idle.copy(nativeExecution = "running", status = "running")))
         val waiting = idle.copy(status = "waiting", nativeExecution = "running")
         assertFalse(threadIsExecuting(waiting))
-        assertEquals("已停止", threadPendingLabel(waiting))
-        assertEquals("已停止", threadPendingLabel(idle.copy(status = "unknown", nativeExecution = "unknown",
-            recoveryRequired = false, hasOutstandingWork = false, deliveryState = "idle")))
         val queued = idle.copy(recoveryRequired = false, deliveryState = "queued", queueDepth = 1)
         assertFalse(threadIsExecuting(queued))
         assertFalse(threadIsActive(queued))
         assertFalse(threadIsExecuting(idle.copy(status = "running")))
-        assertEquals("已停止", threadPendingLabel(queued))
-        assertEquals("已停止", threadPendingLabel(queued.copy(deliveryState = "failed", queueDepth = 0)))
     }
 
     @Test fun explicitNativeStateOverridesLegacyStatus() {
@@ -55,11 +49,9 @@ class QiGuangStateParityTest {
             val stopped = base.copy(nativeExecution = native)
             assertFalse(threadIsExecuting(stopped))
             assertFalse(threadIsActive(stopped))
-            assertEquals("已停止", threadPendingLabel(stopped))
         }
         val recovery = base.copy(status = "idle", nativeExecution = "idle", recoveryRequired = true)
         assertFalse(threadIsActive(recovery))
-        assertNull(threadPendingLabel(recovery.copy(status = "running", nativeExecution = "running")))
     }
 
     @Test fun newRunningTurnQueuesInputWhileOldRecoveryRemains() {

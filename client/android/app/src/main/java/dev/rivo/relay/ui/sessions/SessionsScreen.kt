@@ -41,7 +41,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.R
 import dev.rivo.relay.codex.threadIsExecuting
-import dev.rivo.relay.codex.threadPendingLabel
 import dev.rivo.relay.codex.threadIsActive
 import org.json.JSONObject
 import dev.rivo.relay.data.string
@@ -143,10 +142,9 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                         TextButton(onClick = { selectedIds = emptySet() }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("取消") }
                     }
                 }
-                if (!catalogComplete) Text(if (loading) "正在补全会话列表…" else "列表尚未补全，请刷新重试", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (loading && shown.isEmpty() && shownPending.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(28.dp)) }
                 else if (shown.isEmpty() && shownPending.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                    Text(when { !catalogComplete -> "列表尚未补全"; search.isNotBlank() -> "没有匹配的会话"; archived -> "没有已归档会话"; !showCreate -> "暂无会话"; else -> "还没有 Codex 会话，点击右下角新建" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (catalogComplete) Text(when { search.isNotBlank() -> "没有匹配的会话"; archived -> "没有已归档会话"; !showCreate -> "暂无会话"; else -> "还没有 Codex 会话，点击右下角新建" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else LazyColumn(Modifier.fillMaxWidth().weight(1f), state = listState, contentPadding = PaddingValues(bottom = 100.dp), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Xs)) {
                     items(shownPending, key = { "pending:${it.id}" }, contentType = { "pending" }) { pending ->
                         Surface(onClick = { onResumePending(pending.id) }, shape = MaterialTheme.shapes.large,
@@ -180,10 +178,6 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                                         thread.source == "todo" -> Text("☑", Modifier.testTag("session_source_todo_${thread.id}").semantics { contentDescription = "来自待办" }, style = MaterialTheme.typography.titleMedium)
                                         else -> Icon(painterResource(android.R.drawable.sym_action_chat), null, Modifier.size(20.dp))
                                     }
-                                }
-                                if (!threadIsExecuting(thread)) threadPendingLabel(thread)?.let { label ->
-                                    Text(label, Modifier.padding(start = 4.dp), style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.secondary)
                                 }
                                 Text(thread.name, Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.bodyLarge,
                                     fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
