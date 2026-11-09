@@ -237,7 +237,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                         if (revisionChanged) invalidateHistory()
                         headCache.remember(resolved)
                         cachedHistoryEpoch = historyEpoch
-                        reconcilePending(id, snapshot)
+                        reconcilePending(id, snapshot, authoritativeQueue = true)
                         mutable.update { current ->
                             current.transition(SessionSyncEvent.ReadSucceeded).copy(snapshot = projected, mediaValidationEpoch = current.mediaValidationEpoch + 1,
                                 earlierLoaded = if (revisionChanged) false else current.earlierLoaded,
@@ -304,7 +304,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
     }
     private fun resolveMessage(message: PendingNativeMessage, response: org.json.JSONObject): PendingNativeMessage? = when (response.string("status")) {
         "failed" -> message.copy(delivery = "failed")
-        "accepted" -> if (message.kind in setOf("queue", "create")) null else message.copy(delivery = "accepted",
+        "accepted" -> if (message.kind == "create") null else message.copy(delivery = "accepted",
             nativeTurnId = response.optJSONObject("receipt")?.string("turnId")?.takeIf(String::isNotBlank))
         else -> message.copy(delivery = "unknown")
     }
@@ -323,7 +323,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
             publishPending(id)
         }
     }
-    private fun reconcilePending(id: String, snapshot: SessionSnapshot) {
+    private fun reconcilePending(id: String, snapshot: SessionSnapshot, authoritativeQueue: Boolean = false) {
         api.sentImages.reconcile(snapshot, pendingByThread[id].orEmpty())
         if (pendingLoaded && pendingByThread[id].isNullOrEmpty()) return
         val clientIds = snapshot.messages.filter { it.type in setOf("userMessage", "user_message") }
@@ -333,15 +333,20 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         val candidates = if (pendingLoaded) pendingByThread[id].orEmpty().mapTo(hashSetOf()) { it.clientId } else clientIds
         val persistedClients = if (snapshot.nativeReady) clientIds.intersect(candidates) else emptySet()
         val queueIds = snapshot.queue.map { it.id }.toSet()
+        // A fresh head owns the complete queue. An accepted item may already have
+        // completed or been withdrawn elsewhere; history pages cannot prove that.
+        val retiredQueueIds = queueIds + pendingByThread[id].orEmpty().filter {
+            authoritativeQueue && it.kind == "queue" && it.delivery == "accepted"
+        }.map { it.clientId }
         val newlyPersisted = persistedClients - changedPendingClients
         if (!pendingLoaded) changedPendingClients += persistedClients
         store?.enqueueRemovePendingMessages(newlyPersisted)
-        pendingByThread[id].orEmpty().filter { it.kind == "queue" && it.clientId in queueIds }.forEach {
+        pendingByThread[id].orEmpty().filter { it.kind == "queue" && it.clientId in retiredQueueIds }.forEach {
             if (!pendingLoaded) changedPendingClients += it.clientId
             store?.enqueueRemovePendingMessages(setOf(it.clientId))
         }
         pendingByThread[id] = pendingByThread[id].orEmpty().filterNot {
-            it.clientId in persistedClients || it.kind == "queue" && it.clientId in queueIds
+            it.clientId in persistedClients || it.kind == "queue" && it.clientId in retiredQueueIds
         }
         publishPending(id)
     }

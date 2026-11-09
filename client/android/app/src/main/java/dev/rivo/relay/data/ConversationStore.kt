@@ -453,7 +453,7 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
                 val state = read(source.nameWithoutExtension, 16 * 1024) ?: return@forEach
                 if (state.string("submissionId") != submissionId) return@forEach
                 val status = response.string("status")
-                if (status == "accepted" && state.string("kind") in setOf("queue", "create")) {
+                if (status == "accepted" && state.string("kind") == "create") {
                     removePendingMessage(state.string("clientId"))
                 } else {
                     state.put("delivery", when (status) { "accepted", "failed" -> status; else -> "unknown" })

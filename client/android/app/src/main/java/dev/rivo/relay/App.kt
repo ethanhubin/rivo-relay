@@ -65,7 +65,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     savedNodes: List<dev.rivo.relay.connection.SavedNode>, selectNode: (String) -> Unit, settingsConnection: (String) -> dev.rivo.relay.connection.NodeConnection?,
     setNodeConnectionMode: (String, dev.rivo.relay.connection.ConnectionMode) -> dev.rivo.relay.connection.NodeConnection?) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    var route by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastRoute")?.let { if (it == "new") "sessions" else it }?.takeIf { it in setOf("projects", "sessions", "chat", "todos", "settings") } ?: "projects") }
+    var route by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastRoute")?.let { if (it == "new") "sessions" else it }?.takeIf { it in setOf("projects", "sessions", "chat", "sites", "todos", "settings") } ?: "projects") }
     var threadId by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastThreadId")) }
     var chatParent by rememberSaveable { mutableStateOf("sessions") }
     var addProject by remember { mutableStateOf(false) }
@@ -275,13 +275,14 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             try { awaitCancellation() } finally { node.session.pause() }
         } else node.session.close()
     }
-    val showBottomNavigation = route in setOf("projects", "todos", "settings")
+    val showBottomNavigation = route in setOf("projects", "sites", "todos", "settings")
     // NavigationBar draws behind the system gesture area and applies its own insets.
     Column(Modifier.fillMaxSize()
         .then(if (showBottomNavigation) Modifier else Modifier.navigationBarsPadding())
         .imePadding()) {
         Box(Modifier.weight(1f)) {
             when (route) {
+                "sites" -> dev.rivo.relay.ui.sites.SitesScreen(node.api, node.connection.name)
                 "settings" -> SettingsScreen(connection = node.connection, api = node.api,
                     resolveConnection = settingsConnection, setNodeConnectionMode = setNodeConnectionMode,
                     savedNodes = savedNodes,
@@ -631,6 +632,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
         if (showBottomNavigation) NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
             NavigationBarItem(selected = route == "projects", onClick = { route = "projects"; setError(null); node.catalog.refreshProjects() },
                 icon = { Text("⌘") }, label = { Text("Codex") }, modifier = Modifier.testTag("nav_codex"))
+            NavigationBarItem(selected = route == "sites", onClick = { route = "sites"; setError(null) },
+                icon = { dev.rivo.relay.ui.sites.ConnectorIcon("appgarden") }, label = { Text("Sites") }, modifier = Modifier.testTag("nav_sites"))
             NavigationBarItem(selected = route == "todos", onClick = { route = "todos"; setError(null); node.todos.refresh(); node.catalog.refreshProjects() },
                 icon = { Text("✓") }, label = { Text("待办") }, modifier = Modifier.testTag("nav_todos"))
             NavigationBarItem(selected = route == "settings", onClick = { route = "settings"; setError(null) },

@@ -375,3 +375,10 @@ v1 配对保持兼容。`scripts/start-node.sh` 的 v2 二维码 fragment 增加
 `GET /v1/projects?view=summary` 只返回项目身份、名称和根路径，`statsReady:false` 表示计数尚未加载，不应显示为零。默认 `view=full` 保留完整统计。
 
 `GET /v1/threads?projectId=…&view=summary` 返回状态库中的轻量会话元数据，顶层 `catalogComplete:false`。它是可展示的暂时结果，不包含完整 rollout/工作区归属与运行状态校准；不能据此断言不存在其他会话。客户端随后请求默认完整列表（`catalogComplete:true`）替换，且应在补全期间保留此前发现的会话。`archived` 过滤对两种视图均生效。摘要结果不用于执行准入或确认批量操作对象。
+
+### Sites（只读）
+
+`GET /v1/sites?cursor=…` 需要节点鉴权，返回 `{items:[{id,title,url,accessMode}],cursor}`。
+`url` 仅来自 `current_live_url`，未发布时为 null；分页 cursor 原样传递，客户端不解析。
+通过当前节点的辅助连接和临时会话调用固定的 `sites.list_sites`，结束时解除临时订阅并释放连接。
+不返回源码凭据、账号名单、截图签名 URL 或完整工具响应，不提供通用 MCP 分发、创建或发布接口。

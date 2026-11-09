@@ -290,6 +290,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val timeline = remember(state.id, snapshot?.messages, snapshot?.turnSettings, state.pendingMessages, snapshot?.activeTurnId, pendingTitle) {
         timelineCache.project(projectedSessionMessages(snapshot, if (pendingTitle == null) state.pendingMessages else emptyList()), snapshot?.activeTurnId, snapshot?.turnSettings.orEmpty())
     }
+    val resourceRows = remember(timeline) { nativeResourceRows(timeline) }
     // Preserve lastOrNull semantics, including review replies and empty turn IDs.
     val lastReplyIds = remember(snapshot?.messages) {
         snapshot?.messages.orEmpty()
@@ -417,7 +418,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 modelChange?.let { label -> Text(label,
                     Modifier.fillMaxWidth().padding(bottom = chatActivitySpacing).testTag("model_change_notice"),
                     style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                if (row is NativeTimelineRow.Activities) NativeActivityGroup(row, isCurrent = row.key == currentActivity?.key && !state.stale) { path -> nativeFilePath(path, cwd)?.let(::openFile) }
+                if (row is NativeTimelineRow.Activities) NativeActivityGroup(row, isCurrent = row.key == currentActivity?.key && !state.stale, resourceItems = resourceRows[row.key].orEmpty()) { path -> nativeFilePath(path, cwd)?.let(::openFile) }
                 else if (row is NativeTimelineRow.Notice) NativeTurnNotice(row.turn)
                 else if (row is NativeTimelineRow.Message) {
                 val message = row.message
@@ -612,7 +613,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 modifier = Modifier.testTag("resume_queue")) { Text("恢复队列") }
         }
         val waitingQueue = snapshot?.queue.orEmpty().filter { it.status !in setOf("running", "dispatching") && !it.recoveryRequired && it.id != snapshot?.recoveryTask?.id }
-        if (snapshot != null && waitingQueue.isNotEmpty()) ExecutionQueuePanel(snapshot.id, waitingQueue, !busy && !blocked && !writerBusy && state.canManageQueue(),
+        val displayedQueue = waitingQueue + projectedPendingQueue(snapshot, state.pendingMessages)
+        if (snapshot != null && displayedQueue.isNotEmpty()) ExecutionQueuePanel(snapshot.id, displayedQueue, !busy && !blocked && !writerBusy && state.canManageQueue(),
             canSteer = canOperate && snapshot.activeTurnId.isNotBlank() && snapshot.requests.isEmpty(),
             onEdit = ::editQueuedTask, onWithdraw = { removingQueue = it },
             onSteer = { task -> onQueue(JSONObject().put("operation", "steer").put("itemId", task.id).put("revision", task.revision).put("expectedTurnId", snapshot.activeTurnId), {}) },
