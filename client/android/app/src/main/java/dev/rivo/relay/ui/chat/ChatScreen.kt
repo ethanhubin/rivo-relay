@@ -35,6 +35,7 @@ import dev.rivo.relay.codex.displayControl
 import dev.rivo.relay.codex.ControlState
 import dev.rivo.relay.codex.canManageQueue
 import dev.rivo.relay.codex.canResumeQueue
+import dev.rivo.relay.codex.canContinueTask
 import dev.rivo.relay.codex.canCompose
 import dev.rivo.relay.data.*
 import org.json.JSONObject
@@ -61,6 +62,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     downloadFile: suspend (String, java.io.OutputStream, (Long, Long) -> Unit) -> Unit = { _, _, _ -> error("节点不支持文件下载") },
     onQueue: (JSONObject, () -> Unit) -> Unit = { _, _ -> },
     onGoal: (JSONObject) -> Unit = {},
+    onContinue: () -> Unit = {},
     draftStore: ConversationStore? = null, onPersistDraft: (String, ConversationDraft) -> Unit = { _, _ -> },
     onSendWithMode: ((JSONArray, String?, String?, String?, () -> Unit) -> Unit)? = null,
     readTool: suspend (String) -> JSONObject = { error("节点工具不可用") },
@@ -633,6 +635,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             preparing = preparing, error = attachmentError, enabled = !busy && !inputLocked && draftLoaded,
             textEditable = textEditable,
             canSend = !(goalMode && displayedGoal == null) && !pendingReceiptUnresolved && !pendingFirstTurnSent && (pendingGoal == null || goalCapability == true) && (draft.isNotBlank() || images.isNotEmpty() || files.isNotEmpty() || pendingGoal != null) && !state.stale && (snapshot != null || pendingTitle != null && pendingReady),
+            canContinue = state.canContinueTask() && !blocked && !submissionInFlight, onContinue = onContinue,
             isRunning = snapshot?.activeTurnId?.isNotBlank() == true, canStop = !busy && !blocked && !state.stale && canOperate, busy = busy,
             onAddImage = { focus.clearFocus(); keyboard?.hide(); imagePickerTarget = state.id; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
             onAddFile = { focus.clearFocus(); keyboard?.hide(); filePickerTarget = state.id; filePicker.launch(arrayOf("*/*")) },

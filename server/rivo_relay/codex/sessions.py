@@ -603,6 +603,8 @@ class CodexService:
         return {"thread": thread, "requests": requests, "settings": settings, 'control': control, 'plan': plan,
                 **goal_state,
                 'tokenUsage': usage, 'changes': changes, 'turnSettings': turn_settings,
+                "resumeTurnId": latest_turn.get('id') if status == 'idle' and not active
+                    and latest_turn.get('status') in ('interrupted', 'failed', 'canceled') else None,
                 "activeTurnId": active, "status": status, "readOnly": read_only, "nextCursor": history["nextCursor"],
                 "backwardsCursor": history["backwardsCursor"],
                 "nativeRevision": history['nativeRevision'], "nativeHeadRevision": history.get('nativeHeadRevision'), "nativeSync": history['nativeSync'],
@@ -780,7 +782,7 @@ class CodexService:
             raise CodexError("请输入消息", code="invalid_message", http_status=400)
         return [{"type": "text", "text": text, "text_elements": []}]
 
-    def send(self, thread_id, text, model=None, effort=None, client_message_id=None, *, input_items=None, mode=None, service_tier=None, acquire_released=False, require_goal_support=False):
+    def send(self, thread_id, text, model=None, effort=None, client_message_id=None, *, input_items=None, mode=None, service_tier=None, acquire_released=False, require_goal_support=False, resume_turn_id=None):
         self.start()
         with self.operation_gate(thread_id):
             if require_goal_support and not self.goal_capabilities()["goalSupported"]:
@@ -791,6 +793,16 @@ class CodexService:
             with self._lock:
                 inherited_settings = copy.deepcopy(self._settings.get(thread_id, {}))
             params = {"threadId": thread_id, "input": input_items if input_items is not None else self._input(text)}
+            if resume_turn_id is not None:
+                snapshot = self.get_session(thread_id, limit=2)
+                turns = snapshot['thread'].get('turns', [])
+                latest = turns[-1] if turns else {}
+                if (snapshot.get('activeTurnId') or snapshot.get('status') != 'idle'
+                        or latest.get('id') != resume_turn_id
+                        or latest.get('status') not in ('interrupted', 'failed', 'canceled')):
+                    raise CodexError('任务状态已变化，请刷新后重试', code='resume_conflict', http_status=409)
+                params['input'] = []
+                params['turnTrigger'] = 'resume_interrupted_task'
             context = attachment_context(self.connection, params['input'])
             if context:
                 params['additionalContext'] = context

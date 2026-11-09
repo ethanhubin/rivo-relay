@@ -782,6 +782,10 @@ class Handler(BaseHTTPRequestHandler):
                     target = validate_review(body.get('target'))
                     fn = lambda: self.app.queue.enqueue(thread_id, sid, connection_id,
                         {'input': [{'type': 'text', 'text': '代码审查 · ' + target['type']}], 'review': target})
+                elif action == "continue":
+                    resume_turn_id = required(body, 'expectedTurnId')
+                    fn = lambda: codex.send(thread_id, '', input_items=[], client_message_id=sid,
+                        acquire_released=True, resume_turn_id=resume_turn_id)
                 elif action == "turns":
                     items = native_input(body)
                     text = required(body, "text", 200000) if items is None else body.get("text", "")

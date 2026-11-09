@@ -49,6 +49,33 @@ class FakeNative:
 
 
 class NativeSemanticsTests(unittest.TestCase):
+    def test_continue_uses_empty_input_and_native_trigger(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        snapshot = {'thread': {'turns': [{'id': 'old', 'status': 'interrupted'}]},
+                    'status': 'idle', 'activeTurnId': None}
+        with patch.object(service, 'get_session', return_value=snapshot):
+            service.send('thread', '', input_items=[], resume_turn_id='old', client_message_id='resume-1')
+        params = next(p for m, p in native.calls if m == 'turn/start')
+        self.assertEqual([], params['input'])
+        self.assertEqual('resume_interrupted_task', params['turnTrigger'])
+        self.assertEqual('resume-1', params['clientUserMessageId'])
+
+    def test_continue_rejects_active_changed_and_completed_turns(self):
+        for status, active, turn_id, turn_status in (
+                ('running', 'old', 'old', 'interrupted'),
+                ('idle', None, 'new', 'interrupted'),
+                ('idle', None, 'old', 'completed'),
+                ('unknown', None, 'old', 'interrupted')):
+            with self.subTest(status=status, turn_id=turn_id, turn_status=turn_status):
+                native = FakeNative()
+                service = CodexService(connection=native)
+                snapshot = {'thread': {'turns': [{'id': turn_id, 'status': turn_status}]},
+                            'status': status, 'activeTurnId': active}
+                with patch.object(service, 'get_session', return_value=snapshot), self.assertRaises(CodexError):
+                    service.send('thread', '', input_items=[], resume_turn_id='old')
+                self.assertFalse(any(m == 'turn/start' for m, _ in native.calls))
+
     def test_permission_presets_and_project_inheritance(self):
         self.assertEqual({}, CodexService._permission_options(None, None))
         for name, sandbox, policy, reviewer in (

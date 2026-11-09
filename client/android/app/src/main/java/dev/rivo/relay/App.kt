@@ -26,6 +26,7 @@ import dev.rivo.relay.codex.SessionState
 import dev.rivo.relay.codex.control
 import dev.rivo.relay.codex.catalogCacheNoticeVisible
 import dev.rivo.relay.codex.canQueueOperation
+import dev.rivo.relay.codex.canContinueTask
 import dev.rivo.relay.codex.canCompose
 import dev.rivo.relay.codex.pinnedThreadsToObserve
 import dev.rivo.relay.ui.login.LoginScreen
@@ -494,6 +495,12 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         val id = threadId
                         if (id != null && current.id == id && current.snapshot?.id == id && !current.stale && current.control().canOperate && writable)
                             node.submissions.submit("/v1/threads/${encoded(id)}/settings", settings, "更新会话设置") { if (threadId == id) node.session.refresh() }
+                    }, onContinue = {
+                        val current = node.session.state.value
+                        if (writable && current.id == threadId && current.canContinueTask()) {
+                            node.submissions.submit("/v1/threads/${encoded(threadId!!)}/continue",
+                                JSONObject().put("expectedTurnId", current.snapshot!!.resumeTurnId), "继续任务") { node.session.refresh() }
+                        }
                     }, onStop = {
                         node.session.state.value.let { current -> current.snapshot?.takeIf { writable && current.control().canOperate && it.id == threadId && current.id == threadId } }?.let { snapshot ->
                             node.submissions.submit("/v1/threads/${encoded(snapshot.id)}/interrupt", JSONObject().put("turnId", snapshot.activeTurnId), "停止任务") { node.session.refresh() }

@@ -309,6 +309,20 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(['probe'], calls)
         self.assertFalse(self.native.created)
 
+    def test_continue_empty_input_is_deduplicated_and_requires_target(self):
+        path = '/v1/threads/thread-1/continue'
+        body = {'submissionId': 'continue-one', 'expectedTurnId': 'interrupted-turn'}
+        first = self.request('POST', path, body, token=self.token)
+        second = self.request('POST', path, body, token=self.token)
+        self.assertEqual('accepted', first[1]['status'])
+        self.assertEqual(first[:2], second[:2])
+        self.assertEqual(1, len(self.native.sent))
+        thread, text, options = self.native.sent[0]
+        self.assertEqual('', text)
+        self.assertEqual([], options['input_items'])
+        self.assertEqual('interrupted-turn', options['resume_turn_id'])
+        self.assertEqual(400, self.request('POST', path, {'submissionId': 'missing'}, token=self.token)[0])
+
     def test_goal_required_turn_flag_is_validated_and_forwarded(self):
         path = '/v1/threads/thread-1/turns'
         body = {'submissionId': 'first-goal-turn', 'text': 'Task', 'requireGoalSupport': True}
