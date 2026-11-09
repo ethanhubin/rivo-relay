@@ -196,19 +196,28 @@ class CodexService:
         self.connection.close()
 
     def idle_for_update(self):
-        if not self.status().get('connected'):
-            return False
-        with self._lock:
-            threads = set(self._joined) | set(self._active) | {tid for tid, _ in self._live} | set(self._unmaterialized)
-        threads.update(getattr(self.connection, 'update_threads', lambda: [])())
+        # Metadata only: never resume a writer or repair history to decide whether
+        # an update may stop Relay. All reads share one short budget.
+        from ..read_budget import read_budget, read_lock
         try:
-            for thread_id in threads:
-                state = self.get_session(thread_id)
-                if (state.get('status') != 'idle' or state.get('activeTurnId') or state.get('requests')
-                        or (state.get('goal') or {}).get('status') == 'active'
-                        or (state.get('nativeSync') or {}).get('state', 'ready') != 'ready'):
+            with read_budget(seconds=2):
+                if not self.status().get('connected'):
                     return False
-            return True
+                with read_lock(self._lock):
+                    if self._unmaterialized:
+                        return False
+                    threads = set(self._joined) | set(self._active) | {tid for tid, _ in self._live}
+                threads.update(getattr(self.connection, 'update_threads', lambda: [])())
+                for thread_id in threads:
+                    if self.interactions.list(thread_id):
+                        return False
+                    thread = self.connection.request('thread/read',
+                        {'threadId': thread_id, 'includeTurns': False}, timeout=2)['thread']
+                    if thread_status(thread) != 'idle' or thread_waiting(thread):
+                        return False
+                    if (self.read_goal(thread_id).get('goal') or {}).get('status') == 'active':
+                        return False
+                return True
         except Exception:
             return False
 

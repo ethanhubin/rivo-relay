@@ -144,6 +144,31 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(200, self.request('POST', '/internal/update-activate', {}, token='test-agent-only')[0])
             self.assertEqual(200, self.request('GET', '/v1/node', token=self.token)[0])
 
+    def test_update_status_requires_authentication_and_is_sanitized(self):
+        directory = self.config.workspace / 'auto-update'
+        directory.mkdir()
+        (directory / 'status.json').write_text(json.dumps({'phase': 'waiting_idle',
+            'reason': 'submission_pending_or_unknown', 'token': 'private', 'python': '/private'}))
+        self.assertEqual(self.request('GET', '/v1/node-updates/status')[0], 401)
+        status, data, _ = self.request('GET', '/v1/node-updates/status', token=self.token)
+        self.assertEqual(status, 200)
+        self.assertEqual(data['reason'], 'submission_pending_or_unknown')
+        self.assertNotIn('private', json.dumps(data))
+
+    def test_expired_stop_permit_does_not_shutdown(self):
+        self.app.codex.idle_for_update = lambda: True
+        with patch.dict('os.environ', {'RIVO_UPDATE_TOKEN': 'test-agent-only'}):
+            status, permit, _ = self.request('POST', '/internal/update-lease', {}, token='test-agent-only')
+            self.assertEqual(status, 200)
+            self.app.update_gate.until = 0
+            with patch.object(self.server, 'shutdown') as stop:
+                status, result, _ = self.request('POST', '/internal/update-stop',
+                    {'lease': permit['lease']}, token='test-agent-only')
+                self.assertEqual(status, 409)
+                self.assertEqual(result['reason'], 'lease_expired')
+                stop.assert_not_called()
+            self.assertEqual(self.request('GET', '/health')[0], 200)
+
     def test_node_rename_preserves_existing_authorization(self):
         self.assertEqual('test-machine', self.paired['node']['name'])
         with patch('rivo_relay.node_name.discover_name', return_value='renamed-tailnet-node'):

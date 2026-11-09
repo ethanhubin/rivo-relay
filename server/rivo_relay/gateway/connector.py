@@ -17,11 +17,20 @@ log = logging.getLogger(__name__)
 
 
 class Connector:
-    def __init__(self, base: str, key: dict, local_port: int):
+    def __init__(self, base: str, key: dict, local_port: int, *, on_ready=None):
         self.base, self.key = base, key
         self.local = f'http://127.0.0.1:{local_port}'
         self.ready = asyncio.Event()
         self.tasks = set()
+        self.on_ready = on_ready
+
+    def set_ready(self, connected):
+        self.ready.set() if connected else self.ready.clear()
+        if self.on_ready:
+            try:
+                self.on_ready(connected)
+            except OSError as error:
+                event('gateway_readiness_write_failed', error=type(error).__name__)
 
     async def transfer(self, session, ticket, local_session=None):
         local_session = local_session or session
@@ -117,7 +126,7 @@ class Connector:
                         hello = await asyncio.wait_for(ws.receive_json(), 10)
                         if not hello.get('ready'):
                             raise ValueError('Unexpected gateway handshake')
-                        self.ready.set()
+                        self.set_ready(True)
                         delay = 1
                         event('gateway_connected')
                         async for message in ws:
@@ -133,7 +142,7 @@ class Connector:
                     event('gateway_reconnecting', error=type(error).__name__, retry_seconds=delay)
                 finally:
                     event('gateway_disconnected', retry_seconds=delay)
-                    self.ready.clear()
+                    self.set_ready(False)
                     active = list(self.tasks)
                     for task in active:
                         task.cancel()

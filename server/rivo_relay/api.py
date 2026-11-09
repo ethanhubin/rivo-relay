@@ -390,14 +390,31 @@ class Handler(BaseHTTPRequestHandler):
                 if (self.client_address[0] not in ('127.0.0.1', '::1') or not expected
                         or not secrets.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + expected)):
                     raise ApiError(403, 'forbidden', 'Local update agent required')
-                self.read_body(limit=4096)
+                update_body = self.read_body(limit=4096)
                 if path[-1] == 'update-activate':
                     with self.app.update_gate.lock:
                         self.app.update_gate.until = 0
+                        self.app.update_gate.lease = None
                     self.send_json(200, {'ready': True})
                     return
-                ready = self.app.update_gate.acquire(self.app)
-                self.send_json(200 if ready else 409, {'ready': ready})
+                gate = self.app.update_gate
+                if path[-1] == 'update-stop' and 'lease' in update_body:
+                    ready = gate.consume(update_body['lease'])
+                else:
+                    # Legacy agents may still use single-step stop. Preserve the
+                    # protocol while preventing an expired/failed write from stopping.
+                    ready = gate.acquire(self.app)
+                    if ready and path[-1] == 'update-stop':
+                        ready = gate.consume(gate.lease)
+                try:
+                    self.send_json(200 if ready else 409, {'ready': ready, 'reason': gate.reason,
+                                   'lease': gate.lease if ready else None})
+                except OSError:
+                    if ready:
+                        with gate.lock:
+                            gate.until = 0
+                            gate.lease = None
+                    raise
                 if ready and path[-1] == 'update-stop':
                     import threading
                     threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -446,6 +463,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {"todo": {"id": todo["id"], "completed": todo["completed"]}})
                 return
             token, connection = self.authenticate()
+            if self.command == 'GET' and path == ['v1', 'node-updates', 'status']:
+                from .gateway.update_status import public_status
+                self.send_json(200, public_status(self.app.config.workspace))
+                return
             if self.command == 'GET' and path == ['v1', 'media', 'versions']:
                 source = required({'source': query.get('source', [None])[0]}, 'source', 8192)
                 parts = source.strip('/').split('/')

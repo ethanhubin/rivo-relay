@@ -105,6 +105,25 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(.1)
         self.assertEqual(len(self.gateway.pending), 0)
 
+    async def test_managed_readiness_tracks_disconnect_and_reconnect(self):
+        from rivo_relay.gateway.update_status import write_ready, is_ready
+        path = self.directory / 'connected.json'
+        changed = []
+        def state(value):
+            changed.append(value)
+            write_ready(path, 'generation', value)
+        self.connector.on_ready = state
+        self.connector.set_ready(True)
+        self.assertTrue(is_ready(path, 'generation'))
+        await self.gateway.nodes[self.key['slot']].close()
+        for _ in range(50):
+            if False in changed: break
+            await asyncio.sleep(.02)
+        self.assertIn(False, changed)
+        self.assertFalse(is_ready(path, 'generation'))
+        await asyncio.wait_for(self.connector.ready.wait(), 4)
+        self.assertTrue(is_ready(path, 'generation'))
+
     async def test_many_live_transfers_do_not_starve_local_or_control_connections(self):
         responses = []
         try:

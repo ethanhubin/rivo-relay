@@ -137,7 +137,8 @@ class SupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.agent.state['active']['versionCode'], 0)
 
     async def test_health_failure_restores_db_and_previous_then_records_bad_digest(self):
-        self.agent.healthy.side_effect = [RuntimeError('bad candidate'), None]
+        from rivo_relay.gateway.updater import UpdateFailure
+        self.agent.healthy.side_effect = [UpdateFailure('candidate_exited', permanent=True), None]
         with self.assertRaises(RuntimeError): await self.agent.switch(self.candidate)
         self.agent.restore.assert_called_once()
         self.assertNotIn('pending', self.agent.state)
@@ -146,11 +147,12 @@ class SupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.agent.start.call_args_list[0].kwargs, {'trial': True})
 
     async def test_success_persists_before_admitting_work(self):
-        async def activate(operation):
+        async def activate(operation, **kwargs):
             if operation == 'activate':
                 saved = json.loads(self.agent.state_file.read_text())
                 self.assertEqual(saved['active'], self.candidate)
                 self.assertNotIn('pending', saved)
+            return {'ready': True, 'lease': 'test'}
         self.agent.local.side_effect = activate
         await self.agent.switch(self.candidate)
         self.agent.restore.assert_not_called()
@@ -189,12 +191,16 @@ class NativeIdleTests(unittest.TestCase):
         service._joined = set(); service._active = {}; service._unmaterialized = set()
         service._live = {('live-thread', 'turn-1'): {'status': 'completed'}}
         service.connection = SimpleNamespace(status=lambda: {'connected': True}, update_threads=lambda: {'owned-thread'})
-        service.get_session = Mock(return_value={'status': 'idle'})
+        service.interactions = SimpleNamespace(list=lambda _: [])
+        service.connection.request = Mock(return_value={'thread': {'status': {'type': 'idle'}}})
+        service.get_session = Mock(side_effect=AssertionError('Must not resume or repair history'))
+        service.read_goal = Mock(return_value={'goal': None})
         self.assertTrue(service.idle_for_update())
-        self.assertEqual({call.args[0] for call in service.get_session.call_args_list}, {'live-thread', 'owned-thread'})
-        service.get_session.return_value = {'status': 'idle', 'goal': {'status': 'active'}}
+        self.assertEqual({call.args[1]['threadId'] for call in service.connection.request.call_args_list}, {'live-thread', 'owned-thread'})
+        service.get_session.assert_not_called()
+        service.read_goal.return_value = {'goal': {'status': 'active'}}
         self.assertFalse(service.idle_for_update())
-        service.get_session.side_effect = RuntimeError('unknown native state')
+        service.connection.request.side_effect = RuntimeError('unknown native state')
         self.assertFalse(service.idle_for_update())
 
 class ProcessLifecycleTests(unittest.IsolatedAsyncioTestCase):

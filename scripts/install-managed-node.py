@@ -27,6 +27,8 @@ def main():
     parser.add_argument('--native-socket', type=Path)
     phases = parser.add_mutually_exclusive_group()
     phases.add_argument('--prepare-only', action='store_true', help='Install bootstrap without stopping or registering services')
+    phases.add_argument('--restore-bootstrap', action='store_true', help='Restore the previous stopped bootstrap after an interrupted/failed upgrade')
+    phases.add_argument('--upgrade-bootstrap', action='store_true', help='Upgrade a stopped existing agent with rollback; does not start services')
     phases.add_argument('--activate', action='store_true', help='Register a prepared bootstrap after old services stop')
     args = parser.parse_args()
     workspace = args.workspace.resolve()
@@ -39,6 +41,18 @@ def main():
             probe.settimeout(2)
             if probe.connect_ex(('127.0.0.1', args.local_port)) == 0:
                 parser.error('Local port is in use. Wait for tasks to finish and stop the old Relay and connector services first')
+    if args.restore_bootstrap:
+        sys.path.insert(0, str(ROOT / 'server'))
+        from rivo_relay.gateway.agent_maintenance import restore_bootstrap
+        restore_bootstrap(workspace)
+        print('Previous bootstrap restored; start the existing service and verify status.')
+        return
+    if args.upgrade_bootstrap:
+        sys.path.insert(0, str(ROOT / 'server'))
+        from rivo_relay.gateway.agent_maintenance import upgrade_bootstrap
+        upgrade_bootstrap(workspace, ROOT / 'server')
+        print('Bootstrap upgraded; service registration preserved. Start the existing service and verify status.')
+        return
     bootstrap = workspace / 'auto-update/bootstrap'
     venv = bootstrap / 'venv'
     python = venv / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
