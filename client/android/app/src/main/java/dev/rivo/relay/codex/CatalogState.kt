@@ -33,8 +33,9 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
     private val monotonicMillis: () -> Long = { System.nanoTime() / 1_000_000 },
     private val sync: NodeSessionSync? = null) {
     private val mutable = MutableStateFlow(CatalogState(pinnedProjectIds = readProjectPins()))
+    private val readRevision = MutableStateFlow(0L)
     val state: StateFlow<CatalogState> = if (sync == null) mutable.asStateFlow() else
-        combine(mutable, sync.activity) { current, activity ->
+        combine(mutable, sync.activity, readRevision) { current, activity, _ ->
             current.withProjectActivity(activity).copy(
                 threads = current.threads.map { thread ->
                     val task = activity.tasks[thread.id]
@@ -44,7 +45,7 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
                         hasOutstandingWork = task?.hasOutstandingWork ?: false, queueDepth = task?.queueDepth ?: 0,
                         deliveryState = task?.deliveryState ?: "idle", displayState = task?.displayState ?: "idle",
                         recoveryRequired = task?.recoveryRequired ?: false)
-                })
+                }).let { projected -> projected.copy(unreadThreadIds = unread(projected.threads)) }
         }.stateIn(scope, SharingStarted.WhileSubscribed(0), mutable.value)
     private val runtimeThreads = mutableMapOf<Pair<String, Boolean>, List<ThreadSummary>>()
     private fun scopeKey() = mutable.value.selectedProject?.id?.let { it to mutable.value.archived }
@@ -395,13 +396,15 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
     }.mapTo(mutableSetOf()) { it.id }
 
     /** Call only after the selected thread's fresh history was successfully displayed. */
-    fun markRead(threadId: String, updatedAt: Long = 0) {
-        val version = maxOf(updatedAt, mutable.value.threads.firstOrNull { it.id == threadId }?.updatedAt ?: 0L)
+    fun markRead(threadId: String, updatedAt: Long) {
+        // Only acknowledge the history actually displayed, never a newer catalog row.
+        val version = updatedAt
         val prior = readVersions[threadId] ?: store?.getMetadata("read:$threadId")?.toLongOrNull() ?: 0L
         if (version <= prior) return
         readVersions[threadId] = maxOf(prior, version)
         store?.putMetadata("read:$threadId", readVersions.getValue(threadId).toString())
         mutable.update { it.copy(unreadThreadIds = unread(it.threads)) }
+        readRevision.update { it + 1 }
     }
 
     suspend fun threadsFor(projectId: String): List<ThreadSummary> {
