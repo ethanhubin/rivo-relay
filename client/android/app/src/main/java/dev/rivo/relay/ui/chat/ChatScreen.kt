@@ -563,9 +563,17 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                                 if (showDeliveryInfo) AlertDialog(
                                     onDismissRequest = { showDeliveryInfo = false },
                                     title = { Text(if (delivery == "failed") "发送失败" else "正在确认是否送达") },
-                                    text = { Text(if (delivery == "failed") "消息已保留，可重新发送这条消息。" else "暂时无法确认服务端是否收到消息，正在核对结果，请勿重复发送。") },
-                                    confirmButton = { TextButton(onClick = { showDeliveryInfo = false }) { Text("关闭") } },
-                                    dismissButton = { if (delivery == "failed") TextButton(
+                                    text = { Text(if (delivery == "failed") "消息已保留，可重试或删除这条消息。" else "暂时无法确认服务端是否收到消息，正在核对结果，请勿重复发送。") },
+                                    confirmButton = { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                        if (delivery == "failed") TextButton(
+                                            modifier = Modifier.testTag("delete_failed_message"),
+                                            onClick = {
+                                                showDeliveryInfo = false
+                                                onDismissFailedMessage(message.raw.string("clientId"))
+                                            },
+                                        ) { Text("删除", color = MaterialTheme.colorScheme.error) }
+                                        Spacer(Modifier.weight(1f))
+                                        if (delivery == "failed") TextButton(
                                         enabled = !busy && !inputLocked && !blocked && !state.stale && (snapshot != null || pendingTitle != null && pendingReady),
                                         onClick = {
                                             showDeliveryInfo = false
@@ -581,7 +589,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                                             else if (onSendWithMode != null) onSendWithMode(input, selectedModel, selectedEffort, selectedMode, retried)
                                             else onSend(input, selectedModel, selectedEffort, retried)
                                         },
-                                    ) { Text("重试") } },
+                                    ) { Text("重试") }
+                                        TextButton(onClick = { showDeliveryInfo = false }) { Text("关闭") }
+                                    } },
                                 )
                             }
                     } else if (assistant) {
