@@ -560,7 +560,11 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                             ReviewDiagnostic(snapshot.reviewDiagnostics.lastOrNull { it.string("turnId") == message.turnId })
                         }
                         AssistantMessageFooter(message.text, "${message.turnId}:${message.id}", timing.outputAt,
-                            completionLabel = completionLabel.takeIf { message.id == completionReplyId })
+                            completionLabel = completionLabel.takeIf { message.id == completionReplyId },
+                            forkTurnId = message.turnId.takeIf { isLastReply && onFork != null &&
+                                snapshot?.turnSettings?.any { it.turnId == message.turnId && it.status in setOf("completed", "interrupted", "failed") } == true },
+                            forkEnabled = !busy && !blocked && !state.stale,
+                            onFork = { forkTurn = message.turnId })
                     }
                     else if (message.type == "imageGeneration" && (message.raw.string("savedPath").isNotBlank() || message.raw.string("result").isNotBlank())) {
                         val source = generatedImageSource(message, mediaIndex)
@@ -593,17 +597,11 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     is NativeTimelineRow.Notice -> next.turn.turnId
                 } }
                 val terminal = snapshot?.turnSettings?.any { it.turnId == rowTurn && it.status in setOf("completed", "interrupted", "failed") } == true
-                if (onFork != null && rowTurn.isNotBlank() && rowTurn != nextTurn && terminal) {
-                    IconButton(onClick = { forkTurn = rowTurn }, enabled = !busy && !blocked && !state.stale,
-                        modifier = Modifier.testTag("fork_turn_$rowTurn")) {
-                        androidx.compose.foundation.Canvas(Modifier.size(20.dp).semantics { contentDescription = "从此轮之后分叉" }) {
-                            val color = androidx.compose.ui.graphics.Color.Gray
-                            val stroke = 2.dp.toPx()
-                            drawLine(color, Offset(size.width * .25f, size.height * .8f), Offset(size.width * .25f, size.height * .2f), stroke)
-                            drawLine(color, Offset(size.width * .25f, size.height * .6f), Offset(size.width * .75f, size.height * .2f), stroke)
-                            listOf(Offset(size.width * .25f, size.height * .8f), Offset(size.width * .25f, size.height * .2f), Offset(size.width * .75f, size.height * .2f)).forEach { drawCircle(color, 2.5.dp.toPx(), it) }
-                        }
-                    }
+                if (onFork != null && rowTurn.isNotBlank() && rowTurn != nextTurn && terminal && lastReplyIds[rowTurn] == null) {
+                    AssistantMessageFooter("", rowTurn,
+                        snapshot?.turnSettings?.firstOrNull { it.turnId == rowTurn }?.completedAt,
+                        forkTurnId = rowTurn, forkEnabled = !busy && !blocked && !state.stale,
+                        onFork = { forkTurn = rowTurn })
                 }
             }
             snapshot?.reviewDiagnostics?.filter { diagnostic ->
