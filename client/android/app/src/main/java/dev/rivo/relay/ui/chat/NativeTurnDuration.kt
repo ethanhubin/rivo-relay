@@ -2,6 +2,9 @@ package dev.rivo.relay.ui.chat
 
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -27,7 +30,14 @@ fun NativeTurnDuration(footer: NativeTurnFooter, elapsedRealtime: () -> Long = a
     }
     val seconds = clientTurnElapsedSeconds(footer, now)
     val text = footer.label ?: "已用时 ${formatNativeThinkingDuration(seconds ?: 0)}"
-    TurnTimingLine(text, if (footer.label != null) "session_completion" else "turn_duration_${turn?.turnId}")
+    if (footer.label == null) {
+        ChatTimelineSummaryRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            CircularProgressIndicator(modifier = Modifier.size(18.dp).testTag("turn_duration_spinner"),
+                color = MaterialTheme.colorScheme.onSurfaceVariant, strokeWidth = 1.5.dp)
+            Text(text, modifier = Modifier.weight(1f).testTag("turn_duration_${turn?.turnId}"),
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    } else TurnTimingLine(text, "session_completion")
 }
 
 /** Historical rows omit the live conversation's completion status. */
