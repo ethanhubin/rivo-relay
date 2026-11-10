@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -40,6 +41,6 @@ fun HistoricalTurnTiming(timings: List<NativeHistoricalTiming>) {
 @Composable
 private fun TurnTimingLine(text: String, tag: String) {
     Text(text, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).testTag(tag),
-        style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace,
+        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp), fontFamily = FontFamily.Monospace,
         textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }

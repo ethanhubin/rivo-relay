@@ -70,15 +70,9 @@ fun sessionCompletionLabel(snapshot: SessionSnapshot): String? {
         goal?.string("status") else turn?.status
     return when (status) {
         "completed", "complete" -> {
-            val timestamp = (if (status == "complete") goalTime else turn?.completedAt)
-                ?: snapshot.updatedAt.takeIf { it > 0 }
-            val time = timestamp?.let { runCatching {
-                java.time.Instant.ofEpochSecond(it).atZone(java.time.ZoneId.systemDefault())
-                    .format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm"))
-            }.getOrNull() }
             val elapsed = turn?.let { nativeTurnElapsedSeconds(it) }
                 ?.let { "耗时 ${formatNativeElapsedDuration(it)}" }
-            listOfNotNull("已完成", time, elapsed).joinToString(" ")
+            listOfNotNull("已完成", elapsed).joinToString(" ")
         }
         "paused" -> "已暂停"
         "blocked" -> "受阻"

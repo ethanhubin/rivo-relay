@@ -89,7 +89,7 @@ class NativeMessageTimingTest {
 
     @Test fun completionFooterTracksLatestStoppedTurn() {
         val snapshot = SessionSnapshot("s", "", "idle", "", emptyList(), emptyList(), JSONObject(), turnSettings = listOf(turn))
-        assertTrue(sessionCompletionLabel(snapshot)!!.matches(Regex("已完成 [0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} 耗时 16s")))
+        assertEquals("已完成 耗时 16s", sessionCompletionLabel(snapshot))
         for ((status, label) in mapOf("failed" to "执行失败", "interrupted" to "已中断", "canceled" to "已取消", "cancelled" to "已取消"))
             assertEquals(label, sessionCompletionLabel(snapshot.copy(turnSettings = listOf(turn.copy(status = status)))))
         assertNull(sessionCompletionLabel(snapshot.copy(activeTurnId = "next")))
