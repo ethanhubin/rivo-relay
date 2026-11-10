@@ -22,6 +22,21 @@ import org.junit.runner.RunWith
 class TodoInteractionParityUiTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
+    @Test fun attachmentsUseConversationMenuAndDisableUnavailableWorkspace() {
+        compose.setContent { RivoTheme { Surface { TodosScreen(TodosState(), emptyList(), false, { emptyList() },
+            { _, _, _, _ -> }, {}, { _, _ -> }, { _, _, _, _ -> }, {}, {}) } } }
+        compose.onNodeWithTag("new_todo").performClick()
+        compose.onNodeWithTag("todo_add_attachment").performScrollTo()
+        compose.waitForIdle()
+        android.os.SystemClock.sleep(600)
+        compose.onNodeWithTag("todo_add_attachment").performClick()
+        compose.onNodeWithTag("attachment_dialog").assertIsDisplayed()
+        listOf("add_camera", "add_image", "add_video", "add_file").forEach {
+            compose.onNodeWithTag(it).assertIsDisplayed().assertIsEnabled()
+        }
+        compose.onNodeWithTag("add_workspace_file").assertIsNotEnabled()
+    }
+
     @Test fun editorContinuesChecklistWithImeAndSavesBothRows() {
         var savedTitle: String? = null
         var saved: JSONObject? = null

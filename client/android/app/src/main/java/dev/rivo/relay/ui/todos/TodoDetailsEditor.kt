@@ -51,7 +51,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.content.ContextCompat
 import dev.rivo.relay.data.*
-import dev.rivo.relay.ui.chat.WorkspaceFilePicker
+import dev.rivo.relay.ui.chat.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import dev.rivo.relay.ui.projects.ProjectSummary
@@ -79,7 +79,7 @@ internal fun todoReminderAt(due: String, time: String, enabled: Boolean): Long {
 }
 
 private const val MAX_TODO_ATTACHMENTS = 16
-private enum class TodoAttachmentSource { Files, Photos, Workspace }
+private enum class TodoAttachmentSource { Files, Photos, Video, Camera, Workspace }
 
 /** QiGuang's bottom checklist editor with Relay attachment references. */
 @Composable
@@ -108,6 +108,7 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
     var chooseAttachmentProject by remember { mutableStateOf(false) }
     var readingAttachments by remember { mutableStateOf(false) }
     var attachmentError by remember { mutableStateOf<String?>(null) }
+    var editingAttachment by remember { mutableStateOf<JSONObject?>(null) }
     val busy = saving || readingAttachments
     val scope = rememberCoroutineScope()
     var attachmentRoot by remember { mutableStateOf<String?>(null) }
@@ -125,7 +126,7 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
             attachmentsJson = current.put(JSONObject().put("name", name).put("path", path).put("type", type)).toString()
         }
     }
-    fun addLocalAttachments(uris: List<Uri>) {
+    fun addLocalAttachments(uris: List<Uri>, copyToStorage: Boolean = false) {
         if (uris.isEmpty() || busy) return
         val existingPaths = attachments.mapTo(mutableSetOf()) { it.string("path") }
         val selected = uris.filter { existingPaths.add(it.toString()) }
@@ -137,15 +138,26 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
             try {
                 for (uri in selected.take(available)) {
                     try {
-                        val name = withContext(Dispatchers.IO) {
+                        val stored = withContext(Dispatchers.IO) {
                             val resolver = context.contentResolver
                             val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
                                 if (it.moveToFirst()) it.getString(0) else null
                             }
-                            resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            name?.takeIf(String::isNotBlank)?.take(300) ?: "附件"
+                            if (copyToStorage) {
+                                val prepared = prepareFile(context, uri)
+                                try {
+                                    val target = java.io.File(java.io.File(context.filesDir, "todo-attachments").apply { mkdirs() },
+                                        "${UUID.randomUUID()}.${prepared.name.substringAfterLast('.', "bin").take(12)}")
+                                    prepared.file.copyTo(target)
+                                    val storedUri = androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".files", target)
+                                    Pair(name ?: prepared.name, storedUri.toString())
+                                } finally { prepared.file.delete() }
+                            } else {
+                                resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                Pair(name?.takeIf(String::isNotBlank)?.take(300) ?: "附件", uri.toString())
+                            }
                         }
-                        addAttachment(name, uri.toString(), LOCAL_TODO_ATTACHMENT)
+                        addAttachment(stored.first, stored.second, LOCAL_TODO_ATTACHMENT)
                     } catch (e: CancellationException) { throw e }
                     catch (_: Exception) { failed++ }
                 }
@@ -156,19 +168,22 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
             } finally { readingAttachments = false }
         }
     }
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments(), ::addLocalAttachments)
-    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(MAX_TODO_ATTACHMENTS), ::addLocalAttachments)
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { addLocalAttachments(it) }
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(MAX_TODO_ATTACHMENTS)) { addLocalAttachments(it) }
+    val launchCamera = rememberAttachmentCamera({ addLocalAttachments(listOf(it), copyToStorage = true) }) { attachmentError = it }
     fun selectSource(source: TodoAttachmentSource) {
         chooseAttachmentSource = false
         attachmentError = null
         try {
             when (source) {
+                TodoAttachmentSource.Camera -> launchCamera()
+                TodoAttachmentSource.Video -> filePicker.launch(arrayOf("video/*"))
                 TodoAttachmentSource.Files -> filePicker.launch(arrayOf("*/*"))
                 TodoAttachmentSource.Photos -> photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                 TodoAttachmentSource.Workspace -> chooseAttachmentProject = true
             }
-        } catch (_: android.content.ActivityNotFoundException) {
-            attachmentError = "此设备没有可用的文件或相册选择器"
+        } catch (_: Exception) {
+            attachmentError = "无法打开相机或文件选择器"
         }
     }
     fun openAttachment(attachment: JSONObject) {
@@ -178,8 +193,9 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
             return
         }
         val uri = Uri.parse(path)
+        if (isTodoImage(context, attachment)) { editingAttachment = attachment; return }
         try {
-            val intent = Intent(Intent.ACTION_VIEW).setData(uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            val intent = todoAttachmentOpenIntent(context, attachment)
             context.startActivity(intent)
         } catch (_: android.content.ActivityNotFoundException) {
             attachmentError = "没有可打开此附件的应用"
@@ -203,14 +219,14 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
             window.setDimAmount(.20f)
             window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
         }
-        TodoEditorBackHandler(window, ::dismiss)
+        TodoEditorBackHandler(window) { if (chooseAttachmentSource) chooseAttachmentSource = false else dismiss() }
         Box(Modifier.fillMaxSize().testTag("todo_editor_scrim")) {
             Box(Modifier.matchParentSize().clickable(enabled = !busy, onClick = ::dismiss))
             Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth().imePadding().padding(horizontal = RivoSpacing.Md, vertical = RivoSpacing.KeyboardGap)
                 .animateContentSize().testTag("todo_editor"), shape = RoundedCornerShape(RivoRadius.Panel), color = MaterialTheme.colorScheme.surfaceContainerLow) {
-                Column(Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState())
+                Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
                     .padding(horizontal = RivoSpacing.PanelContentHorizontal, vertical = RivoSpacing.Lg)) {
-                    BasicTextField(title, { title = it.take(200) }, Modifier.fillMaxWidth().heightIn(min = 40.dp).testTag("todo_title"), enabled = !busy,
+                    BasicTextField(title, { title = it.take(200) }, Modifier.fillMaxWidth().heightIn(min = 40.dp).testTag("todo_title").pasteImageAttachments(context, !busy) { addLocalAttachments(it, copyToStorage = true) }, enabled = !busy,
                         textStyle = MaterialTheme.typography.titleMedium.copy(color = MaterialTheme.colorScheme.onSurfaceVariant), cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                         decorationBox = { inner -> Box(contentAlignment = Alignment.CenterStart) { if (title.isEmpty()) Text("待办清单", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant); inner() } })
                     subtasks.forEachIndexed { index, task ->
@@ -228,7 +244,7 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
                             Spacer(Modifier.width(RivoSpacing.Sm))
                             BasicTextField(task.string("title"), { value ->
                                 subtasksJson = JSONArray(subtasks.mapIndexed { i, current -> JSONObject(current.toString()).apply { if (i == index) put("title", value.take(500)) } }).toString()
-                            }, Modifier.weight(1f).padding(top = 8.dp).focusRequester(requester).testTag("todo_subtask_input_$index"), enabled = !busy,
+                            }, Modifier.weight(1f).padding(top = 8.dp).focusRequester(requester).testTag("todo_subtask_input_$index").pasteImageAttachments(context, !busy) { addLocalAttachments(it, copyToStorage = true) }, enabled = !busy,
                                 textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface), cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                                 keyboardOptions = KeyboardOptions(imeAction = if (subtasks.size >= 64 && index == subtasks.lastIndex) ImeAction.Done else ImeAction.Next),
                                 keyboardActions = KeyboardActions(onNext = {
@@ -244,18 +260,13 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
                         }
                     }
                     Spacer(Modifier.height(RivoSpacing.Md))
-                    if (attachments.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = RivoSpacing.Sm), horizontalArrangement = Arrangement.spacedBy(RivoSpacing.Sm)) {
-                        attachments.forEachIndexed { index, attachment -> Surface(Modifier.width(96.dp), shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
-                            Column(Modifier.padding(6.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    TextButton(onClick = { openAttachment(attachment) }, enabled = attachment.string("type") == LOCAL_TODO_ATTACHMENT || onOpenAttachment != null,
-                                        modifier = Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) { Text("附件") }
-                                    TextButton(onClick = { attachmentsJson = JSONArray(attachments.filterIndexed { i, _ -> i != index }).toString() }, enabled = !busy,
-                                        modifier = Modifier.size(28.dp).testTag("todo_attachment_remove_$index"), contentPadding = PaddingValues(0.dp)) { Text("×") }
-                                }
-                                Text(attachment.string("name"), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
-                            }
-                        } }
+                    if (attachments.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).testTag("todo_attachments"),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        attachments.forEachIndexed { index, attachment ->
+                            TodoAttachmentRow(attachment, !busy, attachment.string("type") == LOCAL_TODO_ATTACHMENT || onOpenAttachment != null,
+                                { openAttachment(attachment) },
+                                { attachmentsJson = JSONArray(attachments.filterIndexed { i, _ -> i != index }).toString() }, index)
+                        }
                     }
                     if (readingAttachments) Text("正在读取附件…", style = MaterialTheme.typography.bodySmall)
                     attachmentError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
@@ -265,8 +276,15 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
                     BoxWithConstraints(Modifier.fillMaxWidth()) {
                         Row(Modifier.horizontalScroll(rememberScrollState()).widthIn(min = maxWidth), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                             TodoEditorButton(onClick = { focus.clearFocus(); keyboard?.hide(); reminderOpen = true }, enabled = !busy, modifier = Modifier.testTag("todo_due_date").semantics { contentDescription = "设置提醒" }) { TodoReminderIcon() }
-                            TodoEditorButton(onClick = { focus.clearFocus(); keyboard?.hide(); chooseAttachmentSource = true }, enabled = !busy && attachments.size < MAX_TODO_ATTACHMENTS,
-                                modifier = Modifier.testTag("todo_add_attachment")) { Text("＋附件") }
+                            Box {
+                                ComposerToolButton({ focus.clearFocus(); keyboard?.hide(); chooseAttachmentSource = true },
+                                    !busy && attachments.size < MAX_TODO_ATTACHMENTS, "添加附件", "todo_add_attachment") { ComposerAddIcon() }
+                                AttachmentSourceMenu(chooseAttachmentSource, MAX_TODO_ATTACHMENTS - attachments.size, MAX_TODO_ATTACHMENTS - attachments.size,
+                                    { chooseAttachmentSource = false }, { selectSource(TodoAttachmentSource.Camera) },
+                                    { selectSource(TodoAttachmentSource.Photos) }, { selectSource(TodoAttachmentSource.Files) },
+                                    { selectSource(TodoAttachmentSource.Video) }, { selectSource(TodoAttachmentSource.Workspace) },
+                                    workspaceEnabled = readDirectory != null && projects.isNotEmpty())
+                            }
                             if (due.isNotBlank()) TodoEditorButton(onClick = { due = ""; reminderEnabled = false; repeat = "none" }, enabled = !busy) { Text("清除") }
                             if (onStartCodex != null) TodoEditorButton(onClick = { onStartCodex(normalizedTitle, notes, details()) }, enabled = hasContent && !busy,
                                 modifier = Modifier.testTag("todo_start_codex")) { Text("Codex") }
@@ -293,17 +311,28 @@ internal fun TodoDetailsEditor(item: Todo?, saving: Boolean, projects: List<Proj
     }
     if (deleteConfirm) AlertDialog(onDismissRequest = { deleteConfirm = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("删除这条待办？") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("待办会被删除，已关联的 Codex 会话仍会保留。") } },
         confirmButton = { Button(onClick = { deleteConfirm = false; onDelete() }, enabled = !busy) { Text("删除") } }, dismissButton = { TextButton(onClick = { deleteConfirm = false }) { Text("取消") } })
-    if (chooseAttachmentSource) AlertDialog(onDismissRequest = { chooseAttachmentSource = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("添加附件") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu {
-        Column {
-            TextButton(onClick = { selectSource(TodoAttachmentSource.Files) },
-                modifier = Modifier.testTag("todo_attachment_local_files")) { Text("本地文件") }
-            TextButton(onClick = { selectSource(TodoAttachmentSource.Photos) },
-                modifier = Modifier.testTag("todo_attachment_photos")) { Text("相册") }
-            TextButton(onClick = { selectSource(TodoAttachmentSource.Workspace) }, enabled = readDirectory != null && projects.isNotEmpty(),
-                modifier = Modifier.testTag("todo_attachment_workspace")) { Text("节点项目文件") }
-            Text("本地文件和照片保留在这台手机上。", style = MaterialTheme.typography.bodySmall)
+    editingAttachment?.let { attachment ->
+        MediaAttachmentEditor(Uri.parse(attachment.string("path")), { editingAttachment = null }) { uri ->
+            readingAttachments = true
+            editingAttachment = null
+            scope.launch {
+                try {
+                    val stored = withContext(Dispatchers.IO) {
+                        val target = java.io.File(java.io.File(context.filesDir, "todo-attachments").apply { mkdirs() }, "edited-${UUID.randomUUID()}.jpg")
+                        context.contentResolver.openInputStream(uri)?.use { input -> target.outputStream().use { input.copyTo(it) } }
+                            ?: error("无法读取编辑后的图片")
+                        androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".files", target)
+                    }
+                    attachmentsJson = JSONArray(attachments.map { current ->
+                        if (current.string("path") == attachment.string("path")) JSONObject(current.toString()).put("path", stored.toString()).put("name", "编辑后的图片.jpg") else current
+                    }).toString()
+                    editingAttachment = null
+                } catch (e: CancellationException) { throw e }
+                catch (_: Exception) { attachmentError = "无法保存编辑后的图片"; editingAttachment = null }
+                finally { readingAttachments = false }
+            }
         }
-    } }, confirmButton = { TextButton(onClick = { chooseAttachmentSource = false }) { Text("取消") } })
+    }
     if (chooseAttachmentProject) AlertDialog(onDismissRequest = { chooseAttachmentProject = false },
         title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("选择文件所在项目") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu {
             Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {

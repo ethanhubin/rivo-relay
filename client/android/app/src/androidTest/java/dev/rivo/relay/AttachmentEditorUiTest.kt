@@ -42,8 +42,9 @@ class AttachmentEditorUiTest {
             assertEquals(original.id, current.id)
             assertTrue(current.bytes.size <= 1024 * 1024)
             val decoded = BitmapFactory.decodeByteArray(current.bytes, 0, current.bytes.size)
-            assertEquals(630, decoded.width)
-            assertEquals(840, decoded.height)
+            // Initial crop keeps full width and the middle half of the image.
+            assertEquals(900, decoded.width)
+            assertEquals(600, decoded.height)
             decoded.recycle()
         }
         compose.onNodeWithTag("draft_image", useUnmergedTree = true).assertIsDisplayed()
