@@ -45,6 +45,8 @@ PROJECTION_TABLES = (
 MAX_ROLLOUT_BYTES = 256 * 1024 * 1024
 MAX_RECORD_BYTES = 32 * 1024 * 1024
 MAX_RECORDS = 1_000_000
+MAX_BACKUP_BYTES = 512 * 1024 * 1024
+BACKUP_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 
 class NativeHistoryReprojectionError(RuntimeError):
@@ -617,7 +619,18 @@ class NativeHistoryReprojector:
                 )
         return len(turn_rows)
 
-    def _publish(
+    def _publish(self, *args, **kwargs) -> tuple[Path, Path]:
+        # Serialize retention with publication across threads and processes.
+        self.repair_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with (self.repair_dir / '.retention.lock').open('a+b') as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                self._prune_backups()
+                return self._publish_locked(*args, **kwargs)
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+    def _publish_locked(
         self,
         thread_id: str,
         live_rollout: Path,
@@ -633,9 +646,16 @@ class NativeHistoryReprojector:
         prefix = f"{stamp}-{thread_id}-before-official-reprojection"
         rollout_backup = self.repair_dir / f"{prefix}.jsonl"
         projection_backup = self.repair_dir / f"{prefix}.sqlite"
-        shutil.copy2(live_rollout, rollout_backup)
+        projection_id = self._projection_id(thread_id, live_rollout)
         try:
-            self._backup_database(live_database, projection_backup)
+            budget = MAX_BACKUP_BYTES - live_rollout.stat().st_size
+            if budget < 4096:
+                raise NativeHistoryReprojectionError("会话修复备份超过全局容量限制")
+            self._backup_projection(live_database, projection_backup, projection_id, budget)
+            shutil.copy2(live_rollout, rollout_backup)
+            # Retention age is creation time, not the source rollout's mtime.
+            os.utime(rollout_backup, (self._clock(), self._clock()))
+            self._prune_backups(protected=rollout_backup)
         except Exception:
             rollout_backup.unlink(missing_ok=True)
             projection_backup.unlink(missing_ok=True)
@@ -684,7 +704,7 @@ class NativeHistoryReprojector:
             ) from error
         finally:
             staged_rollout.unlink(missing_ok=True)
-            self._prune_backups(thread_id)
+            self._prune_backups(protected=rollout_backup)
         return rollout_backup, projection_backup
 
     @classmethod
@@ -717,6 +737,24 @@ class NativeHistoryReprojector:
         if not rows:
             raise NativeHistoryReprojectionError(f"projection 缺少表：{table}")
         return [str(row[1]) for row in rows]
+
+    @staticmethod
+    def _backup_projection(source: Path, destination: Path, projection_id: str,
+                           budget: int) -> None:
+        """Export only affected rows, without copying unrelated data or triggers."""
+        try:
+            with sqlite_connection(destination) as target:
+                target.execute("PRAGMA page_size=4096")
+                target.execute("PRAGMA journal_mode=OFF")
+                target.execute(f"PRAGMA max_page_count={budget // 4096}")
+                target.execute("ATTACH DATABASE ? AS source", (source.as_uri() + '?mode=ro',))
+                target.execute("BEGIN")
+                for table in PROJECTION_TABLES:
+                    target.execute(
+                        f'CREATE TABLE "{table}" AS SELECT * FROM source."{table}" '
+                        'WHERE thread_id = ?', (projection_id,))
+        except sqlite3.Error as error:
+            raise NativeHistoryReprojectionError(f"无法备份会话 projection（容量受限）：{error}") from error
 
     @staticmethod
     def _backup_database(source: Path, destination: Path) -> None:
@@ -903,18 +941,40 @@ class NativeHistoryReprojector:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def _prune_backups(self, thread_id: str, *, keep: int = 2) -> None:
-        backups = sorted(
-            self.repair_dir.glob(
-                f"*-{thread_id}-before-official-reprojection.jsonl"
-            ),
-            key=lambda path: path.stat().st_mtime_ns,
-            reverse=True,
-        )
-        for stale_rollout in backups[keep:]:
-            stale_projection = stale_rollout.with_suffix(".sqlite")
-            stale_rollout.unlink(missing_ok=True)
-            stale_projection.unlink(missing_ok=True)
+    def _prune_backups(self, *, keep: int = 2,
+                       protected: Optional[Path] = None) -> None:
+        """Global retention; caller holds the directory lock during publication.
+
+        Also recognizes old full-database backups and incomplete pairs.
+        """
+        protected = protected.resolve() if protected is not None else None
+        groups = {}
+        for suffix in ('jsonl', 'sqlite'):
+            for path in self.repair_dir.glob(f'*-before-official-reprojection.{suffix}'):
+                groups.setdefault(path.with_suffix(''), []).append(path)
+        entries = []
+        for base, paths in groups.items():
+            rollout = base.with_suffix('.jsonl')
+            stamp = rollout.stat().st_mtime if rollout in paths else max(p.stat().st_mtime for p in paths)
+            owner = base.name[-len('-before-official-reprojection') - 36:-len('-before-official-reprojection')]
+            entries.append((stamp, owner, paths, sum(p.stat().st_size for p in paths)))
+        entries.sort(key=lambda entry: entry[0], reverse=True)
+        if protected is not None:
+            entries.sort(key=lambda entry: protected not in entry[2])
+        total = 0
+        counts = {}
+        for stamp, owner, paths, size in entries:
+            pinned = protected in paths
+            discard = (len(paths) != 2 or self._clock() - stamp > BACKUP_MAX_AGE_SECONDS
+                       or counts.get(owner, 0) >= keep or total + size > MAX_BACKUP_BYTES)
+            if pinned and size > MAX_BACKUP_BYTES:
+                raise NativeHistoryReprojectionError("会话修复备份超过全局容量限制")
+            if discard and not pinned:
+                for path in paths:
+                    path.unlink(missing_ok=True)
+            else:
+                total += size
+                counts[owner] = counts.get(owner, 0) + 1
 
     @staticmethod
     def _path_is_within(path: Path, root: Path) -> bool:
