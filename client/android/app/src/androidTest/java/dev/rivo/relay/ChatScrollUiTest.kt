@@ -57,7 +57,7 @@ class ChatScrollUiTest {
         compose.onNodeWithTag("latest_message_anchor").assertIsDisplayed()
     }
     @Test fun runningRevalidationPreservesViewportAndWriterHeight() {
-        val ready = SessionState(id = "scroll-test", snapshot = snapshot(30).copy(
+        val ready = SessionState(id = "scroll-test", activityStatus = "running", snapshot = snapshot(30).copy(
             status = "running", activeTurnId = "turn", readOnly = true, writerOwner = "external"))
         current.value = ready.copy(lastConfirmedControl = ready.control())
         show(); atLatest()

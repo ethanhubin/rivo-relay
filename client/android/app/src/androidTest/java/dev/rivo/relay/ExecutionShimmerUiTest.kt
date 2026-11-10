@@ -28,7 +28,7 @@ class ExecutionShimmerUiTest {
 
     @Test fun onlyLiveExecutionShimmersAndStopsForCompletionOfflineOrApproval() {
         val snapshot = SessionSnapshot("thread", "扫光验证", "running", "turn", emptyList(), emptyList(), JSONObject())
-        val state = mutableStateOf(SessionState(id = snapshot.id, snapshot = snapshot))
+        val state = mutableStateOf(SessionState(id = snapshot.id, snapshot = snapshot, activityStatus = "running"))
         // The Compose test InfiniteAnimationPolicy cancels infinite effects while
         // autoAdvance is enabled. Control the clock before creating the effect.
         compose.mainClock.autoAdvance = false
@@ -71,13 +71,13 @@ class ExecutionShimmerUiTest {
         compose.waitForIdle()
         compose.onNodeWithTag("activity_group_shimmer", useUnmergedTree = true).assertDoesNotExist()
         compose.onNodeWithTag("activity_group_summary", useUnmergedTree = true).assertIsDisplayed()
-        compose.runOnIdle { state.value = state.value.copy(synchronization = SessionSynchronization.confirmed(),
+        compose.runOnIdle { state.value = state.value.copy(activityStatus = "idle", synchronization = SessionSynchronization.confirmed(),
             snapshot = snapshot.copy(status = "idle", activeTurnId = "", messages = listOf(activity))) }
         compose.mainClock.advanceTimeBy(64)
         compose.waitForIdle()
         compose.onNodeWithTag("activity_group_shimmer", useUnmergedTree = true).assertDoesNotExist()
         compose.onNodeWithTag("execution_stage_shimmer").assertDoesNotExist()
-        compose.runOnIdle { state.value = state.value.copy(snapshot = snapshot.copy(requests = listOf(NativeRequest("request", "unknown", JSONObject())))) }
+        compose.runOnIdle { state.value = state.value.copy(activityStatus = "waiting", snapshot = snapshot.copy(requests = listOf(NativeRequest("request", "unknown", JSONObject())))) }
         compose.mainClock.advanceTimeBy(64)
         compose.waitForIdle()
         compose.onNodeWithTag("execution_stage_shimmer").assertDoesNotExist()

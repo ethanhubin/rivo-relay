@@ -1,6 +1,8 @@
 package dev.rivo.relay
 
 import dev.rivo.relay.codex.CatalogController
+import dev.rivo.relay.codex.withNodeActivity
+import dev.rivo.relay.codex.executionActive
 import dev.rivo.relay.codex.CatalogState
 import dev.rivo.relay.codex.pinnedThreadsToObserve
 import dev.rivo.relay.data.ConversationStore
@@ -147,7 +149,7 @@ class CatalogControllerTest {
             assertEquals(setOf("r", "q", "other"), full.keys)
             assertEquals("Recent metadata", full.getValue("other").name)
             assertEquals(20L, full.getValue("other").updatedAt)
-            assertEquals("idle", full.getValue("r").nativeExecution)
+            assertEquals("running", full.getValue("r").nativeExecution)
             assertEquals("Renamed", full.getValue("r").name)
             assertEquals("waiting", full.getValue("q").status)
             assertEquals(2, full.getValue("q").queueDepth)
@@ -405,7 +407,7 @@ class CatalogControllerTest {
             controller.reconcileSession(dev.rivo.relay.data.SessionSnapshot("new", "N", "idle", "",
                 emptyList(), emptyList(), JSONObject(), updatedAt = 10, nativeExecution = "idle"))
             controller.refreshThreads()?.join()
-            assertEquals("idle", controller.state.value.threads.single().nativeExecution)
+            assertEquals("", controller.state.value.threads.single().nativeExecution)
             controller.setArchived(true); settled()
             assertTrue(controller.state.value.threads.isEmpty())
             controller.setArchived(false); settled()
@@ -416,7 +418,7 @@ class CatalogControllerTest {
         } finally { scope.cancel(); server.shutdown() }
     }
 
-    @Test fun detailCompletionFencesOlderListButAllowsLaterRunningState() = runBlocking {
+    @Test fun detailMetadataDoesNotOverrideListExecution() = runBlocking {
         val server = MockWebServer()
         val running = """{"threads":[{"id":"t","status":"running","nativeExecution":"running","updatedAt":10}]}"""
         server.enqueue(MockResponse().setBody(running))
@@ -433,11 +435,11 @@ class CatalogControllerTest {
             val completed = dev.rivo.relay.data.SessionSnapshot("t", "T", "idle", "",
                 emptyList(), emptyList(), JSONObject(), updatedAt = 10, nativeExecution = "idle")
             controller.reconcileSession(completed.copy(updatedAt = 9))
-            // Metadata updatedAt does not order live execution observations.
-            assertFalse(dev.rivo.relay.codex.threadIsExecuting(controller.state.value.threads.single()))
+            // Execution remains untouched; production views obtain it from NodeActivity.
+            assertTrue(dev.rivo.relay.codex.threadIsExecuting(controller.state.value.threads.single()))
             controller.reconcileSession(completed)
             oldRead?.join()
-            assertFalse(dev.rivo.relay.codex.threadIsExecuting(controller.state.value.threads.single()))
+            assertTrue(dev.rivo.relay.codex.threadIsExecuting(controller.state.value.threads.single()))
             controller.refreshThreads()?.join()
             assertTrue(dev.rivo.relay.codex.threadIsExecuting(controller.state.value.threads.single()))
         } finally { scope.cancel(); server.shutdown() }
@@ -463,7 +465,7 @@ class CatalogControllerTest {
         } finally { scope.cancel(); server.shutdown() }
     }
 
-    @Test fun completedDetailClearsListSpinner() = runBlocking {
+    @Test fun detailCannotMaintainAnIndependentExecutionState() = runBlocking {
         val server = MockWebServer()
         server.enqueue(MockResponse().setBody("""{"threads":[{"id":"t","status":"running","nativeExecution":"running","hasOutstandingWork":true,"updatedAt":10}]}"""))
         server.start()
@@ -477,8 +479,8 @@ class CatalogControllerTest {
             controller.reconcileSession(completed.copy(nativeSyncState = "converging"))
             assertTrue(dev.rivo.relay.codex.threadIsExecuting(controller.state.value.threads.single()))
             controller.reconcileSession(completed)
-            assertFalse(dev.rivo.relay.codex.threadIsExecuting(controller.state.value.threads.single()))
-            assertFalse(controller.state.value.threads.single().hasOutstandingWork)
+            assertTrue(dev.rivo.relay.codex.threadIsExecuting(controller.state.value.threads.single()))
+            assertTrue(controller.state.value.threads.single().hasOutstandingWork)
         } finally { scope.cancel(); server.shutdown() }
     }
 
@@ -726,6 +728,46 @@ class CatalogControllerTest {
             assertEquals("/v1/threads?projectId=p&archived=false&view=summary", server.takeRequest().path)
             assertEquals("/v1/threads?projectId=p&archived=true&view=summary", server.takeRequest().path)
         } finally { releaseRecent.countDown(); scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun projectHomeAndConversationShareVersionedGlobalActivityWithoutListReads() = runBlocking {
+        val server = MockWebServer()
+        val detailVersion = AtomicInteger(2)
+        val listReads = AtomicInteger()
+        fun activity(version: Int): String {
+            val tasks = if (version == 2) "[]" else """[{"threadId":"t","projectId":"p","status":"running","nativeExecution":"running"}]"""
+            return """{"complete":true,"generation":"g","version":$version,"tasks":$tasks,"knownThreadIds":["t"],"unknownThreadIds":[]}"""
+        }
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.requestUrl?.encodedPath) {
+                "/v1/activity" -> MockResponse().setBody(activity(1)) // Deliberately stale after the detail read.
+                "/v1/projects" -> MockResponse().setBody("""{"projects":[{"id":"p","name":"Rivo-Relay","path":"/p"}]}""")
+                "/v1/threads/t" -> MockResponse().setBody("""{"activity":${activity(detailVersion.get())}}""")
+                "/v1/events" -> MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE)
+                else -> { listReads.incrementAndGet(); MockResponse().setResponseCode(404) }
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val api = api(server)
+        val sync = dev.rivo.relay.codex.NodeSessionSync(api, scope)
+        val controller = CatalogController(api, scope, { throw it }, sync = sync)
+        val collector = scope.launch { controller.state.collect {} }
+        try {
+            controller.refreshProjects().join()
+            withTimeout(5000) { controller.state.first { it.projects.singleOrNull()?.isRunning == true } }
+            assertTrue(controller.state.value.threads.isEmpty())
+            sync.read("t")
+            withTimeout(5000) { sync.activity.first { it.version == 2L } }
+            withTimeout(5000) { controller.state.first { it.projects.singleOrNull()?.isRunning == false } }
+            val detail = dev.rivo.relay.codex.SessionState(id = "t").withNodeActivity(sync.activity.value)
+            assertFalse(detail.executionActive)
+            detailVersion.set(3)
+            sync.read("t")
+            withTimeout(5000) { controller.state.first { it.projects.singleOrNull()?.isRunning == true } }
+            assertTrue(dev.rivo.relay.codex.SessionState(id = "t").withNodeActivity(sync.activity.value).executionActive)
+            assertEquals(0, listReads.get())
+        } finally { collector.cancel(); scope.cancel(); server.shutdown() }
     }
 
     @Test fun activityCompletionRevealsUnreadAndDisplayedHistoryClearsIt() = runBlocking {

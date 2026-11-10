@@ -16,6 +16,7 @@ class ActivityRegistry:
         self.worker = None
         self.epoch = None
         self.revision = 0
+        self.snapshot_version = 0
         self.tasks, self.membership, self.turns = {}, {}, {}
         self.known, self.unknown = set(), set()
         self.terminal = OrderedDict()
@@ -88,6 +89,7 @@ class ActivityRegistry:
             self.known = set(result['knownThreadIds']) | self.excluded
             self.unknown = unknown
             self.ready = True
+            self.revision += 1
             self.last_sync = time.time()
             self.error = None
             return True
@@ -217,10 +219,64 @@ class ActivityRegistry:
                 self.ready = False
         self.wake.set()
 
+    def read_token(self):
+        with self.lock:
+            self._generation()
+            return self.epoch, self.revision
+
+    def observe_execution(self, thread_id, status, *, token, project_id=None,
+                          turn_id=None, goal_active=False, queue=()):
+        """Verified native reads update the same table as events and discovery.
+
+        A read that predates a newer event/reconciliation cannot overwrite it.
+        Pagination and unavailable history must never be submitted here.
+        """
+        with self.lock:
+            self._generation()
+            if token != (self.epoch, self.revision) or thread_id in self.excluded:
+                return False
+            if status == 'unknown':
+                if thread_id not in self.unknown:
+                    self.revision += 1
+                self.known.add(thread_id)
+                self.unknown.add(thread_id)
+                self.confirmed_idle.discard(thread_id)
+                return True
+            project_id = project_id or self.membership.get(thread_id, '')
+            projection = execution_projection(status, queue)
+            row = {'threadId': thread_id, 'projectId': project_id, 'turnId': turn_id,
+                   'status': status, 'goalActive': goal_active, **projection}
+            desired = row if projection['hasOutstandingWork'] else None
+            current = self.tasks.get(thread_id)
+            if current is not None:
+                current = {**current, 'turnId': current.get('turnId') or self.turns.get(thread_id)}
+            if (current == desired and thread_id in self.known
+                    and thread_id not in self.unknown):
+                return True
+            self.revision += 1
+            self.known.add(thread_id)
+            self.unknown.discard(thread_id)
+            if project_id:
+                self.membership[thread_id] = project_id
+            if desired:
+                self.tasks[thread_id] = row
+            else:
+                self.tasks.pop(thread_id, None)
+            if turn_id:
+                self.turns[thread_id] = turn_id
+            else:
+                self.turns.pop(thread_id, None)
+            if status == 'idle':
+                self.confirmed_idle.add(thread_id)
+            else:
+                self.confirmed_idle.discard(thread_id)
+            return True
+
     def snapshot(self):
         with self.lock:
             self._generation()
-            return {'tasks': copy.deepcopy(list(self.tasks.values())),
+            self.snapshot_version += 1
+            return {'version': self.snapshot_version, 'tasks': copy.deepcopy(list(self.tasks.values())),
                     'knownThreadIds': sorted(self.known), 'unknownThreadIds': sorted(self.unknown),
                     'generation': self.epoch, 'revision': self.revision,
                     # Each row has explicit uncertainty, even before first discovery.

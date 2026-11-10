@@ -160,6 +160,18 @@ class NativeSemanticsTests(unittest.TestCase):
             self.assertIsNone(snapshot['activeTurnId'])
             self.assertEqual(goal, snapshot['goal'])
 
+    def test_verified_detail_updates_the_global_activity_snapshot(self):
+        native = FakeNative()
+        native.thread['projectId'] = 'project'
+        service = CodexService(connection=native)
+        service.activity.receive({'method': 'turn/started', 'params': {
+            'threadId': 'thread', 'projectId': 'project', 'turn': {'id': 'old'}}})
+        result = service.get_session('thread')
+        self.assertEqual(result['status'], 'idle')
+        self.assertEqual(result['activity']['tasks'], [])
+        self.assertIn('thread', result['activity']['knownThreadIds'])
+        self.assertNotIn('thread', service.activity.snapshot()['unknownThreadIds'])
+
     def test_external_execution_overrides_unloaded_metadata_in_list_and_detail(self):
         native = FakeNative()
         native.thread['status'] = {'type': 'notLoaded'}

@@ -568,6 +568,7 @@ class CodexService:
     @read_identity
     def get_session(self, thread_id, cursor=None, limit=30, native_revision=None):
         self.start()
+        activity_token = self.activity.read_token()
         # Reconcile the idle persisted history before resume takes a writer lock.
         # A live Desktop/CLI writer remains authoritative and is never released.
         history = self.history(thread_id, cursor=cursor, limit=limit, native_revision=native_revision)
@@ -675,7 +676,11 @@ class CodexService:
                 question_reply_available = getattr(self.connection, 'can_answer_questions', lambda _: False)(thread_id)
             except CodexError:
                 pass
-        return {"thread": thread, "requests": requests, "settings": settings, 'control': control, 'plan': plan,
+        if cursor is None and (history['nativeSync'].get('historyReady') or history['nativeSync'].get('state') == 'ready'):
+            self.activity.observe_execution(thread_id, status, token=activity_token,
+                project_id=thread.get('projectId'), turn_id=active,
+                goal_active=goal_active, queue=queue)
+        return {"activity": self.activity.snapshot(), "thread": thread, "requests": requests, "settings": settings, 'control': control, 'plan': plan,
                 'canAnswerQuestions': question_reply_available, 'questionAnswerStates': answer_states,
                 **goal_state,
                 'tokenUsage': usage, 'changes': changes, 'turnSettings': turn_settings,

@@ -6,9 +6,39 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-data class NodeActivity(val tasks: Map<String, ThreadSummary> = emptyMap(), val unknown: Set<String> = emptySet(), val confirmed: Boolean = false, val known: Set<String> = emptySet(), val generation: String = "") {
+/** The only execution projection consumed by project, list and conversation views. */
+data class NodeActivity(val tasks: Map<String, ThreadSummary> = emptyMap(), val unknown: Set<String> = emptySet(), val confirmed: Boolean = false, val known: Set<String> = emptySet(), val generation: String = "", val version: Long = -1, val retiredGenerations: Set<String> = emptySet()) {
     fun status(id: String): String? = if (!confirmed || id in unknown || id !in known) null else tasks[id]?.status ?: "idle"
+    fun execution(id: String): ThreadSummary {
+        val status = status(id) ?: "unknown"
+        return tasks[id]?.takeIf { status != "unknown" } ?: ThreadSummary(id, "", "", status, "", "",
+            nativeExecution = status, deliveryState = "idle", displayState = status)
+    }
+    val runningProjectIds: Set<String> get() = tasks.values.filter {
+        status(it.id) == "running"
+    }.map { it.projectId }.filter(String::isNotBlank).toSet()
 }
+
+/** Old HTTP responses cannot roll back a newer node snapshot from a detail read. */
+internal fun NodeActivity.accept(response: org.json.JSONObject): NodeActivity {
+    require(response.optBoolean("complete", false) && response.string("generation").isNotBlank())
+    require(response.optJSONArray("tasks") != null && response.optJSONArray("knownThreadIds") != null &&
+        response.optJSONArray("unknownThreadIds") != null)
+    if (response.string("generation") in retiredGenerations) return this
+    val nextVersion = response.optLong("version", -1)
+    if (generation == response.string("generation") && version >= 0 && nextVersion <= version) return this
+    fun ids(key: String) = response.getJSONArray(key).let { values ->
+        (0 until values.length()).map { values.getString(it) }.toSet()
+    }
+    val known = ids("knownThreadIds")
+    val unknown = ids("unknownThreadIds")
+    val tasks = response.objects("tasks").map { row ->
+        threadSummary(org.json.JSONObject(row.toString()).put("id", row.string("threadId")))
+    }.filter { it.id in known && it.id !in unknown }.associateBy { it.id }
+    return NodeActivity(tasks, unknown, true, known, response.string("generation"), nextVersion,
+        retiredGenerations + setOf(generation).filter { it.isNotBlank() && it != response.string("generation") })
+}
+
 fun nodeActivity(api: RelayApi, sync: NodeSessionSync, scope: CoroutineScope): StateFlow<NodeActivity> = channelFlow {
     var previous = NodeActivity()
     var epoch = 0L
@@ -28,34 +58,39 @@ fun nodeActivity(api: RelayApi, sync: NodeSessionSync, scope: CoroutineScope): S
                 if (catalogLifecycleEvent(it)) invalidate()
             }
         }
+        val snapshots = launch {
+            sync.activitySnapshots.collect { response ->
+                try {
+                    lock.withLock {
+                        val next = previous.accept(response)
+                        if (next !== previous) {
+                            previous = next
+                            epoch++
+                            send(previous)
+                        }
+                    }
+                } catch (e: CancellationException) { throw e }
+                catch (_: Exception) { signals.trySend(Unit) }
+            }
+        }
         try {
             while (currentCoroutineContext().isActive) {
+                val readEpoch = lock.withLock { epoch }
                 try {
-                    val readEpoch = lock.withLock { epoch }
                     val response = api.call("/v1/activity")
                     lock.withLock {
                         if (readEpoch == epoch && response.optBoolean("complete", false)) {
-                            require(response.string("generation").isNotBlank())
-                            require(response.optJSONArray("tasks") != null && response.optJSONArray("knownThreadIds") != null &&
-                                response.optJSONArray("unknownThreadIds") != null)
-                            val tasks = response.objects("tasks").map { row -> row.put("id", row.string("threadId")); threadSummary(row) }.associateBy { it.id }.toMutableMap()
-                            val unknown = response.optJSONArray("unknownThreadIds")
-                            if (previous.generation == response.string("generation") && unknown != null) (0 until unknown.length()).forEach { index ->
-                                val id = unknown.optString(index)
-                                previous.tasks[id]?.let { tasks.putIfAbsent(id, it) }
-                            }
-                            val known = response.optJSONArray("knownThreadIds")
-                            previous = NodeActivity(tasks, if (unknown == null) emptySet() else (0 until unknown.length()).map { unknown.optString(it) }.toSet(), true, if (known == null) tasks.keys else (0 until known.length()).map { known.optString(it) }.toSet(), response.string("generation"))
-                        } else previous = previous.copy(confirmed = false)
+                            previous = previous.accept(response)
+                        } else if (readEpoch == epoch) previous = previous.copy(confirmed = false)
                         send(previous)
                     }
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) { lock.withLock {
-                    previous = previous.copy(confirmed = false)
+                    if (readEpoch == epoch) previous = previous.copy(confirmed = false)
                     send(previous)
                 } }
                 withTimeoutOrNull(5000) { signals.receive() }
             }
-        } finally { events.cancel(); signals.close() }
+        } finally { events.cancel(); snapshots.cancel(); signals.close() }
     }
 }.stateIn(scope, SharingStarted.WhileSubscribed(0), NodeActivity())

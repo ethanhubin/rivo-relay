@@ -392,3 +392,9 @@ v1 配对保持兼容。`scripts/start-node.sh` 的 v2 二维码 fragment 增加
 `url` 仅来自 `current_live_url`，未发布时为 null；分页 cursor 原样传递，客户端不解析。
 通过当前节点的辅助连接和临时会话调用固定的 `sites.list_sites`，结束时解除临时订阅并释放连接。
 不返回源码凭据、账号名单、截图签名 URL 或完整工具响应，不提供通用 MCP 分发、创建或发布接口。
+
+### 全局执行状态
+
+`GET /v1/activity` 返回节点统一任务表，包含 `generation`、单调递增的 `version`、`tasks`、`knownThreadIds` 和 `unknownThreadIds`。`complete` 表示快照结构完整，不代表所有会话均已核验；待核验会话不得作为运行证据。原生事件、后台扫描和已核验的会话首页读取都更新这张表，晚于读取开始的事件或扫描结果会阻止该读取覆盖新状态。分页读取不回写执行状态。
+
+会话读取响应附带同格式的 `activity` 快照。Android 在节点级统一接收活动接口和会话读取中的快照，同一 generation 只接受更新的 version，已退出的 generation 不可回滚。项目转圈仅按有效运行任务的 projectId 汇总，列表和详情的运行指示使用同一表；历史缓存和详情页面不独立回写运行状态。待核验状态统一显示为未知，不推断为空闲或继续运行。

@@ -7,7 +7,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SessionSynchronizationTest {
-    private fun running() = SessionState(id = "t", snapshot = SessionSnapshot(
+    private fun running() = SessionState(id = "t", activityStatus = "running", snapshot = SessionSnapshot(
         "t", "running", "running", "turn", emptyList(), emptyList(), JSONObject()))
 
     @Test fun slowRefreshKeepsExecutionAndContentButRequiresFreshPermission() {

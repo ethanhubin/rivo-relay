@@ -357,3 +357,63 @@ class ActivityDiscoveryTests(unittest.TestCase):
         service.activity.reconcile()
         self.assertEqual(service.activity.snapshot()['tasks'][0]['threadId'], 't')
         service.connection.request.assert_any_call('thread/read', {'threadId': 't', 'includeTurns': False})
+
+
+class ActivityObservationTests(unittest.TestCase):
+    def test_verified_detail_completion_updates_global_table_and_fences_old_reads(self):
+        registry = ActivityRegistry(lambda: snapshot(), lambda: 'g')
+        registry.receive(event('turn/started', projectId='p'))
+        token = registry.read_token()
+        before = registry.snapshot()
+        self.assertTrue(registry.observe_execution('t', 'idle', token=token))
+        completed = registry.snapshot()
+        self.assertEqual(completed['tasks'], [])
+        self.assertNotIn('t', completed['unknownThreadIds'])
+        self.assertGreater(completed['version'], before['version'])
+        self.assertFalse(registry.observe_execution('t', 'running', token=token, turn_id='one'))
+        registry.receive(event('turn/started', 'two'))
+        self.assertEqual(registry.snapshot()['tasks'][0]['projectId'], 'p')
+        self.assertFalse(registry.observe_execution('t', 'idle', token=token))
+        self.assertEqual(registry.snapshot()['tasks'][0]['turnId'], 'two')
+
+    def test_detail_cannot_override_new_reconciliation_or_runtime(self):
+        generation = ['g']
+        registry = ActivityRegistry(lambda: snapshot(), lambda: generation[0])
+        token = registry.read_token()
+        registry.reconcile()
+        self.assertFalse(registry.observe_execution('t', 'running', token=token))
+        token = registry.read_token()
+        generation[0] = 'new'
+        self.assertFalse(registry.observe_execution('t', 'running', token=token))
+        self.assertEqual(registry.snapshot()['tasks'], [])
+
+    def test_verified_running_detail_publishes_project_and_queue_in_one_table(self):
+        registry = ActivityRegistry(lambda: snapshot(), lambda: 'g')
+        registry.observe_execution('t', 'running', token=registry.read_token(), project_id='p', turn_id='one')
+        row = registry.snapshot()['tasks'][0]
+        self.assertEqual((row['projectId'], row['status']), ('p', 'running'))
+        registry.observe_execution('t', 'idle', token=registry.read_token(), queue=[{'status': 'waiting'}])
+        row = registry.snapshot()['tasks'][0]
+        self.assertEqual((row['projectId'], row['nativeExecution'], row['queueDepth']), ('p', 'idle', 1))
+
+    def test_detail_completion_wins_over_inflight_background_scan(self):
+        started, release = threading.Event(), threading.Event()
+        def load():
+            started.set()
+            self.assertTrue(release.wait(3))
+            return snapshot([{'threadId': 't', 'projectId': 'p', 'status': 'running'}])
+        registry = ActivityRegistry(load, lambda: 'g')
+        registry.receive(event('turn/started', projectId='p'))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(registry.reconcile)
+            self.assertTrue(started.wait(1))
+            self.assertTrue(registry.observe_execution('t', 'idle', token=registry.read_token()))
+            release.set()
+            self.assertFalse(pending.result(1))
+        self.assertEqual(registry.snapshot()['tasks'], [])
+
+    def test_unknown_detail_invalidates_running_evidence_globally(self):
+        registry = ActivityRegistry(lambda: snapshot(), lambda: 'g')
+        registry.receive(event('turn/started', projectId='p'))
+        registry.observe_execution('t', 'unknown', token=registry.read_token())
+        self.assertIn('t', registry.snapshot()['unknownThreadIds'])
