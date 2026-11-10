@@ -458,6 +458,17 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         })
                 }
                 "chat" -> ChatScreen(session.takeIf { it.id == threadId }?.let { if (network == null) it.transition(SessionSyncEvent.RouteUnavailable) else it } ?: SessionState(id = threadId, synchronization = SessionSynchronization.opening()), submission.busy, submission.pending != null || handoffLoading || network == null, catalog.models, ::back,
+                    onFork = { turn, ref ->
+                        val id = threadId
+                        if (id != null && writable && !session.stale && !submission.busy && submission.pending == null) {
+                            val body = JSONObject().put("lastTurnId", turn)
+                            ref?.let { body.put("worktreeRef", it) }
+                            node.submissions.submit("/v1/threads/${encoded(id)}/fork", body, "分叉会话") { receipt ->
+                                node.catalog.refreshThreads(force = true)
+                                if (threadId == id && route == "chat") openChat(receipt.string("threadId"), chatParent)
+                            }
+                        }
+                    },
                     recoveryState = connectionIndicator, nodeName = node.connection.name, writerBusy = handoffLoading, onWriterAction = ::requestHandoff,
                     takeoverBlockedReason = when {
                         network == null -> "网络不可用，请恢复节点连接后接管"

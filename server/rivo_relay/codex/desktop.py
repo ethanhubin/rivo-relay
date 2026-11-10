@@ -143,6 +143,9 @@ class DesktopConnection(NativeConnection):
     def request(self, method, params=None, *, timeout=None):
         if not self.status()['connected']:
             raise CodexError('Desktop 原生连接尚未就绪', code='desktop_not_ready')
+        if method == 'thread/fork' and (params or {}).get('lastTurnId'):
+            raise CodexError('Desktop 桥接尚不能核实按轮次分叉能力，请使用独立 writer 节点',
+                             code='fork_unsupported', http_status=409)
         return super().request('rpc', {'method': method, 'params': params or {}}, timeout=timeout)
 
     def respond(self, request_id, result):

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
 import os
+import json
+import tempfile
 import re
 from pathlib import Path
 import signal
@@ -460,6 +462,19 @@ class SessionWriters:
             elif backend is self.metadata:
                 self._ensure_metadata()
             try:
+                if method == 'thread/fork' and params.get('lastTurnId'):
+                    # Unknown fields can be silently ignored by older native versions.
+                    # Inspect the actual writer binary before any fork mutation.
+                    executable = backend.native_host_info().get('executable')
+                    try:
+                        with tempfile.TemporaryDirectory(prefix='rivo-fork-schema-') as directory:
+                            subprocess.run([executable, 'app-server', 'generate-json-schema', '--out', directory],
+                                check=True, capture_output=True, timeout=30)
+                            schema = json.loads((Path(directory) / 'v2' / 'ThreadForkParams.json').read_text())
+                            if not {'lastTurnId', 'cwd', 'excludeTurns'} <= schema.get('properties', {}).keys():
+                                raise ValueError('unsupported fork schema')
+                    except (OSError, ValueError, TypeError, subprocess.SubprocessError) as error:
+                        raise CodexError('此节点不支持按轮次分叉，请升级 Codex', code='fork_unsupported', http_status=409) from error
                 result = backend.request(method, params, timeout=timeout)
             except Exception:
                 if creating:
@@ -475,7 +490,8 @@ class SessionWriters:
                     invalid = (self._closed or not writer.status().get('connected')
                                or self._retired.get(writer) == writer.generation
                                or not selected or selected in self._writers
-                               or (method == 'thread/resume' and selected != tid))
+                               or (method == 'thread/resume' and selected != tid)
+                               or (method == 'thread/fork' and selected == tid))
                     if not invalid:
                         self._writers[selected] = writer
                         self._children.add(writer)

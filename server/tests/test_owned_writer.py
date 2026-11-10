@@ -50,6 +50,16 @@ class OwnedRoutingTests(unittest.TestCase):
         self.busy = patch('rivo_relay.codex.owned_writer.WriterProcesses.busy', return_value=False).start()
         self.addCleanup(patch.stopall)
         self.addCleanup(self.pool.close)
+    def test_fork_rejects_old_schema_before_native_mutation(self):
+        with patch.object(Backend, 'native_host_info', return_value={'executable': '/codex'}, create=True), \
+             patch('rivo_relay.codex.owned_writer.subprocess.run'), \
+             patch('pathlib.Path.read_text', return_value='{"properties":{"cwd":{}}}'):
+            with self.assertRaises(CodexError) as caught:
+                self.pool.request('thread/fork', {'threadId': 'parent', 'lastTurnId': 'turn'})
+        self.assertEqual('fork_unsupported', caught.exception.code)
+        self.assertTrue(self.created[-1].closed)
+        self.assertFalse(any(method == 'thread/fork' for method, _ in self.created[-1].calls))
+
     def test_prepared_takeover_acquires_without_metadata_and_adopts_writer(self):
         with self.pool.prepare_takeover('target') as acquire:
             self.assertFalse(self.pool.owns('target'))
