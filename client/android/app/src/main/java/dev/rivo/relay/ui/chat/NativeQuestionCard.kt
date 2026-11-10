@@ -21,7 +21,7 @@ import org.json.JSONObject
 /** QiGuang CodexInteractionCard presentation, keeping native question IDs and answer labels. */
 @Composable
 internal fun NativeQuestionCard(questions: List<JSONObject>, answers: Map<String, String>, index: Int, enabled: Boolean,
-    onIndex: (Int) -> Unit, onAnswer: (String, String) -> Unit, onSubmit: () -> Unit) {
+    onIndex: (Int) -> Unit, onAnswer: (String, String) -> Unit, submitEnabled: Boolean = enabled, onSubmit: () -> Unit) {
     if (questions.isEmpty()) { Text("请求尚未提供可回答的问题，请等待节点更新。"); return }
     val position = index.coerceIn(questions.indices)
     val question = questions[position]
@@ -58,7 +58,7 @@ internal fun NativeQuestionCard(questions: List<JSONObject>, answers: Map<String
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalAlignment = Alignment.CenterVertically) {
             if (position > 0) TextButton(onClick = { onIndex(position - 1) }, enabled = enabled, modifier = Modifier.testTag("previous_question")) { Text("上一题") }
             if (position < questions.lastIndex) TextButton(onClick = { onIndex(position + 1) }, enabled = enabled && answer.isNotBlank(), modifier = Modifier.testTag("next_question")) { Text("下一题") }
-            Button(onClick = onSubmit, enabled = enabled && questions.all { !answers[it.string("id")].isNullOrBlank() }, modifier = Modifier.testTag("answer_questions")) { Text("提交回答") }
+            Button(onClick = onSubmit, enabled = submitEnabled && questions.all { !answers[it.string("id")].isNullOrBlank() }, modifier = Modifier.testTag("answer_questions")) { Text("提交回答") }
         }
     }
 }

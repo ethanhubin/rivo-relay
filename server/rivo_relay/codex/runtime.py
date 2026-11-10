@@ -198,6 +198,26 @@ class RuntimeConnection:
                 raise CodexError('原生连接已变化，请核对结果', request_sent=True)
         return result
 
+    def can_answer_questions(self, thread_id):
+        with self._lock:
+            if self._closed: return False
+            backend = self._backend(self._pins.get(thread_id, self._preferred))
+        check = getattr(backend, 'can_answer_questions', None)
+        if check:
+            return check(thread_id)
+        return thread_id in backend.request('thread/loaded/list', {}).get('data', [])
+
+    def answer_questions(self, params, *, start_turn=False):
+        with self._lock:
+            if self._closed: raise CodexError('Codex 连接已关闭')
+            backend = self._backend(self._pins.get(params['threadId'], self._preferred))
+            generation = backend.generation
+        answer = getattr(backend, 'answer_questions', None)
+        result = answer(params, start_turn=start_turn) if answer else backend.request('turn/start' if start_turn else 'turn/steer', params)
+        if backend.generation != generation:
+            raise CodexError('回答连接已变化，请核对结果', request_sent=True)
+        return result
+
     def respond(self, request_id, result):
         with self._lock:
             selected = self._requests.get(request_id)

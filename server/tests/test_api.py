@@ -310,6 +310,33 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(['probe'], calls)
         self.assertFalse(self.native.created)
 
+    def test_question_answer_requires_auth_and_is_deduplicated(self):
+        path = '/v1/threads/thread-1/answers'
+        body = {'submissionId': 'answer-one', 'expectedTurnId': 'turn',
+                'answers': [{'questionItemId': 'question', 'answer': 'A'}]}
+        calls = []
+        def answer(thread, turn, answers, submission):
+            calls.append((thread, turn, answers, submission))
+            return {'threadId': thread, 'turnId': turn}
+        self.native.answer_questions = answer
+        self.assertEqual(401, self.request('POST', path, body)[0])
+        first = self.request('POST', path, body, token=self.token)
+        second = self.request('POST', path, body, token=self.token)
+        self.assertEqual('accepted', first[1]['status'])
+        self.assertEqual(first[:2], second[:2])
+        self.assertEqual([('thread-1', 'turn', body['answers'], 'answer-one')], calls)
+        self.assertEqual(400, self.request('POST', path, {'submissionId': 'missing'}, token=self.token)[0])
+
+    def test_uncertain_question_answer_is_not_replayed(self):
+        path = '/v1/threads/thread-1/answers'
+        body = {'submissionId': 'answer-unknown', 'expectedTurnId': 'turn', 'answers': []}
+        self.native.answer_questions = Mock(side_effect=TimeoutError('lost response'))
+        first = self.request('POST', path, body, token=self.token)
+        second = self.request('POST', path, body, token=self.token)
+        self.assertEqual('unknown', first[1]['status'])
+        self.assertEqual(first[:2], second[:2])
+        self.assertEqual(1, self.native.answer_questions.call_count)
+
     def test_continue_empty_input_is_deduplicated_and_requires_target(self):
         path = '/v1/threads/thread-1/continue'
         body = {'submissionId': 'continue-one', 'expectedTurnId': 'interrupted-turn'}

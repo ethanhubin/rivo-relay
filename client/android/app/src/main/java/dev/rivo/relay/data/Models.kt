@@ -39,7 +39,7 @@ data class SessionSnapshot(val id: String, val name: String, val status: String,
     val messages: List<NativeMessage>, val requests: List<NativeRequest>, val settings: JSONObject, val historyCursor: String? = null, val readOnly: Boolean = false, val queue: List<QueueTask> = emptyList(), val plan: JSONObject? = null, val tokenUsage: JSONObject? = null, val changes: List<JSONObject> = emptyList(), val updatedAt: Long = 0, val turnSettings: List<NativeTurnSettings> = emptyList(),
     val nativeRevision: String? = null, val nativeSyncState: String = "ready", val recoveryTask: QueueTask? = null,
     val recoveryRequired: Boolean = false, val nativeExecution: String = "", val deliveryState: String = "",
-    val displayState: String = "", val writerOwner: String = "", val queueDepth: Int = 0, val reviewDiagnostics: List<JSONObject> = emptyList(), val nativeRuntime: JSONObject? = null, val goal: JSONObject? = null, val goalSupported: Boolean = false, val control: JSONObject? = null, val workspaceUnavailable: Boolean = false, val persistedHistoryReady: Boolean = false, val resumeTurnId: String = "") {
+    val displayState: String = "", val writerOwner: String = "", val queueDepth: Int = 0, val reviewDiagnostics: List<JSONObject> = emptyList(), val nativeRuntime: JSONObject? = null, val goal: JSONObject? = null, val goalSupported: Boolean = false, val control: JSONObject? = null, val workspaceUnavailable: Boolean = false, val persistedHistoryReady: Boolean = false, val resumeTurnId: String = "", val canAnswerQuestions: Boolean = false, val questionAnswerStates: JSONObject = JSONObject()) {
     val isOngoing: Boolean get() = activeTurnId.isNotBlank() || status in setOf("running", "waiting") || (nativeExecution.isBlank() && goal?.string("status") == "active")
     val shouldQueueInput: Boolean get() = isOngoing || requests.isNotEmpty() || (!recoveryRequired && queue.isNotEmpty())
     val nativeReady: Boolean get() = nativeSyncState == "ready"
@@ -86,7 +86,7 @@ fun sessionSnapshot(json: JSONObject): SessionSnapshot {
         json.string("nativeRevision").takeIf(String::isNotBlank), json.optJSONObject("nativeSync")?.string("state")?.ifBlank { "ready" } ?: "ready",
         json.optJSONObject("recoveryTask")?.let(::queueTask), json.optBoolean("recoveryRequired"), json.string("nativeExecution"),
         json.string("deliveryState"), json.string("displayState"), json.string("writerOwner"), json.optInt("queueDepth").coerceAtLeast(0),
-        mergeTurnDiagnostics(emptyList(), json.objects("reviewDiagnostics")), json.optJSONObject("nativeRuntime"), json.optJSONObject("goal"), json.optBoolean("goalSupported"), json.optJSONObject("control"), json.optBoolean("workspaceUnavailable"), json.optJSONObject("nativeSync")?.optBoolean("historyReady") == true, json.string("resumeTurnId"))
+        mergeTurnDiagnostics(emptyList(), json.objects("reviewDiagnostics")), json.optJSONObject("nativeRuntime"), json.optJSONObject("goal"), json.optBoolean("goalSupported"), json.optJSONObject("control"), json.optBoolean("workspaceUnavailable"), json.optJSONObject("nativeSync")?.optBoolean("historyReady") == true, json.string("resumeTurnId"), json.optBoolean("canAnswerQuestions"), json.optJSONObject("questionAnswerStates") ?: JSONObject())
 }
 
 fun mergeTurnDiagnostics(previous: List<JSONObject>, latest: List<JSONObject>): List<JSONObject> =
