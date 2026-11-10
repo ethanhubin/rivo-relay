@@ -101,19 +101,6 @@ internal fun diffLineNumbers(lines: List<String>): List<String> {
     }
 }
 
-internal fun diffForFile(patch: String, path: String): String {
-    val blocks = patch.split(Regex("(?m)(?=^diff --git )"))
-    return blocks.filter { block ->
-        val lines = block.lineSequence().takeWhile { !it.startsWith("@@") }.toList()
-        val newPath = lines.firstOrNull { it.startsWith("+++ ") }?.substring(4)?.let(::gitDiffHeaderPath)
-        val oldPath = lines.firstOrNull { it.startsWith("--- ") }?.substring(4)?.let(::gitDiffHeaderPath)
-        val renamePath = lines.firstOrNull { it.startsWith("rename to ") }?.removePrefix("rename to ")
-        val target = newPath?.takeUnless { it == "/dev/null" } ?: oldPath?.takeUnless { it == "/dev/null" } ?: renamePath
-            ?: lines.firstOrNull { it.startsWith("diff --git ") }?.substringAfterLast(" b/")
-        target == path
-    }.joinToString("")
-}
-
 internal fun fileMimeType(path: String, declared: String = ""): String {
     val extension = path.substringBefore('?').substringBefore('#').substringAfterLast('.', "").lowercase()
     if (extension in setOf("md", "mdx", "markdown")) return "text/markdown"

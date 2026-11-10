@@ -2,7 +2,6 @@ package dev.rivo.relay
 
 import dev.rivo.relay.data.*
 import java.io.IOException
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.runCurrent
@@ -11,14 +10,6 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MediaValidationTest {
-    @Test fun missingEndpointAllowsLegacyButOtherFailuresPropagate() = runTest {
-        assertNull(readMediaVersions { throw ApiException(404, "not_found", "Unknown endpoint") })
-        for (error in listOf(ApiException(404, "media_not_found", "missing"),
-            ApiException(401, "unauthorized", "denied"), IOException("offline"), CancellationException())) {
-            try { readMediaVersions { throw error }; fail("Expected failure") }
-            catch (actual: Exception) { assertSame(error, actual) }
-        }
-    }
     @Test fun transientFailureKeepsImageButPermanentFailureClearsIt() {
         val image = Any()
         assertSame(image, imageAfterValidationFailure(image, IOException("offline")))
@@ -26,6 +17,7 @@ class MediaValidationTest {
         assertNull(imageAfterValidationFailure(null, IOException("offline")))
         assertNull(imageAfterValidationFailure(image, ApiException(401, "unauthorized", "denied")))
         assertNull(imageAfterValidationFailure(image, ApiException(404, "media_not_found", "deleted")))
+        assertNull(imageAfterValidationFailure(image, ApiException(404, "not_found", "Unknown endpoint")))
     }
     @Test fun coilHttpFailuresUseStatusInsteadOfExceptionSuperclass() {
         val image = Any()

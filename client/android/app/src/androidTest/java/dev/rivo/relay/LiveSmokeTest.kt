@@ -246,7 +246,6 @@ class LiveSmokeTest {
         lateinit var node: NodeRuntime
         compose.runOnIdle { node = requireNotNull(androidx.lifecycle.ViewModelProvider(compose.activity)[AppViewModel::class.java].state.value.node) }
         org.junit.Assert.assertEquals(dev.rivo.relay.connection.NodeEndpoints.DIRECT, node.connection.base)
-        org.junit.Assert.assertEquals(dev.rivo.relay.connection.NodeEndpoints.LEGACY, node.connection.storageBase)
         val lookups = java.util.concurrent.atomic.AtomicInteger()
         val noDns = object : okhttp3.Dns {
             override fun lookup(hostname: String): List<java.net.InetAddress> {

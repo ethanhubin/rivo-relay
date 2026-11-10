@@ -15,7 +15,7 @@ object PairingParser {
         require(uri.scheme == "https" || (uri.scheme == "http" && ((allowLocalHttp && local) || uri.host == NodeEndpoints.TAILNET_IP))) { "请使用 HTTPS 或已配置的 Tailscale IP 节点地址" }
         val fragmentParts = uri.rawFragment?.split('&').orEmpty()
         val version = fragmentParts.firstOrNull { it.startsWith("v=") }?.substringAfter('=')
-        if (fragmentParts.any { it.startsWith("code=") }) require(version == "1" || version == "2") { "不支持此配对链接版本，请重新生成二维码" }
+        if (uri.rawFragment != null) require(version == "2") { "不支持此配对链接版本，请重新生成二维码" }
         val fragmentCode = uri.rawFragment?.split('&')?.firstOrNull { it.startsWith("code=") }?.substringAfter('=')?.let {
             try { URLDecoder.decode(it, "UTF-8") } catch (_: Exception) { throw IllegalArgumentException("配对链接无效") }
         }

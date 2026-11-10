@@ -42,6 +42,7 @@ class DiffProjectionTests(unittest.TestCase):
     def test_pagination_is_revision_bound_and_lossless(self):
         diff = snapshot(PATCH)
         first = diff_page(diff, limit=3)
+        self.assertNotIn("patch", first)
         lines, page = list(first['lines']), first
         while page['nextOffset'] is not None:
             page = diff_page(diff, revision=diff['revision'], offset=page['nextOffset'], limit=3)

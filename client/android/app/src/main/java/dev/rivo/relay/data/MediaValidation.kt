@@ -1,14 +1,6 @@
 package dev.rivo.relay.data
 
-import org.json.JSONObject
 import kotlinx.coroutines.async
-
-/** Only a missing endpoint permits legacy transport; missing media/auth failures do not. */
-internal suspend fun readMediaVersions(read: suspend () -> JSONObject): JSONObject? =
-    try { read() }
-    catch (error: ApiException) {
-        if (error.status == 404 && error.code == "not_found") null else throw error
-    }
 
 internal fun <T> imageAfterValidationFailure(previous: T?, error: Throwable): T? =
     if (isTransientMediaFailure(error)) previous else null

@@ -132,6 +132,5 @@ def diff_page(diff, *, revision=None, file_id=None, offset=0, limit=400):
     result.update(lines=lines[offset:offset + limit], offset=offset,
                   nextOffset=offset + limit if offset + limit < len(lines) else None,
                   totalLines=len(lines))
-    # Legacy clients still consume patch. Page requests don't repeat the payload.
-    if revision is not None: result.pop('patch', None)
+    result.pop('patch', None)
     return result

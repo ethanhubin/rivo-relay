@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 from rivo_relay.api import Handler
 from rivo_relay.app import RelayApp
@@ -30,6 +31,14 @@ class UnusedNative:
 
 
 class ConfigTests(unittest.TestCase):
+    def test_serve_rejects_removed_name_override(self):
+        import contextlib
+        import io
+        from rivo_relay.__main__ import parser
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            parser().parse_args(['serve', '--name', 'Old label'])
+        self.assertEqual(error.exception.code, 2)
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -73,7 +82,7 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 replace(self.config, port=port).validate()
         self.config.prepare()
-        self.assertEqual(self.config.node_id, replace(self.config, name="Different label").node_id)
+        self.assertEqual(self.config.node_id, replace(self.config, port=9876).node_id)
         self.assertNotEqual(self.config.node_id, replace(self.config, workspace=self.config.workspace / "other").node_id)
         self.assertTrue(self.config.database_path.parent.is_dir())
 
@@ -82,10 +91,12 @@ class ConfigTests(unittest.TestCase):
         # no-op in both children, so this never probes the user's runtime.
         bootstrap = """
 import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 from rivo_relay.__main__ import main
 class NoNative:
-    def __init__(self, **kwargs): pass
+    def __init__(self, **kwargs):
+        self.activity = SimpleNamespace(start=lambda: None)
     def start(self): pass
     def status(self): return {'connected': False, 'capabilities': {}}
     def close(self): pass
@@ -97,6 +108,7 @@ with patch('rivo_relay.codex.CodexService', NoNative):
             port = reservation.getsockname()[1]
         env = dict(os.environ)
         env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+        env["RIVO_RELEASE_CODE"] = "123"
         command = [sys.executable, "-c", bootstrap, "serve", "--workspace", str(self.config.workspace),
                    "--port", str(port), "--url", f"http://127.0.0.1:{port}",
                    "--codex-home", str(self.config.workspace / "unused-codex-home")]
@@ -104,7 +116,11 @@ with patch('rivo_relay.codex.CodexService', NoNative):
         try:
             ready, _, _ = select.select([first.stdout], [], [], 5)
             self.assertTrue(ready, "First isolated serve did not become ready")
-            self.assertEqual(__import__("json").loads(first.stdout.readline())["event"], "service_started")
+            startup = first.stdout.readline()
+            if not startup or json.loads(startup).get("event") != "service_started":
+                first.terminate()
+                _, diagnostics = first.communicate(timeout=5)
+                self.fail(f"Isolated serve failed to start: {startup}\n{diagnostics}")
             second = subprocess.run(command, env=env, capture_output=True, text=True, timeout=5)
             self.assertEqual(second.returncode, 1)
             self.assertIn("already owns this workspace", second.stderr)
@@ -113,7 +129,10 @@ with patch('rivo_relay.codex.CodexService', NoNative):
                 client.request("GET", "/health")
                 response = client.getresponse()
                 self.assertEqual(response.status, 200)
-                self.assertEqual(json.loads(response.read()), {"status": "ok"})
+                self.assertEqual(json.loads(response.read()), {
+                    "status": "ok", "nodeId": self.config.node_id,
+                    "releaseCode": 123, "nativeConnected": False,
+                })
             finally:
                 client.close()
         finally:
@@ -207,7 +226,11 @@ authorityKeyIdentifier=keyid:always,issuer
             client.close()
 
     def test_explicitly_trusted_ca_and_correct_hostname_complete_real_https(self):
-        self.assertEqual(self.request("localhost", self.ca), (200, {"status": "ok"}))
+        with patch.dict(os.environ, {"RIVO_RELEASE_CODE": "123"}):
+            self.assertEqual(self.request("localhost", self.ca), (200, {
+                "status": "ok", "nodeId": self.app.config.node_id,
+                "releaseCode": 123, "nativeConnected": False,
+            }))
 
     def test_wrong_hostname_is_rejected_without_disabling_verification(self):
         with self.assertRaises(ssl.SSLCertVerificationError):
