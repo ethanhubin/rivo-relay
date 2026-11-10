@@ -912,6 +912,8 @@ class CodexService:
         return [{"type": "text", "text": text, "text_elements": []}]
 
     def send(self, thread_id, text, model=None, effort=None, client_message_id=None, *, input_items=None, mode=None, service_tier=None, acquire_released=False, require_goal_support=False, resume_turn_id=None):
+        from ..submission_dispatch import dispatch_phase
+        dispatch_phase(client_message_id, thread_id, 'preparing')
         self.start()
         with self.operation_gate(thread_id):
             if require_goal_support and not self.goal_capabilities()["goalSupported"]:
@@ -971,6 +973,8 @@ class CodexService:
                 elif (baseline and sandbox.get('type') == 'readOnly' and baseline.get('sandbox')
                       and (settings.get('collaborationMode') or {}).get('mode') == 'plan'):
                     params['sandboxPolicy'] = baseline['sandbox']
+            # Persist before sending: a crash after this point is uncertain.
+            dispatch_phase(client_message_id, thread_id, 'dispatching')
             try:
                 result = self.connection.request("turn/start", params)
             except CodexError as error:
@@ -985,6 +989,9 @@ class CodexService:
                 with self._lock:
                     self._created.pop(thread_id, None)
                 raise CodexError("Codex 没有返回可核对的 turn ID", code="native_protocol", request_sent=True)
+            # Preserve the native receipt before any derived-state work can fail.
+            dispatch_phase(client_message_id, thread_id, 'received',
+                           {'threadId': thread_id, 'turnId': turn['id']})
             with self._lock:
                 created = self._created.pop(thread_id, None)
                 if created is not None:
