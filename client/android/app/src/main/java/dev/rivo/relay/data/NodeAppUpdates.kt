@@ -110,8 +110,6 @@ class NodeAppUpdates(
                             throw IOException("安装包响应无效")
                         }
                         if (body.contentLength() != release.size - total) throw IOException("安装包长度不匹配")
-                        val transferStarted = System.nanoTime()
-                        val transferOffset = total
                         body.byteStream().use { input -> java.io.FileOutputStream(temporary, total > 0).use { output ->
                             val buffer = ByteArray(65536)
                             while (total < release.size) {
@@ -122,15 +120,6 @@ class NodeAppUpdates(
                                 output.write(buffer, 0, count)
                                 digest.update(buffer, 0, count)
                                 val now = System.nanoTime()
-                                val elapsed = now - transferStarted
-                                // One early recovery only: a lossy connection may stay alive
-                                // at tens of KiB/s and never trigger the normal read timeout.
-                                // Do not repeatedly reconnect genuinely slow mobile networks.
-                                if (attempt == 0 && release.size - total > 1024 * 1024 &&
-                                    elapsed >= 3_000_000_000L &&
-                                    (total - transferOffset).toDouble() / (elapsed / 1_000_000_000.0) < 256 * 1024) {
-                                    throw UpdateTransportException(IOException("下载起步持续低速，重新连接续传"))
-                                }
                                 if (total == release.size || now - lastReport >= 100_000_000L) {
                                     progress(total, release.size)
                                     lastReport = now
