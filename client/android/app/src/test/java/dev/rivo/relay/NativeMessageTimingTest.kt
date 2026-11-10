@@ -68,9 +68,28 @@ class NativeMessageTimingTest {
         assertNull(nativeTurnElapsedSeconds(live.copy(completedAt = 104), 106))
     }
 
+    @Test fun completedDurationUsesCompactUnitsWithoutBrackets() {
+        assertEquals("0s", formatNativeElapsedDuration(0))
+        assertEquals("3s", formatNativeElapsedDuration(3))
+        assertEquals("1m 0s", formatNativeElapsedDuration(60))
+        assertEquals("2m 3s", formatNativeElapsedDuration(123))
+        assertEquals("1h 0m 0s", formatNativeElapsedDuration(3600))
+        assertEquals("1h 2m 3s", formatNativeElapsedDuration(3723))
+        assertEquals("25h 2m 3s", formatNativeElapsedDuration(90123))
+        val snapshot = SessionSnapshot("s", "", "idle", "", emptyList(), emptyList(), JSONObject(),
+            turnSettings = listOf(turn.copy(durationMs = 3723000)))
+        val label = sessionCompletionLabel(snapshot)!!
+        assertTrue(label.endsWith(" 耗时 1h 2m 3s"))
+        assertFalse(label.contains("（") || label.contains("("))
+        assertFalse(sessionCompletionLabel(snapshot.copy(turnSettings = listOf(
+            turn.copy(durationMs = null, startedAt = null))))!!.contains("耗时"))
+        assertTrue(sessionCompletionLabel(snapshot.copy(turnSettings = listOf(
+            turn.copy(durationMs = null))))!!.endsWith(" 耗时 16s"))
+    }
+
     @Test fun completionFooterTracksLatestStoppedTurn() {
         val snapshot = SessionSnapshot("s", "", "idle", "", emptyList(), emptyList(), JSONObject(), turnSettings = listOf(turn))
-        assertTrue(sessionCompletionLabel(snapshot)!!.matches(Regex("已完成 [0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}")))
+        assertTrue(sessionCompletionLabel(snapshot)!!.matches(Regex("已完成 [0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} 耗时 16s")))
         for ((status, label) in mapOf("failed" to "执行失败", "interrupted" to "已中断", "canceled" to "已取消", "cancelled" to "已取消"))
             assertEquals(label, sessionCompletionLabel(snapshot.copy(turnSettings = listOf(turn.copy(status = status)))))
         assertNull(sessionCompletionLabel(snapshot.copy(activeTurnId = "next")))
@@ -102,6 +121,6 @@ class NativeMessageTimingTest {
         assertNull(sessionCompletionLabel(snapshot.copy(goal = JSONObject().put("status", "blocked"))))
         val oldGoal = JSONObject().put("status", "blocked").put("updatedAt", 110)
         assertTrue(sessionCompletionLabel(snapshot.copy(goal = oldGoal))!!.startsWith("已完成 "))
-        assertEquals("已完成", sessionCompletionLabel(snapshot.copy(turnSettings = listOf(turn.copy(completedAt = Long.MAX_VALUE)))))
+        assertEquals("已完成 耗时 16s", sessionCompletionLabel(snapshot.copy(turnSettings = listOf(turn.copy(completedAt = Long.MAX_VALUE)))))
     }
 }
