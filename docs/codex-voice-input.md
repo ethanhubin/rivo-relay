@@ -40,3 +40,9 @@ draft/target fencing, bounded backlog, timeout cleanup, stop/cancel PCM framing,
 capability caching, authenticated raw PCM transport, and expired-stream errors.
 These tests use fake speech transports and an isolated HTTP fixture. They do not
 record the microphone or contact a real speech backend.
+
+
+VPS-paired Android clients obtain a short-lived speech-only grant from the node
+and send audio directly to the pinned VPS speech endpoint. Only grant issuance
+uses the chat route; chunks, finish and cancel do not traverse the chat node.
+See [shared ASR](shared-asr.md) for the 180-second revocation window and upgrade requirements.

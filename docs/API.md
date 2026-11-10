@@ -349,6 +349,7 @@ for release as well as takeover. Changed/expired previews must be fetched again.
 | GET `/v1/media/library/{id}/content`、`thumbnail` | 已保存副本/缩略图，认证Range/ETag。 |
 | GET `/v1/media/library/{id}/provenance` | record含原生threadId/turnId/itemId及provenance.facts、promptKind（original/revised/unknown）。 |
 | GET `/v1/media/generated?threadId=...` 及 `/{id}/content`、`thumbnail`、`provenance` | 生成媒体查询/读取别名。 |
+| POST `/v1/speech/access` | 已配对手机获取 180 秒、仅限 VPS 语音接口的授权；不返回节点密钥或 ASR 密钥。 |
 | POST `/v1/speech/streams` | 创建当前配对连接拥有的转写流。 |
 | POST `/v1/speech/streams/{id}/chunks` | `application/octet-stream` 原始16kHz单声道PCM16LE，不自动重发。 |
 | POST `/v1/speech/streams/{id}/finish`、`cancel` | 完成或取消流；跨配对连接访问被拒绝。 |

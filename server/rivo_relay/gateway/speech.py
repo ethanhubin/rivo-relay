@@ -30,8 +30,21 @@ class SharedSpeech:
         task.add_done_callback(completed)
         return await asyncio.shield(task)
 
-    async def handle(self, request):
-        owner = self.gateway.authorize(request)
+    async def direct(self, request):
+        from .speech_access import verify
+        authorization = request.headers.get('Authorization', '')
+        try:
+            if not authorization.startswith('Bearer '):
+                raise ValueError()
+            owner = verify(authorization[7:], request.match_info['slot'],
+                           json.loads(self.gateway.keys_file.read_text()))
+        except ValueError:
+            return web.json_response({'error': {'code': 'speech_access_expired',
+                'message': '语音授权无效或已过期，请重新录音'}}, status=401)
+        return await self.handle(request, owner=owner)
+
+    async def handle(self, request, *, owner=None):
+        owner = self.gateway.authorize(request) if owner is None else owner
         path = request.match_info['path']
         if request.method == 'GET' and path == 'capabilities':
             return web.json_response({'speech': self.service.capabilities()})
@@ -71,4 +84,5 @@ class SharedSpeech:
 def routes(app, gateway):
     service = SharedSpeech(gateway)
     app.router.add_route('*', '/gateway/speech/{slot}/{path:.*}', service.handle)
+    app.router.add_route('*', '/relay/{slot}/v1/speech-direct/{path:.*}', service.direct)
     return service
