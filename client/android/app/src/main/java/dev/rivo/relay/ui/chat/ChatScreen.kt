@@ -581,8 +581,6 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     } else if (assistant) {
                         val isLastReply = lastReplyIds[message.turnId] == message.id
                         val timing = nativeMessageTiming(message, snapshot?.turnSettings?.firstOrNull { it.turnId == message.turnId }, isLastReply)
-                        if (isLastReply) snapshot?.turnSettings?.firstOrNull { it.turnId == message.turnId }
-                            ?.takeIf { it.status != "inProgress" }?.let { NativeTurnDuration(it) }
                         MessageContent(message.text, cwd, cacheBlocks = !(snapshot?.isOngoing == true && message.turnId == snapshot.activeTurnId), onQuoteText = quoteText, onSaveFile = saveFile, inlineImage = { source ->
                                 val target = if (isHttpWebLink(source)) source else nativeFilePath(source, cwd)
                                 target?.let { NativeImage(it, readFile, downloadFile = downloadFile) }
@@ -628,10 +626,6 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     is NativeTimelineRow.Activities -> next.messages.first().turnId
                     is NativeTimelineRow.Notice -> next.turn.turnId
                 } }
-                if (rowTurn.isNotBlank() && rowTurn != nextTurn && lastReplyIds[rowTurn] == null) {
-                    snapshot?.turnSettings?.firstOrNull { it.turnId == rowTurn }
-                        ?.takeIf { it.status != "inProgress" }?.let { NativeTurnDuration(it) }
-                }
                 val terminal = snapshot?.turnSettings?.any { it.turnId == rowTurn && it.status in setOf("completed", "interrupted", "failed") } == true
                 if (onFork != null && rowTurn.isNotBlank() && rowTurn != nextTurn && terminal && lastReplyIds[rowTurn] == null) {
                     AssistantMessageFooter("", rowTurn,
@@ -645,7 +639,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     it.turnId == diagnostic.string("turnId") && it.type in setOf("agentMessage", "agent_message", "exitedReviewMode")
                 }
             }?.forEach { diagnostic -> item(key = "review-diagnostic:${diagnostic.string("turnId")}") { ReviewDiagnostic(diagnostic) } }
-            timedRunningTurn?.let { turn -> item(key = "turn-duration:${turn.turnId}") { NativeTurnDuration(turn, running = true) } }
+            timedRunningTurn?.let { turn -> item(key = "turn-duration:${turn.turnId}") { NativeTurnDuration(turn) } }
             if (executionActive && currentActivity == null && timedRunningTurn == null) item(key = "execution_stage") {
                 ChatTimelineSummaryRow {
                     if (state.stale) Text("正在处理…", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("execution_stage_pending"))

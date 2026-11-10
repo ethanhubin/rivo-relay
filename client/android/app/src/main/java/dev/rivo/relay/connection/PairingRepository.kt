@@ -26,17 +26,6 @@ class PairingRepository internal constructor(
     init {
         RouteMemory.read = { read(it) }
         RouteMemory.write = { key, value -> save(key, value) }
-        for (key in listOf("connection", "nodes")) {
-            read(key)?.let { raw ->
-                val migrated = NodeEndpoints.migrateStored(raw, key == "nodes")
-                if (migrated != raw) save(key, migrated)
-            }
-        }
-    }
-    init {
-        val old = read("nodes") ?: "[]"
-        val provisioned = NodeEndpoints.provisionedNodes(old, read("connection"))
-        if (provisioned != old) save("nodes", provisioned)
     }
     private fun records() = runCatching { org.json.JSONArray(read("nodes") ?: "[]") }.getOrDefault(org.json.JSONArray())
     private fun remember(base: String, connection: NodeConnection? = null) {
@@ -55,7 +44,7 @@ class PairingRepository internal constructor(
     }
     fun connection(base: String): NodeConnection? {
         val all = records()
-        val item = (0 until all.length()).map { all.getJSONObject(it) }.firstOrNull { it.string("base") == (if (base.trimEnd('/') == NodeEndpoints.LEGACY) NodeEndpoints.DIRECT else base) && it.string("token").isNotBlank() } ?: return null
+        val item = (0 until all.length()).map { all.getJSONObject(it) }.firstOrNull { it.string("base") == base && it.string("token").isNotBlank() } ?: return null
         return decode(item.toString())
     }
     fun select(base: String): NodeConnection? = connection(base)?.also { save("connection", it.serialized()) }

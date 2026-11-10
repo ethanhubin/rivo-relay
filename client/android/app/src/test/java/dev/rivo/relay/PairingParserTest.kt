@@ -5,10 +5,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PairingParserTest {
-    @Test fun scanAndManualResolveSameConnection() {
-        val scanned = PairingParser.parse("https://node.example:8787/pair#v=1&code=short-lived-code")
+    @Test fun v2DirectScanAndManualResolveSameAddress() {
+        val scanned = PairingParser.parse("https://node.example:8787/pair#v=2&node=11111111-1111-1111-1111-111111111111&direct=https%3A%2F%2Fnode.example%3A8787&code=short-lived-code")
         val manual = PairingParser.parse("https://node.example:8787", "short-lived-code")
-        assertEquals(manual, scanned)
+        assertEquals(manual.baseUrl, scanned.baseUrl)
+        assertEquals(manual.code, scanned.code)
+        assertEquals(scanned.baseUrl, scanned.routes!!.direct)
+        assertEquals("11111111-1111-1111-1111-111111111111", scanned.nodeId)
         assertEquals("https://node.example:8787", scanned.baseUrl)
         assertFalse(scanned.baseUrl.contains("code"))
     }
@@ -18,12 +21,12 @@ class PairingParserTest {
         assertThrows(IllegalArgumentException::class.java) { PairingParser.parse("http://192.168.1.2:8787", "code", true) }
     }
     @Test fun rejectUnknownVersionCredentialsAndQuery() {
-        listOf("https://node.example/pair#v=2&code=x", "https://user:secret@node.example/pair#v=1&code=x", "https://node.example/pair?code=x").forEach { uri ->
+        listOf("https://node.example/pair#v=1&code=x", "https://node.example/pair#v=2&code=x", "https://user:secret@node.example/pair#v=1&code=x", "https://node.example/pair?code=x").forEach { uri ->
             assertThrows(IllegalArgumentException::class.java) { PairingParser.parse(uri, "x") }
         }
     }
     @Test fun prefixAndEncodedCodeAreHandledWithoutLeakingCodeIntoBase() {
-        val value = PairingParser.parse("https://node.example/relay/pair#v=1&code=a%2Bb")
+        val value = PairingParser.parse("https://node.example/relay/pair#v=2&node=11111111-1111-1111-1111-111111111111&direct=https%3A%2F%2Fnode.example%2Frelay&code=a%2Bb")
         assertEquals("https://node.example/relay", value.baseUrl)
         assertEquals("a+b", value.code)
     }

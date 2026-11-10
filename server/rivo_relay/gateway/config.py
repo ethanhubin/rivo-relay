@@ -117,7 +117,9 @@ def discover_direct_url(local_port: int) -> str:
     return ''
 
 
-def pairing_route_binding(workspace: Path) -> str:
+def pairing_route_binding(workspace: Path, direct_url: str = '') -> str:
+    if direct_url and not (workspace / 'gateway-client.json').exists():
+        return hashlib.sha256((direct_url.rstrip('/') + '\n\n').encode()).hexdigest()
     try:
         config = json.loads((workspace / 'gateway-client.json').read_text())
         if config.get('mode') == 'direct':

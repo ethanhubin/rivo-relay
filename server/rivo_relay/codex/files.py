@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import io
 import mimetypes
 import ntpath
 import posixpath
@@ -129,23 +128,6 @@ def read_directory(connection, path):
     return {"path": path, "entries": entries}
 
 
-def upload_attachment(connection, cwd, name, encoded):
-    """Stage a phone file on the native host; never overwrite a project file."""
-    import uuid
-    cwd = native_path(cwd)
-    if (not isinstance(name, str) or not name.strip() or len(name) > 200
-            or name in {".", ".."} or any(c in name for c in '/\\:')
-            or any(ord(c) < 32 for c in name)):
-        raise CodexError("文件名无效", code="invalid_filename", http_status=400)
-    if not isinstance(encoded, str) or len(encoded) > ((MAX_TRANSFER_BYTES + 2) // 3) * 4:
-        raise CodexError("文件不能超过 1 GiB", code="file_too_large", http_status=413)
-    try:
-        data = base64.b64decode(encoded, validate=True)
-    except (binascii.Error, ValueError) as error:
-        raise CodexError("文件编码无效", code="invalid_file_data", http_status=400) from error
-    if len(data) > MAX_TRANSFER_BYTES:
-        raise CodexError("文件不能超过 1 GiB", code="file_too_large", http_status=413)
-    return upload_attachment_stream(connection, cwd, name, io.BytesIO(data), len(data))
 
 
 def upload_attachment_stream(connection, cwd, name, stream, size, *, directory_name='.rivo-attachments'):

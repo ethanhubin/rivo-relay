@@ -1,5 +1,6 @@
 """Focused regression tests for native identity, settings and delivery semantics."""
 import copy
+import io
 import base64
 import json
 import tempfile
@@ -12,7 +13,7 @@ from rivo_relay.codex.connection import CodexError, NativeConnection
 from rivo_relay.codex.interactions import Interactions
 from rivo_relay.codex.sessions import CodexService
 from rivo_relay.codex.history import NativeHistoryAdapter
-from rivo_relay.codex.files import read_file, read_directory, upload_attachment, download_file, upload_attachment_stream, stream_download
+from rivo_relay.codex.files import read_file, read_directory, download_file, upload_attachment_stream, stream_download
 
 
 class FakeNative:
@@ -656,20 +657,19 @@ class NativeFileTests(unittest.TestCase):
     def test_phone_attachment_writes_native_workspace_and_keeps_bytes(self):
         native = FakeNative()
         payload = base64.b64encode(b"%PDF-1.7\x00binary").decode()
-        first = upload_attachment(native, "/remote/worktree", "报告.pdf", payload)
-        second = upload_attachment(native, "/remote/worktree", "报告.pdf", payload)
+        first = upload_attachment_stream(native, "/remote/worktree", "报告.pdf", io.BytesIO(base64.b64decode(payload)), len(base64.b64decode(payload)))
+        second = upload_attachment_stream(native, "/remote/worktree", "报告.pdf", io.BytesIO(base64.b64decode(payload)), len(base64.b64decode(payload)))
         self.assertEqual("mention", first["type"])
         self.assertTrue(first["path"].startswith("/remote/worktree/.rivo-attachments/"))
         self.assertNotEqual(first["path"], second["path"])
         self.assertEqual(("fs/writeFile", {"path": first["path"], "dataBase64": payload}), native.calls[1])
-        windows = upload_attachment(native, "C:\\work", "a.txt", payload)
+        windows = upload_attachment_stream(native, "C:\\work", "a.txt", io.BytesIO(base64.b64decode(payload)), len(base64.b64decode(payload)))
         self.assertTrue(windows["path"].startswith("C:\\work\\.rivo-attachments\\"))
 
     def test_transfer_above_preview_limit_preserves_binary(self):
         native = FakeNative()
         data = b"\x00\xff" * (3 * 1024 * 1024)
-        encoded = base64.b64encode(data).decode()
-        result = upload_attachment(native, "/remote", "large.zip", encoded)
+        result = upload_attachment_stream(native, "/remote", "large.zip", io.BytesIO(data), len(data))
         self.assertEqual(len(data), result["size"])
         def request(method, params, **kwargs):
             if method == "fs/getMetadata": return {"isFile": True}
@@ -690,7 +690,7 @@ class NativeFileTests(unittest.TestCase):
             calls.append((method, params))
             return {"exitCode": 0} if method == "command/exec" else {}
         native.request = request
-        result = upload_attachment(native, "/remote", "a; echo injected.zip", base64.b64encode(b"x" * (12 * 1024 * 1024)).decode())
+        result = upload_attachment_stream(native, "/remote", "a; echo injected.zip", io.BytesIO(b"x" * (12 * 1024 * 1024)), 12 * 1024 * 1024)
         writes = [p for m, p in calls if m == "fs/writeFile"]
         self.assertEqual(3, len(writes))
         self.assertTrue(all(len(p["dataBase64"]) < 6 * 1024 * 1024 for p in writes))
@@ -724,10 +724,10 @@ class NativeFileTests(unittest.TestCase):
 
     def test_invalid_attachments_never_write(self):
         native = FakeNative()
-        for name, payload in [("../escape", "YQ=="), ("a", "!invalid"), ("bad\\path", "YQ==")]:
+        for name in ["../escape", "", "bad\\path"]:
             with self.subTest(name=name):
                 with self.assertRaises(CodexError):
-                    upload_attachment(native, "/remote/worktree", name, payload)
+                    upload_attachment_stream(native, "/remote/worktree", name, io.BytesIO(b"a"), 1)
         self.assertEqual([], native.calls)
 
     def test_remote_file_is_read_only_via_native_rpc(self):

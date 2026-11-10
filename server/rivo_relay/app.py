@@ -125,16 +125,7 @@ class RelayApp:
         except SubmissionNotFound:
             pass
         else:
-            try:
-                claim = self.submissions.claim(submission_id, connection_id, "todo.dispatch", todo_id, submitted_payload)
-            except SubmissionConflict:
-                # Pre-0.2.0 dispatch claims did not hash a details field. Accept only
-                # its exact old payload when details are semantically empty. The
-                # store still verifies connection, operation, target and all text.
-                if todo.get("details", {}) not in ({}, {"dueDate": "", "reminderAt": 0, "repeatRule": "none", "subtasks": [], "attachments": []}):
-                    raise
-                legacy_payload = {key: value for key, value in submitted_payload.items() if key != "details"}
-                claim = self.submissions.claim(submission_id, connection_id, "todo.dispatch", todo_id, legacy_payload)
+            claim = self.submissions.claim(submission_id, connection_id, "todo.dispatch", todo_id, submitted_payload)
             return public_submission(claim["submission"])
         if todo["completed"]:
             raise SubmissionConflict("Reopen the completed todo before dispatching it")

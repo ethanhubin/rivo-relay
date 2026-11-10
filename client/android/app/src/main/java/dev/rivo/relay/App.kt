@@ -281,6 +281,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     Column(Modifier.fillMaxSize()
         .then(if (showBottomNavigation) Modifier else Modifier.navigationBarsPadding())
         .imePadding()) {
+        CompositionLocalProvider(dev.rivo.relay.ui.sites.LocalSitesApi provides node.api) {
         Box(Modifier.weight(1f)) {
             when (route) {
                 "sites" -> dev.rivo.relay.ui.sites.SitesScreen(node.api, node.connection.name)
@@ -661,6 +662,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     }
                 }
             }
+        }
         }
         if (showBottomNavigation) NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
             NavigationBarItem(selected = route == "projects", onClick = { route = "projects"; setError(null); node.catalog.refreshProjects() },

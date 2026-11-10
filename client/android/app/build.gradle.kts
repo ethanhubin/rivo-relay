@@ -18,6 +18,7 @@ kotlin { jvmToolchain(17) }
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2026.03.01"))
     androidTestImplementation(platform("androidx.compose:compose-bom:2026.03.01"))
+    implementation("androidx.webkit:webkit:1.17.0")
     implementation("androidx.core:core-ktx:1.18.0")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("androidx.activity:activity-compose:1.13.0")

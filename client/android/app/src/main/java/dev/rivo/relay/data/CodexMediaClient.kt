@@ -23,15 +23,13 @@ class CodexMediaClient(val api: RelayApi, val threadId: String, context: Context
         if (source.startsWith("data:") || source.startsWith("content:") || source.startsWith("file:")) return
         flights.run(source) {
         val result = try {
-            readMediaVersions { api.call("/v1/media/versions?source=${encoded(source)}") }
+            api.call("/v1/media/versions?source=${encoded(source)}")
         } catch (error: Exception) {
             if (error is kotlinx.coroutines.CancellationException) throw error
             if (!isTransientMediaFailure(error)) versions.remove(source)
             throw error
         }
-        run {
-            if (result == null) versions.remove(source) else versions[source] = result
-        }
+        versions[source] = result
     }
     }
     fun hasVersion(source: String): Boolean = versions.containsKey(source)

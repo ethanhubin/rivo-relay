@@ -27,7 +27,7 @@ from .live_items import ITEM_EVENTS, TERMINAL, project_item, merge_item
 from .native_journal import NativeJournal
 from .interactions import Interactions
 from .projects import ProjectCatalog, pages, thread_pages, RECENT_PROJECT_ID, unlisted_threads
-from .files import read_file, read_directory, upload_attachment, download_file, upload_attachment_stream, stream_download
+from .files import read_file, read_directory, download_file, upload_attachment_stream, stream_download
 from .developer import (project_directory, project_git, review_context, workspace_diff,
                         diff_summary, validate_review, Workspaces)
 from .observations import Observations
@@ -1622,8 +1622,6 @@ class CodexService:
         # must not create an empty thread simply to obtain an upload location.
         return upload_attachment_stream(self.connection, self._project_attachment_cwd(project_id), name, stream, size)
 
-    def upload_project_attachment(self, project_id, name, encoded):
-        return upload_attachment(self.connection, self._project_attachment_cwd(project_id), name, encoded)
 
     def _attachment_cwd(self, thread_id):
         self.start()
@@ -1633,8 +1631,6 @@ class CodexService:
             thread = self.connection.request("thread/read", {"threadId": thread_id, "includeTurns": False})["thread"]
         return thread.get("cwd")
 
-    def upload_attachment(self, thread_id, name, encoded):
-        return upload_attachment(self.connection, self._attachment_cwd(thread_id), name, encoded)
 
     def goal_capabilities(self):
         # Read-only sentinel: never start/resume a thread merely to discover support.
