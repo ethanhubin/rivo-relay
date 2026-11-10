@@ -1,0 +1,3 @@
+capabilities: {"transcription": true, "streaming": true, "sampleRate": 16000, "encoding": "pcm_s16le", "maxSeconds": 120, "maxUploadBytes": 12582912, "state": "configured", "backend": "shared-vps"}
+{"text": "你好，请帮我查看今天的任务，并打开语音输入功能。", "maxRequestSeconds": 0.463, "finishSeconds": 0.463}
+PASS: node credential -> shared VPS API -> centrally configured E2 backend

@@ -235,6 +235,8 @@ class Gateway:
         app = web.Application(client_max_size=MAX_BODY)
         from .update_store import routes
         routes(app, self.keys_file.parent)
+        from .speech import routes as speech_routes
+        self.speech = speech_routes(app, self)
         app.router.add_get('/gateway/control/{slot}', self.control)
         app.router.add_get('/gateway/data/{slot}', self.data)
         from .sites_tunnel import SitesTunnel

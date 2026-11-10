@@ -9,8 +9,11 @@ The authenticated node advertises speech capability through
 `/v1/media/capabilities`; discovery is cached per `RelayApi` client. An
 unconfigured or incompatible node displays only a greyed-out, disabled microphone,
 without a visible status message. Its reason remains available to screen readers.
-No speech model is downloaded or started automatically. The node owner supplies
-`RIVO_SPEECH_BACKEND_URL` and, optionally, `RIVO_SPEECH_BACKEND_TOKEN`.
+No speech model is downloaded or started automatically. VPS-connected nodes discover the shared speech service through their existing
+gateway credentials. The VPS chooses the ASR backend; nodes do not install models
+or configure backend secrets. Standalone nodes without gateway credentials may
+set `RIVO_SPEECH_BACKEND_URL` and `RIVO_SPEECH_BACKEND_TOKEN`.
+See [shared ASR](shared-asr.md) for deployment and update behavior.
 
 The recording permission dialog requires a fresh tap after permission is granted.
 Leaving the screen, changing node/chat, locking the composer, or backgrounding

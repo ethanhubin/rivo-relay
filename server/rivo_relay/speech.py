@@ -5,6 +5,9 @@ device that created them and never become Codex messages without a later send.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
+import ssl
 import http.client
 import json
 import os
@@ -21,9 +24,25 @@ MAX_CHUNK_BYTES = 64 * 1024
 
 
 class SpeechService:
-    def __init__(self, url=None, token=None, *, requester=None):
+    def __init__(self, url=None, token=None, *, requester=None, workspace=None):
         self.url = (url if url is not None else os.environ.get('RIVO_SPEECH_BACKEND_URL', '')).rstrip('/')
         self.token = token if token is not None else os.environ.get('RIVO_SPEECH_BACKEND_TOKEN', '')
+        self.pin = None
+        self.shared = False
+        self._capability_cache = None
+        self._capability_until = 0
+        if url is None and workspace is not None:
+            from pathlib import Path
+            from .gateway.config import decode_key
+            path = Path(workspace) / 'gateway-client.json'
+            if path.exists():
+                self.url, self.token = '', ''
+                try:
+                    key = decode_key(json.loads(path.read_text())['key'])
+                    self.url = key['gateway'] + '/gateway/speech/' + key['slot']
+                    self.token, self.pin, self.shared = key['secret'], key['pin'], True
+                except (ValueError, KeyError, TypeError, OSError):
+                    pass  # An invalid gateway config must not advertise working ASR.
         self.requester = requester or self._request
         self._lock = threading.RLock()
         self._streams = {}
@@ -33,20 +52,50 @@ class SpeechService:
                 raise ValueError('RIVO_SPEECH_BACKEND_URL must be an explicit HTTP(S) service URL without credentials')
 
     def capabilities(self):
+        if self.shared:
+            with self._lock:
+                if time.monotonic() >= self._capability_until:
+                    try:
+                        value = self._request('/capabilities', None, method='GET', timeout=3).get('speech', {})
+                        available = (value.get('streaming') is True and value.get('sampleRate') == 16000
+                                     and value.get('encoding') == 'pcm_s16le')
+                    except (MediaError, ValueError, TypeError, AttributeError):
+                        available = False
+                    self._capability_cache = available
+                    self._capability_until = time.monotonic() + (30 if available else 5)
+                available = self._capability_cache
+            return {'transcription': available, 'streaming': available, 'sampleRate': 16000,
+                    'encoding': 'pcm_s16le', 'maxSeconds': 120, 'maxUploadBytes': MAX_SPEECH_BYTES,
+                    'state': 'configured' if available else 'unavailable', 'backend': 'shared-vps'}
         return {'transcription': bool(self.url), 'streaming': bool(self.url), 'sampleRate': 16000,
                 'encoding': 'pcm_s16le', 'maxSeconds': 120, 'maxUploadBytes': MAX_SPEECH_BYTES,
                 'state': 'configured' if self.url else 'unconfigured'}
 
-    def _request(self, path, body, content_type='application/json'):
+    def _request(self, path, body, content_type='application/json', *, method='POST', timeout=120):
         if not self.url:
             raise MediaError('此节点尚未配置语音识别服务', code='speech_unavailable', http_status=503)
         target = urllib.parse.urlsplit(self.url)
         cls = http.client.HTTPSConnection if target.scheme == 'https' else http.client.HTTPConnection
-        connection = cls(target.hostname, target.port, timeout=120)
+        options = {'timeout': timeout}
+        if self.pin:
+            if target.scheme != 'https':
+                raise MediaError('共享语音需要 HTTPS', code='speech_unavailable', http_status=503)
+            # Validate the exact enrolled certificate before transmitting a node secret.
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            options['context'] = context
+        connection = cls(target.hostname, target.port, **options)
         try:
+            if self.pin:
+                connection.connect()
+                actual = hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest()
+                if not hmac.compare_digest(actual, self.pin):
+                    raise ValueError('Gateway certificate mismatch')
             headers = {'Content-Type': content_type, 'Accept': 'application/json'}
             if self.token: headers['Authorization'] = 'Bearer ' + self.token
-            connection.request('POST', target.path.rstrip('/') + path, body=body, headers=headers)
+            connection.request(method, target.path.rstrip('/') + path, body=body, headers=headers)
             response = connection.getresponse()
             raw = response.read(1024 * 1024 + 1)
             if not 200 <= response.status < 300 or len(raw) > 1024 * 1024:

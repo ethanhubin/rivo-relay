@@ -52,7 +52,7 @@ class RelayApp:
         self.download_lock = threading.Lock()
         self.file_transfer_slots = threading.BoundedSemaphore(2)
         self.media = MediaService(config.workspace, codex)
-        self.speech = SpeechService()
+        self.speech = SpeechService(workspace=config.workspace)
         if hasattr(codex, 'on_event'):
             native_event = codex.on_event
             def media_event(event):
