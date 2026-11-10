@@ -16,6 +16,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import dev.rivo.relay.data.NativeHistoricalTiming
 
 @Composable
 internal fun AssistantCopyButton(text: String, identity: String) {
@@ -51,7 +53,8 @@ private fun AssistantForkButton(turnId: String, enabled: Boolean, onClick: () ->
 
 @Composable
 internal fun AssistantMessageFooter(text: String, identity: String, outputAt: Long?, completionLabel: String? = null,
-    forkTurnId: String? = null, forkEnabled: Boolean = true, onFork: (() -> Unit)? = null) {
+    forkTurnId: String? = null, forkEnabled: Boolean = true, onFork: (() -> Unit)? = null,
+    historicalTiming: NativeHistoricalTiming? = null) {
     androidx.compose.foundation.layout.Row(
         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
         horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
@@ -70,5 +73,10 @@ internal fun AssistantMessageFooter(text: String, identity: String, outputAt: Lo
         )
         AssistantCopyButton(text, identity)
         if (forkTurnId != null && onFork != null) AssistantForkButton(forkTurnId, forkEnabled, onFork)
+        historicalTiming?.let { timing ->
+            Text(timing.label, modifier = Modifier.weight(1f, fill = false).testTag("historical_turn_timing_${timing.turnId}"),
+                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }

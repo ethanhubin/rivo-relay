@@ -502,7 +502,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             itemsIndexed(timeline, key = { _, row -> row.key }, contentType = { _, row ->
                 when (row) { is NativeTimelineRow.Message -> row.message.type; is NativeTimelineRow.Activities -> "activity_group"; is NativeTimelineRow.Notice -> "turn_notice" }
             }) { index, row ->
-                HistoricalTurnTiming(historicalTiming[index].orEmpty())
+                HistoricalTurnTiming(historicalTiming[index].orEmpty().filter { lastReplyIds[it.turnId] == null })
                 val modelChange = modelChangeRows[row.key]
                 val consecutiveActivities = row is NativeTimelineRow.Activities &&
                     timeline.getOrNull(index - 1) is NativeTimelineRow.Activities && modelChange == null
@@ -608,6 +608,10 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                         AssistantMessageFooter(message.text, "${message.turnId}:${message.id}", timing.outputAt,
                             forkTurnId = message.turnId.takeIf { isLastReply && onFork != null &&
                                 snapshot?.turnSettings?.any { it.turnId == message.turnId && it.status in setOf("completed", "interrupted", "failed") } == true },
+                            historicalTiming = if (isLastReply && message.turnId != turnFooter?.turn?.turnId)
+                                snapshot?.turnSettings?.firstOrNull { it.turnId == message.turnId }?.let { turn ->
+                                    nativeHistoricalTimingLabel(turn)?.let { NativeHistoricalTiming(turn.turnId, it) }
+                                } else null,
                             forkEnabled = !busy && !blocked && !state.stale,
                             onFork = { forkTurn = message.turnId })
                     }
@@ -650,7 +654,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 }
             }
             historicalTiming[timeline.size]?.let { timings ->
-                item(key = "historical_turn_timing_tail") { HistoricalTurnTiming(timings) }
+                item(key = "historical_turn_timing_tail") { HistoricalTurnTiming(timings.filter { lastReplyIds[it.turnId] == null }) }
             }
             snapshot?.reviewDiagnostics?.filter { diagnostic ->
                 diagnostic.string("status") != "verified" && snapshot.messages.none {

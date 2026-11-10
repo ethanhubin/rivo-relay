@@ -84,7 +84,11 @@ class TurnFooterStabilityUiTest {
         compose.onAllNodesWithTag("historical_turn_timing_first").assertCountEquals(1)
         compose.onNodeWithTag("historical_turn_timing_first").assertIsDisplayed().assertTextContains("耗时 1m 3s", substring = true)
         assertTrue(!compose.onNodeWithTag("historical_turn_timing_first").fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.Text].joinToString().contains("已完成"))
+        val timingBounds = compose.onNodeWithTag("historical_turn_timing_first").fetchSemanticsNode().boundsInRoot
+        val copyBounds = compose.onNodeWithTag("assistant_copy_first:a").fetchSemanticsNode().boundsInRoot
+        assertTrue(timingBounds.top < copyBounds.bottom && copyBounds.top < timingBounds.bottom)
         compose.onNodeWithTag("turn_duration_next").assertIsDisplayed()
+        compose.onNodeWithTag("turn_duration_spinner").assertIsDisplayed()
         compose.onNodeWithTag("session_completion").assertDoesNotExist()
         compose.runOnIdle { state.value = state.value.copy(snapshot = live.copy(status = "idle", activeTurnId = "",
             turnSettings = listOf(first, next.copy(status = "completed", completedAt = started + 90, durationMs = 20000)))) }
@@ -92,6 +96,7 @@ class TurnFooterStabilityUiTest {
         compose.onNodeWithTag("historical_turn_timing_first").assertIsDisplayed()
         compose.onNodeWithTag("session_completion").assertIsDisplayed().assertTextContains("已完成", substring = true)
         compose.onNodeWithTag("historical_turn_timing_next").assertDoesNotExist()
+        compose.onNodeWithTag("turn_duration_spinner").assertDoesNotExist()
         // Reopen the same native history with a new conversation-owned display cache.
         val completed = state.value
         compose.runOnIdle { state.value = SessionState(id = "other") }
