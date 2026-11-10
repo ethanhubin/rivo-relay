@@ -320,7 +320,7 @@ fun MessageComposer(
                                     if (text.isEmpty()) Text(
                                         prediction ?: when { isRunning -> "输入下一项任务或实时引导"; discussionMode -> "输入想讨论的方案或问题"; else -> "描述要实现或修改的功能" },
                                         style = MaterialTheme.typography.bodyMedium,
-                                        maxLines = if (inputFocused) 2 else 1,
+                                        maxLines = if (prediction != null) Int.MAX_VALUE else if (inputFocused) 2 else 1,
                                         overflow = TextOverflow.Ellipsis,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )

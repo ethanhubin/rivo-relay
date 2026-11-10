@@ -540,7 +540,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.stream_events(token)
                 return
             body = self.read_body() if self.command in {"POST", "PATCH"} else {}
-            with read_budget(self.connection) if self.command == "GET" else nullcontext():
+            with read_budget(self.connection) if self.command == "GET" or url.path.endswith("/prediction") else nullcontext():
                 result = self.route(path, query, body, connection)
             self.send_json(200, result)
         except (BrokenPipeError, ConnectionResetError, TimeoutError):

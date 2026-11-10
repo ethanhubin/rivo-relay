@@ -116,7 +116,7 @@ class NativeConnection:
             return local_native_host_info(self)
 
     def request(self, method, params=None, *, timeout=None):
-        interruptible = method in {'thread/read', 'thread/turns/list',
+        interruptible = method in {'prediction', 'thread/sample', 'thread/read', 'thread/turns/list',
             'thread/list', 'thread/loaded/list', 'thread/goal/get', 'project/list',
             'project/read', 'model/list', 'account/read', 'account/rateLimits/read',
             'config/read', 'fs/readDirectory', 'fs/readFile', 'fs/getMetadata',
@@ -140,11 +140,23 @@ class NativeConnection:
                 self._pending.pop(request_id, None)
                 raise CodexError("Codex 请求发送中断，需核对结果", request_sent=True) from error
         try:
-            # Only pure metadata reads are interruptible after dispatch. Resume,
+            # Metadata reads and optional predictions are interruptible. Resume,
             # repair and mutations must retain their result/reconciliation semantics.
             reader = read_reply if interruptible else lambda q, timeout: q.get(timeout=timeout)
             response = reader(reply, self.timeout if timeout is None else timeout)
-        except queue.Empty as error:
+        except Exception as error:
+            if method in {'thread/sample', 'prediction'}:
+                # Cancel the exact native request; do not wait for cancellation acknowledgement.
+                with self._lock:
+                    if self._socket is sock:
+                        self._counter += 1
+                        try:
+                            sock.send(json.dumps({'id': self._counter, 'method': 'prediction/cancel' if method == 'prediction' else 'thread/sample/cancel',
+                                                  'params': {'requestId': request_id}}))
+                        except Exception:
+                            pass
+            if not isinstance(error, queue.Empty):
+                raise
             raise CodexError("Codex 请求超时，需核对结果", code="native_timeout", request_sent=True) from error
         finally:
             with self._lock:

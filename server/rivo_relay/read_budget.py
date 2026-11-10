@@ -9,6 +9,17 @@ import time
 
 from .observability import event
 
+_prediction_cancel = ContextVar("prediction_cancel", default=None)
+
+@contextmanager
+def prediction_cancellation(cancelled):
+    token = _prediction_cancel.set(cancelled)
+    try:
+        yield
+    finally:
+        _prediction_cancel.reset(token)
+
+
 _current = ContextVar('read_budget', default=None)
 
 
@@ -33,6 +44,9 @@ def read_budget(connection=None, seconds=30):
 
 
 def checkpoint():
+    cancelled = _prediction_cancel.get()
+    if cancelled is not None and cancelled():
+        raise ReadStopped("Prediction invalidated")
     budget = _current.get()
     if budget is None:
         return
@@ -73,7 +87,7 @@ def read_lock(lock):
 
 
 def read_reply(reply, timeout):
-    if _current.get() is None:
+    if _current.get() is None and _prediction_cancel.get() is None:
         return reply.get(timeout=timeout)
     deadline = time.monotonic() + timeout
     while True:
