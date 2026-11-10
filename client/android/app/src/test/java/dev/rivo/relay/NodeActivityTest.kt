@@ -17,6 +17,27 @@ class NodeActivityTest {
             .withNodeActivity(running.copy(confirmed = false)).executionActive)
     }
 
+    @Test fun staleActivityCannotRestartCompletedListOrProjectSpinner() {
+        val completed = dev.rivo.relay.data.threadSummary(org.json.JSONObject("""{"id":"t","projectId":"p","status":"idle","nativeExecution":"idle"}"""))
+        val running = completed.copy(status = "running", nativeExecution = "running")
+        val project = dev.rivo.relay.ui.projects.ProjectSummary("p", "P", "/p")
+        val catalog = CatalogState(threads = listOf(completed), projects = listOf(project), selectedProject = project)
+        val activity = NodeActivity(tasks = mapOf("t" to running), confirmed = true, known = setOf("t"))
+        for (stale in listOf(activity.copy(confirmed = false), activity.copy(unknown = setOf("t")), activity.copy(known = emptySet()))) {
+            val result = catalog.withNodeActivity(stale)
+            assertEquals(completed, result.threads.single())
+            assertFalse(result.projects.single().isRunning)
+            assertFalse(result.selectedProject!!.isRunning)
+        }
+        val next = catalog.withNodeActivity(activity)
+        assertTrue(threadIsExecuting(next.threads.single()))
+        assertTrue(next.projects.single().isRunning)
+        val finished = next.withNodeActivity(activity.copy(tasks = emptyMap()))
+        assertFalse(threadIsExecuting(finished.threads.single()))
+        assertFalse(finished.projects.single().isRunning)
+        assertEquals(completed, catalog.copy(archived = true).withNodeActivity(activity).threads.single())
+    }
+
     @Test fun absenceMeansIdleOnlyWhenConfirmedAndKnown() {
         assertNull(NodeActivity().status("t"))
         assertEquals("idle", NodeActivity(confirmed = true, known = setOf("t")).status("t"))

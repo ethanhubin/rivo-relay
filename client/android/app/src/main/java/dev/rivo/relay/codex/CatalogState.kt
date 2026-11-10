@@ -23,9 +23,22 @@ data class CatalogState(
 
 internal fun CatalogState.withProjectActivity(activity: NodeActivity): CatalogState {
     fun projectState(project: ProjectSummary) = project.copy(
-        isRunning = activity.tasks.values.any { it.projectId == project.id && threadIsExecuting(it) })
+        isRunning = activity.tasks.values.any { it.projectId == project.id && activity.status(it.id) != null && threadIsExecuting(it) })
     return copy(projects = projects.map(::projectState), selectedProject = selectedProject?.let(::projectState))
 }
+
+/** Unverified activity must not overwrite a freshly reconciled detail status. */
+internal fun CatalogState.withNodeActivity(activity: NodeActivity): CatalogState =
+    withProjectActivity(activity).copy(
+        threads = threads.map { thread ->
+            val task = activity.tasks[thread.id]
+            val status = activity.status(thread.id)
+            if (status == null || archived) thread else thread.copy(status = status,
+                nativeExecution = task?.nativeExecution ?: "idle",
+                hasOutstandingWork = task?.hasOutstandingWork ?: false, queueDepth = task?.queueDepth ?: 0,
+                deliveryState = task?.deliveryState ?: "idle", displayState = task?.displayState ?: "idle",
+                recoveryRequired = task?.recoveryRequired ?: false)
+        })
 
 /** Separate catalog/list owner; stale requests cannot overwrite another project or archive filter. */
 class CatalogController(private val api: RelayApi, private val scope: CoroutineScope, private val failure: (Throwable) -> Unit,
@@ -36,16 +49,9 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
     private val readRevision = MutableStateFlow(0L)
     val state: StateFlow<CatalogState> = if (sync == null) mutable.asStateFlow() else
         combine(mutable, sync.activity, readRevision) { current, activity, _ ->
-            current.withProjectActivity(activity).copy(
-                threads = current.threads.map { thread ->
-                    val task = activity.tasks[thread.id]
-                    val status = activity.status(thread.id) ?: task?.status
-                    if (status == null || current.archived) thread else thread.copy(status = status,
-                        nativeExecution = task?.nativeExecution ?: "idle",
-                        hasOutstandingWork = task?.hasOutstandingWork ?: false, queueDepth = task?.queueDepth ?: 0,
-                        deliveryState = task?.deliveryState ?: "idle", displayState = task?.displayState ?: "idle",
-                        recoveryRequired = task?.recoveryRequired ?: false)
-                }).let { projected -> projected.copy(unreadThreadIds = unread(projected.threads)) }
+            current.withNodeActivity(activity).let { projected ->
+                projected.copy(unreadThreadIds = unread(projected.threads))
+            }
         }.stateIn(scope, SharingStarted.WhileSubscribed(0), mutable.value)
     private val runtimeThreads = mutableMapOf<Pair<String, Boolean>, List<ThreadSummary>>()
     private fun scopeKey() = mutable.value.selectedProject?.id?.let { it to mutable.value.archived }

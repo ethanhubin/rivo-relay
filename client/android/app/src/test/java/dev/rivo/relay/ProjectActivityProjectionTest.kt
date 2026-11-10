@@ -12,7 +12,7 @@ class ProjectActivityProjectionTest {
         val other = ProjectSummary("q", "Other", "/q")
         val task = ThreadSummary("t", "", "", "running", "", "p", nativeExecution = "running")
         val initial = CatalogState(projects = listOf(p, other), selectedProject = p)
-        val running = initial.withProjectActivity(NodeActivity(tasks = mapOf("t" to task)))
+        val running = initial.withProjectActivity(NodeActivity(tasks = mapOf("t" to task), confirmed = true, known = setOf("t")))
         assertTrue(running.projects[0].isRunning)
         assertFalse(running.projects[1].isRunning)
         assertTrue(running.selectedProject!!.isRunning)
@@ -32,6 +32,6 @@ class ProjectActivityProjectionTest {
     @Test fun waitingTaskDoesNotAnimateAsExecuting() {
         val task = ThreadSummary("t", "", "", "waiting", "", "p", nativeExecution = "running")
         val state = CatalogState(projects = listOf(ProjectSummary("p", "P", "/p")))
-        assertFalse(state.withProjectActivity(NodeActivity(tasks = mapOf("t" to task))).projects.single().isRunning)
+        assertFalse(state.withProjectActivity(NodeActivity(tasks = mapOf("t" to task), confirmed = true, known = setOf("t"))).projects.single().isRunning)
     }
 }

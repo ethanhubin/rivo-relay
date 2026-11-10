@@ -323,16 +323,13 @@ class CodexService:
             activity_revision = self.activity.revision
             active_ids = set(self.activity.tasks)
         discovered = self._activity_discovery
-        full = (discovered is None or discovered[0] != generation or time.monotonic() >= discovered[1]
-                or not active_ids.issubset({t['id'] for t in discovered[3]}))
-        if not full:
-            projects, all_threads, known = discovered[2:]
-            threads = [self.connection.request('thread/read', {'threadId': t['id'], 'includeTurns': False})['thread']
-                       for t in all_threads if t['id'] in known or t['id'] in active_ids]
-        else:
-            projects = list(pages(self.connection, 'project/list'))
-            threads = list(pages(self.connection, "thread/list", {"archived": False, "modelProviders": [],
-                    "sortKey": "updated_at", "sortDirection": "desc", "useStateDbOnly": True}))
+        full = discovered is None or discovered[0] != generation or time.monotonic() >= discovered[1]
+        projects = list(pages(self.connection, 'project/list')) if full else discovered[2]
+        # Idle threads can start in Desktop without a notification on this
+        # connection. Refresh cheap state-DB metadata every reconciliation;
+        # caching only active/unknown IDs misses restarts and new threads.
+        threads = list(pages(self.connection, "thread/list", {"archived": False, "modelProviders": [],
+                "sortKey": "updated_at", "sortDirection": "desc", "useStateDbOnly": True}))
         # Index discovery may omit rollout-only or newly created active threads.
         # Read those known live IDs directly before treating absence as completion.
         indexed = {t['id'] for t in threads}
@@ -364,12 +361,10 @@ class CodexService:
                               'status': status, 'goalActive': (goal or {}).get('status') == 'active', **projection})
         if generation != str(self.connection.generation):
             raise CodexError('原生运行时已变化，请重新同步任务', code='native_unavailable')
-        self._activity_discovery = (generation, time.monotonic() + 60 if full else discovered[1],
-                                    projects, threads if full else all_threads,
-                                    {t['threadId'] for t in tasks} | set(unknown))
-        return {'tasks': tasks, 'unknownThreadIds': unknown, 'knownThreadIds': [t['id'] for t in (threads if full else all_threads)], 'generation': generation,
+        self._activity_discovery = (generation, time.monotonic() + 60 if full else discovered[1], projects)
+        return {'tasks': tasks, 'unknownThreadIds': unknown, 'knownThreadIds': [t['id'] for t in threads], 'generation': generation,
                 'projectByThread': {t['id']: associations.get(t['id'], {}).get('projectId') or t.get('projectId') or
-                    roots.get(t.get('cwd'), RECENT_PROJECT_ID) for t in (threads if full else all_threads)}}
+                    roots.get(t.get('cwd'), RECENT_PROJECT_ID) for t in threads}}
 
     def add_project(self, path, name=None, idempotency_key=None, folder_name=None, trust_confirmed=False):
         self.start()
@@ -458,8 +453,8 @@ class CodexService:
         active = {t['threadId']: t for t in (shared or {}).get('tasks', [])}
         unknown = set((shared or {}).get('unknownThreadIds', []))
         external = {} if summary or shared else self._external_execution(list(by_id.values()))
-        statuses = {t["id"]: (active[t['id']]['status'] if t['id'] in active else
-                    'unknown' if shared and (t['id'] in unknown or t['id'] not in shared.get('knownThreadIds', [])) else 'idle' if shared else
+        statuses = {t["id"]: ('unknown' if shared and (t['id'] in unknown or t['id'] not in shared.get('knownThreadIds', [])) else
+                    active[t['id']]['status'] if t['id'] in active else 'idle' if shared else
                     "waiting" if self.interactions.list(t["id"]) or thread_waiting(t) else
                     "running" if goal_running(t, None if summary else self.read_goal(t["id"]).get("goal"), external)
                     else external.get(t['id'], thread_status(t))) for t in by_id.values()}

@@ -282,3 +282,78 @@ class ActivityTests(unittest.TestCase):
         self.assertNotIn('t', result['unknownThreadIds'])
         registry.receive(event('turn/started', 'two'))
         self.assertEqual(registry.snapshot()['tasks'][0]['turnId'], 'two')
+
+
+class ActivityDiscoveryTests(unittest.TestCase):
+    def service(self):
+        from unittest.mock import Mock
+        from rivo_relay.codex.sessions import CodexService
+        service = CodexService.__new__(CodexService)
+        service.start = Mock()
+        service.connection = Mock(generation='g')
+        service.workspaces = None
+        service.projects = Mock()
+        service.projects.get.return_value = {'id': 'p', 'roots': [{'path': '/p'}]}
+        service.projects.external_worktrees.associations.return_value = {}
+        service._activity_discovery = None
+        service._external_running = Mock(return_value={})
+        service._external_execution = Mock(return_value={})
+        service.read_goal = Mock(return_value={'goal': None})
+        service.interactions = Mock()
+        service.interactions.list.return_value = []
+        service.activity = ActivityRegistry(service._load_activity, lambda: 'g')
+        return service
+
+    def test_unknown_cached_task_is_not_published_as_running_in_list(self):
+        service = self.service()
+        service.projects.thread_catalog.list.return_value = [
+            {'id': 't', 'projectId': 'p', 'status': {'type': 'notLoaded'}}]
+        service.activity.load = lambda: {**snapshot(), 'unknownThreadIds': ['t']}
+        service.activity.receive(event('turn/started', projectId='p'))
+        service.activity.reconcile()
+        self.assertEqual(service.activity.snapshot()['tasks'][0]['status'], 'running')
+        row = service.list_sessions('p')[0]
+        self.assertEqual(row['status'], 'unknown')
+        self.assertEqual(row['nativeExecution'], 'unknown')
+
+    def test_idle_thread_restart_and_new_thread_are_discovered_without_events(self):
+        for native in (False, True):
+            with self.subTest(native=native):
+                service = self.service()
+                rows = [{'id': 't', 'projectId': 'p', 'status': {'type': 'notLoaded'}}]
+                phase = ['running']
+                def request(method, params):
+                    if method == 'project/list':
+                        return {'data': [{'id': 'p', 'roots': []}]}
+                    self.assertEqual(method, 'thread/list')
+                    self.assertTrue(params['useStateDbOnly'])
+                    return {'data': rows}
+                service.connection.request.side_effect = request
+                service._external_running.side_effect = lambda threads: (
+                    {t['id']: 'running' for t in threads} if phase[0] == 'running' and not native else {})
+                service._external_execution.side_effect = lambda threads: {t['id']: phase[0] for t in threads}
+                for state in ('running', 'idle', 'running'):
+                    phase[0] = state
+                    if native:
+                        rows[0]['status'] = {'type': 'active' if state == 'running' else 'idle'}
+                    self.assertTrue(service.activity.reconcile())
+                    tasks = service.activity.snapshot()['tasks']
+                    self.assertEqual([t['threadId'] for t in tasks], ['t'] if state == 'running' else [])
+                rows.append({'id': 'new', 'projectId': 'p', 'status': {'type': 'active' if native else 'notLoaded'}})
+                service.activity.reconcile()
+                self.assertEqual({t['threadId'] for t in service.activity.snapshot()['tasks']}, {'t', 'new'})
+                # Only project membership uses the longer discovery interval.
+                self.assertEqual(sum(call.args[0] == 'project/list' for call in service.connection.request.call_args_list), 1)
+                service.projects.thread_catalog.list.assert_not_called()
+
+    def test_active_thread_missing_from_index_is_read_before_completion(self):
+        service = self.service()
+        service.activity.receive(event('turn/started', projectId='p'))
+        def request(method, params):
+            if method == 'thread/read':
+                return {'thread': {'id': 't', 'projectId': 'p', 'status': {'type': 'active'}}}
+            return {'data': []}
+        service.connection.request.side_effect = request
+        service.activity.reconcile()
+        self.assertEqual(service.activity.snapshot()['tasks'][0]['threadId'], 't')
+        service.connection.request.assert_any_call('thread/read', {'threadId': 't', 'includeTurns': False})
