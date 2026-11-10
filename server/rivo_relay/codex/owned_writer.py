@@ -432,6 +432,30 @@ class SessionWriters:
             self._close_writer(writer)
             raise
 
+    def can_answer_questions(self, thread_id):
+        if self._closed:
+            return False
+        with self._thread_lock(thread_id):
+            if self.owns(thread_id):
+                return self._writers[thread_id].status().get('connected', False)
+            self._ensure_metadata()
+            # Loaded IDs prove that the selected daemon already owns this thread.
+            # Never resume, spawn, or steal an external writer to answer a question.
+            return thread_id in self.metadata.request('thread/loaded/list', {}).get('data', [])
+
+    def answer_questions(self, params, *, start_turn=False):
+        tid = params['threadId']
+        with self._thread_lock(tid):
+            if not self.can_answer_questions(tid):
+                raise CodexError('问题所属桌面连接不可达，请在桌面回答；不会接管会话',
+                                 code='question_writer_unavailable', http_status=409)
+            backend = self._writers.get(tid, self.metadata)
+            generation = backend.generation
+            result = backend.request('turn/start' if start_turn else 'turn/steer', params)
+            if backend.generation != generation:
+                raise CodexError('回答连接已变化，请核对结果', request_sent=True)
+            return result
+
     def request(self, method, params=None, *, timeout=None):
         if self._closed:
             raise CodexError('会话连接池已关闭')

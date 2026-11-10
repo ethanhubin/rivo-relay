@@ -501,6 +501,21 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                                 if (threadId == id) { accepted(); node.session.refresh() }
                             }
                         }
+                    }, onAnswerQuestions = { expectedTurn, input, accepted ->
+                        val current = node.session.state.value
+                        val id = threadId
+                        if (writable && id != null && current.id == id && !current.stale &&
+                            current.snapshot?.canAnswerQuestions == true &&
+                            current.snapshot.activeTurnId.ifBlank { current.snapshot.turnSettings.lastOrNull()?.turnId.orEmpty() } == expectedTurn &&
+                            current.snapshot.requests.isEmpty()) {
+                            val text = input.getJSONObject(0).getString("text")
+                            val answers = org.json.JSONArray(text.substringAfter("<send_user_message_question_reply>")
+                                .substringBeforeLast("</send_user_message_question_reply>"))
+                            node.submissions.submit("/v1/threads/${encoded(id)}/answers",
+                                JSONObject().put("expectedTurnId", expectedTurn).put("answers", answers), "回答 Codex") {
+                                if (threadId == id) { accepted(); node.session.refresh() }
+                            }
+                        }
                     }, onSettingsChange = { settings ->
                         val current = node.session.state.value
                         val id = threadId
@@ -518,7 +533,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         }
                     }, onRespond = { request, response ->
                         val current = node.session.state.value
-                        if (writable && current.control().canOperate && current.id == threadId && current.snapshot?.id == threadId && current.snapshot?.requests?.any { it.key == request.key } == true) {
+                        if (writable && !current.stale && (current.control().canOperate || request.method.endsWith("requestUserInput")) && current.id == threadId && current.snapshot?.id == threadId && current.snapshot?.requests?.any { it.key == request.key && it.method == request.method } == true) {
                             node.submissions.submit("/v1/requests/respond", JSONObject().put("key", request.key).put("response", response), "回答 Codex") { node.session.refresh() }
                         }
                     }, onRefresh = node.session::refresh, onLoadModels = { node.catalog.loadModels() }, onEarlier = node.session::loadEarlier,

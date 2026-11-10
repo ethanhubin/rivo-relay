@@ -824,6 +824,9 @@ class Handler(BaseHTTPRequestHandler):
                             raise ApiError(400, 'invalid_request', 'requireGoalSupport must be boolean')
                         kwargs['require_goal_support'] = body['requireGoalSupport']
                     fn = lambda: codex.send(thread_id, text, acquire_released=True, **kwargs)
+                elif action == 'answers':
+                    turn_id = required(body, 'expectedTurnId')
+                    fn = lambda: codex.answer_questions(thread_id, turn_id, body.get('answers'), sid)
                 elif action == "steer":
                     items = native_input(body)
                     text = required(body, "text", 200000) if items is None else body.get("text", "")

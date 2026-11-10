@@ -116,6 +116,8 @@ class CodexService:
         self.projects.external_worktrees = ExternalWorktrees(self.connection, self._observe, self.observations_for)
         self.review_guard = ReviewGuard(self.connection, self._observe, self.observations_for, self._forget_observation)
         self.interactions = Interactions(self.connection)
+        from .questions import QuestionClaims
+        self.question_claims = QuestionClaims()
         self.history_adapter = NativeHistoryAdapter()
         self.native_journal = NativeJournal(self.connection, self.history_adapter, self._history_repaired)
         self.projects.execution_provider = self._external_running
@@ -145,6 +147,8 @@ class CodexService:
     def configure_storage(self, db):
         self._handoff_log = Path(db.path).parent / "handoff-runtime.log"
         self.observations = Observations(db)
+        from .questions import QuestionClaims
+        self.question_claims = QuestionClaims(db)
         self.model_catalog.configure(self.observations)
         self.workspaces = Workspaces(db, self)
 
@@ -661,7 +665,19 @@ class CodexService:
             control['handoffStage'] = ownership.get('takeoverStage')
             if not control.get('unavailableReason'):
                 control['unavailableReason'] = ownership.get('releaseError') or '接管失败，请核验持锁状态后重试'
+        from .questions import pending_questions
+        question_reply_available = False
+        question_turn = next((turn for turn in thread['turns'] if turn['id'] == active), latest_turn)
+        questions = pending_questions(question_turn)
+        answer_states = {key: value for key, value in self.question_claims.states(thread_id).items() if key in questions}
+        unanswered = set(questions) - {key for key, value in answer_states.items() if value == 'accepted'}
+        if control.get('state') in ('writable', 'external') and (active or status == 'idle') and unanswered and not any(answer_states.get(key) in ('pending', 'unknown') for key in unanswered):
+            try:
+                question_reply_available = getattr(self.connection, 'can_answer_questions', lambda _: False)(thread_id)
+            except CodexError:
+                pass
         return {"thread": thread, "requests": requests, "settings": settings, 'control': control, 'plan': plan,
+                'canAnswerQuestions': question_reply_available, 'questionAnswerStates': answer_states,
                 **goal_state,
                 'tokenUsage': usage, 'changes': changes, 'turnSettings': turn_settings,
                 "resumeTurnId": latest_turn.get('id') if status == 'idle' and not active
@@ -1026,6 +1042,37 @@ class CodexService:
             if snapshot.get("readOnly") or snapshot.get("activeTurnId") or snapshot["status"] != "idle":
                 return None
             return self.send(thread_id, "", **kwargs)
+
+    def answer_questions(self, thread_id, expected_turn_id, answers, client_message_id):
+        from .questions import answer_input
+        self.start()
+        with self.operation_gate(thread_id):
+            self._assert_workspace(thread_id)
+            snapshot = self.get_session(thread_id)
+            turn = next((value for value in snapshot['thread']['turns'] if value['id'] == expected_turn_id), None)
+            active = snapshot.get('activeTurnId')
+            latest = snapshot['thread']['turns'][-1] if snapshot['thread']['turns'] else {}
+            start_turn = not active and snapshot.get('status') == 'idle' and latest.get('id') == expected_turn_id
+            if (not turn or (active != expected_turn_id and not start_turn)
+                    or not snapshot.get('canAnswerQuestions') or snapshot.get('requests')):
+                raise CodexError('问题或桌面连接状态已变化，请刷新后重试', code='interaction_expired', http_status=409)
+            params = {'threadId': thread_id, 'expectedTurnId': expected_turn_id,
+                      'input': answer_input(turn, answers), 'clientUserMessageId': client_message_id}
+            # Intentionally bypass _resume: the question's existing writer owns execution.
+            if start_turn:
+                params.pop('expectedTurnId')
+            ids = [answer['questionItemId'] for answer in answers]
+            self.question_claims.claim(thread_id, ids, client_message_id)
+            try:
+                result = self.connection.answer_questions(params, start_turn=start_turn)
+                turn_id = result.get('turn', {}).get('id') if start_turn else result.get('turnId')
+                if not isinstance(turn_id, str) or not turn_id or (not start_turn and turn_id != expected_turn_id):
+                    raise CodexError('回答结果待核对', code='native_protocol', request_sent=True)
+            except Exception as error:
+                self.question_claims.finish(thread_id, ids, client_message_id, None if getattr(error, 'definite', False) else 'unknown')
+                raise
+            self.question_claims.finish(thread_id, ids, client_message_id, 'accepted')
+            return {'threadId': thread_id, 'turnId': turn_id}
 
     def steer(self, thread_id, text, expected_turn_id, client_message_id=None, *, input_items=None):
         self.start()

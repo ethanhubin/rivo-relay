@@ -50,6 +50,7 @@
 | `POST /v1/threads/{threadId}/steer` | `{submissionId,expectedTurnId,text}`，或用 `input` 数组 | 提交记录；接受时 `{threadId,turnId}` |
 | `POST /v1/threads/{threadId}/interrupt` | `{submissionId,turnId}` | 提交记录；接受时 `{threadId,turnId}` |
 | `POST /v1/threads/{threadId}/archive` | `{submissionId,archived:boolean}` | 提交记录；接受时 `{threadId}`；false 为恢复 |
+| `POST /v1/threads/{threadId}/answers` | `{submissionId,expectedTurnId,answers:[{questionItemId,answer}]}` | 回答原生异步问题；接受时 `{threadId,turnId}`，不接管 writer |
 | `POST /v1/requests/respond` | `{submissionId,key,response:{…}}` | 提交记录；接受时 `{requestId,threadId}` |
 
 `GET /v1/submissions/{submissionId}` 仅查询当前连接的回执。返回 `submission_not_found` 时，客户端可调用 `POST /v1/submissions/{submissionId}/reconcile`（空 JSON 对象）：已有记录原样返回；不存在时在与提交 claim 相同的事务锁内写入 `failed / submission_not_received` 记录，阻止同 ID 的迟到请求执行。不能仅凭 GET 404 就允许重新发送。旧节点不支持该接口时继续保留未知状态，不重放原操作。
@@ -82,6 +83,10 @@
 `image` 也接受原生 `fileId` 字段，但该形式尚未真实执行验收；audio/localAudio 不在原生 turn HTTP 输入列表；语音输入由独立 speech 流式接口转成文本。节点路径不是 Android `content://` URI；系统选图由 App 转为图片 data URL，普通文件先上传取得 mention。输入保留原生结构，由原生运行时进一步校验。不传 model/effort 时沿用该 thread 的原生设置；不接受调用方任意替换审批策略、sandbox 或整套运行配置。
 
 `mode` 可省略，或为 `plan` / `default`。Plan 通过原生 collaboration mode 运行，并将当前 turn sandbox 收紧为 `readOnly`；切回 default 仅在当前配置仍匹配 Relay 保存的 Plan 设置时恢复原先 sandbox，避免覆盖其他端修改。已有原生只读配置不会因此提升权限。`readOnly=true` 表示另一运行时占用了 thread writer，仍可读取持久历史。
+
+异步问题来自 `agentMessage.questions:[{title,options?:string[]}]`，问题身份使用 `JSON.stringify(["request_user_input_async", item.id, index])`。快照 `canAnswerQuestions=true` 表示当前问题的原 writer 可达，独立于 `readOnly` 和 `control.canOperate`；客户端不能据此放开普通任务、停止或设置操作。回答接口重新核验问题、来源回合和已接受回答，服务端生成原生 `send_user_message_question_reply` 消息。运行时使用带 `expectedTurnId` 的 `turn/steer`，空闲且问题仍属于最新回合时通过原 writer 的 `turn/start` 继续；均不调用 `thread/resume`、不创建 writer、不加入普通任务队列。桌面进程不在节点所连接 daemon 中且没有可用共享连接时能力为 false，不会隐式接管。接口沿用提交 ID 去重与结果不确定时不重发规则。
+
+问答恢复：快照的 `questionAnswerStates` 按原生 questionItemId 提供 pending/unknown/accepted。服务端在发送前持久化问题级提交记录；即使换 submissionId、重启节点或原生历史暂未更新，也不重复发送。明确未发送的失败允许重试；结果不确定时保持待核对，禁止自动重放。APP 按节点/会话/来源回合保存独立回答草稿，离线可编辑、不可提交，恢复新快照后重新校验。
 
 归档前检查运行中的 turn、待回答请求和执行队列；存在未处理工作时拒绝，最终操作仍由原生节点校验。批量归档、恢复由客户端逐项提交独立 submissionId，没有全有或全无的批量事务。未读标记是 Android 按节点和 thread 的已读 updatedAt 本地记录，没有服务端未读字段。没有已读记录的历史会话首次出现在列表（包括本地缓存）时，以当前 updatedAt 持久保存已读基线；后续更晚的已完成更新才显示未读，已有已读记录继续保留。
 

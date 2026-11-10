@@ -56,6 +56,7 @@ private val chatSectionSpacing = 12.dp
 fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: List<JSONObject>, onBack: () -> Unit,
     onDismissFailedMessage: (String) -> Unit = {},
     onSend: (JSONArray, String?, String?, () -> Unit) -> Unit, onStop: () -> Unit,
+    onAnswerQuestions: (String, JSONArray, () -> Unit) -> Unit = { _, _, _ -> },
     onRespond: (NativeRequest, JSONObject) -> Unit, onRefresh: () -> Unit, onLoadModels: () -> Unit, onEarlier: () -> Unit,
     readFile: suspend (String) -> JSONObject,
     readDirectory: suspend (String) -> JSONObject = { error("节点不支持目录浏览") },
@@ -632,10 +633,25 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
             .onSizeChanged { bottomOverlayHeight = it.height }) {
         if (pendingTitle == null) pendingWorkspace?.invoke()
+        val asyncQuestions = remember(snapshot?.messages, snapshot?.activeTurnId, snapshot?.turnSettings, snapshot?.questionAnswerStates) {
+            snapshot?.let(::pendingAsyncQuestions).orEmpty()
+        }
+        if (asyncQuestions.isNotEmpty() && snapshot != null) key(draftStore, state.id, snapshot.activeTurnId.ifBlank { snapshot.turnSettings.lastOrNull()?.turnId }) {
+            AsyncQuestionPanel(asyncQuestions, !busy && !blocked && !writerBusy && !state.stale &&
+                snapshot.canAnswerQuestions && snapshot.requests.isEmpty(),
+                store = draftStore, draftKey = "question:${snapshot.id}:${snapshot.activeTurnId.ifBlank { snapshot.turnSettings.lastOrNull()?.turnId.orEmpty() }}",
+                unavailableReason = if (asyncQuestions.any { snapshot.questionAnswerStates.string(it.id) in setOf("pending", "unknown") })
+                    "回答结果待核对，请刷新；不会自动重发。" else if (!snapshot.canAnswerQuestions)
+                    "当前节点暂不能连接问题所属会话，请刷新或在桌面回答。" else null) { input, accepted ->
+                val activeTurn = snapshot.activeTurnId
+                onAnswerQuestions(activeTurn.ifBlank { snapshot.turnSettings.lastOrNull()?.turnId.orEmpty() }, input, accepted)
+            }
+        }
+
         if (snapshot?.requests?.isNotEmpty() == true) Column(Modifier.fillMaxWidth().heightIn(max = 320.dp)
             .verticalScroll(rememberScrollState()).padding(horizontal = 12.dp).testTag("native_requests_panel")) {
             snapshot.requests.forEach { request -> key(request.key) {
-                NativeRequestPanel(request, !busy && !blocked && !state.stale && canOperate) { onRespond(request, it) }
+                NativeRequestPanel(request, !busy && !blocked && !state.stale && (canOperate || request.method.endsWith("requestUserInput"))) { onRespond(request, it) }
             } }
         }
         var goalEditing by remember(state.id) { mutableStateOf(false) }
