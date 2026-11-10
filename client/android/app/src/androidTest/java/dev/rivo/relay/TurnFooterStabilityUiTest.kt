@@ -87,6 +87,8 @@ class TurnFooterStabilityUiTest {
         val timingBounds = compose.onNodeWithTag("historical_turn_timing_first").fetchSemanticsNode().boundsInRoot
         val copyBounds = compose.onNodeWithTag("assistant_copy_first:a").fetchSemanticsNode().boundsInRoot
         assertTrue(timingBounds.top < copyBounds.bottom && copyBounds.top < timingBounds.bottom)
+        assertTrue(timingBounds.right <= copyBounds.left)
+        compose.onNodeWithTag("message_output_time").assertTextContains("-", substring = true)
         compose.onNodeWithTag("turn_duration_next").assertIsDisplayed()
         compose.onNodeWithTag("turn_duration_spinner").assertIsDisplayed()
         compose.onNodeWithTag("session_completion").assertDoesNotExist()
@@ -95,6 +97,11 @@ class TurnFooterStabilityUiTest {
         compose.mainClock.advanceTimeBy(64)
         compose.onNodeWithTag("historical_turn_timing_first").assertIsDisplayed()
         compose.onNodeWithTag("session_completion").assertIsDisplayed().assertTextContains("已完成", substring = true)
+        val completedBounds = compose.onNodeWithTag("session_completion").fetchSemanticsNode().boundsInRoot
+        val completedCopyBounds = compose.onNodeWithTag("assistant_copy_next:b").fetchSemanticsNode().boundsInRoot
+        assertTrue(completedBounds.right <= completedCopyBounds.left)
+        assertTrue(completedBounds.top < completedCopyBounds.bottom && completedCopyBounds.top < completedBounds.bottom)
+        compose.onNodeWithTag("session_completion").assertTextContains("-", substring = true)
         compose.onNodeWithTag("historical_turn_timing_next").assertDoesNotExist()
         compose.onNodeWithTag("turn_duration_spinner").assertDoesNotExist()
         // Reopen the same native history with a new conversation-owned display cache.
