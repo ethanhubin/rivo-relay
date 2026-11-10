@@ -38,6 +38,8 @@ class RelayApi(private val base: String, private val token: String = "", private
     }
     private val connectionObserver = dev.rivo.relay.connection.ConnectionStatusObserver(routes, base)
     val connectionStatus = connectionObserver.status
+    private val latencyProbe = dev.rivo.relay.connection.NetworkLatencyProbe(dns)
+    suspend fun networkLatency(endpoint: String): Long = latencyProbe.measure(endpoint)
     @Volatile var recovery: ConnectionRecovery? = null
     internal val sentImages = SentImageCache()
     fun describeFailure(error: Throwable) = connectionFailure(error, when (routes?.mode) {

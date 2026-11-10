@@ -9,7 +9,7 @@ import java.io.IOException
 
 /** Observes the final routed response; never infers connectivity from a saved preference. */
 data class ConnectionStatus(val endpoint: String = "", val httpCode: Int? = null, val failed: Boolean = false, val checkedAt: Long = 0,
-    val latencyMs: Long? = null)
+    val requestDurationMs: Long? = null)
 
 class ConnectionStatusObserver(private val routes: NodeRoutes?, private val base: String) : Interceptor {
     private val state = MutableStateFlow(ConnectionStatus())
@@ -22,7 +22,7 @@ class ConnectionStatusObserver(private val routes: NodeRoutes?, private val base
             val endpoint = listOfNotNull(routes?.relay, routes?.direct, base)
                 .filter { it.isNotBlank() }.firstOrNull { url.startsWith(it.trimEnd('/') + "/") }.orEmpty()
             state.value = ConnectionStatus(endpoint, response.code, checkedAt = System.currentTimeMillis(),
-                latencyMs = (System.nanoTime() - startedAt) / 1_000_000)
+                requestDurationMs = (System.nanoTime() - startedAt) / 1_000_000)
             return response
         } catch (error: IOException) {
             if (!chain.call().isCanceled()) state.value = ConnectionStatus(failed = true, checkedAt = System.currentTimeMillis())

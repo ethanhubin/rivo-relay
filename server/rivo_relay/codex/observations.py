@@ -8,12 +8,17 @@ class Observations:
         self.db = db
 
     def put(self, thread_id, kind, turn_id, payload):
-        encoded = json.dumps(payload, ensure_ascii=False)
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         if len(encoded.encode()) > 2 * 1024 * 1024:
             return
         with self.db.transaction() as c:
-            c.execute("INSERT OR REPLACE INTO native_observations VALUES(?,?,?,?,?)",
-                      (thread_id, kind, turn_id or '', encoded, time.time()))
+            changed = c.execute("""INSERT INTO native_observations VALUES(?,?,?,?,?)
+                ON CONFLICT(thread_id,kind,turn_id) DO UPDATE SET
+                    payload_json=excluded.payload_json, updated_at=excluded.updated_at
+                WHERE native_observations.payload_json != excluded.payload_json""",
+                (thread_id, kind, turn_id or '', encoded, time.time())).rowcount
+            if not changed:
+                return  # Repeated reads must not dirty WAL pages or refresh retention order.
             c.execute("DELETE FROM native_observations WHERE rowid IN (SELECT rowid FROM native_observations WHERE kind NOT IN ('ownership','externalWorkspace','workspace_share','questionAnswer') ORDER BY updated_at DESC LIMIT -1 OFFSET 1000)")
 
     def get(self, thread_id):

@@ -42,16 +42,13 @@ def pages(connection, method, params=None):
 
 
 def thread_pages(connection, params):
-    """Keep rollout-only threads and DB threads omitted by rollout scanning.
+    """Use the same indexed catalog as Desktop, never scan rollout files here.
 
-    Desktop agent-created chats can have has_user_event=0 despite having
-    visible conversation history. The native scan path omits these chats;
-    its state-only query includes them. Preserve native filters in both.
+    The native disk scan can take seconds per page and omits some indexed
+    agent-created chats. History reconciliation belongs to opening a thread,
+    not navigation. Preserve every native query filter and exhaust DB cursors.
     """
-    by_id = {thread['id']: thread for thread in pages(connection, 'thread/list', params)}
-    for thread in pages(connection, 'thread/list', {**params, 'useStateDbOnly': True}):
-        by_id.setdefault(thread['id'], thread)
-    return list(by_id.values())
+    return list(pages(connection, 'thread/list', {**params, 'useStateDbOnly': True}))
 
 
 class ProjectCatalog:
