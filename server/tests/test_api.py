@@ -115,6 +115,19 @@ class ApiTests(RelayHTTPFixture, unittest.TestCase):
         self.assertEqual(data['reason'], 'submission_pending_or_unknown')
         self.assertNotIn('private', json.dumps(data))
 
+    def test_update_stop_requires_explicit_lease(self):
+        self.app.codex.idle_for_update = Mock(return_value=True)
+        with patch.dict('os.environ', {'RIVO_UPDATE_TOKEN': 'test-agent-only'}):
+            with patch.object(self.server, 'shutdown') as stop:
+                for body in ({}, {'lease': None}, {'lease': ''}, {'lease': 123}):
+                    status, result, _ = self.request('POST', '/internal/update-stop',
+                        body, token='test-agent-only')
+                    self.assertEqual(status, 400)
+                    self.assertEqual(result['error']['code'], 'invalid_request')
+                stop.assert_not_called()
+                self.app.codex.idle_for_update.assert_not_called()
+            self.assertEqual(self.request('GET', '/health')[0], 200)
+
     def test_expired_stop_permit_does_not_shutdown(self):
         self.app.codex.idle_for_update = lambda: True
         with patch.dict('os.environ', {'RIVO_UPDATE_TOKEN': 'test-agent-only'}):
@@ -612,7 +625,7 @@ class ApiTests(RelayHTTPFixture, unittest.TestCase):
 
     def test_error_diagnostics_keep_conflict_code_but_not_private_details(self):
         from unittest.mock import patch
-        from rivo_relay.api import ApiError
+        from rivo_relay.routes.common import ApiError
         for code, expected in [('workspace_busy', 'workspace_busy'), ('private_secret', 'other')]:
             with patch('rivo_relay.api.event') as log, \
                     patch.object(Handler, 'route', side_effect=ApiError(409, code, 'private message')):

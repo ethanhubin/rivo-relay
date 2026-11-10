@@ -55,9 +55,9 @@ python3 scripts/publish-update.py \
 
 仅在明确要求 GitHub Release 时追加 `--github-release`，并先按用户授权将对应提交推到远端。
 
-## 首次迁移
+## 客户端更新入口
 
-0.2.12 及更早版本仍使用 GitHub 更新逻辑，需要手动下载一次 0.2.13 节点 APK 并覆盖安装。之后可直接在 App 检查节点更新。此次只部署主发布节点，其他会话节点无需跟随提供更新接口。
+客户端仅通过节点／VPS 更新源检查版本，已移除无人调用的 GitHub Release 检查器。GitHub Release 的显式发布功能仍保留在发布脚本中。
 
 ## 主节点服务代码隔离
 
