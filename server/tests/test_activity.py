@@ -53,6 +53,30 @@ class ActivityTests(unittest.TestCase):
         self.assertNotIn('t', registry.snapshot()['unknownThreadIds'])
         self.assertIn('t', registry.snapshot()['knownThreadIds'])
 
+    def test_terminal_clears_metadata_activity_without_start_event(self):
+        for method in ('turn/completed', 'turn/failed', 'turn/interrupted'):
+            with self.subTest(method=method):
+                registry = self.registry()
+                registry.observe_metadata([{'id': 't', 'status': {'type': 'active'}}], {}, 'g', 0)
+                registry.receive(event(method))
+                self.assertEqual(registry.snapshot()['tasks'], [])
+                self.assertIn('t', registry.confirmed_idle)
+
+    def test_terminal_respects_reconciled_newer_turn(self):
+        registry = self.registry(lambda: snapshot([{'threadId': 't', 'turnId': 'two', 'status': 'running'}]))
+        registry.reconcile()
+        registry.receive(event('turn/completed', 'one'))
+        self.assertEqual(registry.snapshot()['tasks'][0]['turnId'], 'two')
+        registry.receive(event('turn/completed', 'two'))
+        self.assertEqual(registry.snapshot()['tasks'], [])
+
+    def test_terminal_preserves_active_goal_without_start_event(self):
+        registry = self.registry(lambda: snapshot([{'threadId': 't', 'goalActive': True, 'status': 'running'}]))
+        registry.reconcile()
+        registry.receive(event('turn/completed'))
+        self.assertEqual(registry.snapshot()['tasks'][0]['status'], 'running')
+        self.assertTrue(registry.snapshot()['tasks'][0]['goalActive'])
+
     def test_membership_survives_completion_and_next_start(self):
         registry = self.registry()
         registry.reconcile()

@@ -157,7 +157,10 @@ class ActivityRegistry:
                         self.terminal[(tid, turn_id)] = True
                         while len(self.terminal) > 1024:
                             self.terminal.popitem(last=False)
-                    if turn_id and self.turns.get(tid) == turn_id:
+                    # Metadata/reconciliation can restore activity without a start event.
+                    # Respect any known newer turn, including one restored by the loader.
+                    active_turn = self.turns.get(tid) or self.tasks.get(tid, {}).get('turnId')
+                    if turn_id and active_turn in (None, turn_id):
                         self.turns.pop(tid, None)
                         if self.tasks.get(tid, {}).get('goalActive'):
                             self.tasks[tid].update(turnId=None, status='running',
