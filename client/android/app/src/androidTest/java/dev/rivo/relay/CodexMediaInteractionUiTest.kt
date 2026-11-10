@@ -53,6 +53,24 @@ class CodexMediaInteractionUiTest {
             File(folder, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }; bitmap.recycle()
         }
     }
+    @Test fun pendingInlineAttachmentOpensFullScreenWithoutUploading() {
+        val source = "data:image/png;base64," + android.util.Base64.encodeToString(png(), android.util.Base64.NO_WRAP)
+        val server = server(png())
+        val client = CodexMediaClient(RelayApi(server.url("/").toString(), "pending-fixture"), "thread", compose.activity)
+        try {
+            compose.setContent { RivoTheme { CompositionLocalProvider(LocalCodexMediaClient provides client) {
+                NativeImage(source, { error("Pending image must stay local") })
+            } } }
+            compose.waitUntil(10_000) { compose.onAllNodesWithTag("native_image").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithTag("native_image").performClick()
+            compose.waitUntil(10_000) { compose.onAllNodesWithTag("fullscreen_original_loaded").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithTag("fullscreen_original_error").assertDoesNotExist()
+            repeat(server.requestCount) {
+                assertTrue(server.takeRequest().path!!.startsWith("/v1/media/library?threadId="))
+            }
+        } finally { client.close(); server.shutdown() }
+    }
+
     @Test fun originalImageCanRetryWithoutClosingGallery() {
         val bytes = png()
         val originals = AtomicInteger()
