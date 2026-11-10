@@ -132,6 +132,15 @@ sealed interface NativeTimelineRow {
     data class Notice(val turn: NativeTurnSettings): NativeTimelineRow { override val key = "notice:${turn.turnId}" }
 }
 
+/** App artifact bookkeeping stays in raw history, not in user-facing activity groups. */
+private fun isInternalArtifactCall(item: JSONObject): Boolean {
+    val type = item.string("type").replace("_", "").lowercase()
+    if (type !in setOf("mcptoolcall", "dynamictoolcall", "functioncalloutput")) return false
+    val namespace = item.string("server").ifBlank { item.string("namespace") }
+    val tool = item.string("tool").ifBlank { item.string("name") }
+    return namespace == "codex_app" && tool == "attach_artifact"
+}
+
 /** Same-turn adjacent activity runs collapse together; user/final/process messages keep their positions. */
 fun nativeTimelineRows(messages: List<NativeMessage>, activeTurnId: String? = null,
     turnSettings: List<NativeTurnSettings> = emptyList()): List<NativeTimelineRow> {
@@ -139,8 +148,9 @@ fun nativeTimelineRows(messages: List<NativeMessage>, activeTurnId: String? = nu
     val pending = mutableListOf<NativeMessage>()
     fun flush() { if (pending.isNotEmpty()) { rows += NativeTimelineRow.Activities(pending.toList()); pending.clear() } }
     messages.forEach { message ->
-        // Internal reasoning and sleep stay in history without splitting visible tool groups.
-        if (message.activity?.kind == "reasoning" || message.type in setOf("reasoning", "sleep")) return@forEach
+        // Hidden records never enter groups or their failure counts, and do not split adjacent tools.
+        if (message.activity?.kind == "reasoning" || message.type in setOf("reasoning", "sleep") ||
+            isInternalArtifactCall(message.raw)) return@forEach
         if (message.activity != null && message.activity.kind != "commentary") {
             if (pending.lastOrNull()?.turnId?.let { it != message.turnId } == true) flush()
             pending += message
