@@ -372,10 +372,11 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             .filter { it.type in setOf("agentMessage", "agent_message", "exitedReviewMode") }
             .associate { it.turnId to it.id }
     }
-    val completionLabel = snapshot?.takeIf { !state.stale && !state.loading && state.readError == null &&
-        !submissionInFlight && state.pendingMessages.isEmpty() }?.let(::sessionCompletionLabel)
-    val completionReplyId = if (completionLabel?.startsWith("已完成") == true)
-        snapshot?.turnSettings?.lastOrNull()?.turnId?.let { lastReplyIds[it] } else null
+    val turnFooterCache = remember(state.id) { NativeTurnFooterCache() }
+    val turnFooter = remember(turnFooterCache, snapshot, state.synchronization) {
+        turnFooterCache.project(snapshot, state.stale || state.loading || state.readError != null,
+            System.currentTimeMillis() / 1000)
+    }
     var historyAnchor by remember(state.id) { mutableStateOf<HistoryScrollAnchor?>(null) }
     // The paging button can be the first visible item. Anchor a timeline row
     // instead, retaining its viewport position when older rows are inserted.
@@ -390,9 +391,6 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         }
     }
     val executionActive = state.executionActive
-    val timedRunningTurn = snapshot?.turnSettings?.firstOrNull {
-        it.turnId == snapshot.activeTurnId && it.status == "inProgress" && it.startedAt != null && it.completedAt == null
-    }?.takeIf { executionActive && !state.stale && snapshot.nativeReady && !snapshot.recoveryRequired && !snapshot.workspaceUnavailable }
     val currentActivity = (timeline.lastOrNull() as? NativeTimelineRow.Activities)
         ?.takeIf { executionActive && it.messages.lastOrNull()?.turnId == snapshot?.activeTurnId }
     val modelChangeRows = remember(timeline, snapshot?.turnSettings) {
@@ -590,7 +588,6 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                             ReviewDiagnostic(snapshot.reviewDiagnostics.lastOrNull { it.string("turnId") == message.turnId })
                         }
                         AssistantMessageFooter(message.text, "${message.turnId}:${message.id}", timing.outputAt,
-                            completionLabel = completionLabel.takeIf { message.id == completionReplyId },
                             forkTurnId = message.turnId.takeIf { isLastReply && onFork != null &&
                                 snapshot?.turnSettings?.any { it.turnId == message.turnId && it.status in setOf("completed", "interrupted", "failed") } == true },
                             forkEnabled = !busy && !blocked && !state.stale,
@@ -639,16 +636,12 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     it.turnId == diagnostic.string("turnId") && it.type in setOf("agentMessage", "agent_message", "exitedReviewMode")
                 }
             }?.forEach { diagnostic -> item(key = "review-diagnostic:${diagnostic.string("turnId")}") { ReviewDiagnostic(diagnostic) } }
-            timedRunningTurn?.let { turn -> item(key = "turn-duration:${turn.turnId}") { NativeTurnDuration(turn) } }
-            if (executionActive && currentActivity == null && timedRunningTurn == null) item(key = "execution_stage") {
+            turnFooter?.let { footer -> item(key = "turn_footer") { NativeTurnDuration(footer) } }
+            if (executionActive && currentActivity == null && turnFooter == null) item(key = "execution_stage") {
                 ChatTimelineSummaryRow {
                     if (state.stale) Text("正在处理…", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("execution_stage_pending"))
                     else ShimmeringStageText("正在处理…", Modifier.testTag("execution_stage_shimmer"))
                 }
-            }
-            if (completionLabel != null && completionReplyId == null) item(key = "session_completion") {
-                Text(completionLabel, Modifier.fillMaxWidth().testTag("session_completion"),
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             item(key = "relay_latest_anchor") { Spacer(Modifier.fillMaxWidth().height(1.dp).testTag("latest_message_anchor")) }
         }
