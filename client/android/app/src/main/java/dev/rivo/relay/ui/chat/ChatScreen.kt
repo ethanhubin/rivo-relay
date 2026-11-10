@@ -377,6 +377,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         turnFooterCache.project(snapshot, state.stale || state.loading || state.readError != null,
             System.currentTimeMillis() / 1000)
     }
+    val historicalTiming = remember(timeline, snapshot?.turnSettings, turnFooter?.turn?.turnId) {
+        nativeHistoricalTimingRows(timeline, snapshot?.turnSettings.orEmpty(), turnFooter?.turn?.turnId)
+    }
     var historyAnchor by remember(state.id) { mutableStateOf<HistoryScrollAnchor?>(null) }
     // The paging button can be the first visible item. Anchor a timeline row
     // instead, retaining its viewport position when older rows are inserted.
@@ -495,6 +498,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             itemsIndexed(timeline, key = { _, row -> row.key }, contentType = { _, row ->
                 when (row) { is NativeTimelineRow.Message -> row.message.type; is NativeTimelineRow.Activities -> "activity_group"; is NativeTimelineRow.Notice -> "turn_notice" }
             }) { index, row ->
+                HistoricalTurnTiming(historicalTiming[index].orEmpty())
                 val modelChange = modelChangeRows[row.key]
                 val consecutiveActivities = row is NativeTimelineRow.Activities &&
                     timeline.getOrNull(index - 1) is NativeTimelineRow.Activities && modelChange == null
@@ -630,6 +634,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                         forkTurnId = rowTurn, forkEnabled = !busy && !blocked && !state.stale,
                         onFork = { forkTurn = rowTurn })
                 }
+            }
+            historicalTiming[timeline.size]?.let { timings ->
+                item(key = "historical_turn_timing_tail") { HistoricalTurnTiming(timings) }
             }
             snapshot?.reviewDiagnostics?.filter { diagnostic ->
                 diagnostic.string("status") != "verified" && snapshot.messages.none {

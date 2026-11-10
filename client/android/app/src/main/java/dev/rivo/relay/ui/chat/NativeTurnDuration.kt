@@ -1,6 +1,8 @@
 package dev.rivo.relay.ui.chat
 
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -29,4 +31,15 @@ fun NativeTurnDuration(footer: NativeTurnFooter) {
     Text(text, modifier = Modifier.fillMaxWidth().testTag(if (footer.label != null) "session_completion" else "turn_duration_${turn?.turnId}"),
         style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace,
         color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+/** Historical rows omit the live conversation's completion status. */
+@Composable
+fun HistoricalTurnTiming(timings: List<NativeHistoricalTiming>) {
+    timings.forEach { timing ->
+        Text(timing.label,
+            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).testTag("historical_turn_timing_${timing.turnId}"),
+            style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
 }
