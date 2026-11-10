@@ -96,8 +96,6 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
                     Text("+", style = MaterialTheme.typography.headlineSmall)
                 }
             }
-            Text("节点版本：$version", Modifier.testTag("settings_node_version"),
-                style = MaterialTheme.typography.bodySmall)
             Column(Modifier.selectableGroup()) {
                 ConnectionMode.entries.forEach { mode ->
                     val available = when (mode) {
@@ -136,8 +134,8 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
                     RecoveryState.DISCONNECTED -> false
                 }, Modifier.testTag("settings_connection_status"))
                 Text(
-                    listOfNotNull(statusLabel, routeLabel).joinToString(" · "),
-                    modifier = Modifier.weight(1f),
+                    listOfNotNull("$statusLabel - 节点版本：$version", routeLabel).joinToString(" · "),
+                    modifier = Modifier.weight(1f).testTag("settings_node_version"),
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -150,8 +148,6 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
                 latencyFailed -> "探测失败"
                 else -> "测量中…"
             }, Modifier.testTag("settings_network_latency"), style = MaterialTheme.typography.bodySmall)
-            Text("独立测量 TCP 建连往返，取 3 次中位数；不含业务处理，中转模式不含 VPS 到节点。",
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedButton(enabled = api != null && !checking && !reconnecting, modifier = Modifier.testTag("settings_refresh"), onClick = {
                 scope.launch {
                     checking = true
