@@ -53,7 +53,7 @@ Windows 创建 Limited/S4U 无窗口计划任务；macOS 创建登录用户 Laun
 - 上传前计算暂存及落盘空间，至少预留 1 GiB；最终发布再次检查剩余空间和目录限额。只回收不再引用的哈希文件与超过 24 小时的本发布器暂存目录，当前版本始终受保护。
 - 节点保留当前、上一版回滚环境及待切换环境；其他版本目录按需清理。安装前预留包解压空间和至少 1 GiB；pip 不保留下载缓存。
 - 代理日志 2 MiB × 3；节点运行日志约 5 MiB，另保留一次重启轮换日志。bootstrap、当前/上一版依赖和 SQLite 回滚备份不按文件大小盲删。
-- 不清理其他服务的日志、目录、证书、登录或设备数据。磁盘实时检查记录见 `validation-central-updates.md`。
+- 不清理其他服务的日志、目录、证书、登录或设备数据。历史磁盘检查记录的追溯方式见[历史验证归档说明](validation.md)；新的实时检查记录写入本项目验证记录。
 
 ## 下载传输与诊断
 
@@ -71,7 +71,7 @@ runuser -u rivo-gateway -- python3 -c 'import socket; s=socket.socket(); s.setso
 
 `journalctl -u rivo-gateway.service` 中的 `update_download_started` / `update_download_finished` 用 `download_id` 关联；响应也返回 `X-Rivo-Download-Id`。记录请求是否续传、实际算法、状态、发送耗时、响应体字节数、Linux TCP RTT/发送窗口和本次重传段数，不记录令牌、URL、文件路径、异常正文或客户端地址。连接取消/异常记录 `interrupted`，不冒充完成。`sent` 仅表示服务端完成交给传输层，不代表手机已收到全部字节或通过 SHA-256 校验；中断字节数未知时记为 `null`。
 
-本次排查及验证范围见 [下载性能验证记录](validation-update-download.md)。
+本次排查及验证范围见 [历史验证归档说明](validation.md)。
 
 ## 设备维护入口
 
