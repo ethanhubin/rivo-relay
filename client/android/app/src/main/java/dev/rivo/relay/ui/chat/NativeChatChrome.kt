@@ -16,7 +16,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -257,12 +256,11 @@ internal fun NewSessionSettings(models: List<JSONObject>, model: String?, effort
     sandbox: String?, approval: String?, enabled: Boolean, permissionsEditable: Boolean,
     onModel: (String?) -> Unit, onEffort: (String?) -> Unit,
     onSandbox: (String?) -> Unit, onApproval: (String?) -> Unit, workspace: (@Composable () -> Unit)? = null) {
-    val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val capability = models.firstOrNull { it.string("model").ifBlank { it.string("id") } == model }
         ?: if (model == null) models.firstOrNull { it.optBoolean("isDefault") } else null
     val efforts = capability?.objects("supportedReasoningEfforts").orEmpty()
         .map { it.string("reasoningEffort") }.filter(String::isNotBlank)
-    Column(Modifier.fillMaxWidth().heightIn(max = if (keyboardVisible) 148.dp else 340.dp)
+    Column(Modifier.fillMaxWidth().heightIn(max = 340.dp)
         .verticalScroll(rememberScrollState()).testTag("new_session_settings"),
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
         workspace?.invoke()
