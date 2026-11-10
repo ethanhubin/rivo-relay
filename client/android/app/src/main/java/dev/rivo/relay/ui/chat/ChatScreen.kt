@@ -86,11 +86,12 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val mediaClient = remember(mediaApi, state.id) { mediaApi?.let { dev.rivo.relay.data.CodexMediaClient(it, state.id.orEmpty(), mediaContext) } }
     DisposableEffect(mediaClient) { onDispose { mediaClient?.close() } }
     var forkTurn by remember(state.id) { mutableStateOf<String?>(null) }
-    var forkContext by remember(state.id) { mutableStateOf<JSONObject?>(null) }
-    var forkError by remember(state.id) { mutableStateOf<String?>(null) }
+    var forkContext by remember(state.id, forkTurn) { mutableStateOf<JSONObject?>(null) }
+    var forkError by remember(state.id, forkTurn) { mutableStateOf<String?>(null) }
     var forkRef by remember(state.id, forkTurn) { mutableStateOf<String?>(null) }
     var forkReady by remember(state.id, forkTurn) { mutableStateOf(true) }
-    LaunchedEffect(state.id, forkTurn) {
+    var forkRetry by remember(state.id, forkTurn) { mutableIntStateOf(0) }
+    LaunchedEffect(state.id, forkTurn, forkRetry) {
         forkContext = null; forkError = null
         if (forkTurn != null) try {
             forkContext = readTool("/v1/threads/${encoded(state.id.orEmpty())}/fork-context")
@@ -102,7 +103,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         title = { Text("从此轮之后分叉") },
         text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("保留此轮及之前的对话。文件不会恢复到该轮发生时的状态。")
-            forkError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            forkError?.let { Text(it, color = MaterialTheme.colorScheme.error); TextButton(onClick = { forkRetry++ }) { Text("重试") } }
             val context = forkContext
             if (context == null && forkError == null) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (context != null && context.string("projectId").isNotBlank()) {
@@ -112,7 +113,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     onSelection = { ref, ready -> forkRef = ref; forkReady = ready })
             } else Text("使用原会话当前目录")
         } },
-        confirmButton = { TextButton(enabled = !busy && !blocked && forkReady && !state.stale,
+        confirmButton = { TextButton(enabled = !busy && !blocked && forkContext != null && forkError == null && forkReady && !state.stale,
             onClick = { forkTurn?.let { onFork?.invoke(it, forkRef) }; forkTurn = null }) { Text("分叉") } },
         dismissButton = { TextButton(enabled = !busy, onClick = { forkTurn = null }) { Text("取消") } })
     val snapshot = state.snapshot

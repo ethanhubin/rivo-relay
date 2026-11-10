@@ -1,5 +1,6 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+from contextlib import nullcontext
 from rivo_relay.codex.sessions import CodexService
 from rivo_relay.codex.connection import CodexError
 from test_codex import FakeNative
@@ -54,3 +55,28 @@ class ForkTests(unittest.TestCase):
         self.assertEqual('workspace_thread_unknown', caught.exception.code)
         self.service.workspaces.abandon.assert_not_called()
         self.assertIn('child', self.service._joined)
+
+    def test_fork_reads_persisted_history_instead_of_empty_new_thread(self):
+        self.service.fork_session('thread', 'turn-2')
+        self.assertNotIn('child', self.service._created)
+        self.assertNotIn('child', self.service._unmaterialized)
+        # Reaching native history inspection proves the new-thread empty shortcut
+        # is not used, even before the first input to the fork.
+        with patch.object(self.service.native_journal, 'read_scope', return_value=nullcontext()), \
+             patch.object(self.service, '_native_history_state', side_effect=RuntimeError('native history reached')):
+            with self.assertRaisesRegex(RuntimeError, 'native history reached'):
+                self.service.history.__wrapped__(self.service, 'child')
+
+    def test_shared_reservation_only_cancelled_on_definite_failure(self):
+        self.service.workspaces.reserve_shared_directory.return_value = ('owner', 'reservation')
+        original = self.native.request
+        for uncertain in (False, True):
+            self.service.workspaces.cancel_shared_directory.reset_mock()
+            def fail(method, params, **kwargs):
+                if method == 'thread/fork':
+                    raise CodexError('failure', request_sent=uncertain)
+                return original(method, params, **kwargs)
+            self.native.request = fail
+            with self.assertRaises(CodexError):
+                self.service.fork_session('thread', 'turn-2')
+            self.assertEqual(not uncertain, self.service.workspaces.cancel_shared_directory.called)

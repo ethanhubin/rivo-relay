@@ -247,6 +247,28 @@ class Workspaces:
                 c.execute('UPDATE workspaces SET status=? WHERE id=?', (status, identity))
             return {**row, 'status': status}
 
+    def reserve_shared_directory(self, path):
+        # Persist before the native mutation: a lost fork reply must still protect
+        # the directory. The transaction serializes with cleanup's state change.
+        paths = ntpath if ntpath.splitdrive(path)[0] else posixpath
+        normalize = lambda value: paths.normcase(paths.normpath(value))
+        with self.db.transaction() as c:
+            rows = c.execute('SELECT * FROM workspaces').fetchall()
+            row = next((r for r in rows if normalize(r['path']) == normalize(path)), None)
+            if row is None:
+                return None
+            if row['status'] != 'ready':
+                raise CodexError('来源工作树正在清理或已移除', code='workspace_changed', http_status=409)
+            reservation = uuid.uuid4().hex
+            c.execute("INSERT INTO native_observations VALUES(?,?,?,?,?)",
+                (row['thread_id'], 'workspace_share', reservation, json.dumps({'path': path}), time.time()))
+            return row['thread_id'], reservation
+
+    def cancel_shared_directory(self, reservation):
+        if reservation is not None:
+            with self.db.transaction() as c:
+                c.execute("DELETE FROM native_observations WHERE thread_id=? AND kind='workspace_share' AND turn_id=?", reservation)
+
     def row(self, thread_id):
         with self.db.read() as c:
             row = c.execute('SELECT * FROM workspaces WHERE thread_id=?', (thread_id,)).fetchone()
@@ -303,6 +325,8 @@ class Workspaces:
         if current['dirty'] and not discard:
             raise CodexError('工作树有未保存改动，请明确确认归档后清理', code='workspace_dirty', http_status=409)
         with self.db.transaction() as c:
+            if c.execute("SELECT 1 FROM native_observations WHERE thread_id=? AND kind='workspace_share' LIMIT 1", (thread_id,)).fetchone():
+                raise CodexError('此工作树已被分叉会话共享，不能从单个会话清理', code='workspace_busy', http_status=409)
             c.execute("UPDATE workspaces SET status='cleaning' WHERE id=?", (row['id'],))
         # Native archive closes our thread writer before removing its cwd.
         try:

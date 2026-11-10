@@ -845,11 +845,14 @@ class CodexService:
             if not cwd:
                 raise CodexError('来源会话没有工作目录', code='invalid_request', http_status=409)
             workspace_id = None
+            shared = None
             if worktree_ref is not None:
                 project_id = source.get('projectId')
                 if not project_id or self.workspaces is None:
                     raise CodexError('来源会话没有可用的工作树项目', code='invalid_request', http_status=409)
                 workspace_id, cwd = self.workspaces.create(project_id, cwd, worktree_ref)
+            elif self.workspaces is not None:
+                shared = self.workspaces.reserve_shared_directory(cwd)
             try:
                 result = self.connection.request('thread/fork', {
                     'threadId': thread_id, 'lastTurnId': last_turn_id,
@@ -859,6 +862,8 @@ class CodexService:
                 if not isinstance(selected, str) or not selected or selected == thread_id:
                     raise CodexError('分叉未返回新的会话身份', code='native_protocol', request_sent=True)
             except Exception as error:
+                if shared is not None and isinstance(error, CodexError) and error.definite:
+                    self.workspaces.cancel_shared_directory(shared)
                 if workspace_id:
                     uncertain = not isinstance(error, CodexError) or not error.definite
                     retained = self.workspaces.abandon(workspace_id, uncertain=uncertain)
@@ -868,8 +873,6 @@ class CodexService:
                             http_status=409, request_sent=uncertain) from error
                 raise
             with self._lock:
-                self._created[selected] = copy.deepcopy(result['thread'])
-                self._unmaterialized.add(selected)
                 self._joined.add(selected)
                 self._settings[selected] = self._settings_from(result)
             if workspace_id:

@@ -275,6 +275,29 @@ class DeveloperTests(unittest.TestCase):
         self.assertEqual('before\n', (self.source / 'tracked.txt').read_text())
         self.assertEqual('', self.git('status', '--porcelain'))
 
+    def test_shared_worktree_cannot_be_cleaned_even_after_service_restart(self):
+        path = self.create()
+        reservation = self.workspaces.reserve_shared_directory(str(path))
+        from rivo_relay.codex.observations import Observations
+        with self.db.transaction() as c:
+            c.executemany('INSERT INTO native_observations VALUES(?,?,?,?,?)',
+                [('other', 'plan', str(i), '{}', 9999999999 + i) for i in range(1001)])
+        Observations(self.db).put('other', 'plan', 'new', {})
+        restarted = Workspaces(self.db, self.service)
+        current = restarted.inspect('thread')
+        self.assert_code('workspace_busy', lambda: restarted.cleanup('thread', current['revision'], False))
+        self.assertTrue(path.is_dir())
+        self.assertEqual([], self.service.archived)
+        restarted.cancel_shared_directory(reservation)
+        restarted.cleanup('thread', current['revision'], False)
+        self.assertFalse(path.exists())
+
+    def test_fork_reservation_rejected_once_cleanup_has_started(self):
+        path = self.create()
+        with self.db.transaction() as c:
+            c.execute("UPDATE workspaces SET status='cleaning' WHERE thread_id='thread'")
+        self.assert_code('workspace_changed', lambda: self.workspaces.reserve_shared_directory(str(path)))
+
     def test_dirty_cleanup_requires_confirmation_and_keeps_archive(self):
         path = self.create()
         (path / 'notes.txt').write_text('keep these changes\n')
