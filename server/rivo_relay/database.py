@@ -139,6 +139,12 @@ class Database:
                     token_hash TEXT PRIMARY KEY, todo_id TEXT NOT NULL,
                     thread_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
                     used INTEGER NOT NULL DEFAULT 0)""")
+                # NULL means legacy/uninstrumented; never infer that it was not sent.
+                columns = {row[1] for row in connection.execute("PRAGMA table_info(submissions)")}
+                if 'dispatch_phase' not in columns:
+                    connection.execute("ALTER TABLE submissions ADD COLUMN dispatch_phase TEXT")
+                if 'recovery_json' not in columns:
+                    connection.execute("ALTER TABLE submissions ADD COLUMN recovery_json TEXT")
                 # Additive indexes are compatible with the existing schema and
                 # old services; keep durable claims and completed queue records.
                 for statement in (

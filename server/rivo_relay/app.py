@@ -96,14 +96,22 @@ class RelayApp:
         if not claim["should_dispatch"]:
             return public_submission(claim["submission"])
         try:
-            receipt = action()
+            from .submission_dispatch import observe_dispatch
+            tracked = operation in {'thread.turns', 'thread.continue'}
+            with observe_dispatch(submission_id, target,
+                    lambda phase, receipt: self.submissions.record_dispatch(submission_id, phase, receipt)
+                    if tracked else None):
+                receipt = action()
             if not receipt:
                 raise RuntimeError("Missing native identity receipt; reconcile before retry")
             record = self.submissions.mark_accepted(submission_id, receipt)
         except Exception as error:
-            # A transport failure can occur after native acceptance. Only a
-            # native rejection explicitly classified definite is safe to fail.
-            if getattr(error, "definite", False):
+            # Resolve a proven turn boundary first. For uninstrumented/sent
+            # requests only an explicit definite rejection is safe to fail.
+            proven = self.submissions.resolve_dispatch(submission_id)
+            if proven is not None:
+                record = proven
+            elif getattr(error, "definite", False):
                 record = self.submissions.mark_failed(submission_id, getattr(error, "code", "native_rejected"))
             else:
                 record = self.submissions.mark_unknown(submission_id)
