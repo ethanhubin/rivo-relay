@@ -379,7 +379,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val turnFooterCache = remember(state.id) { NativeTurnFooterCache() }
     val turnFooter = remember(turnFooterCache, snapshot, state.synchronization) {
         turnFooterCache.project(snapshot, state.stale || state.loading || state.readError != null,
-            System.currentTimeMillis() / 1000)
+            System.currentTimeMillis() / 1000, android.os.SystemClock.elapsedRealtime())
     }
     val historicalTiming = remember(timeline, snapshot?.turnSettings, turnFooter?.turn?.turnId) {
         nativeHistoricalTimingRows(timeline, snapshot?.turnSettings.orEmpty(), turnFooter?.turn?.turnId)
