@@ -90,7 +90,7 @@ VPS 是可信中转端：手机到 VPS 为 HTTPS，桌面到 VPS 为固定证书
 - 主节点连接器：`~/Library/LaunchAgents/local.rivo-relay.gateway.plist`，连接器日志在 `workspace/local-node/logs/gateway*.log`。
 - 原 Relay 启动配置与数据库部署前备份：`workspace/gateway-deployment/`。此目录包含私有文件，不进入 Git。
 
-验证范围与限制见[本次验证记录](validation-vps-gateway.md)；支持代码、回归测试、模拟器验证和真机验证应分别报告。
+验证范围与限制见[历史验证归档说明](validation.md)；支持代码、回归测试、模拟器验证和真机验证应分别报告。
 
 ### Windows 节点接入验证（2026-11-08）
 

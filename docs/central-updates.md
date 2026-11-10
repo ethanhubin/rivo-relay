@@ -71,7 +71,7 @@ runuser -u rivo-gateway -- python3 -c 'import socket; s=socket.socket(); s.setso
 
 `journalctl -u rivo-gateway.service` 中的 `update_download_started` / `update_download_finished` 用 `download_id` 关联；响应也返回 `X-Rivo-Download-Id`。记录请求是否续传、实际算法、状态、发送耗时、响应体字节数、Linux TCP RTT/发送窗口和本次重传段数，不记录令牌、URL、文件路径、异常正文或客户端地址。连接取消/异常记录 `interrupted`，不冒充完成。`sent` 仅表示服务端完成交给传输层，不代表手机已收到全部字节或通过 SHA-256 校验；中断字节数未知时记为 `null`。
 
-本次排查及验证范围见 [下载性能验证记录](validation-update-download.md)。
+本次排查及验证范围见 [历史验证归档说明](validation.md)。
 
 ## 设备维护入口
 

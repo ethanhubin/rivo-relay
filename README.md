@@ -57,6 +57,8 @@ PYTHONPATH=server .venv/bin/python -m unittest discover -s server/tests -p test_
 
 ## 文档
 
+完整分类与历史记录见[文档导航](docs/README.md)，开发和运维工具见[脚本导航](scripts/README.md)。
+
 | 文档 | 内容 |
 | --- | --- |
 | [产品说明](docs/product.md) | 定位与使用流程 |

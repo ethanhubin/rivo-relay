@@ -110,4 +110,4 @@ Linux 可使用用户 systemd 服务，`ExecStart` 使用上述绝对路径参�
 
 未迁移的旧节点仍需单独复制源码升级；迁移到[统一更新代理](central-updates.md)后，日常发布会由 VPS 分发节点程序和 APK。当前发布约定不推送 GitHub；首次迁移将本版源码安全复制到目标机器，再按统一更新指南安装。源码中不应包含 workspace、凭据或配对图。
 
-验证依据：[Windows 实机记录](validation-windows-2026-11-08.md)、[VPS 通道说明](vps-gateway.md)。2026-11-08 用户已确认 Windows 双通道二维码手机配对成功；不把此结果扩大为其他机器或全部功能已验收。
+验证依据：[历史验证归档说明](validation.md)、[VPS 通道说明](vps-gateway.md)。2026-11-08 用户已确认 Windows 双通道二维码手机配对成功；不把此结果扩大为其他机器或全部功能已验收。
