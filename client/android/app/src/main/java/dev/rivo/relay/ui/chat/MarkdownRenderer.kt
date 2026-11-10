@@ -131,9 +131,6 @@ internal fun splitChatMarkdownBlocks(markdown: String): List<ChatMarkdownBlock> 
   return blocks.ifEmpty { listOf(ChatMarkdownBlock.Text(normalized)) }
 }
 
-internal fun shouldRenderMarkdownTableAsCards(table: ChatMarkdownBlock.Table): Boolean =
-  table.headers.size <= 3 && table.rows.any { row -> row.any { markdownVisibleLength(it) >= 12 } }
-
 private fun parseMarkdownTableSeparator(
   line: String,
   expectedColumns: Int,
@@ -198,7 +195,7 @@ private fun parseMarkdownTableRow(line: String, budget: MarkdownScanBudget): Lis
   return cells.takeIf { it.isNotEmpty() }
 }
 
-private fun markdownVisibleLength(markdown: String): Int =
+internal fun markdownVisibleLength(markdown: String): Int =
   markdown.count { it !in "\\`*_~" }
 
 internal data class BoundedMarkdownPreview(val text: String, val truncated: Boolean)

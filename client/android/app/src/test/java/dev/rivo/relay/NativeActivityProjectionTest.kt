@@ -156,12 +156,6 @@ class NativeActivityProjectionTest {
         assertTrue(activity.title.contains("futureNativeType")); assertTrue(activity.detail.contains("keep this"))
     }
 
-    @Test fun qiguangTableRuleKeepsShortDataAsGridAndLongNarrowRowsAsCards() {
-        val short = parseChatMarkdownBlocks("| A | B |\n|---|---|\n| 1 | 2 |").single() as ChatMarkdownBlock.Table
-        val long = parseChatMarkdownBlocks("| A | B |\n|---|---|\n| title | a much longer description |").single() as ChatMarkdownBlock.Table
-        assertFalse(shouldRenderMarkdownTableAsCards(short)); assertTrue(shouldRenderMarkdownTableAsCards(long))
-    }
-
     @Test fun commandLabelHidesCommandButPreservesRawHistory() {
         val original = "rg '\\s+' \n\tfile.txt"
         val message = snapshot(turn("one", command("regex", original))).messages.single()

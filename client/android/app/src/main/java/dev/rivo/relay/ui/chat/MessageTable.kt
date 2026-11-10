@@ -9,14 +9,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 // Directly migrated from QiGuang ChatTimelineContent.
@@ -32,8 +31,11 @@ internal fun ChatMarkdownTable(
 ) {
   var visibleRows by rememberSaveable(messageId, blockIndex) { mutableIntStateOf(MARKDOWN_TABLE_BATCH_SIZE) }
   val visibleTable = remember(table, visibleRows) { table.copy(rows = table.rows.take(visibleRows)) }
-  val cards = remember(table) { shouldRenderMarkdownTableAsCards(table) }
+  var cards by rememberSaveable(messageId, blockIndex) { mutableStateOf(false) }
   Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+  TextButton(onClick = { cards = !cards }, modifier = Modifier.testTag("markdown_table_toggle")) {
+    Text(if (cards) "切换为表格" else "切换为卡片")
+  }
   if (table.rows.size > MARKDOWN_TABLE_BATCH_SIZE) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
     TextButton(onClick = { onCopyText(markdownTableSource(table)) }, modifier = Modifier.testTag("markdown_table_copy_all")) { Text("复制完整表格") }
     if (onQuoteText != null) TextButton(onClick = { onQuoteText(markdownTableSource(table)) }, modifier = Modifier.testTag("markdown_table_quote_all")) { Text("引用完整表格") }
@@ -88,68 +90,21 @@ private fun MarkdownTableCard(
   onOpenLink: (String) -> Unit,
   onOpenImage: (String) -> Unit,
 ) {
-  val statusIndex = row.lastIndex.takeIf { row.size >= 3 && markdownTableCellIsCompact(row[it]) }
   Surface(
     modifier = Modifier.fillMaxWidth().testTag(testTag),
     shape = RoundedCornerShape(14.dp),
     color = MaterialTheme.colorScheme.surfaceContainerLow,
     border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
   ) {
-    Column(
-      modifier = Modifier.fillMaxWidth().padding(12.dp),
-      verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.Top,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-      ) {
-        MarkdownTableCell(
-          markdown = row.first(),
-          modifier = Modifier.weight(1f),
-          textStyle = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-          testTag = "${testTag}_title",
-          onCopyText = onCopyText,
-          onQuoteText = onQuoteText,
-          onOpenLink = onOpenLink,
-          onOpenImage = onOpenImage,
-        )
-        statusIndex?.let { index ->
-          Surface(
-            modifier = Modifier.width(IntrinsicSize.Min).widthIn(max = 112.dp),
-            shape = RoundedCornerShape(999.dp),
-            color = MaterialTheme.colorScheme.secondaryContainer,
-          ) {
-            MarkdownTableCell(
-              markdown = row[index],
-              modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
-              textStyle = MaterialTheme.typography.labelMedium,
-              testTag = "${testTag}_status",
-              onCopyText = onCopyText,
-              onQuoteText = onQuoteText,
-              onOpenLink = onOpenLink,
-              onOpenImage = onOpenImage,
-            )
-          }
-        }
-      }
-      row.indices.drop(1).filter { it != statusIndex }.forEach { columnIndex ->
+    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+      row.forEachIndexed { index, cell ->
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-          Text(
-            table.headers[columnIndex],
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.labelSmall,
-          )
-          MarkdownTableCell(
-            markdown = row[columnIndex],
-            modifier = Modifier.fillMaxWidth(),
-            textStyle = MaterialTheme.typography.bodyMedium,
-            testTag = "${testTag}_cell_$columnIndex",
-            onCopyText = onCopyText,
-            onQuoteText = onQuoteText,
-            onOpenLink = onOpenLink,
-            onOpenImage = onOpenImage,
-          )
+          MarkdownTableCell(table.headers[index], Modifier.fillMaxWidth(),
+            MaterialTheme.typography.labelSmall, "${testTag}_header_$index",
+            onCopyText, onQuoteText, onOpenLink, onOpenImage)
+          MarkdownTableCell(cell, Modifier.fillMaxWidth(),
+            MaterialTheme.typography.bodyMedium, "${testTag}_cell_$index",
+            onCopyText, onQuoteText, onOpenLink, onOpenImage)
         }
       }
     }
@@ -165,46 +120,59 @@ private fun MarkdownTableGrid(
   onOpenLink: (String) -> Unit,
   onOpenImage: (String) -> Unit,
 ) {
-  val gridWidth = maxOf(LocalConfiguration.current.screenWidthDp - 40, table.headers.size * 136).dp
-  Surface(
-    modifier = Modifier.fillMaxWidth().testTag(testTag),
-    shape = RoundedCornerShape(12.dp),
-    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
-    color = MaterialTheme.colorScheme.surface,
-  ) {
-    Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-      Column(Modifier.width(gridWidth)) {
-        MarkdownTableGridRow(
-          cells = table.headers,
-          alignments = table.alignments,
-          header = true,
-          testTag = "${testTag}_header",
-          onCopyText = onCopyText,
-          onQuoteText = onQuoteText,
-          onOpenLink = onOpenLink,
-          onOpenImage = onOpenImage,
-        )
-        table.rows.forEachIndexed { rowIndex, row ->
-          Box(Modifier.fillMaxWidth().height(0.5.dp).background(MaterialTheme.colorScheme.outlineVariant))
+  BoxWithConstraints(Modifier.fillMaxWidth()) {
+    val widths = table.headers.indices.map { index ->
+      val length = (listOf(table.headers[index]) + table.rows.map { it.getOrElse(index) { "" } })
+        .maxOf { markdownVisibleLength(it) }
+      (length * 8 + 20).coerceIn(88, 260).dp
+    }
+    val scale = maxOf(1f, maxWidth.value / widths.sumOf { it.value.toDouble() }.toFloat())
+    val columnWidths = widths.map { it * scale }
+    val gridWidth = columnWidths.fold(0.dp) { sum, width -> sum + width }
+    Surface(
+      modifier = Modifier.fillMaxWidth().testTag(testTag),
+      shape = RoundedCornerShape(12.dp),
+      border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+      color = MaterialTheme.colorScheme.surface,
+    ) {
+      Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+        Column(Modifier.width(gridWidth)) {
           MarkdownTableGridRow(
-            cells = row,
+            cells = table.headers,
+            columnWidths = columnWidths,
             alignments = table.alignments,
-            header = false,
-            testTag = "${testTag}_row_$rowIndex",
+            header = true,
+            testTag = "${testTag}_header",
             onCopyText = onCopyText,
             onQuoteText = onQuoteText,
             onOpenLink = onOpenLink,
             onOpenImage = onOpenImage,
           )
+          table.rows.forEachIndexed { rowIndex, row ->
+            Box(Modifier.fillMaxWidth().height(0.5.dp).background(MaterialTheme.colorScheme.outlineVariant))
+            MarkdownTableGridRow(
+              cells = row,
+              columnWidths = columnWidths,
+              alignments = table.alignments,
+              header = false,
+              testTag = "${testTag}_row_$rowIndex",
+              onCopyText = onCopyText,
+              onQuoteText = onQuoteText,
+              onOpenLink = onOpenLink,
+              onOpenImage = onOpenImage,
+            )
+          }
         }
       }
     }
   }
+
 }
 
 @Composable
 private fun MarkdownTableGridRow(
   cells: List<String>,
+  columnWidths: List<Dp>,
   alignments: List<MarkdownTableAlignment>,
   header: Boolean,
   testTag: String,
@@ -221,7 +189,7 @@ private fun MarkdownTableGridRow(
     cells.forEachIndexed { index, cell ->
       MarkdownTableCell(
         markdown = cell,
-        modifier = Modifier.weight(1f).padding(horizontal = 10.dp, vertical = 9.dp),
+        modifier = Modifier.width(columnWidths[index]).padding(horizontal = 10.dp, vertical = 9.dp),
         textStyle =
           MaterialTheme.typography.bodySmall.copy(
             fontWeight = if (header) FontWeight.SemiBold else FontWeight.Normal,
@@ -268,9 +236,6 @@ private fun renderMarkdownTableCell(markdown: String): AnnotatedString {
     parsed.styled(colors.primary, colors.surfaceContainerHighest, colors.onSurfaceVariant)
   }
 }
-
-private fun markdownTableCellIsCompact(markdown: String): Boolean =
-  markdown.count { it !in "\\`*_~" } <= 8
 
 private fun markdownTableTextAlign(alignment: MarkdownTableAlignment): TextAlign =
   when (alignment) {
