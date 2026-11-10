@@ -1,5 +1,7 @@
 package dev.rivo.relay.ui.chat
 
+import dev.rivo.relay.codex.executionActive
+
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
 import androidx.activity.result.PickVisualMediaRequest
@@ -387,8 +389,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             historyAnchor = null
         }
     }
-    val executionActive = (state.activityStatus?.let { it == "running" }
-        ?: (snapshot?.isOngoing == true && snapshot.status != "waiting")) && snapshot?.requests.orEmpty().isEmpty()
+    val executionActive = state.executionActive
     val currentActivity = (timeline.lastOrNull() as? NativeTimelineRow.Activities)
         ?.takeIf { executionActive && it.messages.lastOrNull()?.turnId == snapshot?.activeTurnId }
     val modelChangeRows = remember(timeline, snapshot?.turnSettings) {

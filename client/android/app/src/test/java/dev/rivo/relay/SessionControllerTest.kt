@@ -46,6 +46,7 @@ class SessionControllerTest {
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                    if (request.requestUrl!!.encodedPath == "/v1/activity") return MockResponse().setBody("""{"complete":true,"generation":"test","tasks":[],"knownThreadIds":["t"],"unknownThreadIds":[]}""")
                     reads += request
                     val page = request.requestUrl!!.queryParameter("cursor") != null
                     if (page) { pageStarted.countDown(); releasePage.await(5, TimeUnit.SECONDS) }
@@ -102,6 +103,7 @@ class SessionControllerTest {
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                    if (request.requestUrl!!.encodedPath == "/v1/activity") return MockResponse().setBody("""{"complete":true,"generation":"test","tasks":[],"knownThreadIds":["t"],"unknownThreadIds":[]}""")
                     val token = request.requestUrl!!.queryParameter("knownHeadRevision")
                     tokens += token
                     return MockResponse().setBody(if (token == null) full.toString() else
