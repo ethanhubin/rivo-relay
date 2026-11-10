@@ -317,10 +317,9 @@ class CodexService:
         self.activity.start()
         return self.activity.snapshot()
 
-    def _load_activity(self):
+    def _load_activity(self, activity_token):
         generation = str(self.connection.generation)
         with self.activity.lock:
-            activity_revision = self.activity.revision
             active_ids = set(self.activity.tasks)
         discovered = self._activity_discovery
         full = discovered is None or discovered[0] != generation or time.monotonic() >= discovered[1]
@@ -336,7 +335,7 @@ class CodexService:
         for tid in active_ids - indexed:
             threads.append(self.connection.request('thread/read', {'threadId': tid, 'includeTurns': False})['thread'])
         roots = {r['path']: p['id'] for p in projects for r in p.get('roots', []) if r.get('path')}
-        self.activity.observe_metadata(threads, roots, generation, activity_revision)
+        self.activity.observe_metadata(threads, roots, activity_token)
         associations = self.projects.external_worktrees.associations(
             [t for t in threads if not t.get('projectId')], projects)
         external = self._external_running(threads)
