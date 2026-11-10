@@ -68,12 +68,8 @@ fun sessionCompletionLabel(snapshot: SessionSnapshot): String? {
     if (goal != null && !goalIsLatest && (turnTime == null || goalTime == null)) return null
     val status = if (goalIsLatest && goal?.string("status") in setOf("complete", "paused", "blocked", "usageLimited", "budgetLimited"))
         goal?.string("status") else turn?.status
-    return when (status) {
-        "completed", "complete" -> {
-            val elapsed = turn?.let { nativeTurnElapsedSeconds(it) }
-                ?.let { "耗时 ${formatNativeElapsedDuration(it)}" }
-            listOfNotNull("已完成", elapsed).joinToString(" ")
-        }
+    val label = when (status) {
+        "completed", "complete" -> "已完成"
         "paused" -> "已暂停"
         "blocked" -> "受阻"
         "usageLimited" -> "额度受限"
@@ -82,5 +78,8 @@ fun sessionCompletionLabel(snapshot: SessionSnapshot): String? {
         "interrupted" -> "已中断"
         "canceled", "cancelled" -> "已取消"
         else -> null
-    }
+    } ?: return null
+    if (status !in setOf("completed", "complete", "failed", "interrupted", "canceled", "cancelled")) return label
+    val elapsed = turn?.let { nativeTurnElapsedSeconds(it) }?.let { "耗时 ${formatNativeElapsedDuration(it)}" }
+    return listOfNotNull(label, elapsed).joinToString(" ")
 }

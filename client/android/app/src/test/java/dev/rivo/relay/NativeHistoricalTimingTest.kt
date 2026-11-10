@@ -27,6 +27,20 @@ class NativeHistoricalTimingTest {
         assertEquals(listOf("t1", "t2"), next.values.flatten().map { it.turnId })
     }
 
+    @Test fun lateToolCompletionMovesTimingAfterAllTurnRecords() {
+        val replies = listOf(row("answer", "t1"))
+        val turns = listOf(turn("t1"))
+        assertEquals(setOf(1), nativeHistoricalTimingRows(replies, turns, null).keys)
+        val lateTool = NativeTimelineRow.Activities(listOf(
+            NativeMessage("emulator", "t1", "commandExecution", "", JSONObject().put("exitCode", 1))))
+        val withTool = replies + lateTool
+        assertEquals(setOf(2), nativeHistoricalTimingRows(withTool, turns, null).keys)
+        val nextRound = withTool + row("next", "t2")
+        val timings = nativeHistoricalTimingRows(nextRound, turns + turn("t2"), "t2")
+        assertEquals(setOf(2), timings.keys)
+        assertEquals(listOf("t1"), timings.values.flatten().map { it.turnId })
+    }
+
     @Test fun emptyTurnsKeepChronologicalPositionAndPagingRebuildsFromHistory() {
         val turns = listOf(turn("empty"), turn("t1"), turn("t2"))
         val rows = listOf(row("a", "t1"), row("b", "t2"))

@@ -91,7 +91,7 @@ class NativeMessageTimingTest {
         val snapshot = SessionSnapshot("s", "", "idle", "", emptyList(), emptyList(), JSONObject(), turnSettings = listOf(turn))
         assertEquals("已完成 耗时 16s", sessionCompletionLabel(snapshot))
         for ((status, label) in mapOf("failed" to "执行失败", "interrupted" to "已中断", "canceled" to "已取消", "cancelled" to "已取消"))
-            assertEquals(label, sessionCompletionLabel(snapshot.copy(turnSettings = listOf(turn.copy(status = status)))))
+            assertEquals("$label 耗时 16s", sessionCompletionLabel(snapshot.copy(turnSettings = listOf(turn.copy(status = status)))))
         assertNull(sessionCompletionLabel(snapshot.copy(activeTurnId = "next")))
         assertNull(sessionCompletionLabel(snapshot.copy(status = "running")))
         assertNull(sessionCompletionLabel(snapshot.copy(queueDepth = 1)))
