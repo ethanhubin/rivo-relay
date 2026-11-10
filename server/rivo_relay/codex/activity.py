@@ -117,6 +117,25 @@ class ActivityRegistry:
                     self.known.add(tid)
                     self.unknown.discard(tid)
 
+    def _finish_execution(self, tid):
+        self.turns.pop(tid, None)
+        row = self.tasks.get(tid, {})
+        if row.get('goalActive'):
+            row.update(turnId=None, status='running')
+            row['nativeExecution'] = 'running'
+            row['displayState'] = 'executing_with_queue' if row.get('queueDepth') else 'executing'
+        elif row.get('deliveryState', 'idle') != 'idle':
+            row.update(turnId=None, status='idle', nativeExecution='idle',
+                       displayState=row['deliveryState'])
+        else:
+            self.tasks.pop(tid, None)
+        if row.get('goalActive'):
+            self.confirmed_idle.discard(tid)
+        else:
+            self.confirmed_idle.add(tid)
+        self.known.add(tid)
+        self.unknown.discard(tid)
+
     def receive(self, event):
         method, params = event.get('method'), event.get('params', {})
         if not isinstance(method, str) or not isinstance(params, dict):
@@ -160,16 +179,12 @@ class ActivityRegistry:
                     # Metadata/reconciliation can restore activity without a start event.
                     # Respect any known newer turn, including one restored by the loader.
                     active_turn = self.turns.get(tid) or self.tasks.get(tid, {}).get('turnId')
-                    if turn_id and active_turn in (None, turn_id):
-                        self.turns.pop(tid, None)
-                        if self.tasks.get(tid, {}).get('goalActive'):
-                            self.tasks[tid].update(turnId=None, status='running',
-                                                   **execution_projection('running'))
-                        else:
-                            self.tasks.pop(tid, None)
-                            self.confirmed_idle.add(tid)
-                        self.known.add(tid)
-                        self.unknown.discard(tid)
+                    if turn_id and active_turn == turn_id:
+                        self._finish_execution(tid)
+                    elif active_turn is None:
+                        # A terminal event may belong to an older turn. Reconcile
+                        # metadata-only activity instead of declaring it idle.
+                        self.unknown.add(tid)
                 elif method.endswith(('/requestApproval', '/requestUserInput')):
                     if turn_id and ((tid, turn_id) in self.terminal or
                                     self.turns.get(tid) not in (None, turn_id)):
@@ -180,6 +195,8 @@ class ActivityRegistry:
                     if isinstance(native, dict) and native.get('type') == 'active':
                         status = 'waiting' if any(flag in ('waitingOnApproval', 'waitingOnUserInput')
                             for flag in native.get('activeFlags', [])) else 'running'
+                    elif isinstance(native, dict) and native.get('type') == 'idle':
+                        self._finish_execution(tid)
                     else:
                         self.unknown.add(tid)
                 elif method in ('thread/deleted', 'thread/archived'):
@@ -192,7 +209,7 @@ class ActivityRegistry:
                 if status:
                     self.confirmed_idle.discard(tid)
                     self.tasks[tid] = {**self.tasks.get(tid, {}), 'threadId': tid, 'projectId': project or '',
-                                       'turnId': turn_id, 'status': status, **execution_projection(status)}
+                                       'turnId': turn_id or self.turns.get(tid) or self.tasks.get(tid, {}).get('turnId'), 'status': status, **execution_projection(status)}
                     self.known.add(tid)
                     self.unknown.discard(tid)
             if method == 'relay/nativeDisconnected':
