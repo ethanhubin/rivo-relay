@@ -60,7 +60,7 @@ internal fun AssistantMessageFooter(text: String, identity: String, outputAt: Lo
             completionLabel,
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.testTag("session_completion"),
+            modifier = Modifier.weight(1f, fill = false).testTag("session_completion"),
         ) else if (outputAt != null) Text(
             java.time.Instant.ofEpochSecond(outputAt).atZone(java.time.ZoneId.systemDefault())
                 .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm")),

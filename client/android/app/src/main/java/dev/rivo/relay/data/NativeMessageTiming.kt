@@ -29,6 +29,13 @@ fun formatNativeThinkingDuration(seconds: Long): String = when {
     else -> "${seconds / 60} 分${seconds % 60} 秒"
 }
 
+fun formatNativeElapsedDuration(seconds: Long): String = buildList {
+    val value = seconds.coerceAtLeast(0)
+    if (value >= 3600) add("${value / 3600}h")
+    if (value >= 60) add("${value / 60 % 60}m")
+    add("${value % 60}s")
+}.joinToString(" ")
+
 /** Whole-turn wall time, independent of individual assistant message timestamps. */
 fun nativeTurnElapsedSeconds(turn: NativeTurnSettings, nowSeconds: Long? = null): Long? {
     if (turn.status in setOf("completed", "failed", "interrupted", "canceled", "cancelled")) {
@@ -69,7 +76,9 @@ fun sessionCompletionLabel(snapshot: SessionSnapshot): String? {
                 java.time.Instant.ofEpochSecond(it).atZone(java.time.ZoneId.systemDefault())
                     .format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm"))
             }.getOrNull() }
-            listOfNotNull("已完成", time).joinToString(" ")
+            val elapsed = turn?.let { nativeTurnElapsedSeconds(it) }
+                ?.let { "耗时 ${formatNativeElapsedDuration(it)}" }
+            listOfNotNull("已完成", time, elapsed).joinToString(" ")
         }
         "paused" -> "已暂停"
         "blocked" -> "受阻"
