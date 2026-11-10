@@ -122,6 +122,9 @@ async def node(args):
     child = None
     connector_task = None
     previous_signals = {}
+    from .update_status import ReadinessPublisher
+    readiness = (ReadinessPublisher(os.environ['RIVO_MANAGED_READY'], os.environ['RIVO_UPDATE_TOKEN'])
+                 if os.environ.get('RIVO_MANAGED_READY') else None)
     try:
         import aiohttp
         async with aiohttp.ClientSession() as session:
@@ -169,9 +172,8 @@ async def node(args):
                 raise RuntimeError('Local Relay unavailable')
         if key and not args.pair_only:
             def ready_changed(connected):
-                if os.environ.get('RIVO_MANAGED_READY'):
-                    from .update_status import write_ready
-                    write_ready(os.environ['RIVO_MANAGED_READY'], os.environ['RIVO_UPDATE_TOKEN'], connected)
+                if readiness:
+                    readiness.publish(connected)
             connector = Connector(base, key, args.local_port, on_ready=ready_changed)
             connector_task = asyncio.create_task(connector.run())
             try:
@@ -179,10 +181,8 @@ async def node(args):
             except TimeoutError:
                 print('VPS 暂未连接，正在后台重试；可用直连入口不受影响。', flush=True)
         def publish_readiness():
-            if os.environ.get('RIVO_MANAGED_READY'):
-                from .update_status import write_ready
-                write_ready(os.environ['RIVO_MANAGED_READY'], os.environ['RIVO_UPDATE_TOKEN'],
-                            connector_task is not None and connector.ready.is_set())
+            if readiness:
+                readiness.publish(connector_task is not None and connector.ready.is_set())
         publish_readiness()
         if not args.no_pair:
             db = Database(config.database_path)
@@ -219,9 +219,8 @@ async def node(args):
             except TimeoutError:
                 pass
     finally:
-        if os.environ.get('RIVO_MANAGED_READY'):
-            from .update_status import write_ready
-            write_ready(os.environ['RIVO_MANAGED_READY'], os.environ['RIVO_UPDATE_TOKEN'], False)
+        if readiness:
+            readiness.publish(False)
         for sig, previous in previous_signals.items():
             signal.signal(sig, previous)
         if connector_task:

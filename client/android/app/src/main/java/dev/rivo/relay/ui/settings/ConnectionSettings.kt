@@ -19,6 +19,8 @@ import dev.rivo.relay.data.RelayApi
 import dev.rivo.relay.ui.common.ConnectionStatusDot
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 @Composable
 fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (ConnectionMode) -> Unit,
@@ -43,6 +45,27 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
     val recovery = api?.recovery?.state?.collectAsState()?.value
     val reconnecting = recovery == RecoveryState.CONNECTING
     val status = api?.connectionStatus?.collectAsState()?.value ?: ConnectionStatus()
+    var networkLatencyMs by remember(api, status.endpoint) { mutableStateOf<Long?>(null) }
+    var latencyFailed by remember(api, status.endpoint) { mutableStateOf(false) }
+    LaunchedEffect(api, status.endpoint, status.failed, recovery, versionRefresh) {
+        networkLatencyMs = null
+        latencyFailed = false
+        if (api != null && status.endpoint.isNotBlank() && !status.failed &&
+            recovery != RecoveryState.DISCONNECTED && recovery != RecoveryState.CONNECTING) {
+            while (isActive) {
+                try {
+                    networkLatencyMs = api.networkLatency(status.endpoint)
+                    latencyFailed = false
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Exception) {
+                    networkLatencyMs = null
+                    latencyFailed = true
+                }
+                delay(15_000)
+            }
+        }
+    }
     Card(Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -113,13 +136,22 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
                     RecoveryState.DISCONNECTED -> false
                 }, Modifier.testTag("settings_connection_status"))
                 Text(
-                    listOfNotNull(statusLabel, routeLabel, status.latencyMs?.let { "Ping ${it} ms" }).joinToString(" · "),
+                    listOfNotNull(statusLabel, routeLabel).joinToString(" · "),
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            val latencyTarget = if (routes != null && status.endpoint == routes.relay) "手机 → VPS" else "手机 → 节点"
+            Text("TCP Ping（$latencyTarget）：" + when {
+                status.failed || status.endpoint.isBlank() || recovery == RecoveryState.DISCONNECTED || reconnecting -> "—"
+                networkLatencyMs != null -> "$networkLatencyMs ms"
+                latencyFailed -> "探测失败"
+                else -> "测量中…"
+            }, Modifier.testTag("settings_network_latency"), style = MaterialTheme.typography.bodySmall)
+            Text("独立测量 TCP 建连往返，取 3 次中位数；不含业务处理，中转模式不含 VPS 到节点。",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedButton(enabled = api != null && !checking && !reconnecting, modifier = Modifier.testTag("settings_refresh"), onClick = {
                 scope.launch {
                     checking = true

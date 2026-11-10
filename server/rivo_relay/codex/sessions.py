@@ -367,7 +367,7 @@ class CodexService(SessionHandoffMixin):
     def list_sessions(self, project_id, archived=False, *, summary=False):
         self.start()
         if summary:
-            # A provisional metadata view: complete rollout reconciliation, Git
+            # A provisional metadata view: complete indexed membership, Git
             # discovery and execution inspection remain in the full response.
             generation = self.connection.generation
             params = {"archived": archived, "modelProviders": [], "sortKey": "updated_at",

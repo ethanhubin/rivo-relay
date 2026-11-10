@@ -11,6 +11,24 @@ def write_ready(path, token, connected):
     save_private(Path(path), {'token': token, 'connected': bool(connected), 'updatedAt': time.time()})
 
 
+class ReadinessPublisher:
+    """Refresh well within the 15s lease; publish transitions immediately."""
+    def __init__(self, path, token):
+        self.path, self.token = path, token
+        self._connected = None
+        self._written_at = None
+
+    def publish(self, connected):
+        connected = bool(connected)
+        now = time.monotonic()
+        if (connected == self._connected and self._written_at is not None
+                and now - self._written_at < 5):
+            return
+        write_ready(self.path, self.token, connected)
+        # A failed write must be retried on the next supervision tick.
+        self._connected, self._written_at = connected, now
+
+
 def is_ready(path, token):
     try:
         value = json.loads(Path(path).read_text())
