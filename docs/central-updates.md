@@ -87,6 +87,14 @@ runuser -u rivo-gateway -- python3 -c 'import socket; s=socket.socket(); s.setso
 - 代理写入不含令牌、路径和异常正文的 `auto-update/status.json`：阶段、当前/目标版本、原因、尝试次数、下次重试时间、代理修订号及更新时间。阶段覆盖检查、下载、安装、等待空闲、候选验收、回滚、重试等待/耗尽和隔离。检查间隔是每轮结束后 60 秒，下载安装时间另计。
 - 已配对客户端可鉴权读取 `GET /v1/node-updates/status`；本地可运行 `python scripts/node-update-status.py --workspace /原workspace`。旧代理没有状态文件时返回 unknown，不推断“已启动自动更新”。`agent.log`、候选 `install.log` 与 `node.log` 仍用于本地详细诊断。
 
+### 当前节点更新协议
+
+发布前开发阶段统一使用当前协议，不再接受旧版单步停止与 token-only 就绪标记：
+
+- `/internal/update-stop` 必须携带 `/internal/update-lease` 签发的有效 `lease`；缺失或类型错误返回 400，过期租约仍返回 409。
+- 网关就绪标记必须包含当前 token、`connected: true` 和最近 15 秒内的 `updatedAt`，不再按 `readyProtocol` 降级判断。
+- 旧实验节点需先更新 bootstrap 与节点代码；仅写入 token 的旧节点不能作为要求网关就绪的候选版本通过验收。现有离线启动与回滚路径仍保留 `require_gateway=False` 的明确行为。
+
 ### 显式升级已有 bootstrap
 
 此流程需要该节点的管理权限，不能仅通过 VPS 普通中转接口代办。先确认用户任务结束，**停止已有 managed 服务**，不要停止外部 Codex Desktop/daemon。使用更新后的源码和它的 Python 环境运行：

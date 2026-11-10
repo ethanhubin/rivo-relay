@@ -224,7 +224,7 @@ class ProcessLifecycleTests(unittest.IsolatedAsyncioTestCase):
             agent = Supervisor(SimpleNamespace(workspace=root, attach=False, pair_only=False, configure=False, local_port=port))
             script = root / 'fake.py'
             script.write_text('''
-import json,sys,threading,sqlite3
+import json,sys,threading,sqlite3,time
 from http.server import HTTPServer,BaseHTTPRequestHandler
 from pathlib import Path
 root,port,code,node,token=sys.argv[1:]
@@ -241,7 +241,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200); self.send_header('Content-Type','application/json'); self.end_headers(); self.wfile.write(b'{"ready":true}')
         if self.path.endswith('update-stop'): threading.Thread(target=self.server.shutdown).start()
 server=HTTPServer(('127.0.0.1',int(port)),Handler)
-(Path(root)/'auto-update/connected.json').write_text(json.dumps({'token':token}))
+(Path(root)/'auto-update/connected.json').write_text(json.dumps({'token':token,'connected':True,'updatedAt':time.time()}))
 server.serve_forever(poll_interval=.01)
 ''')
             def start(release, trial=False):

@@ -179,10 +179,6 @@ class Supervisor:
                 result = await self.local()
                 ready_path = self.root / 'connected.json'
                 ready = not require_gateway or is_ready(ready_path, self.token)
-                if not ready and release.get('readyProtocol', 1) < 2:
-                    # Compatibility for the previously installed child only.
-                    marker = json.loads(ready_path.read_text())
-                    ready = 'connected' not in marker and marker.get('token') == self.token
                 if (result.get('nodeId') == identity and result.get('releaseCode') == release['versionCode']
                         and result.get('nativeConnected') and ready):
                     return
@@ -255,8 +251,7 @@ class Supervisor:
                                 [str(python_at(venv)), '-c', 'import rivo_relay.gateway, rivo_relay.update_gate, aiohttp']):
                     subprocess.run(command, check=True, timeout=600, stdin=subprocess.DEVNULL, stdout=output, stderr=output)
         await asyncio.to_thread(install)
-        release = {'python': str(python_at(venv)), 'versionCode': item['versionCode'], 'sha256': asset['sha256'],
-                   'readyProtocol': 2 if (target / 'server/rivo_relay/gateway/update_status.py').exists() else 1}
+        release = {'python': str(python_at(venv)), 'versionCode': item['versionCode'], 'sha256': asset['sha256']}
         save_private(ready, release)
         return release
 

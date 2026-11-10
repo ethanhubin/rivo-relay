@@ -11,7 +11,6 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import dev.rivo.relay.data.AppRelease
-import dev.rivo.relay.data.RELEASES_PAGE
 import dev.rivo.relay.ui.settings.SettingsScreen
 import dev.rivo.relay.ui.theme.RivoTheme
 import kotlinx.coroutines.CompletableDeferred
@@ -121,7 +120,7 @@ class SettingsUiTest {
         val result = CompletableDeferred<AppRelease?>()
         var calls = 0
         var opened = ""
-        val download = "$RELEASES_PAGE/download/v0.2.12/rivo-relay-0.2.12-debug.apk"
+        val download = "https://updates.example.test/rivo-relay-0.2.12.apk"
         compose.setContent { RivoTheme { Surface { Box(Modifier.systemBarsPadding()) {
             CompositionLocalProvider(LocalUriHandler provides object : UriHandler {
                 override fun openUri(uri: String) { opened = uri }
@@ -130,7 +129,7 @@ class SettingsUiTest {
             }
         } } } }
         compose.onNodeWithTag("check_updates").performClick().assertIsNotEnabled()
-        compose.runOnIdle { assertEquals(1, calls); result.complete(AppRelease("0.2.12", "新增设置页", download, RELEASES_PAGE, true)) }
+        compose.runOnIdle { assertEquals(1, calls); result.complete(AppRelease("0.2.12", "新增设置页", download, "https://updates.example.test", true)) }
         compose.onNodeWithTag("update_available").assertTextContains("0.2.12", substring = true)
         compose.onNodeWithTag("download_update").performClick()
         compose.runOnIdle { assertEquals(download, opened) }

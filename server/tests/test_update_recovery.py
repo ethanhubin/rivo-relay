@@ -26,7 +26,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         (self.workspace/'gateway-client.json').write_text(json.dumps({'key': key}))
         self.args = SimpleNamespace(workspace=self.workspace, local_port=18765, attach=False, pair_only=False, configure=False)
         self.agent = Supervisor(self.args)
-        self.candidate = {'python': '/candidate/python', 'versionCode': 96, 'sha256': 'a'*64, 'readyProtocol': 2}
+        self.candidate = {'python': '/candidate/python', 'versionCode': 96, 'sha256': 'a'*64}
         self.item = {'versionCode': 96, 'node': {'sha256': 'a'*64}}
 
     def test_unpack_disk_pressure_is_retryable(self):
@@ -126,6 +126,19 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         with patch('rivo_relay.gateway.updater.asyncio.sleep', new=reconnect):
             await self.agent.healthy(self.candidate)
         self.assertGreaterEqual(self.agent.local.await_count, 2)
+
+    async def test_token_only_marker_does_not_satisfy_health(self):
+        from rivo_relay.config import Config
+        self.agent.child = Mock(poll=Mock(return_value=None))
+        self.agent.local = AsyncMock(return_value={'nodeId': Config(workspace=self.workspace).node_id,
+            'releaseCode': 96, 'nativeConnected': True})
+        path = self.agent.root/'connected.json'
+        path.write_text(json.dumps({'token': self.agent.token}))
+        async def reconnect(_):
+            write_ready(path, self.agent.token, True)
+        with patch('rivo_relay.gateway.updater.asyncio.sleep', new=reconnect):
+            await self.agent.healthy(self.candidate)
+        self.assertEqual(self.agent.local.await_count, 2)
 
     def test_ready_marker_follows_disconnect_and_rejects_old_generation(self):
         path = self.agent.root/'connected.json'

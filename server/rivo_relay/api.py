@@ -22,8 +22,7 @@ from .speech import MAX_SPEECH_BYTES, MAX_CHUNK_BYTES
 from .media import MediaError
 from .updates import latest_update, update_apk
 from .routes import dispatch
-# Preserve the existing import path for shared validation helpers.
-from .routes.common import ApiError, required, permission_options, native_input
+from .routes.common import ApiError, required
 
 
 def accepts_gzip(value: str) -> bool:
@@ -365,14 +364,10 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, {'ready': True})
                     return
                 gate = self.app.update_gate
-                if path[-1] == 'update-stop' and 'lease' in update_body:
-                    ready = gate.consume(update_body['lease'])
+                if path[-1] == 'update-stop':
+                    ready = gate.consume(required(update_body, 'lease'))
                 else:
-                    # Legacy agents may still use single-step stop. Preserve the
-                    # protocol while preventing an expired/failed write from stopping.
                     ready = gate.acquire(self.app)
-                    if ready and path[-1] == 'update-stop':
-                        ready = gate.consume(gate.lease)
                 try:
                     self.send_json(200 if ready else 409, {'ready': ready, 'reason': gate.reason,
                                    'lease': gate.lease if ready else None})
