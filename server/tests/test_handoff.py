@@ -5,7 +5,7 @@ import socket
 import sys
 from pathlib import Path
 from unittest.mock import patch, Mock
-from test_codex import FakeNative
+from relay_test_support.native import FakeNative
 from rivo_relay.codex.sessions import CodexService
 from rivo_relay.codex.connection import CodexError
 from rivo_relay.codex.writers import WriterProcesses
@@ -83,7 +83,7 @@ class HandoffTests(unittest.TestCase):
     def test_handoff_logs_correlate_failure_without_sensitive_text(self):
         service, native, writers = self.service()
         writers.terminate.side_effect = CodexError('secret-native-text', code='handoff_changed')
-        with patch('rivo_relay.codex.sessions.event') as log:
+        with patch('rivo_relay.codex.session_handoff.event') as log:
             with self.assertRaises(CodexError):
                 service.handoff(TID, 'takeover', owner='secret-owner', ticket='ticket',
                                 confirmed=True, request_id='a' * 32)

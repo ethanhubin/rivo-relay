@@ -1,4 +1,3 @@
-import importlib.util
 from pathlib import Path
 import plistlib
 import runpy
@@ -10,9 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
 
-spec = importlib.util.spec_from_file_location('restart', Path(__file__).resolve().parents[2] / 'scripts/restart-service.py')
-m = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(m)
+from relay_test_support.restart import restart_service as m
 
 
 class RestartTest(unittest.TestCase):

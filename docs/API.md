@@ -17,7 +17,7 @@
 | `GET /health` | 无 | 返回 `status: "ok"`、稳定节点 ID `nodeId`、运行版本码 `releaseCode`（未设置时为 `0`）和原生连接状态 `nativeConnected`；`status` 仅说明 HTTP 活着，不代表原生已连通 |
 | `POST /v1/pair` | `{code, deviceName}` | `{token, deviceId, node:{id,name}}` |
 | `GET /v1/node` | Bearer | `{id,name,connected,capabilities,runtime}` |
-| `GET /v1/projects` | Bearer | `{projects:[{id,name,path,roots,threadCount,outstandingWorkCount}]}`；包含无会话项目 |
+| `GET /v1/projects` | Bearer | `{projects:[{id,name,path,roots}]}`；包含无会话项目 |
 | `POST /v1/projects` | `{submissionId,path,folderName?}`，path 是节点绝对路径 | 提交记录；接受时 receipt 含 `projectId` |
 | `GET /v1/project-directories?path=…` | path 可省略，起点为原生节点当前目录 | `{path,parentPath,entries}`；条目结构同 `/v1/directories` |
 | `GET /v1/projects/{projectId}/git` | Bearer | `{git:{available,head?,branch?,dirty?,refs:[{id,commit,name}],reason?}}` |
@@ -30,7 +30,7 @@
 
 `runtime` 包含连接方式、runtimeId、generation、runtimeMode、preferredWriter 与 bridge 就绪/验证状态。只有已验证的 Desktop 桥接连接可报告 `desktopShared=true`；普通 daemon 或未知状态不能推断为 Desktop 共享。`capabilities.media/speech` 明确广告可用媒体/语音能力，缺省字段不能推断支持。
 
-添加项目时，省略 `folderName` 表示添加已有目录；提供它则在 path 下新建单层文件夹并添加项目。名称不能是 `.`、`..` 或包含路径分隔符、NUL。Git 信息中的 refs 最多包含当前 HEAD 和 200 条本地/远程分支；`worktreeRef` 使用其 commit ID，不传用户拼接的工作树路径。`outstandingWorkCount` 按会话去重统计原生执行中、持续目标 active 或存在 Relay 队列的会话；目标在轮次间隔或外部运行时持有时仍计入。`runningTurnCount` 仅统计当前原生活跃线程，`activeGoalCount` 统计持续目标 active 的会话。
+添加项目时，省略 `folderName` 表示添加已有目录；提供它则在 path 下新建单层文件夹并添加项目。名称不能是 `.`、`..` 或包含路径分隔符、NUL。Git 信息中的 refs 最多包含当前 HEAD 和 200 条本地/远程分支；`worktreeRef` 使用其 commit ID，不传用户拼接的工作树路径。项目列表只返回项目元数据；运行状态由 `/v1/activity` 提供。
 
 额度对象保留原生 `rateLimits` / `rateLimitsByLimitId`、窗口 `usedPercent`、`windowDurationMins`、`resetsAt` 等字段。缺失值表示尚无数据，不能推断剩余 100%。账户额度与下述单会话 `tokenUsage` 是不同数据。
 
@@ -380,7 +380,7 @@ Android 输入框设置面板提供权限选择和“设为新会话默认”，
 
 ### 目录摘要
 
-`GET /v1/projects?view=summary` 只返回项目身份、名称和根路径，`statsReady:false` 表示计数尚未加载，不应显示为零。默认 `view=full` 保留完整统计。
+`GET /v1/projects` 统一返回项目身份、名称和根路径（`id/name/path/roots`），包含“最近”虚拟项目；不扫描会话、目标或队列，不返回计数或 `statsReady`。不再接受 `view` 参数，传入时返回 400。
 
 `GET /v1/threads?projectId=…&view=summary` 返回状态库中的轻量会话元数据，顶层 `catalogComplete:false`。它是可展示的暂时结果，不包含完整 rollout/工作区归属与运行状态校准；不能据此断言不存在其他会话。客户端随后请求默认完整列表（`catalogComplete:true`）替换，且应在补全期间保留此前发现的会话。`archived` 过滤对两种视图均生效。摘要结果不用于执行准入或确认批量操作对象。
 

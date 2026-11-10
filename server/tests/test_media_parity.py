@@ -1,8 +1,7 @@
 """Isolated media, provenance, public-origin and authenticated Range regressions."""
+from relay_test_support.media import png, NativeMedia
 import base64
-import hashlib
 import http.client
-import io
 import json
 from pathlib import Path
 import socket
@@ -15,23 +14,7 @@ from PIL import Image
 
 from rivo_relay.media import MediaService, MediaError, public_target, public_media, media_type, atomic_json, read_record
 from rivo_relay.speech import SpeechService
-import test_api
-
-
-def png(size=(32, 16), color='red'):
-    output = io.BytesIO()
-    Image.new('RGB', size, color).save(output, format='PNG')
-    return output.getvalue()
-
-
-class NativeMedia:
-    def __init__(self, raw=None):
-        self.raw = raw or png()
-        self.calls = []
-
-    def prepare_download(self, path):
-        self.calls.append(path)
-        return {'size': len(self.raw), 'etag': '"' + hashlib.sha256(self.raw).hexdigest() + '"', 'chunks': iter([self.raw])}
+from relay_test_support.http import RelayHTTPFixture
 
 
 class MediaParityTests(unittest.TestCase):
@@ -245,8 +228,7 @@ class PublicMediaTests(unittest.TestCase):
         self.assertEqual(['93.184.215.14'], calls[0][2])
 
 
-class MediaHTTPTests(unittest.TestCase):
-    setUp, _start, _stop, _pair, request = test_api.ApiTests.setUp, test_api.ApiTests._start, test_api.ApiTests._stop, test_api.ApiTests._pair, test_api.ApiTests.request
+class MediaHTTPTests(RelayHTTPFixture, unittest.TestCase):
 
     def binary(self, path, headers=None, authenticated=True):
         connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)

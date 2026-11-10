@@ -7,8 +7,8 @@ from unittest.mock import patch
 from rivo_relay.codex.connection import CodexError
 from rivo_relay.codex.image_inputs import prepare_image_inputs, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES
 from rivo_relay.codex.sessions import CodexService
-from test_codex import FakeNative
-from test_media_parity import png
+from relay_test_support.native import FakeNative
+from relay_test_support.media import png
 
 
 def image(raw=None, mime='image/png'):

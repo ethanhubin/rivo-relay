@@ -9,7 +9,7 @@ import tempfile
 import unittest
 import uuid
 from unittest.mock import patch
-from test_service_restart import m
+from relay_test_support.restart import restart_service as m
 
 
 @unittest.skipUnless(os.environ.get('RIVO_TEST_LAUNCHD') == '1', 'explicit isolated launchd drill only')

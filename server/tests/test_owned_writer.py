@@ -1,40 +1,17 @@
 """Per-thread writer routing, release, and generation fencing regressions."""
+from relay_test_support.native import Backend
 import unittest
 import threading
 import os
 import signal
 import subprocess
 import sys
-from pathlib import Path
 from unittest.mock import patch
 from rivo_relay.codex.connection import CodexError
 from rivo_relay.codex.owned_writer import SessionWriters
 from rivo_relay.codex.runtime import RuntimeConnection
 from rivo_relay.codex.sessions import CodexService
-from test_codex import FakeNative
 
-class Backend(FakeNative):
-    codex_home = Path('/fixture')
-    socket_path = '/fixture/socket'
-    serial = 0
-    def __init__(self, *args):
-        super().__init__()
-        Backend.serial += 1
-        self.generation = str(Backend.serial)
-        self.on_event = lambda _: None
-        self.closed = False
-    def status(self):
-        return {'connected': not self.closed, 'runtime': 'relay-session-writer', 'ownedWriter': True}
-    def request(self, method, params=None, **kwargs):
-        if self.closed:
-            raise CodexError('closed', code='writer_unavailable')
-        if method in ('thread/start', 'thread/resume', 'thread/fork'):
-            self.calls.append((method, params))
-            return {'thread': {'id': params.get('threadId') or 'new-'+self.generation, 'status': {'type': 'idle'}}}
-        return super().request(method, params, **kwargs)
-    def close(self):
-        self.closed = True
-        self.on_event({'method': 'relay/nativeDisconnected', 'params': {}, 'connectionId': self.generation})
 
 class OwnedRoutingTests(unittest.TestCase):
     def setUp(self):

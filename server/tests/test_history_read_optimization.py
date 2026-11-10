@@ -17,7 +17,7 @@ from rivo_relay.codex.native_history_support import sqlite_connection
 from rivo_relay.codex.native_journal import NativeJournal
 from rivo_relay.codex.native_reprojection import NativeHistoryReprojectionError
 from rivo_relay.codex.sessions import CodexService
-from test_codex import FakeNative
+from relay_test_support.native import FakeNative
 
 
 THREAD = '01a04609-7917-7c73-ad6d-cae86ce70da8'

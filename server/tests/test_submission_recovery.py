@@ -12,7 +12,7 @@ from rivo_relay.database import Database
 from rivo_relay.pairing import PairingStore
 from rivo_relay.submissions import SubmissionStore, SubmissionConflict
 from rivo_relay.submission_recovery import inspect, recover, stopped
-from test_codex import FakeNative
+from relay_test_support.native import FakeNative
 
 
 class RecoveryTests(unittest.TestCase):

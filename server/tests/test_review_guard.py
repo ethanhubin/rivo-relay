@@ -7,7 +7,7 @@ from unittest.mock import Mock
 from rivo_relay.codex.connection import CodexError
 from rivo_relay.codex.sessions import CodexService
 from rivo_relay.database import Database
-from test_native_files_worktrees import NativeHost
+from relay_test_support.files import NativeHost
 
 
 class ReviewGuardTests(unittest.TestCase):

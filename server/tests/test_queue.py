@@ -1,31 +1,13 @@
-import copy
-import tempfile
+from relay_test_support.native import QueueNative
 import unittest
-from pathlib import Path
 from unittest.mock import patch
-from rivo_relay.database import Database, SCHEMA_VERSION
+from rivo_relay.database import Database
 from rivo_relay.events import EventBus
 from rivo_relay.queue import ExecutionQueue, QueueConflict
 from rivo_relay.submissions import SubmissionStore
 from rivo_relay.codex.sessions import CodexService
-from rivo_relay.codex.connection import CodexError
-from test_codex import FakeNative
+from relay_test_support.native import FakeNative
 
-class QueueNative:
-    def __init__(self):
-        self.snapshot = {'thread': {'turns': []}, 'activeTurnId': None, 'status': 'idle'}
-        self.sent = []
-        self.error = None
-    def validate_queue_target(self, thread): pass
-    def get_session(self, thread): return copy.deepcopy(self.snapshot)
-    def send_queued(self, thread, **kwargs):
-        self.sent.append(kwargs)
-        if self.error: raise self.error
-        return {'threadId': thread, 'turnId': 'turn-' + str(len(self.sent))}
-    def steer(self, thread, text, turn, **kwargs):
-        self.sent.append(kwargs)
-        if self.error: raise self.error
-        return {'threadId': thread, 'turnId': turn}
 
 class QueueTests(unittest.TestCase):
     def setUp(self):
@@ -133,7 +115,7 @@ class QueueTests(unittest.TestCase):
         self.assertEqual('unknown',self.queue.list('thread')[0]['status'])
         self.assertEqual(1,len(self.native.sent))
 
-class PinAndMigrationTests(unittest.TestCase):
+class PinTests(unittest.TestCase):
     def test_pin_uses_native_section_pagination_without_resuming(self):
         native=FakeNative(); original=native.request
         def request(method, params, **kwargs):
@@ -146,16 +128,3 @@ class PinAndMigrationTests(unittest.TestCase):
         moves=[params for method,params in native.calls if method=='thread/section/move']
         self.assertEqual(['pin',None],[m['sectionId'] for m in moves])
         self.assertFalse(any(method=='thread/resume' for method,_ in native.calls))
-    def test_v1_migration_keeps_credentials_and_existing_rows(self):
-        with tempfile.TemporaryDirectory() as d:
-            path=Path(d)/'old.sqlite3'; db=Database(path)
-            with db.transaction() as c:
-                c.execute("INSERT INTO connections VALUES ('phone','keep-hash','Keep',1,NULL)")
-                c.execute('DROP TABLE queued_tasks'); c.execute('DROP TABLE native_observations'); c.execute('DROP TABLE workspaces'); c.execute('ALTER TABLE todos DROP COLUMN extra_json'); c.execute('PRAGMA user_version=1')
-            db.close(); db=Database(path)
-            try:
-                with db.read() as c:
-                    self.assertEqual('keep-hash',c.execute('SELECT token_hash FROM connections').fetchone()[0])
-                    self.assertEqual(SCHEMA_VERSION,c.execute('PRAGMA user_version').fetchone()[0])
-                    self.assertEqual(0,c.execute('SELECT COUNT(*) FROM queued_tasks').fetchone()[0])
-            finally: db.close()

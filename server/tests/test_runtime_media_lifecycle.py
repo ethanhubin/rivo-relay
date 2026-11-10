@@ -10,8 +10,8 @@ from unittest.mock import patch
 from rivo_relay.codex.connection import CodexError
 from rivo_relay.codex.runtime import RuntimeConnection
 from rivo_relay.media import MediaService
-from test_media_parity import NativeMedia
-from test_owned_writer import Backend
+from relay_test_support.media import NativeMedia
+from relay_test_support.native import Backend
 
 
 class RuntimeLifecycleTests(unittest.TestCase):

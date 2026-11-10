@@ -1,6 +1,6 @@
 """Real temporary files/Git, accessed only through a controlled native RPC stub."""
+from relay_test_support.files import NativeHost
 import hashlib
-import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -9,47 +9,9 @@ import unittest
 from unittest.mock import patch
 
 from rivo_relay.codex.connection import CodexError
-from rivo_relay.codex.external_worktrees import ExternalWorktrees
 from rivo_relay.codex.native_download import prepare_download
 from rivo_relay.codex.sessions import CodexService
 from rivo_relay.database import Database
-
-
-class NativeHost:
-    generation = 'test-host'
-
-    def __init__(self, root):
-        self.root = Path(root)
-        self.projects = []
-        self.threads = []
-
-    def start(self):
-        return {}
-
-    def request(self, method, params, **kwargs):
-        if method == 'command/exec':
-            result = subprocess.run(params['command'], cwd=params.get('cwd') or self.root,
-                                    capture_output=True, text=True, timeout=35)
-            return {'exitCode': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr}
-        if method == 'fs/getMetadata':
-            path = Path(params['path'])
-            if not path.exists():
-                raise CodexError('No such file', code='native_rejected', http_status=404, native_code=-1)
-            return {'isFile': path.is_file(), 'isDirectory': path.is_dir(), 'isSymlink': path.is_symlink()}
-        if method == 'project/list':
-            return {'data': self.projects, 'nextCursor': None}
-        if method == 'project/read':
-            return {'project': next(project for project in self.projects if project['id'] == params['projectId'])}
-        if method == 'thread/list':
-            threads = self.threads
-            if params.get('projectId'):
-                threads = [thread for thread in threads if thread.get('projectId') == params['projectId']]
-            return {'data': threads, 'nextCursor': None}
-        if method == 'thread/goal/get':
-            return {'goal': None}
-        if method == 'thread/read':
-            return {'thread': next(thread for thread in self.threads if thread['id'] == params['threadId'])}
-        raise AssertionError((method, params))
 
 
 class NativeDownloadTests(unittest.TestCase):
@@ -127,13 +89,12 @@ class ExternalWorktreeTests(unittest.TestCase):
     def git(cwd, *args):
         subprocess.run(['git', '-C', str(cwd), *args], check=True, capture_output=True)
 
-    def test_external_membership_lists_counts_and_persists_deleted_association(self):
+    def test_external_membership_lists_and_persists_deleted_association(self):
         sessions = self.service.list_sessions('project')
         self.assertEqual(['legacy'], [thread['id'] for thread in sessions])
         self.assertEqual('ready', sessions[0]['externalWorkspace']['status'])
         self.assertFalse(sessions[0]['externalWorkspace']['managed'])
         self.assertEqual(sessions[0]['externalWorkspace'], self.service.external_workspace('legacy'))
-        self.assertEqual(1, self.service.list_projects()[0]['threadCount'])
         shutil.rmtree(self.worktree)
         # Recreate service to prove association is durable across Relay restart.
         restored = CodexService(connection=self.native)

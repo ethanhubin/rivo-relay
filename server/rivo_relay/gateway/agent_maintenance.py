@@ -40,7 +40,6 @@ def retry_candidate(workspace, digest):
         state = json.loads(path.read_text())
         if state.get('pending'):
             raise ValueError('Recover the pending trial before resetting retries')
-        state['failed'] = [x for x in state.get('failed', []) if x != digest]
         state.setdefault('quarantine', {}).pop(digest, None)
         state.setdefault('retries', {}).pop(digest, None)
         save_private(path, state)

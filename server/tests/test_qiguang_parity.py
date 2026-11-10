@@ -15,8 +15,8 @@ from rivo_relay.codex.observations import Observations
 from rivo_relay.database import Database
 from rivo_relay.events import EventBus
 from rivo_relay.queue import ExecutionQueue, QueueConflict
-from test_codex import FakeNative
-from test_queue import QueueNative
+from relay_test_support.native import FakeNative
+from relay_test_support.native import QueueNative
 
 
 class RecoveryParityTests(unittest.TestCase):

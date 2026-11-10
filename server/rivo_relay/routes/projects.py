@@ -13,10 +13,9 @@ def route(handler, path, query, body, connection):
         return {'git': codex.project_git(path[2])}
     if path == ["v1", "projects"]:
         if method == "GET":
-            view = query.get('view', ['full'])[0]
-            if view not in {'full', 'summary'}:
-                raise ApiError(400, 'invalid_request', 'Unknown project view')
-            return {"projects": codex.list_projects(summary=True) if view == 'summary' else codex.list_projects()}
+            if 'view' in query:
+                raise ApiError(400, 'invalid_request', 'Project views are not supported')
+            return {"projects": codex.list_projects()}
         if method == "POST":
             project_path = required(body, "path", 4096)
             sid = required(body, "submissionId")

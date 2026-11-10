@@ -16,9 +16,9 @@ from rivo_relay.events import EventBus
 from rivo_relay.media import MediaService, atomic_json, MediaError
 from rivo_relay.operation_gates import ThreadGates
 from rivo_relay.queue import ExecutionQueue
-from test_owned_writer import Backend
-from test_media_parity import png, NativeMedia
-from test_queue import QueueNative
+from relay_test_support.native import Backend
+from relay_test_support.media import png, NativeMedia
+from relay_test_support.native import QueueNative
 
 
 class RuntimePerformanceTests(unittest.TestCase):

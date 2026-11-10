@@ -13,7 +13,7 @@ from rivo_relay.api import Handler
 from rivo_relay.app import RelayApp
 from rivo_relay.config import Config
 from rivo_relay.http_server import BoundedHTTPServer
-from test_api import NativeStub
+from relay_test_support.http import NativeStub
 
 
 class CompletingNative(NativeStub):

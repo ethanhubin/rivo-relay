@@ -143,7 +143,7 @@ class SupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.agent.restore.assert_called_once()
         self.assertNotIn('pending', self.agent.state)
         self.assertEqual(self.agent.state['active']['versionCode'], 0)
-        self.assertIn(self.candidate['sha256'], self.agent.state['failed'])
+        self.assertIn(self.candidate['sha256'], self.agent.state['quarantine'])
         self.assertEqual(self.agent.start.call_args_list[0].kwargs, {'trial': True})
 
     async def test_success_persists_before_admitting_work(self):
