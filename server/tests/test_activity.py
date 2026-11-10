@@ -417,3 +417,20 @@ class ActivityObservationTests(unittest.TestCase):
         registry.receive(event('turn/started', projectId='p'))
         registry.observe_execution('t', 'unknown', token=registry.read_token())
         self.assertIn('t', registry.snapshot()['unknownThreadIds'])
+
+    def test_detail_completion_prevents_delayed_start_resurrecting_same_turn(self):
+        registry = ActivityRegistry(lambda: snapshot(), lambda: 'g')
+        registry.receive(event('turn/started', projectId='p'))
+        registry.observe_execution('t', 'idle', token=registry.read_token(), settled_turn_id='one')
+        registry.receive(event('turn/started', 'one'))
+        self.assertEqual(registry.snapshot()['tasks'], [])
+        registry.receive(event('turn/started', 'two'))
+        self.assertEqual(registry.snapshot()['tasks'][0]['turnId'], 'two')
+
+    def test_reconfirmed_idle_also_fences_an_older_scan(self):
+        registry = ActivityRegistry(lambda: snapshot(), lambda: 'g')
+        registry.observe_execution('t', 'idle', token=registry.read_token())
+        before = registry.read_token()
+        registry.observe_execution('t', 'idle', token=registry.read_token())
+        self.assertFalse(registry.observe_execution('t', 'running', token=before))
+        self.assertEqual(registry.snapshot()['tasks'], [])

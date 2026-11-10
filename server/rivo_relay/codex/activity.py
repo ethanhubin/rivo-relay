@@ -225,7 +225,7 @@ class ActivityRegistry:
             return self.epoch, self.revision
 
     def observe_execution(self, thread_id, status, *, token, project_id=None,
-                          turn_id=None, goal_active=False, queue=()):
+                          turn_id=None, settled_turn_id=None, goal_active=False, queue=()):
         """Verified native reads update the same table as events and discovery.
 
         A read that predates a newer event/reconciliation cannot overwrite it.
@@ -242,17 +242,17 @@ class ActivityRegistry:
                 self.unknown.add(thread_id)
                 self.confirmed_idle.discard(thread_id)
                 return True
+            if settled_turn_id:
+                self.terminal[(thread_id, settled_turn_id)] = True
+                while len(self.terminal) > 1024:
+                    self.terminal.popitem(last=False)
             project_id = project_id or self.membership.get(thread_id, '')
             projection = execution_projection(status, queue)
             row = {'threadId': thread_id, 'projectId': project_id, 'turnId': turn_id,
                    'status': status, 'goalActive': goal_active, **projection}
             desired = row if projection['hasOutstandingWork'] else None
-            current = self.tasks.get(thread_id)
-            if current is not None:
-                current = {**current, 'turnId': current.get('turnId') or self.turns.get(thread_id)}
-            if (current == desired and thread_id in self.known
-                    and thread_id not in self.unknown):
-                return True
+            # Even unchanged evidence is newer than an in-flight scan. Fence
+            # that scan instead of letting it resurrect a missed, finished turn.
             self.revision += 1
             self.known.add(thread_id)
             self.unknown.discard(thread_id)

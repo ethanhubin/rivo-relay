@@ -679,6 +679,8 @@ class CodexService:
         if cursor is None and (history['nativeSync'].get('historyReady') or history['nativeSync'].get('state') == 'ready'):
             self.activity.observe_execution(thread_id, status, token=activity_token,
                 project_id=thread.get('projectId'), turn_id=active,
+                settled_turn_id=latest_turn.get('id') if latest_turn.get('status') in
+                    ('completed', 'failed', 'interrupted', 'canceled') else None,
                 goal_active=goal_active, queue=queue)
         return {"activity": self.activity.snapshot(), "thread": thread, "requests": requests, "settings": settings, 'control': control, 'plan': plan,
                 'canAnswerQuestions': question_reply_available, 'questionAnswerStates': answer_states,
