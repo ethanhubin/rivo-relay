@@ -11,7 +11,7 @@ class NativeHistoricalTimingTest {
 
     @Test fun historyShowsNativeDateAndDurationWithoutCompletionStatus() {
         val label = nativeHistoricalTimingLabel(turn("t"))!!
-        assertTrue(label.matches(Regex("[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} 耗时 1h 2m 3s")))
+        assertEquals("耗时 1h 2m 3s", label)
         assertFalse(label.contains("已完成"))
         assertEquals(label, nativeHistoricalTimingLabel(turn("t").copy(status = "interrupted")))
         assertNull(nativeHistoricalTimingLabel(turn("t").copy(status = "inProgress")))

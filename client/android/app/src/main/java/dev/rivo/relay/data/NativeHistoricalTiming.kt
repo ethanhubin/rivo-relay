@@ -3,12 +3,7 @@ package dev.rivo.relay.data
 /** Rebuilt from native history when a conversation is reopened or older turns are paged in. */
 fun nativeHistoricalTimingLabel(turn: NativeTurnSettings): String? {
     if (turn.status !in setOf("completed", "failed", "interrupted", "canceled", "cancelled")) return null
-    val time = turn.completedAt?.let { runCatching {
-        java.time.Instant.ofEpochSecond(it).atZone(java.time.ZoneId.systemDefault())
-            .format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm"))
-    }.getOrNull() }
-    val elapsed = nativeTurnElapsedSeconds(turn)?.let { "耗时 ${formatNativeElapsedDuration(it)}" }
-    return listOfNotNull(time, elapsed).joinToString(" ").takeIf { it.isNotBlank() }
+    return nativeTurnElapsedSeconds(turn)?.let { "耗时 ${formatNativeElapsedDuration(it)}" }
 }
 
 data class NativeHistoricalTiming(val turnId: String, val label: String)
