@@ -12,6 +12,40 @@ class NativeActivityProjectionTest {
     private fun turn(id: String, vararg items: JSONObject) = JSONObject().put("id", id).put("items", JSONArray(items.toList()))
     private fun command(id: String, command: String) = JSONObject().put("id", id).put("type", "commandExecution").put("command", command).put("aggregatedOutput", "result").put("status", "completed")
 
+    @Test fun internalArtifactCallsStayInHistoryButNeverEnterVisibleGroupsOrFailureCounts() {
+        for (type in listOf("mcpToolCall", "mcp_tool_call", "dynamicToolCall", "dynamic_tool_call", "functionCallOutput")) {
+            for (status in listOf("inProgress", "completed", "failed")) {
+                val internal = JSONObject().put("id", "internal").put("type", type).put("status", status)
+                    .put(if (type.startsWith("mcp")) "server" else "namespace", "codex_app")
+                    .put(if (type.startsWith("mcp")) "tool" else "name", "attach_artifact")
+                    .put("error", "original diagnostic")
+                val state = snapshot(turn("one", command("a", "first"), internal, command("b", "second")))
+                assertEquals(3, state.messages.size)
+                assertEquals(internal.toString(), state.messages[1].raw.toString())
+                assertNotNull(state.messages[1].activity)
+                for (activeTurn in listOf(null, "one")) {
+                    val row = nativeTimelineRows(state.messages, activeTurn).single() as NativeTimelineRow.Activities
+                    assertEquals(listOf("a", "b"), row.messages.map { it.id })
+                    assertEquals(0, row.messages.count { it.activity?.status == "failed" })
+                    assertTrue(nativeTimelineRows(snapshot(turn("one", internal)).messages, activeTurn).isEmpty())
+                    val final = JSONObject().put("id", "final").put("type", "agentMessage").put("phase", "final_answer").put("text", "完成")
+                    val rows = nativeTimelineRows(snapshot(turn("one", final, internal)).messages, activeTurn)
+                    assertEquals("final", (rows.single() as NativeTimelineRow.Message).message.id)
+                }
+            }
+        }
+    }
+
+    @Test fun ordinaryFailedToolsRemainVisibleIncludingSimilarNames() {
+        for ((server, tool) in listOf("other_server" to "attach_artifact", "codex_app" to "other_tool", "codex_apps" to "attach_artifact")) {
+            val item = JSONObject().put("id", "failure").put("type", "mcpToolCall")
+                .put("server", server).put("tool", tool).put("status", "failed")
+            val row = nativeTimelineRows(snapshot(turn("one", item)).messages).single() as NativeTimelineRow.Activities
+            assertEquals(1, row.messages.count { it.activity?.status == "failed" })
+            assertTrue(nativeActivityGroupLabel(row.messages).contains("调用失败"))
+        }
+    }
+
     @Test fun sleepStaysInHistoryWithoutSplittingCommands() {
         val sleep = JSONObject().put("id", "wait").put("type", "sleep").put("durationMs", 20000)
         val state = snapshot(turn("one", command("a", "first"), sleep, command("b", "second")))
