@@ -101,7 +101,7 @@ class ConversationStorePerformanceTest {
             val reopened = ConversationStore(directory)
             assertTrue(reopened.sentDraftCheckpoints().getValue("request").string("fingerprint").startsWith("v2:"))
             assertEquals("newer edit", reopened.loadDraft("t").text)
-            withContext(Dispatchers.IO) { reopened.markSentDraftResolved("request", JSONObject().put("status", "accepted")) }
+            withContext(Dispatchers.IO) { reopened.markSentDraftResolved("request", JSONObject().put("status", "accepted").put("receipt", JSONObject().put("threadId", "t"))) }
             reopened.clearAcceptedSentDraft("request")
             assertEquals("newer edit", reopened.loadDraft("t").text)
         } finally { directory.deleteRecursively() }

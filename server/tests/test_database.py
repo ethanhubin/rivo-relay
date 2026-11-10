@@ -114,3 +114,24 @@ class DatabaseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_commit_failure_rolls_back_before_next_transaction(self):
+        from rivo_relay.database import sqlite_transaction
+        class FailingCommit(sqlite3.Connection):
+            fail_commit = False
+            def commit(self):
+                if self.fail_commit:
+                    self.fail_commit = False
+                    raise sqlite3.OperationalError('disk full at commit')
+                return super().commit()
+        with closing(sqlite3.connect(':memory:', factory=FailingCommit)) as db:
+            db.execute('CREATE TABLE results(value TEXT)')
+            db.commit()
+            db.fail_commit = True
+            with self.assertRaises(sqlite3.OperationalError):
+                with sqlite_transaction(db):
+                    db.execute("INSERT INTO results VALUES('uncommitted-success')")
+            self.assertFalse(db.in_transaction)
+            with sqlite_transaction(db):
+                db.execute("INSERT INTO results VALUES('subsequent-result')")
+            self.assertEqual([('subsequent-result',)], db.execute('SELECT value FROM results').fetchall())

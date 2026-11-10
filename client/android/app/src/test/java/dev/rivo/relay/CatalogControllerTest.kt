@@ -45,7 +45,10 @@ class CatalogControllerTest {
                             .setBody("event: native\ndata: {\"method\":\"thread/started\",\"params\":{\"threadId\":\"desktop-new\"}}\n\n" + ":".repeat(4096))
                     }
                     if (request.requestUrl?.queryParameter("view") == "summary")
-                        return MockResponse().setBody(if (summaries.incrementAndGet() == 1) initial else added)
+                        // Introduce the desktop row only after the full scan has started.
+                        // A timer can otherwise return it before that scan, so the
+                        // deliberately stale full fixture no longer models a race.
+                        return MockResponse().setBody(if (summaries.incrementAndGet() == 1 || fullStarted.count != 0L) initial else added)
                     if (fullReads.incrementAndGet() == 1) {
                         fullStarted.countDown(); releaseFull.await(5, TimeUnit.SECONDS)
                         return MockResponse().setBody(initial.replace("false", "true"))

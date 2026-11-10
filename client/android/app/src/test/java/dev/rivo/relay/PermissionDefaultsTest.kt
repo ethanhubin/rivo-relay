@@ -11,10 +11,10 @@ class PermissionDefaultsTest {
         val directory = java.nio.file.Files.createTempDirectory("rivo-permissions").toFile()
         try {
             val store = ConversationStore(directory)
-            store.saveDefaultSettings(JSONObject().put("sandbox", "workspace-write").put("approvalPolicy", "on-request"))
+            store.saveDefaultSettings(JSONObject().put("sandbox", "workspace-write").put("approvalPolicy", "preset-request"))
             val reopened = ConversationStore(directory)
             assertEquals("workspace-write", reopened.defaultSettings()!!.string("sandbox"))
-            assertEquals("on-request", reopened.defaultSettings()!!.string("approvalPolicy"))
+            assertEquals("preset-request", reopened.defaultSettings()!!.string("approvalPolicy"))
             assertNull(ConversationStore(java.io.File(directory, "another-node")).defaultSettings())
             store.saveDraftOrdered("pending:test", ConversationDraft(sandbox = "inherit", approvalPolicy = "never"))
             val draft = ConversationStore(directory).loadDraft("pending:test")

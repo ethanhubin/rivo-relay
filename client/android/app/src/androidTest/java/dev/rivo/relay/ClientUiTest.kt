@@ -153,29 +153,4 @@ class ClientUiTest {
         } finally { scope.cancel(); vault.remove(key); server.shutdown() }
     }
 
-    @Test fun endingReconciliationOnlyClearsLocalWaitAndNeverInvokesOldCompletion() = runBlocking {
-        val server = MockWebServer()
-        val vault = CredentialStore(InstrumentationRegistry.getInstrumentation().targetContext)
-        val key = "instrumentation-end-wait-${UUID.randomUUID()}"
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-        val accepted = AtomicInteger()
-        server.start()
-        try {
-            server.enqueue(MockResponse().setBody("""{"status":"unknown","receipt":{"threadId":"created-before-disconnect"}}"""))
-            val coordinator = SubmissionCoordinator(RelayApi(server.url("/").toString()), scope, vault, key) {}
-            coordinator.submit("/v1/threads", JSONObject().put("projectId", "fixture"), "测试新建") { accepted.incrementAndGet() }
-            withTimeout(10_000) { while (coordinator.state.value.busy) delay(10) }
-            val pending = requireNotNull(coordinator.state.value.pending)
-            assertEquals("created-before-disconnect", pending.threadId)
-            coordinator.finishReconciliation("different-operation")
-            assertNotNull(coordinator.state.value.pending)
-            coordinator.finishReconciliation(pending.id)
-            coordinator.reconcile()
-            assertNull(coordinator.state.value.pending)
-            assertNull(vault.read(key))
-            assertEquals(0, accepted.get())
-            assertEquals(1, server.requestCount)
-            assertEquals("POST", server.takeRequest().method)
-        } finally { scope.cancel(); vault.remove(key); server.shutdown() }
-    }
 }

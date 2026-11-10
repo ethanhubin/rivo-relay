@@ -56,7 +56,10 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
             if (acceptedDraft) scope.launch {
                 try { conversations.clearAcceptedSentDraft(pending.id) }
                 catch (e: CancellationException) { throw e }
-                catch (e: Exception) { failure(e) }
+                catch (e: Exception) {
+                    failure(e)
+                    reconcilePendingReceipts()
+                }
             }
             if (pendingChanged != null) {
                 if (response.string("status") == "accepted" && pending.path == "/v1/threads")
@@ -69,36 +72,32 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
         if (pendingRecoveryJob?.isActive == true) return
         // The coordinator owns its callback and durable ID; do not resolve only
         // the draft checkpoint and leave its global submission lock behind.
-        val activeSubmission = submissions.state.value.pending?.id
         submissions.reconcile()
         // Never repeat native mutations; missing receipts are fenced by the node.
         pendingRecoveryJob = scope.launch {
-            val checkpoints = try { withContext(Dispatchers.IO) {
-                conversations.unresolvedSubmissionIds()
-            } } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { failure(e); return@launch }
-            for (id in checkpoints - setOfNotNull(activeSubmission)) try {
-                // A reconciled create may have just started its first-turn submission.
-                if (id == submissions.state.value.pending?.id) continue
-                val checkpoint = conversations.sentDraftCheckpoints()[id]
-                val pendingCheckpoint = withContext(Dispatchers.IO) { conversations.pendingSubmissionCheckpoints()[id] }
-                val needsPendingResolution = pendingCheckpoint != null
-                val accepted = if (checkpoint?.string("status") == "accepted" && !needsPendingResolution) true else {
-                    val response = api.reconcileSubmission(id)
-                    session.resolveSubmissionDurably(id, response)
-                    val (pendingChanged, acceptedDraft) = withContext(Dispatchers.IO) {
-                        conversations.resolvePendingSubmission(id, response) to conversations.markSentDraftResolved(id, response)
+            recoverPendingCheckpoints(
+                read = { withContext(Dispatchers.IO) { conversations.unresolvedSubmissionIds() } },
+                resolve = recover@{ id ->
+                    // The active coordinator owns callbacks and its durable submission lock.
+                    if (id == submissions.state.value.pending?.id) return@recover
+                    val checkpoint = conversations.sentDraftCheckpoints()[id]
+                    val pendingCheckpoint = withContext(Dispatchers.IO) { conversations.pendingSubmissionCheckpoints()[id] }
+                    val needsPendingResolution = pendingCheckpoint != null
+                    val accepted = if (checkpoint?.string("status") == "accepted" && !needsPendingResolution) true else {
+                        val response = api.reconcileSubmission(id)
+                        val (pendingChanged, acceptedDraft) = withContext(Dispatchers.IO) {
+                            conversations.resolvePendingSubmission(id, response) to conversations.markSentDraftResolved(id, response)
+                        }
+                        session.resolveSubmissionDurably(id, response)
+                        if (pendingChanged != null) {
+                            if (response.string("status") == "accepted" && pendingCheckpoint?.string("kind") == "create")
+                                catalog.recordCreatedThread(pendingChanged, response.optJSONObject("receipt")?.string("threadId").orEmpty())
+                            pendingRevisionMutable.value++
+                        }
+                        acceptedDraft
                     }
-                    if (pendingChanged != null) {
-                        if (response.string("status") == "accepted" && pendingCheckpoint?.string("kind") == "create")
-                            catalog.recordCreatedThread(pendingChanged, response.optJSONObject("receipt")?.string("threadId").orEmpty())
-                        pendingRevisionMutable.value++
-                    }
-                    acceptedDraft
-                }
-                if (accepted) conversations.clearAcceptedSentDraft(id)
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { failure(e) /* Keep the durable checkpoint for an explicit retry. */ }
+                    if (accepted) conversations.clearAcceptedSentDraft(id)
+                }, failure = failure)
         }
     }
     init { reconcilePendingReceipts() }

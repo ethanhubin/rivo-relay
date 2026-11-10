@@ -783,6 +783,22 @@ class ApiTests(RelayHTTPFixture, unittest.TestCase):
         other = self._pair()
         self.assertEqual(self.request("POST", path + "/reconcile", {}, token=other["token"])[0], 404)
 
+    def test_restart_receipt_poll_recovers_exact_history_without_resending(self):
+        body = {"submissionId": "lost-reply", "text": "Synthetic task"}
+        self.app.submissions.claim('lost-reply', self.paired['deviceId'], 'thread.turns', 'thread-1', body)
+        self.app.submissions.record_dispatch('lost-reply', 'preparing')
+        self.app.submissions.record_dispatch('lost-reply', 'dispatching')
+        self._stop()
+        self._start()
+        page = {'turns': [{'id': 'original-turn', 'items': [{'type': 'userMessage', 'clientId': 'lost-reply'}]}]}
+        with patch.object(self.native, 'history', return_value=page):
+            status, result, _ = self.request('GET', '/v1/submissions/lost-reply', token=self.token)
+        self.assertEqual(200, status)
+        self.assertEqual('accepted', result['status'])
+        self.assertEqual({'threadId': 'thread-1', 'turnId': 'original-turn'}, result['receipt'])
+        self.assertEqual(result, self.request('POST', '/v1/threads/thread-1/turns', body, token=self.token)[1])
+        self.assertEqual([], self.native.sent)
+
     def test_submission_lookup_is_scoped_to_originating_connection(self):
         body = {"submissionId": "private-1", "text": "Synthetic task"}
         self.request("POST", "/v1/threads/thread-1/turns", body, token=self.token)

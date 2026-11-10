@@ -253,7 +253,12 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
     fun markSentDraftResolved(submissionId: String, response: JSONObject): Boolean {
         val saved = getMetadata("sent-draft:$submissionId")?.let(::JSONObject) ?: return false
         when (response.string("status")) {
-            "accepted" -> putRecoveryMetadata("sent-draft:$submissionId", saved.put("status", "accepted").toString())
+            "accepted" -> {
+                require(response.optJSONObject("receipt")?.string("threadId") == saved.string("threadId")) {
+                    "成功回执与发送草稿的会话不一致，保留恢复记录"
+                }
+                putRecoveryMetadata("sent-draft:$submissionId", saved.put("status", "accepted").toString())
+            }
             "failed" -> {
                 putRecoveryMetadata("sent-draft:$submissionId", null)
                 synchronized(lock) { file("sent-input-${digest(submissionId)}").delete() }
@@ -372,6 +377,17 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
             if (disk.optString("completed:pending:$pendingId") != "true") {
                 val threadId = response.optJSONObject("receipt")?.string("threadId")?.takeIf(String::isNotBlank)
                 val kind = checkpoint.string("kind")
+                if (status == "accepted" && kind == "create") {
+                    require(threadId != null) { "新建成功回执缺少会话身份，保留等待记录" }
+                }
+                if (status == "accepted" && kind in setOf("send", "sendWithGoal")) {
+                    val receipt = response.optJSONObject("receipt")
+                    val expectedThread = disk.optString("pending-thread:$pendingId").takeIf(String::isNotBlank)
+                    require(threadId != null && receipt?.string("turnId")?.isNotBlank() == true &&
+                        (expectedThread == null || expectedThread == threadId)) {
+                        "首条消息成功回执缺少匹配的会话或任务身份，保留草稿和恢复记录"
+                    }
+                }
                 if (kind == "create" && threadId != null) changes["pending-thread:$pendingId"] = threadId
                 if (status == "accepted") {
                     if (kind == "goal") changes["pending-applied-goal:$pendingId"] = checkpoint.getString("goalAction")

@@ -30,7 +30,7 @@ class SubmissionReceiptTest {
         val server = MockWebServer(); server.start()
         try {
             for (status in listOf("accepted", "unknown", "pending")) {
-                server.enqueue(MockResponse().setBody("""{"status":"$status"}"""))
+                server.enqueue(MockResponse().setBody("""{"status":"$status","receipt":{"threadId":"thread"}}"""))
                 assertEquals(status, api(server).reconcileSubmission("id").string("status"))
                 assertEquals("GET", server.takeRequest().method)
             }
@@ -52,4 +52,21 @@ class SubmissionReceiptTest {
             assertEquals(3, server.requestCount)
         } finally { server.shutdown() }
     }
+    @Test fun malformedOrMismatchedReceiptNeverBecomesAnAcceptedRecovery() = runBlocking {
+        val server = MockWebServer(); server.start()
+        try {
+            for (body in listOf(
+                """{"status":"accepted"}""",
+                """{"status":"accepted","receipt":{}}""",
+                """{"submissionId":"other","status":"failed"}"""
+            )) {
+                server.enqueue(MockResponse().setBody(body))
+                try { api(server).reconcileSubmission("expected"); fail("Invalid receipt must remain unresolved") }
+                catch (_: IllegalArgumentException) { }
+                assertEquals("GET", server.takeRequest().method)
+            }
+            assertEquals(3, server.requestCount)
+        } finally { server.shutdown() }
+    }
+
 }

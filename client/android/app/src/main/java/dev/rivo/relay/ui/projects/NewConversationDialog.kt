@@ -1,11 +1,13 @@
 package dev.rivo.relay.ui.projects
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -98,11 +100,17 @@ fun PendingWorkspaceSelector(project: ProjectSummary, readGit: suspend () -> JSO
     LaunchedEffect(worktree, selected, loading, error) {
         onSelection(selected.takeIf { worktree }, !worktree || (!loading && error == null && selected != null))
     }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("工作区", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Box {
-                OutlinedButton(onClick = { workspaceMenu = true }, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp).testTag("new_conversation_workspace"), shape = androidx.compose.foundation.shape.RoundedCornerShape(13.dp)) {
-                    Text(if (worktree) "工作树" else "本地目录", Modifier.weight(1f)); dev.rivo.relay.ui.chat.SettingsRightArrow()
+                Row(Modifier.fillMaxWidth().clickable(enabled = enabled) { workspaceMenu = true }
+                    .testTag("new_conversation_workspace").padding(horizontal = 16.dp, vertical = 15.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("工作区", style = MaterialTheme.typography.bodyMedium)
+                    Text(if (worktree) "工作树" else "本地目录", Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 1f else .38f),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.End)
+                    dev.rivo.relay.ui.chat.SettingsRightArrow()
                 }
                 DropdownMenu(workspaceMenu && enabled, { workspaceMenu = false }) {
                     DropdownMenuItem(text = { Text("本地目录") }, onClick = { worktree = false; workspaceMenu = false })
@@ -110,9 +118,10 @@ fun PendingWorkspaceSelector(project: ProjectSummary, readGit: suspend () -> JSO
                         onClick = { worktree = true; workspaceMenu = false })
                 }
             }
-            if (worktree && loading) LinearProgressIndicator(Modifier.fillMaxWidth())
-            error?.takeIf { worktree }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error); TextButton(onClick = { retry++ }, enabled = enabled) { Text("重试") } }
-            if (worktree) {
+            if (worktree) Column(Modifier.padding(horizontal = 16.dp).padding(bottom = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error); TextButton(onClick = { retry++ }, enabled = enabled) { Text("重试") } }
                 Text("来源分支", style = MaterialTheme.typography.labelLarge)
                 val refs = git?.objects("refs").orEmpty()
                 val ref = refs.firstOrNull { it.string("id") == selected }

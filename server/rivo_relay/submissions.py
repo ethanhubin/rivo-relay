@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import threading
 from typing import Any, Callable
 
 from .database import Database
@@ -75,6 +76,9 @@ class SubmissionStore:
     def __init__(self, db: Database, *, clock: Callable[[], float] = time.time):
         self.db = db
         self.clock = clock
+        self._recovery_lock = threading.Lock()
+        self._recovering = set()
+        self._history_cursors = {}
 
     def claim(self, submission_id: str, connection_id: str, operation: str,
               target: Any, payload: Any) -> dict:
@@ -220,7 +224,7 @@ class SubmissionStore:
         """Called synchronously at the actual turn boundary; failure prevents sending."""
         with self.db.transaction() as db:
             row = db.execute('SELECT * FROM submissions WHERE id=?', (submission_id,)).fetchone()
-            if row is None or row['status'] != 'pending' or row['operation'] not in {'thread.turns', 'thread.continue'}:
+            if row is None or row['status'] != 'pending' or row['operation'] not in {'thread.turns', 'thread.continue', 'thread.create', 'thread.fork'}:
                 raise SubmissionConflict('Submission cannot advance dispatch')
             expected = {'preparing': None, 'dispatching': 'preparing', 'received': 'dispatching'}
             if phase not in expected or row['dispatch_phase'] != expected[phase]:
@@ -228,12 +232,19 @@ class SubmissionStore:
             merged = None
             if phase == 'received':
                 merged = _merge_receipt(None, receipt)
-                if not merged or merged.get('threadId') != json.loads(row['target_json']) or not merged.get('turnId'):
-                    raise SubmissionConflict('Native turn receipt does not match the submission')
+                creating = row['operation'] in {'thread.create', 'thread.fork'}
+                valid = merged and (bool(merged.get('threadId')) if creating else
+                    merged.get('threadId') == json.loads(row['target_json']) and bool(merged.get('turnId')))
+                if not valid:
+                    raise SubmissionConflict('Native receipt does not match the submission')
             elif receipt is not None:
                 raise SubmissionConflict('Unexpected dispatch receipt')
             db.execute('UPDATE submissions SET dispatch_phase=?,receipt_json=COALESCE(?,receipt_json),updated_at=? WHERE id=?',
                        (phase, _json(merged) if merged else None, self.clock(), submission_id))
+
+    def begin_local(self, submission_id):
+        with self.db.transaction() as db:
+            db.execute("UPDATE submissions SET dispatch_phase='local_transaction' WHERE id=? AND status='pending'", (submission_id,))
 
     def resolve_dispatch(self, submission_id):
         """Only after action exit, or with the service stopped. Never resolve a live preparation."""
@@ -241,15 +252,95 @@ class SubmissionStore:
             row = db.execute('SELECT * FROM submissions WHERE id=?', (submission_id,)).fetchone()
             if row is None or row['status'] not in {'pending', 'unknown'}:
                 return None
-            if row['operation'] not in {'thread.turns', 'thread.continue'}:
+            if row['dispatch_phase'] == 'local_transaction' and row['receipt_json'] is None:
+                return self.mark_failed(submission_id, 'operation_not_dispatched')
+            if row['operation'] not in {'thread.turns', 'thread.continue', 'thread.create', 'thread.fork'}:
                 return None
             if row['dispatch_phase'] == 'preparing' and row['receipt_json'] is None:
-                return self.mark_failed(submission_id, 'turn_not_dispatched')
+                return self.mark_failed(submission_id, 'turn_not_dispatched' if row['operation'] in {'thread.turns', 'thread.continue'} else 'operation_not_dispatched')
             if row['dispatch_phase'] == 'received' and row['receipt_json']:
                 receipt = json.loads(row['receipt_json'])
-                if receipt.get('threadId') == json.loads(row['target_json']) and receipt.get('turnId'):
+                creating = row['operation'] in {'thread.create', 'thread.fork'}
+                if (creating and receipt.get('threadId')) or (receipt.get('threadId') == json.loads(row['target_json']) and receipt.get('turnId')):
                     return self.mark_accepted(submission_id, receipt)
             return None
+
+    def recover_native(self, submission_id, connection_id, codex):
+        """Recover positive evidence only. Never infer absence from age/history gaps.
+
+        Called by authenticated receipt polling. Bounded history pages continue
+        across polls so old messages do not get stuck outside the recent window.
+        """
+        record = self.get(submission_id, connection_id)
+        if record['status'] != 'unknown':
+            return record
+        with self._recovery_lock:
+            if submission_id in self._recovering:
+                return record
+            self._recovering.add(submission_id)
+        try:
+            record = self.get(submission_id, connection_id)
+            if record['status'] != 'unknown':
+                return record
+            resolved = self.resolve_dispatch(submission_id)
+            if resolved:
+                return resolved
+            if record['operation'] == 'thread.queue.enqueue':
+                with self.db.read() as db:
+                    row = db.execute('SELECT thread_id,connection_id FROM queued_tasks WHERE id=?', (submission_id,)).fetchone()
+                if row and row['connection_id'] == connection_id and row['thread_id'] == record['target']:
+                    return self.mark_accepted(submission_id, {'threadId': row['thread_id'], 'itemId': submission_id})
+                return record
+            if record['operation'] not in {'thread.turns', 'thread.continue', 'thread.answers', 'thread.queue.steer'}:
+                return record
+            target = record['target']
+            client_id = (record.get('receipt') or {}).get('itemId') if record['operation'] == 'thread.queue.steer' else submission_id
+            if not client_id:
+                return record
+            snapshot = codex.history(target, limit=100)
+            if (snapshot.get('nativeSync') or {}).get('state', 'ready') != 'ready':
+                return record
+            if snapshot.get('threadId', target) != target:
+                return record
+            revision = snapshot.get('nativeRevision')
+            turns = snapshot.get('turns', [])
+            saved = self._history_cursors.get(submission_id)
+            cursor = saved[1] if saved and saved[0] == revision else snapshot.get('nextCursor')
+            seen = set()
+            for page_index in range(6):
+                matches = [turn for turn in turns if turn.get('id') and any(
+                    item.get('type') == 'userMessage' and item.get('clientId') == client_id
+                    for item in turn.get('items', []))]
+                if len(matches) == 1:
+                    self._history_cursors.pop(submission_id, None)
+                    return self.mark_accepted(submission_id, {'threadId': target, 'turnId': matches[0]['id']})
+                if matches or not cursor or cursor in seen:
+                    self._history_cursors.pop(submission_id, None)
+                    return record
+                if page_index == 5:
+                    self._history_cursors[submission_id] = (revision, cursor)
+                    return record
+                seen.add(cursor)
+                self._history_cursors[submission_id] = (revision, cursor)
+                page = codex.history(target, cursor=cursor, limit=100, native_revision=revision)
+                if (page.get('nativeSync') or {}).get('state', 'ready') != 'ready':
+                    self._history_cursors.pop(submission_id, None)
+                    return record
+                if page.get('threadId', target) != target or page.get('nativeRevision', revision) != revision:
+                    self._history_cursors.pop(submission_id, None)
+                    return record
+                turns, cursor = page.get('turns', []), page.get('nextCursor')
+            return record
+        except Exception as error:
+            # A read/storage failure must not turn uncertainty into a retry.
+            # Keep progress across transport timeouts; only invalidated cursors
+            # must restart from the head on the next poll.
+            if isinstance(error, ValueError) or getattr(error, 'code', None) in {'history_changed', 'invalid_request'}:
+                self._history_cursors.pop(submission_id, None)
+            return self.get(submission_id, connection_id)
+        finally:
+            with self._recovery_lock:
+                self._recovering.discard(submission_id)
 
     def recover_pending(self) -> int:
         """Exclusive startup recovery; preserve legacy and sent-but-unconfirmed claims."""

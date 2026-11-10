@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from .operation_gates import ThreadGates
 from .codex.connection import CodexError
 from .submissions import SubmissionConflict
+from .submission_dispatch import local_commit, checkpoint_identity
 
 class QueueConflict(SubmissionConflict):
     # These checks happen before a native write; a stale edit is safe to retry.
@@ -88,6 +89,7 @@ class ExecutionQueue:
                 position = c.execute('SELECT COALESCE(MAX(position),0)+1 FROM queued_tasks WHERE thread_id=?', (thread_id,)).fetchone()[0]
                 c.execute('INSERT INTO queued_tasks(id,connection_id,thread_id,payload_json,status,position,revision,created_at) VALUES(?,?,?,?,?,?,0,?)',
                           (item_id, connection_id, thread_id, json.dumps(payload, ensure_ascii=False), 'waiting', position, time.time()))
+                local_commit(thread_id, {'threadId': thread_id, 'itemId': item_id})
         self._notify(thread_id)
         self._answer_async_question(thread_id, item_id)
         return {'threadId': thread_id, 'itemId': item_id}
@@ -155,6 +157,7 @@ class ExecutionQueue:
                 c.execute("UPDATE queued_tasks SET payload_json=?,status='waiting',error=NULL,revision=revision+1 WHERE id=?", (json.dumps(payload, ensure_ascii=False), item_id))
             else:
                 raise QueueConflict('Uncertain execution must not be replayed')
+            local_commit(thread_id, {'threadId': thread_id, 'itemId': item_id})
         self._notify(thread_id)
         return {'threadId': thread_id, 'itemId': item_id}
 
@@ -177,6 +180,7 @@ class ExecutionQueue:
                 c.execute("UPDATE queued_tasks SET status='cancelled',revision=revision+1 WHERE id=?", (item_id,))
                 c.execute('INSERT INTO queued_tasks(id,connection_id,thread_id,payload_json,status,position,revision,created_at) VALUES(?,?,?,?,?,?,0,?)',
                           (new_id, connection_id, thread_id, json.dumps(payload, ensure_ascii=False), 'waiting', row['position'], time.time()))
+                local_commit(thread_id, {'threadId': thread_id, 'itemId': new_id, 'recoveredItemId': item_id})
         self._notify(thread_id)
         return {'threadId': thread_id, 'itemId': new_id, 'recoveredItemId': item_id}
 
@@ -190,6 +194,7 @@ class ExecutionQueue:
             base = c.execute("SELECT COALESCE(MAX(position),0) FROM queued_tasks WHERE thread_id=? AND status IN ('running','dispatching','unknown','failed')", (thread_id,)).fetchone()[0]
             for index, item_id in enumerate(ids):
                 c.execute('UPDATE queued_tasks SET position=?,revision=revision+1 WHERE id=?', (base+index+1, item_id))
+            local_commit(thread_id, {'threadId': thread_id})
         self._notify(thread_id)
         return {'threadId': thread_id}
 
@@ -204,6 +209,7 @@ class ExecutionQueue:
                 payload = json.loads(row['payload_json'])
                 if payload.get('review') or payload.get('mode') == 'plan':
                     raise QueueConflict('审查和讨论任务不能转为当前任务的引导')
+                checkpoint_identity(thread_id, {'threadId': thread_id, 'itemId': item_id})
                 c.execute("UPDATE queued_tasks SET status='dispatching',revision=revision+1 WHERE id=?", (item_id,))
             payload = json.loads(row['payload_json'])
             try:
