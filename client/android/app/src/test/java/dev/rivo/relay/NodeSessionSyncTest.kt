@@ -17,6 +17,44 @@ class NodeSessionSyncTest {
     private fun api(server: MockWebServer) = RelayApi(server.url("/").newBuilder().host("127.0.0.1").build().toString())
     private suspend fun await(latch: CountDownLatch) = withContext(Dispatchers.IO) { assertTrue(latch.await(5, TimeUnit.SECONDS)) }
 
+    @Test fun lifecycleEventFencesLateDetailActivity() = runBlocking {
+        for (method in listOf("turn/started", "turn/completed")) {
+            val server = MockWebServer()
+            val started = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    if (request.requestUrl?.encodedPath == "/v1/events") {
+                        started.await(5, TimeUnit.SECONDS)
+                        return MockResponse().setHeader("Content-Type", "text/event-stream")
+                            .setBody("event: native\ndata: {\"method\":\"$method\",\"params\":{\"threadId\":\"t\"}}\n\n" + ":".repeat(4096))
+                            .throttleBody(160, 1, TimeUnit.SECONDS)
+                    }
+                    started.countDown()
+                    release.await(5, TimeUnit.SECONDS)
+                    return MockResponse().setBody("""{"activity":{"complete":true,"generation":"g","version":1,"tasks":[],"knownThreadIds":["t"],"unknownThreadIds":[]}}""")
+                }
+            }
+            server.start()
+            val scope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                val sync = NodeSessionSync(api(server), scope)
+                val received = AtomicInteger()
+                val collector = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                    sync.activitySnapshots.collect { received.incrementAndGet() }
+                }
+                val event = async { sync.events().first { it.type == "native" } }
+                val detail = async { sync.read("t") }
+                withTimeout(5000) { event.await() }
+                release.countDown()
+                withTimeout(5000) { detail.await() }
+                yield()
+                assertEquals(0, received.get())
+                collector.cancel()
+            } finally { release.countDown(); scope.cancel(); server.shutdown() }
+        }
+    }
+
     @Test fun handledInterruptionKeepsSubscriberAndReconnectCursor() = runBlocking {
         val server = MockWebServer()
         val requests = java.util.Collections.synchronizedList(mutableListOf<RecordedRequest>())

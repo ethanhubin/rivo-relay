@@ -7,10 +7,14 @@ import org.json.JSONObject
 
 /** One node event subscription; shared reads are only concurrent, never a stale-response cache. */
 class NodeSessionSync(private val api: RelayApi, private val scope: CoroutineScope) {
+    private val publishedActivity = MutableSharedFlow<JSONObject>(extraBufferCapacity = 1,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
+    internal val activitySnapshots = publishedActivity.asSharedFlow()
     val activity by lazy { nodeActivity(api, this, scope) }
     private data class Observation(val event: RelayEvent? = null, val error: Throwable? = null)
     private data class Read(val result: Deferred<JSONObject>, val startedNanos: Long, var users: Int = 0)
     private val lock = Any()
+    private var activityEpoch = 0L
     private data class ReadKey(val threadId: String, val limit: Int, val headRevision: String?)
     private val reads = mutableMapOf<ReadKey, Read>()
     fun invalidate(threadId: String? = null) {
@@ -21,6 +25,7 @@ class NodeSessionSync(private val api: RelayApi, private val scope: CoroutineSco
         }
     }
     private fun invalidate(event: RelayEvent) {
+        if (catalogLifecycleEvent(event)) synchronized(lock) { activityEpoch++ }
         val params = event.payload.optJSONObject("params")
         val thread = params?.string("threadId").orEmpty().ifBlank { params?.string("conversationId").orEmpty() }
         val threads = params?.optJSONArray("threadIds")
@@ -46,6 +51,7 @@ class NodeSessionSync(private val api: RelayApi, private val scope: CoroutineSco
             } catch (error: Exception) {
                 currentCoroutineContext().ensureActive()
                 invalidate()
+                synchronized(lock) { activityEpoch++ }
                 emit(Observation(error = error))
             }
             delay(1800)
@@ -67,8 +73,13 @@ class NodeSessionSync(private val api: RelayApi, private val scope: CoroutineSco
             // Control reads own their timeout window; an older notification request
             // must not acquire a new freshness deadline when the chat opens.
             read = reads[key]?.takeUnless { it.result.isCompleted || freshAfterNanos != null && it.startedNanos < freshAfterNanos } ?: Read(scope.async(start = CoroutineStart.LAZY) {
+                val readActivityEpoch = synchronized(lock) { activityEpoch }
                 api.call("/v1/threads/${encoded(threadId)}?limit=$limit" +
                     knownHeadRevision?.let { "&knownHeadRevision=${encoded(it)}" }.orEmpty(), background = freshAfterNanos == null)
+                    .also { response -> synchronized(lock) {
+                        if (readActivityEpoch == activityEpoch)
+                            response.optJSONObject("activity")?.let { publishedActivity.tryEmit(it) }
+                    } }
             }, System.nanoTime()).also { reads[key] = it }
             read.users++
         }

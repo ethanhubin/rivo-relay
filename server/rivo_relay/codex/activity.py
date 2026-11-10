@@ -1,10 +1,21 @@
 """Node-owned activity table. HTTP readers never perform native RPCs."""
 from collections import OrderedDict
 import copy
+from dataclasses import dataclass, field
 import threading
 import time
 from ..read_budget import read_budget
 from .projection import execution_projection
+
+
+@dataclass
+class ActivityRead:
+    epoch: str
+    revision: int
+    # A scan may continue after its own early metadata publication, but never
+    # after another writer updated that thread. Kept private to this read.
+    metadata_versions: dict = field(default_factory=dict)
+    running_metadata: set = field(default_factory=set)
 
 
 class ActivityRegistry:
@@ -16,6 +27,9 @@ class ActivityRegistry:
         self.worker = None
         self.epoch = None
         self.revision = 0
+        self.snapshot_version = 0
+        self.thread_revisions = {}
+        self.barrier_revision = 0
         self.tasks, self.membership, self.turns = {}, {}, {}
         self.known, self.unknown = set(), set()
         self.terminal = OrderedDict()
@@ -31,6 +45,8 @@ class ActivityRegistry:
             if self.epoch is not None:
                 self.revision += 1
             self.epoch = epoch
+            self.thread_revisions.clear()
+            self.barrier_revision = self.revision
             self.tasks.clear()
             self.membership.clear()
             self.turns.clear()
@@ -61,51 +77,114 @@ class ActivityRegistry:
                 with read_budget(seconds=20):
                     self.reconcile()
             except Exception:
-                with self.lock:
-                    self.error = 'reconciliation_failed'
-                    self.unknown.update(self.known - self.confirmed_idle)
-                    self.ready = False
+                # reconcile() has already fenced and applied this failure.
+                pass
             self.wake.wait(5)
 
-    def reconcile(self):
-        with self.lock:
-            self._generation()
-            revision, epoch = self.revision, self.epoch
-        result = self.load()
-        with self.lock:
-            self._generation()
-            if revision != self.revision or epoch != self.epoch or self.stopped.is_set():
-                return False
-            tasks = {row['threadId']: row for row in result['tasks'] if row['threadId'] not in self.excluded}
-            unknown = set(result['unknownThreadIds']) - self.excluded - (self.confirmed_idle - tasks.keys())
-            for tid in unknown:
-                if tid in self.tasks:
-                    tasks.setdefault(tid, self.tasks[tid])
-            self.turns = {tid: turn for tid, turn in self.turns.items() if tid in tasks or tid in unknown}
-            self.confirmed_idle.difference_update(tasks)
-            self.tasks = copy.deepcopy(tasks)
-            self.membership.update(result.get('projectByThread', {}))
-            self.known = set(result['knownThreadIds']) | self.excluded
-            self.unknown = unknown
-            self.ready = True
-            self.last_sync = time.time()
-            self.error = None
-            return True
+    def _touch(self, thread_id):
+        self.revision += 1
+        self.thread_revisions[thread_id] = self.revision
 
-    def observe_metadata(self, threads, roots, generation, revision):
+    def _current(self, token):
+        return token.epoch == self.epoch and token.revision >= self.barrier_revision
+
+    def _accepts(self, thread_id, token):
+        version = token.metadata_versions.get(thread_id, token.revision)
+        return self._current(token) and self.thread_revisions.get(thread_id, 0) <= version
+
+    def _scan_failed(self, token):
+        with self.lock:
+            self._generation()
+            if not self._current(token):
+                return
+            # The scan's early metadata is independent positive evidence too.
+            # Do not let a later failed probe invalidate it or newer detail/event rows.
+            affected = {tid for tid in self.known
+                        if self._accepts(tid, token) and tid not in token.running_metadata}
+            if self.known and not affected:
+                return
+            for tid in affected - self.confirmed_idle:
+                self.unknown.add(tid)
+                self._touch(tid)
+            self.error = 'reconciliation_failed'
+            self.ready = False
+
+    def reconcile(self):
+        token = self.read_token()
+        try:
+            result = self.load(token)
+        except Exception:
+            self._scan_failed(token)
+            raise
+        with self.lock:
+            self._generation()
+            if not self._current(token) or self.stopped.is_set():
+                return False
+            tasks = {row['threadId']: row for row in result['tasks']}
+            known = set(result['knownThreadIds']) | set(tasks)
+            unknown = set(result['unknownThreadIds'])
+            membership = result.get('projectByThread', {})
+            candidates = self.known | known | unknown | self.excluded
+            applied = False
+            for tid in candidates:
+                if not self._accepts(tid, token):
+                    continue
+                applied = True
+                self._touch(tid)
+                if tid in self.excluded:
+                    self.known.add(tid)
+                    continue
+                if tid not in known:
+                    self.known.discard(tid)
+                    self.unknown.discard(tid)
+                    self.tasks.pop(tid, None)
+                    self.turns.pop(tid, None)
+                    self.confirmed_idle.discard(tid)
+                    continue
+                self.known.add(tid)
+                if tid in membership:
+                    self.membership[tid] = membership[tid]
+                row = tasks.get(tid)
+                uncertain = tid in unknown and not (tid in self.confirmed_idle and row is None)
+                if uncertain:
+                    self.unknown.add(tid)
+                    if row is None:
+                        row = self.tasks.get(tid)
+                else:
+                    self.unknown.discard(tid)
+                if row is not None:
+                    self.tasks[tid] = copy.deepcopy(row)
+                    self.confirmed_idle.discard(tid)
+                else:
+                    self.tasks.pop(tid, None)
+                if row and row.get('turnId'):
+                    self.turns[tid] = row['turnId']
+                elif not uncertain:
+                    # A metadata-only running row does not prove that a previous
+                    # turn is still current; delayed completion must reconcile it.
+                    self.turns.pop(tid, None)
+            if applied or not candidates:
+                self.ready = True
+                self.last_sync = time.time()
+                self.error = None
+                return True
+            return False
+
+    def observe_metadata(self, threads, roots, token):
         """Publish direct running evidence before slower external/goal probes."""
         with self.lock:
             self._generation()
-            if generation != self.epoch or revision != self.revision:
-                return
             for thread in threads:
                 tid = thread['id']
-                if tid in self.excluded:
+                if tid in self.excluded or not self._accepts(tid, token):
                     continue
+                changed = False
                 project = thread.get('projectId') or roots.get(thread.get('cwd')) or self.membership.get(tid)
                 if project:
+                    changed = self.membership.get(tid) != project
                     self.membership[tid] = project
                     if tid in self.tasks:
+                        changed |= self.tasks[tid].get('projectId') != project
                         self.tasks[tid]['projectId'] = project
                 native = thread.get('status', {})
                 if isinstance(native, dict) and native.get('type') == 'active' and tid not in self.turns:
@@ -116,6 +195,11 @@ class ActivityRegistry:
                                        **execution_projection(status)}
                     self.known.add(tid)
                     self.unknown.discard(tid)
+                    changed = True
+                    token.running_metadata.add(tid)
+                if changed:
+                    self._touch(tid)
+                    token.metadata_versions[tid] = self.thread_revisions[tid]
 
     def _finish_execution(self, tid):
         self.turns.pop(tid, None)
@@ -149,7 +233,13 @@ class ActivityRegistry:
             self._generation()
             if event.get('connectionId', self.epoch) != self.epoch:
                 return
-            self.revision += 1
+            if method == 'relay/nativeDisconnected':
+                self.revision += 1
+                self.barrier_revision = self.revision
+                self.unknown.update(self.known - self.confirmed_idle)
+                self.ready = False
+                self.wake.set()
+                return
             thread = params.get('thread') or {}
             turn = params.get('turn') or {}
             if not isinstance(thread, dict) or not isinstance(turn, dict):
@@ -157,6 +247,7 @@ class ActivityRegistry:
             tid = params.get('threadId') or params.get('conversationId') or thread.get('id')
             turn_id = params.get('turnId') or turn.get('id')
             if isinstance(tid, str) and tid:
+                self._touch(tid)
                 project = params.get('projectId') or thread.get('projectId') or self.membership.get(tid)
                 if project:
                     self.membership[tid] = project
@@ -212,15 +303,68 @@ class ActivityRegistry:
                                        'turnId': turn_id or self.turns.get(tid) or self.tasks.get(tid, {}).get('turnId'), 'status': status, **execution_projection(status)}
                     self.known.add(tid)
                     self.unknown.discard(tid)
-            if method == 'relay/nativeDisconnected':
-                self.unknown.update(self.known - self.confirmed_idle)
-                self.ready = False
+            else:
+                self.revision += 1
+                self.barrier_revision = self.revision
         self.wake.set()
+
+    def read_token(self):
+        with self.lock:
+            self._generation()
+            return ActivityRead(self.epoch, self.revision)
+
+    def observe_execution(self, thread_id, status, *, token, project_id=None,
+                          turn_id=None, settled_turn_id=None, goal_active=False, queue=()):
+        """Verified native reads update the same table as events and discovery.
+
+        A read that predates a newer event/reconciliation cannot overwrite it.
+        Pagination and unavailable history must never be submitted here.
+        """
+        with self.lock:
+            self._generation()
+            if not self._accepts(thread_id, token) or thread_id in self.excluded:
+                return False
+            if status == 'unknown':
+                self._touch(thread_id)
+                self.known.add(thread_id)
+                self.unknown.add(thread_id)
+                self.confirmed_idle.discard(thread_id)
+                return True
+            if settled_turn_id:
+                self.terminal[(thread_id, settled_turn_id)] = True
+                while len(self.terminal) > 1024:
+                    self.terminal.popitem(last=False)
+            project_id = project_id or self.membership.get(thread_id, '')
+            projection = execution_projection(status, queue)
+            row = {'threadId': thread_id, 'projectId': project_id, 'turnId': turn_id,
+                   'status': status, 'goalActive': goal_active, **projection}
+            desired = row if projection['hasOutstandingWork'] else None
+            # Even unchanged evidence is newer than an in-flight scan. Fence
+            # that scan instead of letting it resurrect a missed, finished turn.
+            self._touch(thread_id)
+            self.known.add(thread_id)
+            self.unknown.discard(thread_id)
+            if project_id:
+                self.membership[thread_id] = project_id
+            if desired:
+                self.tasks[thread_id] = row
+            else:
+                self.tasks.pop(thread_id, None)
+            if turn_id:
+                self.turns[thread_id] = turn_id
+            else:
+                self.turns.pop(thread_id, None)
+            if status == 'idle':
+                self.confirmed_idle.add(thread_id)
+            else:
+                self.confirmed_idle.discard(thread_id)
+            return True
 
     def snapshot(self):
         with self.lock:
             self._generation()
-            return {'tasks': copy.deepcopy(list(self.tasks.values())),
+            self.snapshot_version += 1
+            return {'version': self.snapshot_version, 'tasks': copy.deepcopy(list(self.tasks.values())),
                     'knownThreadIds': sorted(self.known), 'unknownThreadIds': sorted(self.unknown),
                     'generation': self.epoch, 'revision': self.revision,
                     # Each row has explicit uncertainty, even before first discovery.

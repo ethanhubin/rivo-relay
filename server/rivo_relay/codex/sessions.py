@@ -317,29 +317,25 @@ class CodexService:
         self.activity.start()
         return self.activity.snapshot()
 
-    def _load_activity(self):
+    def _load_activity(self, activity_token):
         generation = str(self.connection.generation)
         with self.activity.lock:
-            activity_revision = self.activity.revision
             active_ids = set(self.activity.tasks)
         discovered = self._activity_discovery
-        full = (discovered is None or discovered[0] != generation or time.monotonic() >= discovered[1]
-                or not active_ids.issubset({t['id'] for t in discovered[3]}))
-        if not full:
-            projects, all_threads, known = discovered[2:]
-            threads = [self.connection.request('thread/read', {'threadId': t['id'], 'includeTurns': False})['thread']
-                       for t in all_threads if t['id'] in known or t['id'] in active_ids]
-        else:
-            projects = list(pages(self.connection, 'project/list'))
-            threads = list(pages(self.connection, "thread/list", {"archived": False, "modelProviders": [],
-                    "sortKey": "updated_at", "sortDirection": "desc", "useStateDbOnly": True}))
+        full = discovered is None or discovered[0] != generation or time.monotonic() >= discovered[1]
+        projects = list(pages(self.connection, 'project/list')) if full else discovered[2]
+        # Idle threads can start in Desktop without a notification on this
+        # connection. Refresh cheap state-DB metadata every reconciliation;
+        # caching only active/unknown IDs misses restarts and new threads.
+        threads = list(pages(self.connection, "thread/list", {"archived": False, "modelProviders": [],
+                "sortKey": "updated_at", "sortDirection": "desc", "useStateDbOnly": True}))
         # Index discovery may omit rollout-only or newly created active threads.
         # Read those known live IDs directly before treating absence as completion.
         indexed = {t['id'] for t in threads}
         for tid in active_ids - indexed:
             threads.append(self.connection.request('thread/read', {'threadId': tid, 'includeTurns': False})['thread'])
         roots = {r['path']: p['id'] for p in projects for r in p.get('roots', []) if r.get('path')}
-        self.activity.observe_metadata(threads, roots, generation, activity_revision)
+        self.activity.observe_metadata(threads, roots, activity_token)
         associations = self.projects.external_worktrees.associations(
             [t for t in threads if not t.get('projectId')], projects)
         external = self._external_running(threads)
@@ -364,12 +360,10 @@ class CodexService:
                               'status': status, 'goalActive': (goal or {}).get('status') == 'active', **projection})
         if generation != str(self.connection.generation):
             raise CodexError('原生运行时已变化，请重新同步任务', code='native_unavailable')
-        self._activity_discovery = (generation, time.monotonic() + 60 if full else discovered[1],
-                                    projects, threads if full else all_threads,
-                                    {t['threadId'] for t in tasks} | set(unknown))
-        return {'tasks': tasks, 'unknownThreadIds': unknown, 'knownThreadIds': [t['id'] for t in (threads if full else all_threads)], 'generation': generation,
+        self._activity_discovery = (generation, time.monotonic() + 60 if full else discovered[1], projects)
+        return {'tasks': tasks, 'unknownThreadIds': unknown, 'knownThreadIds': [t['id'] for t in threads], 'generation': generation,
                 'projectByThread': {t['id']: associations.get(t['id'], {}).get('projectId') or t.get('projectId') or
-                    roots.get(t.get('cwd'), RECENT_PROJECT_ID) for t in (threads if full else all_threads)}}
+                    roots.get(t.get('cwd'), RECENT_PROJECT_ID) for t in threads}}
 
     def add_project(self, path, name=None, idempotency_key=None, folder_name=None, trust_confirmed=False):
         self.start()
@@ -458,8 +452,8 @@ class CodexService:
         active = {t['threadId']: t for t in (shared or {}).get('tasks', [])}
         unknown = set((shared or {}).get('unknownThreadIds', []))
         external = {} if summary or shared else self._external_execution(list(by_id.values()))
-        statuses = {t["id"]: (active[t['id']]['status'] if t['id'] in active else
-                    'unknown' if shared and (t['id'] in unknown or t['id'] not in shared.get('knownThreadIds', [])) else 'idle' if shared else
+        statuses = {t["id"]: ('unknown' if shared and (t['id'] in unknown or t['id'] not in shared.get('knownThreadIds', [])) else
+                    active[t['id']]['status'] if t['id'] in active else 'idle' if shared else
                     "waiting" if self.interactions.list(t["id"]) or thread_waiting(t) else
                     "running" if goal_running(t, None if summary else self.read_goal(t["id"]).get("goal"), external)
                     else external.get(t['id'], thread_status(t))) for t in by_id.values()}
@@ -573,6 +567,7 @@ class CodexService:
     @read_identity
     def get_session(self, thread_id, cursor=None, limit=30, native_revision=None):
         self.start()
+        activity_token = self.activity.read_token()
         # Reconcile the idle persisted history before resume takes a writer lock.
         # A live Desktop/CLI writer remains authoritative and is never released.
         history = self.history(thread_id, cursor=cursor, limit=limit, native_revision=native_revision)
@@ -680,7 +675,13 @@ class CodexService:
                 question_reply_available = getattr(self.connection, 'can_answer_questions', lambda _: False)(thread_id)
             except CodexError:
                 pass
-        return {"thread": thread, "requests": requests, "settings": settings, 'control': control, 'plan': plan,
+        if cursor is None and (history['nativeSync'].get('historyReady') or history['nativeSync'].get('state') == 'ready'):
+            self.activity.observe_execution(thread_id, status, token=activity_token,
+                project_id=thread.get('projectId'), turn_id=active,
+                settled_turn_id=latest_turn.get('id') if latest_turn.get('status') in
+                    ('completed', 'failed', 'interrupted', 'canceled') else None,
+                goal_active=goal_active, queue=queue)
+        return {"activity": self.activity.snapshot(), "thread": thread, "requests": requests, "settings": settings, 'control': control, 'plan': plan,
                 'canAnswerQuestions': question_reply_available, 'questionAnswerStates': answer_states,
                 **goal_state,
                 'tokenUsage': usage, 'changes': changes, 'turnSettings': turn_settings,

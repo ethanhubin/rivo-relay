@@ -23,9 +23,20 @@ data class CatalogState(
 
 internal fun CatalogState.withProjectActivity(activity: NodeActivity): CatalogState {
     fun projectState(project: ProjectSummary) = project.copy(
-        isRunning = activity.tasks.values.any { it.projectId == project.id && threadIsExecuting(it) })
+        isRunning = project.id in activity.runningProjectIds)
     return copy(projects = projects.map(::projectState), selectedProject = selectedProject?.let(::projectState))
 }
+
+/** Unverified activity must not overwrite a freshly reconciled detail status. */
+internal fun CatalogState.withNodeActivity(activity: NodeActivity): CatalogState =
+    withProjectActivity(activity).copy(
+        threads = threads.map { thread ->
+            val task = activity.execution(thread.id)
+            if (archived) thread else thread.copy(status = task.status,
+                nativeExecution = task.nativeExecution, hasOutstandingWork = task.hasOutstandingWork,
+                queueDepth = task.queueDepth, deliveryState = task.deliveryState,
+                displayState = task.displayState, recoveryRequired = task.recoveryRequired)
+        })
 
 /** Separate catalog/list owner; stale requests cannot overwrite another project or archive filter. */
 class CatalogController(private val api: RelayApi, private val scope: CoroutineScope, private val failure: (Throwable) -> Unit,
@@ -36,16 +47,9 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
     private val readRevision = MutableStateFlow(0L)
     val state: StateFlow<CatalogState> = if (sync == null) mutable.asStateFlow() else
         combine(mutable, sync.activity, readRevision) { current, activity, _ ->
-            current.withProjectActivity(activity).copy(
-                threads = current.threads.map { thread ->
-                    val task = activity.tasks[thread.id]
-                    val status = activity.status(thread.id) ?: task?.status
-                    if (status == null || current.archived) thread else thread.copy(status = status,
-                        nativeExecution = task?.nativeExecution ?: "idle",
-                        hasOutstandingWork = task?.hasOutstandingWork ?: false, queueDepth = task?.queueDepth ?: 0,
-                        deliveryState = task?.deliveryState ?: "idle", displayState = task?.displayState ?: "idle",
-                        recoveryRequired = task?.recoveryRequired ?: false)
-                }).let { projected -> projected.copy(unreadThreadIds = unread(projected.threads)) }
+            current.withNodeActivity(activity).let { projected ->
+                projected.copy(unreadThreadIds = unread(projected.threads))
+            }
         }.stateIn(scope, SharingStarted.WhileSubscribed(0), mutable.value)
     private val runtimeThreads = mutableMapOf<Pair<String, Boolean>, List<ThreadSummary>>()
     private fun scopeKey() = mutable.value.selectedProject?.id?.let { it to mutable.value.archived }
@@ -361,7 +365,7 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
             unreadThreadIds = unread(merged), threadsFresh = fresh) }
     }
 
-    /** Fresh detail reads also reconcile the list; read markers alone cannot stop its spinner. */
+    /** Detail reads update metadata only; execution is owned by NodeActivity. */
     fun reconcileSession(snapshot: SessionSnapshot) {
         if (!snapshot.nativeReady) return
         val current = mutable.value
@@ -370,10 +374,6 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
         // The session controller has already rejected obsolete detail responses.
         detailVersions[snapshot.id] = (detailVersions[snapshot.id] ?: 0) + 1
         val updated = prior.copy(name = if (snapshot.updatedAt >= prior.updatedAt) snapshot.name.ifBlank { prior.name } else prior.name,
-            status = snapshot.status, nativeExecution = snapshot.nativeExecution,
-            deliveryState = snapshot.deliveryState, displayState = snapshot.displayState,
-            queueDepth = snapshot.queueDepth, recoveryRequired = snapshot.recoveryRequired,
-            hasOutstandingWork = snapshot.isOngoing || snapshot.queue.isNotEmpty(),
             updatedAt = maxOf(snapshot.updatedAt, prior.updatedAt))
         createdThreads[snapshot.id]?.let { createdThreads[snapshot.id] = it.copy(summary = updated) }
         if (updated == prior) return

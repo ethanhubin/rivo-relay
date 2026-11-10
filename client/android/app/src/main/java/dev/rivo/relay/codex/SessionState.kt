@@ -81,18 +81,14 @@ fun SessionState.syncStatusLabel(): String? = when {
     offline -> if (snapshot != null) "离线缓存" else "连接中断"
     readError != null -> "同步失败，正在重试"
     loading || stale -> "同步中"
-    snapshot?.requests?.isNotEmpty() == true -> "等待回应"
     activityStatus == "running" -> "执行中"
     activityStatus == "waiting" -> "等待回应"
-    activityStatus == null && snapshot?.status == "waiting" -> "等待回应，请在原会话处理"
-    activityStatus == null && snapshot?.isOngoing == true -> "执行中"
+    activityStatus == "unknown" -> "运行状态待核验"
     else -> null
 }
 
-/** Fresh conversation details take precedence over independently refreshed node activity. */
+/** Execution indicators are a projection of the node table, never of cached history. */
 internal fun SessionState.withNodeActivity(activity: NodeActivity): SessionState =
-    copy(activityStatus = if (snapshot != null && !stale) null else id?.let(activity::status))
+    copy(activityStatus = id?.let { activity.execution(it).status } ?: "unknown")
 
-val SessionState.executionActive: Boolean get() =
-    (activityStatus?.let { it == "running" }
-        ?: (snapshot?.isOngoing == true && snapshot.status != "waiting")) && snapshot?.requests.orEmpty().isEmpty()
+val SessionState.executionActive: Boolean get() = activityStatus == "running"
