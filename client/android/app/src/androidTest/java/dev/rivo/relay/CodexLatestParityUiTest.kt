@@ -34,7 +34,7 @@ class CodexLatestParityUiTest {
             File(folder, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }; bitmap.recycle()
         }
     }
-    @Test fun clarificationLocksOrdinaryInputAndKeepsItsDraft() {
+    @Test fun clarificationDialogLocksSendingAndKeepsOrdinaryDraft() {
         val state = mutableStateOf(SessionState(id = "latest", snapshot = snapshot()))
         var response: JSONObject? = null
         compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize().systemBarsPadding()) { ChatScreen(state.value, false, false, emptyList(), {},
@@ -43,10 +43,10 @@ class CodexLatestParityUiTest {
         compose.onNodeWithTag("message_input").performTextInput("尚未发送的草稿")
         compose.runOnIdle { state.value = state.value.copy(snapshot = snapshot().copy(requests = listOf(NativeRequest("question", "item/tool/requestUserInput",
             JSONObject("""{"questions":[{"id":"q","question":"是否继续？","options":[{"label":"继续"}]}]}"""))))) }
-        compose.onNodeWithTag("message_input").assertIsNotEnabled().assertTextContains("尚未发送的草稿", substring = true)
+        compose.onNodeWithTag("message_input").assertTextContains("尚未发送的草稿", substring = true)
         compose.onNodeWithTag("send_message").assertIsNotEnabled()
-        compose.onNodeWithTag("native_requests_panel").assertIsDisplayed()
-        compose.onNodeWithTag("answer_with_assumptions").performScrollTo().performClick()
+        compose.onNode(isDialog()).assertExists()
+        compose.onNodeWithTag("answer_with_assumptions").performClick()
         compose.runOnIdle { assertEquals("请按合理假设继续。", response!!.getJSONObject("answers").getJSONObject("q").getJSONArray("answers").getString(0)) }
         evidence("codex-latest-clarification")
         compose.runOnIdle { state.value = state.value.copy(snapshot = snapshot()) }

@@ -67,9 +67,9 @@ class DesktopQuestionsLiveTest {
             fun answer(value: String) {
                 compose.waitUntil(60_000) { compose.onAllNodesWithTag("async_questions_panel").fetchSemanticsNodes().isNotEmpty() }
                 val question = pendingAsyncQuestions(snapshot()).single()
-                compose.onNodeWithTag("question_answer_${question.id}").performScrollTo().performTextInput(value)
+                compose.onNodeWithTag("question_answer_${question.id}").performTextInput(value)
                 compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag("answer_questions") and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
-                compose.onNodeWithTag("answer_questions").performScrollTo().performClick()
+                compose.onNodeWithTag("answer_questions").performClick()
             }
             answer("RIVO_E2E_ALPHA\n请逐字复述 RIVO_E2E_ALPHA，然后使用 request_user_input_async 提问：请输入第二个验收标记。收到回答后逐字复述标记。不修改文件，不使用其他工具。")
             compose.waitUntil(120_000) {

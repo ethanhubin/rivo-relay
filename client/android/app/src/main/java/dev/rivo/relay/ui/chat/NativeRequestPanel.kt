@@ -29,9 +29,11 @@ fun NativeRequestPanel(request: NativeRequest, enabled: Boolean, onRespond: (JSO
         ApprovalRequest(request, enabled, onRespond)
         return
     }
+    if (request.method.endsWith("requestUserInput")) {
+        UserInputRequest(request, enabled, onRespond)
+        return
+    }
     var expanded by remember(request.key) { mutableStateOf(true) }
-    val answers = remember(request.key) { mutableStateMapOf<String, String>() }
-    var questionIndex by remember(request.key) { mutableIntStateOf(0) }
     Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = MaterialTheme.shapes.medium,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         modifier = Modifier.fillMaxWidth().testTag("native_request")) {
@@ -40,18 +42,6 @@ fun NativeRequestPanel(request: NativeRequest, enabled: Boolean, onRespond: (JSO
             if (expanded) {
                 val params = request.params
                 when {
-                    request.method.endsWith("requestUserInput") -> {
-                        val questions = params.objects("questions")
-                        NativeQuestionCard(questions, answers, questionIndex, enabled, { questionIndex = it }, { id, value -> answers[id] = value }) {
-                            val results = JSONObject(); questions.forEach { q -> results.put(q.string("id"), JSONObject().put("answers", JSONArray().put(answers[q.string("id")]))) }
-                            onRespond(JSONObject().put("answers", results))
-                        }
-                        if (questions.isNotEmpty() && questions.none { it.optBoolean("isSecret") }) TextButton(onClick = {
-                            val results = JSONObject()
-                            questions.forEach { question -> results.put(question.string("id"), JSONObject().put("answers", JSONArray().put("请按合理假设继续。"))) }
-                            onRespond(JSONObject().put("answers", results))
-                        }, enabled = enabled, modifier = Modifier.testTag("answer_with_assumptions")) { Text("按合理假设继续") }
-                    }
                     request.method == "item/permissions/requestApproval" -> PermissionRequest(params, enabled, onRespond)
                     request.method == "mcpServer/elicitation/request" -> McpRequest(params, enabled, onRespond)
                     else -> {
@@ -61,6 +51,25 @@ fun NativeRequestPanel(request: NativeRequest, enabled: Boolean, onRespond: (JSO
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun UserInputRequest(request: NativeRequest, enabled: Boolean, onRespond: (JSONObject) -> Unit) {
+    val answers = remember(request.key) { mutableStateMapOf<String, String>() }
+    var questionIndex by remember(request.key) { mutableIntStateOf(0) }
+    val questions = request.params.objects("questions")
+    QuestionDialog("Codex 需要你的回应", "native_request", "toggle_native_request") {
+        NativeQuestionCard(questions, answers, questionIndex, enabled, { questionIndex = it }, { id, value -> answers[id] = value }) {
+            val results = JSONObject()
+            questions.forEach { q -> results.put(q.string("id"), JSONObject().put("answers", JSONArray().put(answers[q.string("id")]))) }
+            onRespond(JSONObject().put("answers", results))
+        }
+        if (questions.isNotEmpty() && questions.none { it.optBoolean("isSecret") }) TextButton(onClick = {
+            val results = JSONObject()
+            questions.forEach { question -> results.put(question.string("id"), JSONObject().put("answers", JSONArray().put("请按合理假设继续。"))) }
+            onRespond(JSONObject().put("answers", results))
+        }, enabled = enabled, modifier = Modifier.testTag("answer_with_assumptions")) { Text("按合理假设继续") }
     }
 }
 
