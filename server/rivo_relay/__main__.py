@@ -28,7 +28,6 @@ def parser():
         if name == "serve":
             sub.add_argument("--host", default="127.0.0.1")
             sub.add_argument("--port", type=int, default=8765)
-            sub.add_argument("--name", default="", help="Deprecated; node name is discovered from Tailscale or the computer")
             sub.add_argument("--url", default="http://10.0.2.2:8765")
             sub.add_argument("--cert", type=Path)
             sub.add_argument("--key", type=Path)
@@ -54,7 +53,7 @@ def main(argv=None):
     args = parser().parse_args(argv)
     os.umask(0o077)
     config = Config(workspace=args.workspace.resolve(), host=getattr(args, "host", "127.0.0.1"),
-        port=getattr(args, "port", 8765), name=getattr(args, "name", ""),
+        port=getattr(args, "port", 8765),
         public_url=getattr(args, "url", "http://10.0.2.2:8765"),
         cert=getattr(args, "cert", None), key=getattr(args, "key", None),
         codex_home=getattr(args, "codex_home", Path.home() / ".codex"),
@@ -72,7 +71,8 @@ def main(argv=None):
             if args.command == "pair":
                 import qrcode
                 result = pairing.create(args.ttl)
-                link = args.url.rstrip("/") + "/pair#" + urlencode({"v": "1", "code": result["code"]})
+                link = args.url.rstrip("/") + "/pair#" + urlencode({"v": "2", "code": result["code"], "node": config.node_id,
+                    "direct": args.url.rstrip("/"), "relay": "", "pin": ""})
                 result["url"] = link
                 image = qrcode.make(link).convert("RGB")
                 if args.output:

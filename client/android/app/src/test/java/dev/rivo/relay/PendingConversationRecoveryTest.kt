@@ -55,7 +55,7 @@ class PendingConversationRecoveryTest {
         } finally { directory.deleteRecursively() }
     }
 
-    @Test fun severalPendingDraftsAndLegacyDraftStayIndependentAcrossRestart() = runBlocking {
+    @Test fun severalPendingDraftsStayIndependentWithoutMigratingLegacyDraft() = runBlocking {
         val directory = Files.createTempDirectory("rivo-many-pending").toFile()
         try {
             val store = ConversationStore(directory)
@@ -68,13 +68,13 @@ class PendingConversationRecoveryTest {
             store.setPendingWorktreeRef(first, "refs/heads/main")
             store.checkpointPendingSubmission(first, "create-first", "create")
             val restarted = ConversationStore(directory)
-            assertEquals(setOf("legacy", "first", "second"), restarted.listPending("project").map { it.draft.text }.toSet())
+            assertEquals(setOf("first", "second"), restarted.listPending("project").map { it.draft.text }.toSet())
             assertEquals("project", restarted.resolvePendingSubmission("create-first", JSONObject("""{"status":"accepted","receipt":{"threadId":"native-first"}}""")))
             assertEquals("native-first", restarted.pendingThreadId(first))
             assertNull(restarted.pendingThreadId(second))
             assertEquals("refs/heads/main", restarted.pendingWorktreeRef(first))
             restarted.finishPending(first)
-            assertEquals(setOf("legacy", "second"), restarted.listPending("project").map { it.draft.text }.toSet())
+            assertEquals(setOf("second"), restarted.listPending("project").map { it.draft.text }.toSet())
             assertEquals("m2", restarted.loadDraft("pending:$second").model)
             restarted.saveDraftOrdered("pending:$first", ConversationDraft())
         } finally { directory.deleteRecursively() }

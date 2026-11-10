@@ -18,6 +18,30 @@ class PairingTests(unittest.TestCase):
         self.now = 1000.0
         self.store = PairingStore(self.db, clock=lambda: self.now)
 
+    def test_cli_emits_v2_direct_pairing_link(self):
+        import contextlib
+        import io
+        import json
+        from urllib.parse import urlsplit, parse_qs
+        from rivo_relay.__main__ import main
+        from rivo_relay.config import Config
+        from rivo_relay.gateway.config import pairing_route_binding
+        import hashlib
+        workspace = Path(self.directory.name) / 'cli'
+        output = workspace / 'pair.json'
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(0, main(['pair', '--workspace', str(workspace), '--url',
+                'https://node.example', '--json-output', str(output)]))
+        fields = parse_qs(urlsplit(json.loads(output.read_text())['url']).fragment, keep_blank_values=True)
+        self.assertEqual(['2'], fields['v'])
+        self.assertEqual([Config(workspace=workspace).node_id], fields['node'])
+        self.assertEqual(['https://node.example'], fields['direct'])
+        self.assertEqual([''], fields['relay'])
+        self.assertEqual([''], fields['pin'])
+        self.assertTrue(fields['code'][0])
+        self.assertEqual(hashlib.sha256(b'https://node.example\n\n').hexdigest(),
+            pairing_route_binding(workspace, 'https://node.example'))
+
     def test_one_time_exchange_normalization_and_digest_only_storage(self):
         pairing = self.store.create()
         self.assertEqual(pairing["expires_at"], 1300)

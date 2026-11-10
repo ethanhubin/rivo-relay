@@ -317,30 +317,15 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
     fun pendingAppliedGoal(id: String): String? = getMetadata("pending-applied-goal:$id")
     fun pendingWorktreeRef(projectId: String): String? = getMetadata("pending-ref:$projectId")
     fun setPendingWorktreeRef(projectId: String, ref: String?) = putMetadata("pending-ref:$projectId", ref)
-    fun beginPending(projectId: String) {
-        val key = "pending:$projectId"
-        if (getMetadata("completed:$key") == "true") enqueueDraft(key, ConversationDraft())
-        commitMetadata(mapOf("completed:$key" to null, "pending-completed-thread:$projectId" to null))
-    }
     private fun pendingEntry(id: String): JSONObject? = getMetadata("pending-entry:$id")?.let { runCatching { JSONObject(it) }.getOrNull() }
-    private fun migratePending(projectId: String) {
-        if (pendingEntry(projectId) != null || pendingCompleted(projectId)) return
-        val draft = latestDraft("pending:$projectId")
-        if (draft.hasContent || pendingThreadId(projectId) != null) {
-            putRecoveryMetadata("pending-entry:$projectId", JSONObject().put("projectId", projectId)
-                .put("createdAt", System.currentTimeMillis()).toString())
-        }
-    }
     /** Each new chat owns a distinct draft, including multiple unsent chats in one project. */
     fun createPending(projectId: String): String {
-        migratePending(projectId)
         val id = UUID.randomUUID().toString()
         putRecoveryMetadata("pending-entry:$id", JSONObject().put("projectId", projectId)
             .put("createdAt", System.currentTimeMillis()).toString())
         return id
     }
     suspend fun listPending(projectId: String): List<PendingConversation> = withContext(Dispatchers.IO) {
-        migratePending(projectId)
         val ids = synchronized(metadataLock) { metadata.keys().asSequence().filter { it.startsWith("pending-entry:") }
             .map { it.removePrefix("pending-entry:") }.toList() }
         ids.mapNotNull { id ->

@@ -3,7 +3,6 @@ from __future__ import annotations
 from contextlib import nullcontext
 from .read_budget import ReadStopped, read_budget
 
-import base64
 import gzip
 import secrets
 import select
@@ -12,26 +11,19 @@ import ssl
 import json
 import os
 import time
-import sys
-import datetime
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, unquote, urlsplit, quote
 
 from .observability import error_code, event, request_id, request_trace, route_kind
 
-from .app import public_submission, public_todo
-from .codex.files import MAX_TRANSFER_BYTES, native_path
+from .codex.files import MAX_TRANSFER_BYTES
 from .codex.native_download import byte_range
 from .speech import MAX_SPEECH_BYTES, MAX_CHUNK_BYTES
 from .media import MediaError
 from .updates import latest_update, update_apk
-from .client_projection import client_history, client_session
-
-
-class ApiError(Exception):
-    def __init__(self, status: int, code: str, message: str):
-        self.status, self.code = status, code
-        super().__init__(message)
+from .routes import dispatch
+# Preserve the existing import path for shared validation helpers.
+from .routes.common import ApiError, required, permission_options, native_input
 
 
 def accepts_gzip(value: str) -> bool:
@@ -50,57 +42,6 @@ def accepts_gzip(value: str) -> bool:
     return qualities.get("gzip", qualities.get("*", 0)) > 0
 
 
-def required(body: dict, key: str, limit: int = 200) -> str:
-    value = body.get(key)
-    if not isinstance(value, str) or not value.strip() or len(value) > limit:
-        raise ApiError(400, "invalid_request", f"{key} is required")
-    return value
-
-
-def permission_options(body: dict) -> dict:
-    options = {}
-    for key, arg, allowed in (
-        ('sandbox', 'sandbox', ('read-only', 'workspace-write', 'danger-full-access')),
-        ('approvalPolicy', 'approval_policy', ('on-request', 'untrusted', 'never', 'on-failure', 'preset-request', 'preset-auto', 'preset-full')),
-    ):
-        value = body.get(key)
-        if value is not None:
-            if value not in allowed:
-                raise ApiError(400, 'invalid_request', f'Invalid {key}')
-            options[arg] = value
-    return options
-
-
-def native_input(body: dict) -> list[dict] | None:
-    items = body.get("input")
-    if items is None:
-        return None
-    if not isinstance(items, list) or not 1 <= len(items) <= 64:
-        raise ApiError(400, "invalid_input", "input must contain 1–64 native items")
-    if sum(isinstance(item, dict) and item.get('type') in ('image', 'localImage') for item in items) > 10:
-        raise ApiError(400, 'invalid_input', '最多添加 10 张图片')
-    for item in items:
-        if not isinstance(item, dict):
-            raise ApiError(400, "invalid_input", "Invalid native input item")
-        kind = item.get("type")
-        if kind == "text":
-            required(item, "text", 200000)
-        elif kind == "image":
-            if not (isinstance(item.get("url"), str) and item["url"] or isinstance(item.get("fileId"), str) and item["fileId"]):
-                raise ApiError(400, "invalid_input", "Image needs a URL or native file ID")
-            if isinstance(item.get('url'), str):
-                limit = ((20 * 1024 * 1024 + 2) // 3) * 4 + 64 if item['url'].startswith('data:') else 8192
-                if len(item['url']) > limit:
-                    raise ApiError(413, 'image_too_large', '图片数据或地址超过大小限制')
-            if isinstance(item.get('fileId'), str) and len(item['fileId']) > 512:
-                raise ApiError(400, 'invalid_input', 'Image file ID is too long')
-        elif kind in {"localImage", "mention", "skill"}:
-            required(item, "path", 4096)
-            if kind != "localImage":
-                required(item, "name", 1000)
-        else:
-            raise ApiError(400, "invalid_input", "Unknown native input type")
-    return items
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -466,7 +407,7 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.app.pairing.exchange(required(body, "code", 512),
                     required(body, "deviceName", 100), client_key=self.client_address[0],
                     resume=body.get("resume"), node_id=self.app.config.node_id,
-                    route_binding=pairing_route_binding(self.app.config.workspace))
+                    route_binding=pairing_route_binding(self.app.config.workspace, self.app.config.public_url))
                 self.send_json(200, {"token": result["token"], "deviceId": result["connection_id"], "reuseProof": result.get("reuseProof", ""),
                     "node": {"id": self.app.config.node_id, "name": self.app.node_name.get()}})
                 return
@@ -522,7 +463,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.command == 'POST' and len(path) == 5 and path[:3] == ['v1', 'speech', 'streams'] and path[-1] == 'chunks':
                 if self.headers.get_content_type() != 'application/octet-stream': raise ApiError(415, 'invalid_speech', '语音分片需要 PCM 数据')
-                self.send_json(200, self.app.speech.stream(connection.get('id', connection.get('connection_id')), path[3], 'chunks', self.read_bounded(MAX_CHUNK_BYTES)))
+                self.send_json(200, self.app.speech.stream(connection['connection_id'], path[3], 'chunks', self.read_bounded(MAX_CHUNK_BYTES)))
                 return
             if self.command == "GET" and path == ["v1", "files", "download"]:
                 self.send_file(required({"path": query.get("path", [None])[0]}, "path", 4096))
@@ -533,7 +474,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, self.receive_file(None, query))
                 return
             if (self.command == "POST" and len(path) == 4 and path[:2] in (["v1", "threads"], ["v1", "projects"])
-                    and path[3] == "attachments" and self.headers.get_content_type() == "application/octet-stream"):
+                    and path[3] == "attachments"):
+                if self.headers.get_content_type() != "application/octet-stream":
+                    raise ApiError(415, "invalid_request", "附件需要二进制上传")
                 self.send_json(200, self.receive_file(path[2], query, project=path[1] == 'projects'))
                 return
             if self.command == "GET" and path == ["v1", "events"]:
@@ -582,329 +525,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.close_connection = True
 
     def route(self, path, query, body, connection):
-        method = self.command
-        codex = self.app.codex
-        connection_id = connection.get("id", connection.get("connection_id"))
-        if path == ["v1", "node"] and method == "GET":
-            return self.app.node()
-        if path == ['v1', 'media', 'capabilities'] and method == 'GET':
-            return self.app.media_capabilities()
-        if path == ['v1', 'speech', 'streams'] and method == 'POST':
-            return self.app.speech.start(connection_id, body.get('context', ''))
-        if len(path) == 5 and path[:3] == ['v1', 'speech', 'streams'] and path[4] in ('finish', 'cancel') and method == 'POST':
-            return self.app.speech.stream(connection_id, path[3], path[4])
-        if path in (['v1', 'media', 'library'], ['v1', 'media', 'generated']) and method == 'GET':
-            return {'items': self.app.media.list(thread_id=query.get('threadId', [None])[0],
-                favorite=query.get('favorite', ['false'])[0] == 'true', generated=path[-1] == 'generated', source=query.get('source', [None])[0])}
-        if path == ['v1', 'media', 'library'] and method == 'POST':
-            return self.app.media.import_source(required(body, 'source', 8192), body.get('threadId'))
-        if len(path) in (4, 5) and path[:3] in (['v1', 'media', 'library'], ['v1', 'media', 'generated']):
-            if method == 'GET' and (len(path) == 4 or path[4] == 'provenance'): return self.app.media.info(path[3])
-            if method == 'PATCH' and len(path) == 4: return self.app.media.favorite(path[3], body.get('favorite'))
-            if method == 'DELETE' and len(path) == 4: return self.app.media.delete(path[3])
-        if path == ["v1", "download-links"] and method == "POST":
-            target = native_path(required(body, "path", 4096))
-            key = secrets.token_urlsafe(32)
-            expiry = time.time() + 3600
-            with self.app.download_lock:
-                self.app.download_links = {k: v for k, v in self.app.download_links.items() if v[1] > time.time()}
-                if len(self.app.download_links) >= 128:
-                    raise ApiError(429, "too_many_downloads", "下载链接过多")
-                self.app.download_links[key] = (target, expiry)
-            return {"url": self.app.config.public_url.rstrip("/") + "/v1/download-links/" + key, "expiresAt": expiry}
-        if path == ["v1", "goals", "capabilities"] and method == "GET":
-            return codex.goal_capabilities()
-        if path == ["v1", "models"] and method == "GET":
-            if hasattr(codex, 'capabilities'):
-                return codex.capabilities(refresh=query.get('refresh', ['0'])[0] == '1')
-            return {"models": codex.models()}
-        if path == ['v1', 'usage'] and method == 'GET':
-            return {'usage': codex.usage()}
-        if path == ['v1', 'project-directories'] and method == 'GET':
-            return codex.project_directory(query.get('path', [None])[0])
-        if len(path) == 4 and path[:2] == ['v1', 'projects'] and path[3] == 'git' and method == 'GET':
-            return {'git': codex.project_git(path[2])}
-        if path == ["v1", "files"] and method == "GET":
-            file_path = required({"path": query.get("path", [None])[0]}, "path", 4096)
-            return codex.read_file(file_path)
-        if path == ["v1", "directories"] and method == "GET":
-            return codex.read_directory(required({"path": query.get("path", [None])[0]}, "path", 4096))
-        if len(path) == 4 and path[:2] == ["v1", "threads"] and path[3] == "attachments" and method == "POST":
-            return codex.upload_attachment(path[2], required(body, "name", 200), body.get("dataBase64"))
-        if len(path) == 4 and path[:2] == ["v1", "projects"] and path[3] == "attachments" and method == "POST":
-            return codex.upload_project_attachment(path[2], required(body, "name", 200), body.get("dataBase64"))
-        if path == ["v1", "activity"] and method == "GET":
-            return codex.active_tasks()
-        if path == ["v1", "projects"]:
-            if method == "GET":
-                view = query.get('view', ['full'])[0]
-                if view not in {'full', 'summary'}:
-                    raise ApiError(400, 'invalid_request', 'Unknown project view')
-                return {"projects": codex.list_projects(summary=True) if view == 'summary' else codex.list_projects()}
-            if method == "POST":
-                project_path = required(body, "path", 4096)
-                sid = required(body, "submissionId")
-                if 'trustConfirmed' in body and not isinstance(body['trustConfirmed'], bool):
-                    raise ApiError(400, 'invalid_request', 'trustConfirmed must be boolean')
-                options = {'trust_confirmed': body['trustConfirmed']} if 'trustConfirmed' in body else {}
-                return self.app.submit(connection_id, sid, "project.add", project_path, body,
-                    lambda: codex.add_project(project_path, idempotency_key=sid, folder_name=body.get('folderName'), **options))
-        if path == ["v1", "threads"]:
-            if method == "GET":
-                project = query.get("projectId", [""])[0]
-                if not project:
-                    raise ApiError(400, "invalid_request", "projectId is required")
-                archived = query.get('archived', ['false'])[0]
-                if archived not in ('true', 'false'):
-                    raise ApiError(400, 'invalid_request', 'archived must be true or false')
-                view = query.get('view', ['full'])[0]
-                if view not in ('full', 'summary'):
-                    raise ApiError(400, 'invalid_request', 'Unknown thread view')
-                if view == 'summary':
-                    return {"threads": codex.list_sessions(project, archived=archived == 'true', summary=True),
-                            "catalogComplete": False}
-                return {"threads": codex.list_sessions(project, archived=True) if archived == 'true' else codex.list_sessions(project),
-                        "catalogComplete": True}
-            if method == "POST":
-                project, sid = required(body, "projectId"), required(body, "submissionId")
-                options = permission_options(body)
-                if body.get('worktreeRef'):
-                    options['worktree_ref'] = body['worktreeRef']
-                return self.app.submit(connection_id, sid, "thread.create", project, body,
-                    lambda: codex.create_session(project, **options))
-        if len(path) >= 3 and path[:2] == ["v1", "threads"]:
-            if len(path) == 4 and path[3] == 'prediction' and method == 'POST':
-                return codex.predict_message(path[2], required(body, 'expectedTurnId'))
-            if len(path) == 4 and path[3] == "ownership" and method == "GET":
-                return codex.preview_handoff(path[2], query.get("operation", ["takeover"])[0], connection_id)
-            thread_id = path[2]
-            if len(path) == 4 and path[3] == 'fork' and method == 'POST':
-                sid, turn_id = required(body, 'submissionId'), required(body, 'lastTurnId')
-                ref = required(body, 'worktreeRef') if 'worktreeRef' in body else None
-                return self.app.submit(connection_id, sid, 'thread.fork', thread_id, body,
-                    lambda: codex.fork_session(thread_id, turn_id, worktree_ref=ref))
-            if len(path) == 4 and path[3] == 'fork-context' and method == 'GET':
-                codex.start()
-                source = codex.connection.request('thread/read', {'threadId': thread_id, 'includeTurns': False})['thread']
-                from .codex.developer import project_git
-                return {'projectId': source.get('projectId'), 'cwd': source.get('cwd'),
-                        'git': project_git(codex.connection, source['cwd'])}
-            if len(path) == 3 and method == "GET":
-                options = {'native_revision': query['nativeRevision'][0]} if query.get('nativeRevision') else {}
-                limit = int(query.get("limit", ["8"])[0])
-                cursor = query.get("cursor", [None])[0]
-                result = codex.get_session(thread_id, cursor=cursor, limit=limit, **options)
-                result["queue"] = self.app.queue.list(thread_id)
-                compact_images = self.observe_history_media(result.get('thread'))
-                return client_session(result, known_head_revision=query.get("knownHeadRevision", [None])[0],
-                                      limit=limit, cursor=cursor, compact_images=compact_images)
-            if len(path) == 4 and path[3] == "history" and method == "GET":
-                options = {'native_revision': query['nativeRevision'][0]} if query.get('nativeRevision') else {}
-                result = codex.history(thread_id, cursor=query.get("cursor", [None])[0],
-                                       limit=int(query.get("limit", ["30"])[0]), **options)
-                compact_images = self.observe_history_media({'id': thread_id, **result})
-                projected = client_history({'threadId': thread_id, **result}, compact_images=compact_images)
-                if 'threadId' not in result:
-                    projected.pop('threadId', None)
-                return projected
-            if len(path) == 4 and method == 'GET':
-                if path[3] == 'diff':
-                    from .codex.diff_projection import diff_page
-                    offset = int(query.get('offset', ['0'])[0])
-                    if offset > 0 and not query.get('revision'):
-                        raise ApiError(400, 'invalid_request', 'revision required for pagination')
-                    return {'diff': diff_page(codex.diff(thread_id), revision=query.get('revision', [None])[0],
-                        file_id=query.get('fileId', [None])[0], offset=offset,
-                        limit=int(query.get('limit', ['400'])[0]))}
-                if path[3] == 'review-context':
-                    return codex.review_context(thread_id)
-                if path[3] == 'workspace':
-                    codex.start()
-                    return {'workspace': codex.workspaces.inspect(thread_id) if codex.workspaces else None,
-                            'externalWorkspace': codex.external_workspace(thread_id)}
-            if len(path) == 5 and path[3:] == ['workspace', 'cleanup'] and method == 'POST':
-                sid, revision = required(body, 'submissionId'), required(body, 'revision')
-                discard = body.get('discard', False)
-                if not isinstance(discard, bool):
-                    raise ApiError(400, 'invalid_request', 'discard must be boolean')
-                if self.app.queue.list(thread_id):
-                    raise ApiError(409, 'workspace_busy', '请先处理此会话的执行队列')
-                return self.app.submit(connection_id, sid, 'workspace.cleanup', thread_id, body,
-                    lambda: codex.workspaces.cleanup(thread_id, revision, discard))
-            if len(path) == 4 and path[3] == "queue" and method == "POST":
-                sid, operation = required(body, "submissionId"), required(body, "operation")
-                if operation == "enqueue":
-                    items = native_input(body)
-                    if not items: raise ApiError(400, "invalid_request", "input required")
-                    for key in ("model", "effort"):
-                        if body.get(key) is not None and (not isinstance(body[key], str) or len(body[key]) > 200):
-                            raise ApiError(400, "invalid_request", "Invalid model settings")
-                    if body.get('mode') not in (None, 'default', 'plan'):
-                        raise ApiError(400, 'invalid_request', 'Invalid mode')
-                    if body.get('serviceTier') not in (None, 'default', 'priority'):
-                        raise ApiError(400, 'invalid_request', 'Invalid serviceTier')
-                    fn = lambda: self.app.queue.enqueue(thread_id, sid, connection_id, {"input": items, "model": body.get("model"), "effort": body.get("effort"), 'mode': body.get('mode'), 'serviceTier': body.get('serviceTier')})
-                elif operation == "reorder":
-                    ids = body.get("ids")
-                    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
-                        raise ApiError(400, "invalid_request", "ids required")
-                    fn = lambda: self.app.queue.reorder(thread_id, ids, body.get("expectedIds"))
-                elif operation in {"edit", "remove", "steer", "recover", "dismiss"}:
-                    item_id = required(body, "itemId")
-                    revision = body.get("revision")
-                    if not isinstance(revision, int) or isinstance(revision, bool):
-                        raise ApiError(400, "invalid_request", "revision required")
-                    if operation == "steer":
-                        turn_id = required(body, "expectedTurnId")
-                        fn = lambda: self.app.queue.steer(thread_id, item_id, revision, turn_id)
-                    elif operation == 'recover':
-                        fn = lambda: self.app.queue.recover(thread_id, item_id, revision, sid, connection_id)
-                    else:
-                        fn = lambda: self.app.queue.change(thread_id, item_id, revision, operation, body.get("text"))
-                else:
-                    raise ApiError(400, "invalid_request", "Unknown queue operation")
-                return self.app.submit(connection_id, sid, "thread.queue." + operation, thread_id, body, fn)
-            if len(path) == 4 and method == "POST":
-                action, sid = path[3], required(body, "submissionId")
-                if action == "pin":
-                    if not isinstance(body.get("pinned"), bool):
-                        raise ApiError(400, "invalid_request", "pinned must be boolean")
-                    fn = lambda: codex.pin_session(thread_id, body["pinned"])
-                elif action == 'goal':
-                    operation = body.get('operation')
-                    if operation not in ('set', 'pause', 'resume', 'clear'):
-                        raise ApiError(400, 'invalid_request', 'Invalid goal operation')
-                    objective = required(body, 'objective', 200000) if operation == 'set' else None
-                    budget = body.get('tokenBudget')
-                    if budget is not None and (type(budget) is not int or not 0 < budget <= 9223372036854775807):
-                        raise ApiError(400, 'invalid_request', 'tokenBudget must be a positive integer')
-                    fn = lambda: codex.update_goal(thread_id, operation, objective=objective, token_budget=budget)
-                elif action == 'settings':
-                    if not any(body.get(key) is not None for key in ('model', 'effort', 'serviceTier', 'sandbox', 'approvalPolicy')):
-                        raise ApiError(400, 'invalid_request', 'Settings required')
-                    for key in ('model', 'effort'):
-                        if body.get(key) is not None:
-                            required(body, key, 200)
-                    if body.get('serviceTier') not in (None, 'default', 'priority'):
-                        raise ApiError(400, 'invalid_request', 'Invalid serviceTier')
-                    options = permission_options(body)
-                    fn = lambda: codex.update_settings(thread_id, model=body.get('model'), effort=body.get('effort'), service_tier=body.get('serviceTier'), **options)
-                elif action == 'archive':
-                    if not isinstance(body.get('archived'), bool):
-                        raise ApiError(400, 'invalid_request', 'archived must be boolean')
-                    if body['archived'] and self.app.queue.list(thread_id):
-                        raise ApiError(409, 'thread_busy', '请先处理此会话的执行队列')
-                    fn = lambda: codex.archive_session(thread_id, body['archived'])
-                elif action == 'review':
-                    from .codex.developer import validate_review
-                    target = validate_review(body.get('target'))
-                    fn = lambda: self.app.queue.enqueue(thread_id, sid, connection_id,
-                        {'input': [{'type': 'text', 'text': '代码审查 · ' + target['type']}], 'review': target})
-                elif action == "continue":
-                    resume_turn_id = required(body, 'expectedTurnId')
-                    fn = lambda: codex.send(thread_id, '', input_items=[], client_message_id=sid,
-                        acquire_released=True, resume_turn_id=resume_turn_id)
-                elif action == "turns":
-                    items = native_input(body)
-                    text = required(body, "text", 200000) if items is None else body.get("text", "")
-                    for key in ("model", "effort"):
-                        if key in body and body[key] is not None and (not isinstance(body[key], str) or len(body[key]) > 200):
-                            raise ApiError(400, "invalid_request", f"Invalid {key}")
-                    kwargs = {"model": body.get("model"), "effort": body.get("effort"), "client_message_id": sid}
-                    if body.get('mode') not in (None, 'default', 'plan'):
-                        raise ApiError(400, 'invalid_request', 'Invalid mode')
-                    if body.get('mode') is not None:
-                        kwargs['mode'] = body['mode']
-                    if body.get('serviceTier') not in (None, 'default', 'priority'):
-                        raise ApiError(400, 'invalid_request', 'Invalid serviceTier')
-                    if body.get('serviceTier') is not None:
-                        kwargs['service_tier'] = body['serviceTier']
-                    if items is not None:
-                        kwargs["input_items"] = items
-                    if 'requireGoalSupport' in body:
-                        if type(body['requireGoalSupport']) is not bool:
-                            raise ApiError(400, 'invalid_request', 'requireGoalSupport must be boolean')
-                        kwargs['require_goal_support'] = body['requireGoalSupport']
-                    fn = lambda: codex.send(thread_id, text, acquire_released=True, **kwargs)
-                elif action == 'answers':
-                    turn_id = required(body, 'expectedTurnId')
-                    fn = lambda: codex.answer_questions(thread_id, turn_id, body.get('answers'), sid)
-                elif action == "steer":
-                    items = native_input(body)
-                    text = required(body, "text", 200000) if items is None else body.get("text", "")
-                    turn_id = required(body, "expectedTurnId")
-                    kwargs = {"expected_turn_id": turn_id, "client_message_id": sid}
-                    if items is not None:
-                        kwargs["input_items"] = items
-                    fn = lambda: codex.steer(thread_id, text, **kwargs)
-                elif action == "ownership":
-                    operation = body.get("operation")
-                    if operation not in ("takeover", "release", "resume"):
-                        raise ApiError(400, "invalid_request", "Invalid ownership operation")
-                    ticket = required(body, "ticket", 128)
-                    options = {'rebind_workspace': required(body, 'rebindWorkspace', 4096)} if 'rebindWorkspace' in body else {}
-                    def fn():
-                        result = codex.handoff(thread_id, operation, request_id=self._request_id, owner=connection_id, ticket=ticket, confirmed=body.get("confirmed") is True, **options)
-                        # Submission receipts contain identities only; release
-                        # metadata belongs to the preview/control projection.
-                        return {"threadId": result["threadId"]}
-                elif action == "interrupt":
-                    turn_id = required(body, "turnId")
-                    fn = lambda: codex.interrupt(thread_id, turn_id=turn_id)
-                else:
-                    raise ApiError(404, "not_found", "Unknown operation")
-                return self.app.submit(connection_id, sid, f"thread.{action}", thread_id, body, fn)
-        if path == ["v1", "requests", "respond"] and method == "POST":
-            key, sid = required(body, "key", 1024), required(body, "submissionId")
-            response = body.get("response")
-            if not isinstance(response, dict):
-                raise ApiError(400, "invalid_request", "response must be an object")
-            return self.app.submit(connection_id, sid, "request.respond", key, body,
-                lambda: codex.respond(key, response))
-        if len(path) == 4 and path[:2] == ["v1", "submissions"] and path[3] == "reconcile" and method == "POST":
-            return public_submission(self.app.submissions.reconcile(path[2], connection_id))
-        if len(path) == 3 and path[:2] == ["v1", "submissions"] and method == "GET":
-            return public_submission(self.app.submissions.get(path[2], connection_id))
-        if path == ["v1", "todos"]:
-            if method == "GET":
-                return {"todos": [public_todo(todo) for todo in self.app.todos.list()]}
-            if method == "POST":
-                todo = self.app.todos.create(required(body, "title", 1000),
-                    notes=body.get("notes", ""), todo_id=body.get("id"), details=body.get("details", {}))
-                self.app.events.publish({"method": "relay/todos", "params": {}})
-                return {"todo": public_todo(todo)}
-        if len(path) >= 3 and path[:2] == ["v1", "todos"]:
-            todo_id = path[2]
-            if len(path) == 4 and path[3] == "dispatch" and method == "POST":
-                required(body, "projectId")
-                required(body, "submissionId")
-                if body.get("threadId") is not None:
-                    required(body, "threadId")
-                if "uploadedAttachments" in body:
-                    uploads = body["uploadedAttachments"]
-                    if not isinstance(uploads, list) or not 1 <= len(uploads) <= 16:
-                        raise ApiError(400, "invalid_request", "本机附件数量无效")
-                    for item in uploads:
-                        if not isinstance(item, dict) or set(item) != {"name", "path"}:
-                            raise ApiError(400, "invalid_request", "本机附件引用无效")
-                        required(item, "name", 200)
-                        native_path(required(item, "path", 4096))
-                return self.app.dispatch_todo(todo_id, connection_id, body)
-            if len(path) == 3:
-                if method == "GET":
-                    return {"todo": public_todo(self.app.todos.get(todo_id))}
-                if method == "PATCH":
-                    allowed = {"title", "notes", "completed", "details"}
-                    if not body or not set(body) <= allowed:
-                        raise ApiError(400, "invalid_request", "Unknown or empty todo fields")
-                    todo = self.app.todos.update(todo_id, **body)
-                    self.app.events.publish({"method": "relay/todos", "params": {}})
-                    return {"todo": public_todo(todo)}
-                if method == "DELETE":
-                    self.app.todos.delete(todo_id)
-                    self.app.events.publish({"method": "relay/todos", "params": {}})
-                    return {"deleted": True}
-        raise ApiError(404, "not_found", "Unknown endpoint")
+        return dispatch(self, path, query, body, connection)
 
     def stream_events(self, token: str):
         if not self.server.stream_slots.acquire(blocking=False):

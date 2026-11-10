@@ -134,6 +134,41 @@ class ApiTests(unittest.TestCase):
         self.paired = self._pair()
         self.token = self.paired["token"]
 
+    def test_route_families_preserve_authentication_and_unknown_endpoints(self):
+        paths = (
+            '/v1/node/unknown', '/v1/media/unknown', '/v1/speech/unknown',
+            '/v1/files/unknown', '/v1/projects/unknown/unknown',
+            '/v1/threads/unknown/unknown', '/v1/todos/unknown/unknown',
+            '/v1/submissions/unknown/unknown', '/v1/unknown',
+            '/v2/projects', '/projects', '/v1',
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertEqual(401, self.request('GET', path)[0])
+                status, result, _ = self.request('GET', path, token=self.token)
+                self.assertEqual(404, status)
+                self.assertEqual({'code': 'not_found', 'message': 'Unknown endpoint'}, result['error'])
+
+    def test_unknown_thread_operation_keeps_validation_order(self):
+        path = '/v1/threads/thread-1/unknown'
+        for body, expected_status, message in (
+            ({}, 400, 'submissionId is required'),
+            ({'submissionId': 'unknown-operation'}, 404, 'Unknown operation'),
+        ):
+            with self.subTest(body=body):
+                status, result, _ = self.request('POST', path, body, token=self.token)
+                self.assertEqual(expected_status, status)
+                self.assertEqual(message, result['error']['message'])
+
+    def test_attachment_routes_reject_json_after_authentication(self):
+        for resource in ('threads', 'projects'):
+            path = f'/v1/{resource}/target-1/attachments'
+            with self.subTest(resource=resource):
+                self.assertEqual(401, self.request('POST', path, {}, token=None)[0])
+                status, result, _ = self.request('POST', path, {'name': 'a', 'dataBase64': 'YQ=='}, token=self.token)
+                self.assertEqual(415, status)
+                self.assertEqual('invalid_request', result['error']['code'])
+
     def test_sites_requires_auth_and_exposes_only_list(self):
         self.app.codex.connection = Mock()
         with patch('rivo_relay.codex.sites.list_sites', return_value={'items': [], 'cursor': None}) as sites:
@@ -552,19 +587,12 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(writes[0][2]["confirmed"])
         self.assertEqual("fixture-ticket", writes[0][2]["ticket"])
 
-    def test_attachment_and_directory_routes_require_auth_and_use_native_host(self):
-        calls = []
+    def test_directory_route_requires_auth_and_uses_native_host(self):
         self.native.read_directory = lambda path: {"path": path, "entries": [{"fileName": "a.pdf", "isFile": True, "isDirectory": False}]}
-        self.native.upload_attachment = lambda thread, name, data: calls.append((thread, name, data)) or {"type": "mention", "name": name, "path": "/remote/a.pdf"}
+        self.assertEqual(401, self.request("GET", "/v1/directories?path=%2Fremote")[0])
         status, body, _ = self.request("GET", "/v1/directories?path=%2Fremote", token=self.token)
         self.assertEqual(200, status)
         self.assertEqual("a.pdf", body["entries"][0]["fileName"])
-        status, body, _ = self.request("POST", "/v1/threads/thread-1/attachments", {"name": "a.pdf", "dataBase64": "YQ=="}, token=self.token)
-        self.assertEqual(200, status)
-        self.assertEqual([("thread-1", "a.pdf", "YQ==")], calls)
-        status, _, _ = self.request("POST", "/v1/threads/thread-1/attachments", {"name": "a.pdf", "dataBase64": "YQ=="})
-        self.assertEqual(401, status)
-        self.assertEqual(1, len(calls))
 
     def test_binary_transfer_and_expiring_scoped_link(self):
         data = b"\x00\xff" * (3 * 1024 * 1024)
@@ -1007,7 +1035,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(replay, original)
         self.assertEqual(len(self.native.sent), 1)
 
-    def test_legacy_todo_dispatch_digest_replays_only_with_empty_details_and_identical_text(self):
+    def test_todo_dispatch_rejects_receipt_without_details_digest(self):
         self.create_todo()
         todo = self.app.todos.get("todo-1")
         payload = {"projectId": "project-1", "submissionId": "pre-upgrade-dispatch"}
@@ -1015,8 +1043,7 @@ class ApiTests(unittest.TestCase):
         self.app.submissions.claim(payload["submissionId"], self.paired["deviceId"], "todo.dispatch", "todo-1", legacy)
         self.app.submissions.mark_accepted(payload["submissionId"], {"threadId": "old-native-thread", "turnId": "old-native-turn"})
         status, receipt, _ = self.request("POST", "/v1/todos/todo-1/dispatch", payload, token=self.token)
-        self.assertEqual(status, 200)
-        self.assertEqual(receipt["receipt"]["threadId"], "old-native-thread")
+        self.assertEqual(status, 409)
         self.assertEqual(self.native.sent, [])
         self.app.todos.update("todo-1", notes="Different content")
         self.assertEqual(self.request("POST", "/v1/todos/todo-1/dispatch", payload, token=self.token)[0], 409)

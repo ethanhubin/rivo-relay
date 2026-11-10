@@ -42,6 +42,7 @@ flowchart LR
 ```text
 server/rivo_relay/
   app.py, api.py, http_server.py  # 依赖组装、认证路由、HTTP/SSE
+  routes/                       # 按业务拆分的已认证 JSON 路由及共享请求校验
   database.py, submissions.py    # 持久化、提交去重和未知结果核对
   operation_gates.py, queue.py   # 会话操作互斥、待发队列
   media.py, speech.py, todos.py  # 媒体、语音、待办
@@ -73,7 +74,7 @@ client/android/app/src/main/java/dev/rivo/relay/
 
 普通离线保留登录；认证失败清除失效连接并回到授权。撤销连接由服务端执行，HTTP 与已有 SSE 都重新验证授权。本机删除保存的凭据不等于撤销服务端连接。
 
-服务默认监听 loopback，非 loopback 监听要求 TLS。本机主节点使用 `http://100.124.150.1:18767`，经 tailnet TCP 转发到 loopback 18765；Android 对该明确 IP 开放 HTTP，其他节点仍要求受信任 HTTPS。旧节点地址迁移保留凭据和 `storageBase`，避免丢失草稿、缓存和提醒。请求日志不记录 Bearer、配对链接或正文。
+服务默认监听 loopback，非 loopback 监听要求 TLS。本机主节点使用 `http://100.124.150.1:18767`，经 tailnet TCP 转发到 loopback 18765；Android 对该明确 IP 开放 HTTP，其他节点仍要求受信任 HTTPS。节点通过显式配对添加，不自动迁移地址或向其他节点复制凭据；已有 `storageBase` 继续用于隔离草稿、缓存和提醒。请求日志不记录 Bearer、配对链接或正文。
 
 默认网络改变时，`RelayApi.resetTransport` 在 IO dispatcher 取消旧 GET/SSE、重建连接池并关闭空闲连接；已发出的写请求不因此取消或重发。会话转为 stale，恢复后重新订阅和校准。服务 HTTP worker 按连接占用，不能只移除关闭响应头就宣称具备合适的长连接调度。
 

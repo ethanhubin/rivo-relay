@@ -1,54 +1,26 @@
 package dev.rivo.relay
 
 import dev.rivo.relay.connection.*
-import org.json.JSONObject
 import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 
 class NodeEndpointsTest {
-    @Test fun migrationRetainsIdentityCredentialAndStorageScope() {
-        val old = JSONObject().put("base", NodeEndpoints.LEGACY).put("token", "fixture")
-            .put("nodeId", "node").put("deviceId", "device").put("name", "name")
-        val migrated = NodeEndpoints.migrateStored(old.toString(), false)
-        val result = JSONObject(migrated)
-        assertEquals(NodeEndpoints.DIRECT, result.getString("base"))
-        assertEquals(NodeEndpoints.LEGACY, result.getString("storageBase"))
-        for (key in listOf("token", "nodeId", "deviceId", "name")) assertEquals(old.getString(key), result.getString(key))
-        assertEquals(migrated, NodeEndpoints.migrateStored(migrated, false))
-        val other = JSONObject(old.toString()).put("base", "https://other.ts.net:18766")
-        val list = JSONArray(NodeEndpoints.migrateStored(JSONArray().put(old).put(other).toString(), true))
-        assertEquals(NodeEndpoints.DIRECT, list.getJSONObject(0).getString("base"))
-        assertEquals(other.toString(), list.getJSONObject(1).toString())
-    }
-    @Test fun provisionedNodesRetainActiveLoginAndUseSeparateStorage() {
-        val source = JSONObject().put("base", NodeEndpoints.DIRECT).put("token", "fixture")
-            .put("nodeId", "source").put("deviceId", NodeEndpoints.provisionedDeviceIds.first())
-            .put("storageBase", NodeEndpoints.LEGACY)
-        val raw = JSONArray().put(source).toString()
-        val result = NodeEndpoints.provisionedNodes(raw, source.toString())
-        val nodes = JSONArray(result)
-        assertEquals(3, nodes.length())
-        assertEquals(source.toString(), nodes.getJSONObject(0).toString())
-        for (i in 1..2) {
-            val node = nodes.getJSONObject(i)
-            assertEquals("fixture", node.getString("token"))
-            assertEquals(source.getString("deviceId"), node.getString("deviceId"))
-            assertNotEquals("source", node.getString("nodeId"))
-            assertEquals(node.getString("base"), node.getString("storageBase"))
+    @Test fun restoringLoginNeverRewritesAddressesOrProvisionsOtherNodes() {
+        for (base in listOf(NodeEndpoints.DIRECT, "https://ethanmac-mini.tail791ea5.ts.net:18766")) {
+            val node = JSONObject().put("base", base).put("storageBase", "saved-storage")
+                .put("name", "Saved node").put("nodeId", "node").put("token", "fixture")
+                .put("deviceId", "4e32d09bb49d4153a29e3a803f655592")
+            val values = mutableMapOf("connection" to node.toString(), "nodes" to JSONArray().put(node).toString())
+            val before = values.toMap()
+            val repository = PairingRepository(values::get, { key, value -> values[key] = value }, { values.remove(it) })
+            assertEquals(before, values)
+            assertEquals(base, repository.restore()!!.base)
+            assertEquals("saved-storage", repository.restore()!!.storageBase)
+            assertEquals(listOf(base), repository.saved().map { it.base })
+            assertEquals("fixture", JSONObject(repository.connection(base)!!.serialized()).getString("token"))
         }
-        assertEquals(result, NodeEndpoints.provisionedNodes(result, source.toString()))
-        nodes.getJSONObject(1).remove("token")
-        assertFalse(JSONArray(NodeEndpoints.provisionedNodes(nodes.toString(), source.toString())).getJSONObject(1).has("token"))
-    }
-    @Test fun unrelatedOrUnprovisionedLoginsNeverShareTokens() {
-        val source = JSONObject().put("base", "https://other.example").put("token", "fixture")
-            .put("deviceId", NodeEndpoints.provisionedDeviceIds.first())
-        assertEquals("[]", NodeEndpoints.provisionedNodes("[]", source.toString()))
-        source.put("base", NodeEndpoints.DIRECT).put("deviceId", "not-provisioned")
-        assertEquals("[]", NodeEndpoints.provisionedNodes("[]", source.toString()))
-        source.put("deviceId", NodeEndpoints.provisionedDeviceIds.first()).remove("token")
-        assertEquals("[]", NodeEndpoints.provisionedNodes("[]", source.toString()))
     }
     @Test fun releaseAcceptsConfiguredIpButRejectsOtherCleartextNodes() {
         assertEquals(NodeEndpoints.DIRECT, PairingParser.parse(NodeEndpoints.DIRECT, "fixture").baseUrl)

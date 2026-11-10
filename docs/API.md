@@ -14,7 +14,7 @@
 
 | 方法与路径 | 请求 | HTTP 200 响应 |
 | --- | --- | --- |
-| `GET /health` | 无 | `{"status":"ok"}`；仅说明 HTTP 活着，不代表原生已连通 |
+| `GET /health` | 无 | 返回 `status: "ok"`、稳定节点 ID `nodeId`、运行版本码 `releaseCode`（未设置时为 `0`）和原生连接状态 `nativeConnected`；`status` 仅说明 HTTP 活着，不代表原生已连通 |
 | `POST /v1/pair` | `{code, deviceName}` | `{token, deviceId, node:{id,name}}` |
 | `GET /v1/node` | Bearer | `{id,name,connected,capabilities,runtime}` |
 | `GET /v1/projects` | Bearer | `{projects:[{id,name,path,roots,threadCount,outstandingWorkCount}]}`；包含无会话项目 |
@@ -109,7 +109,7 @@
 | --- | --- | --- |
 | `GET /v1/threads/{threadId}/workspace` | Bearer | `{workspace:null}`，或 `{workspace:{id,path,sourcePath,commit,status,dirty,revision,archivePath}}`；外部工作树另含 `externalWorkspace:{path,projectRoot,projectId,commit,status,managed:false}` |
 | `POST /v1/threads/{threadId}/workspace/cleanup` | `{submissionId,revision,discard?:boolean}`，默认 false | 提交记录；接受时 `{threadId}` |
-| `GET /v1/threads/{threadId}/diff` | Bearer | `{diff:{patch,revision,files:[{path,added,removed,binary}],truncated}}` |
+| `GET /v1/threads/{threadId}/diff` | Bearer | `{diff:{schemaVersion:1,revision,files,lines,offset,nextOffset,totalLines,truncated}}` |
 | `GET /v1/threads/{threadId}/review-context` | Bearer | `{branch,branches:[…],commits:[{id,subject}]}`，最近 30 个提交 |
 | `POST /v1/threads/{threadId}/review` | `{submissionId,target:{…}}` | 提交记录；接受时 `{itemId}`，表示审查任务已入队 |
 
@@ -120,9 +120,9 @@
 
 `diff` 对比 HEAD，包含已跟踪改动及最多 100 个未跟踪文件，patch 上限 2 MiB。`truncated=true` 表示不能据此视为完整差异。`revision` 是该响应 patch 的摘要，与工作树清理的内容指纹 revision 不可互换。
 
-2026-11-07 起，差异响应增加 `schemaVersion:1`、`structured:true`、文件身份与结构化行。文件字段为 `id/path/oldPath/newPath/status/binary/added/removed/truncated/malformed`。`lines` 每项含 `fileId/path/kind/text/oldLine/newLine`；kind 为 file、hunk、addition、deletion、context 或 notice。首屏保留旧客户端需要的 patch，结构化客户端不解析 patch。
+2026-11-07 起，差异响应增加 `schemaVersion:1`、`structured:true`、文件身份与结构化行。文件字段为 `id/path/oldPath/newPath/status/binary/added/removed/truncated/malformed`。`lines` 每项含 `fileId/path/kind/text/oldLine/newLine`；kind 为 file、hunk、addition、deletion、context 或 notice。所有页面仅返回结构化差异，不返回原始 patch。
 
-差异分页传 `revision`、可选 `fileId`、`offset` 和 `limit`（默认 400，最大 1000）。返回 `offset/nextOffset/totalLines`；`nextOffset:null` 表示结束。后续页不重复传 patch。revision、文件身份或分页位置失效返回 409，客户端重新读取快照并按路径恢复选择；不能拼接不同 revision 的内容。
+差异分页传 `revision`、可选 `fileId`、`offset` 和 `limit`（默认 400，最大 1000）。返回 `offset/nextOffset/totalLines`；`nextOffset:null` 表示结束。所有页面均不传 patch。revision、文件身份或分页位置失效返回 409，客户端重新读取快照并按路径恢复选择；不能拼接不同 revision 的内容。
 
 Review 使用原生 `review/start`，通过会话执行队列等到可执行时启动。target 只接受以下四种范围，不执行 Git commit/push/merge：
 
@@ -171,9 +171,7 @@ branch / sha 最长 500 字符，自定义说明最长 20,000 字符；服务端
 | `GET /v1/files?path=…` | 节点绝对路径 | 下述预览 JSON，文件最大 4 MiB |
 | `GET /v1/files/download?path=…` | Bearer 和节点绝对路径 | `application/octet-stream`，单文件最大 1 GiB |
 | `POST /v1/threads/{threadId}/attachments?name=…` | `application/octet-stream` 与明确 Content-Length，最大 1 GiB | `{type:"mention",name,path,size}` |
-| `POST /v1/threads/{threadId}/attachments` | `{name,dataBase64}`；仍受 64 MiB JSON 请求限制 | 同上；兼容小文件调用 |
 | `POST /v1/projects/{projectId}/attachments?name=…` | 同上，按已选项目根暂存首条消息附件 | 同一 mention 回执；不会创建或恢复原生 thread |
-| `POST /v1/projects/{projectId}/attachments` | `{name,dataBase64}`，64 MiB JSON 限制 | 项目级小文件兼容入口 |
 | `POST /v1/download-links` | `{path}` | `{url,expiresAt}`；expiresAt 为 Unix 秒 |
 | `GET /v1/download-links/{ticket}` | 临时 URL，无需 Bearer | 与 `/v1/files/download` 相同的文件流 |
 
@@ -372,9 +370,9 @@ Android 输入框设置面板提供权限选择和“设为新会话默认”，
 
 ## VPS 双通道配对（v2）
 
-v1 配对保持兼容。`scripts/start-node.sh` 的 v2 二维码 fragment 增加 `node`（稳定节点 ID）、`direct`、`relay`、`pin`（网关完整 DER 证书 SHA-256），以及可选 `updates=1`。所有值使用 URL 编码；桌面注册密钥不进入二维码。`GET /health` 额外返回 `nodeId`，供本机启动器确认监听端口属于指定 workspace。
+配对二维码统一使用 v2，客户端拒绝 v1 链接；普通 CLI 和 `scripts/start-node.sh` 均生成 v2。仅直连时 `relay`、`pin` 为空，手动地址和配对码输入仍受支持。二维码 fragment 包含 `node`（稳定节点 ID）、`direct`、`relay`、`pin`（网关完整 DER 证书 SHA-256），以及可选 `updates=1`。所有值使用 URL 编码；桌面注册密钥不进入二维码。`GET /health` 额外返回 `nodeId`，供本机启动器确认监听端口属于指定 workspace。
 
-手机重新配对已保存的节点时，`POST /v1/pair` 可以增加 `resume:{deviceId,binding,proof}`，不携带旧 Bearer。`binding` 为 UTF-8 的 `direct + "\n" + relay + "\n" + pin` 的 SHA-256 小写十六进制；服务端必须与自身 `gateway-client.json` 配置计算的结果一致。
+手机重新配对已保存的节点时，`POST /v1/pair` 可以增加 `resume:{deviceId,binding,proof}`，不携带旧 Bearer。`binding` 为 UTF-8 的 `direct + "\n" + relay + "\n" + pin` 的 SHA-256 小写十六进制；服务端必须与自身 `gateway-client.json` 配置计算的结果一致；没有该配置的独立直连服务使用自身 `public_url` 作为 direct，relay 和 pin 为空。
 
 请求 proof 为 `HMAC-SHA256(SHA256(token), "request\0" + code + "\0" + nodeId + "\0" + binding)`，结果为小写十六进制。有效一次性配对码和 proof 在同一事务里验证，只有未撤销的原连接可复用。复用响应返回原 `deviceId`、空 `token`，并提供相同算法、方向改为 `response` 的 `reuseProof`。手机校验响应 proof 后保留本地旧 token。正常新配对仍返回新 token；无效 proof 不会复用旧连接，也不会绕过配对码校验。
 
