@@ -226,7 +226,7 @@ fun nativeActivityGroupLabel(messages: List<NativeMessage>): String {
         val text = compactActivity(activity.summary)
         val running = activity.status == "running"
         if (activity.status == "unknown") return@joinToString "$text（状态未知）"
-        if (activity.status == "failed") return@joinToString "$text（未完成）"
+        if (activity.status == "failed") return@joinToString "$text（${if (activity.kind == "tool") "调用失败" else "执行失败"}）"
         when (activity.kind) {
             "command" -> if (running) "正在运行命令" else "运行了 1 条命令"
             "file" -> if (running) "正在编辑 $text" else "编辑了 $text"

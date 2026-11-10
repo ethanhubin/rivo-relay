@@ -42,7 +42,7 @@ internal fun NativeActivityGroup(row: NativeTimelineRow.Activities, isCurrent: B
                 modifier = Modifier.weight(1f).testTag("activity_group_shimmer"), maxLines = if (canExpand) 1 else Int.MAX_VALUE, overflow = TextOverflow.Ellipsis)
             else Text(label, maxLines = if (canExpand) 1 else Int.MAX_VALUE, overflow = TextOverflow.Ellipsis,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f).testTag("activity_group_summary"))
-            if (failedCount > 0) Text("${failedCount} 项未完成", style = MaterialTheme.typography.labelSmall,
+            if (failedCount > 0) Text("${failedCount} 项活动失败", style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("activity_failure_count"))
             if (unknownCount > 0) Text("${unknownCount} 项状态待核验", style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("activity_unknown_count"))
@@ -69,7 +69,7 @@ internal fun NativeActivityGroup(row: NativeTimelineRow.Activities, isCurrent: B
                     }
                 }
                 if (activity.exitCode != null || activity.status in setOf("failed", "unknown")) Text(
-                    listOfNotNull(when (activity.status) { "failed" -> "执行未完成"; "unknown" -> "状态待核验"; else -> null }, activity.exitCode?.let { "退出码 $it" }).joinToString(" · "),
+                    listOfNotNull(when (activity.status) { "failed" -> if (activity.kind == "tool") "工具调用失败（不代表会话未完成）" else "活动执行失败"; "unknown" -> "状态待核验"; else -> null }, activity.exitCode?.let { "退出码 $it" }).joinToString(" · "),
                     style = MaterialTheme.typography.labelSmall,
                     color = if (activity.status == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
             }

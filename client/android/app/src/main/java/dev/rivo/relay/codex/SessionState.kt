@@ -88,3 +88,11 @@ fun SessionState.syncStatusLabel(): String? = when {
     activityStatus == null && snapshot?.isOngoing == true -> "执行中"
     else -> null
 }
+
+/** Unverified node caches cannot override the current conversation snapshot. */
+internal fun SessionState.withNodeActivity(activity: NodeActivity): SessionState =
+    copy(activityStatus = id?.let(activity::status))
+
+val SessionState.executionActive: Boolean get() =
+    (activityStatus?.let { it == "running" }
+        ?: (snapshot?.isOngoing == true && snapshot.status != "waiting")) && snapshot?.requests.orEmpty().isEmpty()

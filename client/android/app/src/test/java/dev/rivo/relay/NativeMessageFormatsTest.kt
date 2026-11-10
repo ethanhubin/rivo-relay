@@ -85,6 +85,6 @@ class NativeMessageFormatsTest {
         assertTrue(parsed.activity!!.detail.contains("+line"))
         assertTrue(parsed.activity!!.detail.contains("patch conflict details"))
         assertTrue(parsed.text.contains("patch conflict details"))
-        assertTrue(nativeActivityGroupLabel(listOf(parsed)).contains("未完成"))
+        assertTrue(nativeActivityGroupLabel(listOf(parsed)).contains("执行失败"))
     }
 }
