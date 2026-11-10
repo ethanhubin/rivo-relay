@@ -1,9 +1,8 @@
 package dev.rivo.relay.ui.chat
 
-import androidx.compose.foundation.layout.*
-import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -40,14 +39,7 @@ fun HistoricalTurnTiming(timings: List<NativeHistoricalTiming>) {
 
 @Composable
 private fun TurnTimingLine(text: String, tag: String) {
-    val gray = MaterialTheme.colorScheme.onSurfaceVariant
-    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        HorizontalDivider(Modifier.width(28.dp), color = gray)
-        Text(text, modifier = Modifier.weight(1f).testTag(tag),
-            style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace,
-            textAlign = TextAlign.Center, color = gray)
-        HorizontalDivider(Modifier.width(28.dp), color = gray)
-    }
+    Text(text, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).testTag(tag),
+        style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace,
+        textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
