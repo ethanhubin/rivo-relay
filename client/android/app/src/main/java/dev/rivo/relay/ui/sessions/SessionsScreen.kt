@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import dev.rivo.relay.R
 import dev.rivo.relay.codex.threadIsExecuting
 import dev.rivo.relay.codex.threadIsActive
+import dev.rivo.relay.codex.stableThreadOrder
 import org.json.JSONObject
 import dev.rivo.relay.data.string
 import dev.rivo.relay.data.PendingConversation
@@ -86,8 +87,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
         if (pendingIds.isNotEmpty()) listState.requestScrollToItem(0)
     }
     val ordered = remember(threads) {
-        threads.sortedWith(compareByDescending<ThreadSummary> { threadIsExecuting(it) }
-            .thenByDescending { it.pinned }.thenByDescending { threadIsActive(it) }.thenByDescending { if (threadIsActive(it)) 0 else it.updatedAt })
+        stableThreadOrder(threads)
     }
     val shown = remember(ordered, query) {
         if (query.isBlank()) ordered else ordered.filter { it.name.contains(query, true) || it.preview.contains(query, true) }
