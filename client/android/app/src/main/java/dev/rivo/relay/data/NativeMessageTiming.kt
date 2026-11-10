@@ -29,6 +29,20 @@ fun formatNativeThinkingDuration(seconds: Long): String = when {
     else -> "${seconds / 60} 分${seconds % 60} 秒"
 }
 
+/** Whole-turn wall time, independent of individual assistant message timestamps. */
+fun nativeTurnElapsedSeconds(turn: NativeTurnSettings, nowSeconds: Long? = null): Long? {
+    if (turn.status in setOf("completed", "failed", "interrupted", "canceled", "cancelled")) {
+        turn.durationMs?.takeIf { it >= 0 }?.let { return it / 1000 }
+        val start = turn.startedAt ?: return null
+        val end = turn.completedAt ?: return null
+        return (end - start).takeIf { start > 0 && end >= start }
+    }
+    if (turn.status != "inProgress" || turn.completedAt != null) return null
+    val start = turn.startedAt ?: return null
+    val now = nowSeconds ?: return null
+    return (now - start).takeIf { start > 0 && now >= start }
+}
+
 /** Transient footer for the latest stopped turn; never stored as a message. */
 fun sessionCompletionLabel(snapshot: SessionSnapshot): String? {
     if (!snapshot.nativeReady || snapshot.recoveryRequired || snapshot.workspaceUnavailable ||
