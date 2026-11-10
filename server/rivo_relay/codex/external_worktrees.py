@@ -1,4 +1,6 @@
 """Read-only Git membership on the connected native host, never Relay's host."""
+from collections import OrderedDict
+from contextlib import contextmanager
 import json
 import threading
 import time
@@ -51,9 +53,38 @@ class ExternalWorktrees:
     def __init__(self, connection, observe, observations_for):
         self.connection, self.observe, self.observations_for = connection, observe, observations_for
         self._lock = threading.Lock()
-        self._cache = None
+        self._cache = OrderedDict()
+        self._flights = {}
+
+    def _generation(self, expected):
+        if str(self.connection.generation) != expected:
+            raise CodexError('原生运行时已变化，请重新读取工作区', code='history_changed', http_status=409)
+
+    @contextmanager
+    def _flight(self, key):
+        # Keep locks alive while readers hold or await them, independently of LRU eviction.
+        with self._lock:
+            entry = self._flights.setdefault(key, [threading.Lock(), 0])
+            entry[1] += 1
+        try:
+            with read_lock(entry[0]):
+                yield
+        finally:
+            with self._lock:
+                entry[1] -= 1
+                if not entry[1]:
+                    self._flights.pop(key)
+
+    def _cached(self, key):
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached is not None and cached[0] > time.monotonic():
+                self._cache.move_to_end(key)
+                return cached[1]
+        return None
 
     def associations(self, threads, projects):
+        checkpoint()
         candidates = [thread for thread in threads if isinstance(thread.get('cwd'), str)]
         roots = [{'id': p['id'], 'roots': [r['path'] for r in p.get('roots', []) if r.get('path')]} for p in projects]
         exact_roots = {path for project in roots for path in project['roots']}
@@ -62,24 +93,28 @@ class ExternalWorktrees:
             return {}
         request = {'projects': roots, 'paths': paths}
         key = (str(self.connection.generation), json.dumps(request, sort_keys=True))
-        with read_lock(self._lock):
-            if str(self.connection.generation) != key[0]:
-                raise CodexError('原生运行时已变化，请重新读取工作区', code='history_changed', http_status=409)
-            if self._cache and self._cache[0] == key and self._cache[1] > time.monotonic():
-                result = self._cache[2]
-            else:
-                try:
-                    response = node_command(self.connection, {'command': ['python3', '-c', _DISCOVER, key[1]],
-                        'timeoutMs': 30000, 'outputBytesCap': 1024 * 1024}, timeout=35)
-                    result = json.loads(response.get('stdout', '')) if response.get('exitCode') == 0 else {}
-                    if not isinstance(result, dict) or not isinstance(result.get('matches'), dict) or not isinstance(result.get('missing'), list):
+        result = self._cached(key)
+        if result is None:
+            with self._flight(key):
+                self._generation(key[0])
+                result = self._cached(key)
+                if result is None:
+                    try:
+                        response = node_command(self.connection, {'command': ['python3', '-c', _DISCOVER, key[1]],
+                            'timeoutMs': 30000, 'outputBytesCap': 1024 * 1024}, timeout=35)
+                        result = json.loads(response.get('stdout', '')) if response.get('exitCode') == 0 else {}
+                        if not isinstance(result, dict) or not isinstance(result.get('matches'), dict) or not isinstance(result.get('missing'), list):
+                            result = {}
+                    except (CodexError, ValueError, TypeError):
                         result = {}
-                except (CodexError, ValueError, TypeError):
-                    result = {}
-                if str(self.connection.generation) != key[0]:
-                    raise CodexError('原生运行时已变化，请重新读取工作区', code='history_changed', http_status=409)
-                # Failed native inspection never invents membership or missing paths.
-                self._cache = (key, time.monotonic() + 15, result)
+                    self._generation(key[0])
+                    checkpoint()
+                    # Failed native inspection never invents membership or missing paths.
+                    with self._lock:
+                        self._cache[key] = (time.monotonic() + 15, result)
+                        self._cache.move_to_end(key)
+                        while len(self._cache) > 8:
+                            self._cache.popitem(last=False)
         checkpoint()
         if str(self.connection.generation) != key[0]:
             raise CodexError('原生运行时已变化，请重新读取工作区', code='history_changed', http_status=409)
@@ -93,7 +128,7 @@ class ExternalWorktrees:
                      and (not thread.get('projectId') or thread['projectId'] == entry.get('projectId'))]
             identities = {(entry['projectId'], entry['projectRoot']) for entry in valid}
             if len(identities) == 1:
-                association = valid[0]
+                association = dict(valid[0])
                 self.observe(thread['id'], 'externalWorkspace', '', association)
                 found[thread['id']] = {**association, 'status': 'ready', 'managed': False}
             elif path in result.get('missing', []):
