@@ -116,3 +116,17 @@ VPS 使用 HAProxy：80/TCP 的 TLS 流量原样转发至原 Rivo 服务 18080�
 验证续期：`/opt/rivo-certbot/bin/certbot renew --dry-run --no-random-sleep-on-renew`。公开接口验收必须使用系统默认信任，不使用 `curl -k`。共享文件链接只改变入口端口为 8443，路径和既有鉴权要求保持一致；未授权媒体仍不能匿名下载。
 
 回退时先停 HAProxy，再移除 `public-https.conf` 并 daemon-reload、重启 `rivo-gateway`，原服务将重新监听 80；如需回退代码，将 `/opt/rivo-relay/current` 恢复到部署前快照。不要删除原私有证书与节点密钥。
+
+## Sites 网页中转（2026-11-10）
+
+Sites 列表仍通过节点接口获取；Sites 卡片的网页浏览使用 `WebView → App 内 loopback CONNECT → VPS WebSocket → Mihomo → 网站`。手机无需运行代理软件。普通资源链接保持原有浏览方式。Sites 必须有带 VPS 地址及指纹的配对信息；旧直连配对需重新扫码。不支持代理覆盖的旧 WebView 会提示更新，不静默回退直连。
+
+VPS 安装 Mihomo v1.19.33，服务 `rivo-mihomo.service`，二进制 `/usr/local/bin/rivo-mihomo`，专用用户 `rivo-mihomo`。私有配置和订阅缓存在 `/var/lib/rivo-mihomo/`，目录 0700、文件 0600。复用旁路由 OpenClash 的 Flower 订阅，每 24 小时刷新；当前选择旁路由实际使用的美国标准 IEPL 专线 3。空节点组回退到 REJECT。订阅 URL 和节点密码不得写入 Git、日志或 APK。
+
+Mihomo 只监听 `127.0.0.1:17890`（HTTP/SOCKS）及 `127.0.0.1:19090`（本机管理）；没有 TUN、系统代理或公网代理端口。网关通过 systemd drop-in `sites.conf` 设置 `RIVO_SITES_SOCKS_PORT=17890`；未设置时网页隧道返回 503。
+
+`GET /relay/{slot}/v1/sites/tunnel?host=<域名>` 升级为 WebSocket。每条连接通过该节点 `/v1/node` 检查当前设备 Bearer，不缓存授权；凭据不进入网站连接。只允许公网 IPv4 目标的 443 端口，解析后固定目标 IP，拒绝内网、保留地址及组播。网站 TLS 始终由 WebView 校验。每节点最多 32 条、全局 128 条，单条最长 5 分钟；撤销设备后拒绝新连接，已有连接最多保留至期限结束。
+
+Android WebView 的代理覆盖作用于进程内所有 WebView，因此浏览 Sites 期间同进程其他 WebView 也受该覆盖影响；关闭浏览页时清除覆盖并释放隧道。只支持 HTTPS，不代理 HTTP、任意 TCP 端口或系统其他 App。
+
+本次网关部署基于原服务器快照，仅添加 Sites 隧道；位于 `/opt/rivo-relay/deployments/sites-tunnel-20261110`。前一部署路径保存在 `/opt/rivo-relay/diagnostics/sites-tunnel-previous-source`。回退时恢复 `current` 软链接、移除 `sites.conf` 并重启 `rivo-gateway`，必要时停止 `rivo-mihomo`；无需重启桌面 Codex 原生运行时。发布后续节点包时须包含本次网关代码，避免覆盖此部署。
