@@ -9,14 +9,16 @@ class NativeTurnFooterTest {
     private val turn = NativeTurnSettings("t", status = "inProgress", startedAt = 100)
     private val live = SessionSnapshot("s", "", "running", "t", emptyList(), emptyList(), JSONObject(), turnSettings = listOf(turn))
 
-    @Test fun revalidationAndDisconnectRetainAndFreezeTheLastKnownTimer() {
+    @Test fun revalidationAndDisconnectRetainTheClientTimer() {
         val cache = NativeTurnFooterCache()
-        val first = cache.project(live, false, 105)!!
-        val syncing = cache.project(live, true, 110)!!
+        val first = cache.project(live, false, 105, 1000)!!
+        val syncing = cache.project(live, true, 110, 6000)!!
         assertEquals(first.turn, syncing.turn)
         assertTrue(syncing.synchronizing)
-        assertEquals(110L, syncing.observedAt)
-        assertEquals(syncing, cache.project(null, true, 120))
+        assertEquals(1000L, syncing.clientStartedAtMillis)
+        assertEquals(5L, clientTurnElapsedSeconds(syncing, 6000))
+        assertEquals(syncing, cache.project(null, true, 120, 16000))
+        assertEquals(15L, clientTurnElapsedSeconds(syncing, 16000))
         val restored = cache.project(live, false, 125)!!
         assertFalse(restored.synchronizing)
         assertEquals(25L, nativeTurnElapsedSeconds(restored.turn!!, restored.observedAt))
@@ -68,4 +70,62 @@ class NativeTurnFooterTest {
             turn.copy(status = "failed", durationMs = 12000))), false, 121)!!
         assertEquals("执行失败", failed.label)
     }
+    @Test fun continuationUsesNewestTurnEvenWhenActivityStillPointsToInterruptedTurn() {
+        val interrupted = turn.copy(status = "interrupted", completedAt = 211, durationMs = 111000)
+        val resumed = NativeTurnSettings("resumed", status = "inProgress", startedAt = 500)
+        for (syncing in listOf(false, true)) {
+            val cache = NativeTurnFooterCache()
+            cache.project(live.copy(status = "idle", activeTurnId = "", turnSettings = listOf(interrupted)), false, 211)
+            val continuing = live.copy(turnSettings = listOf(interrupted, resumed))
+            val running = cache.project(continuing, syncing, 505)!!
+            assertEquals("resumed", running.turn!!.turnId)
+            assertNull(running.label)
+            assertNull(running.turn!!.durationMs)
+            assertNull(running.turn!!.completedAt)
+            assertEquals(5L, nativeTurnElapsedSeconds(running.turn!!, 505))
+            val completed = continuing.copy(status = "idle", activeTurnId = "", turnSettings = listOf(
+                interrupted, resumed.copy(status = "completed", completedAt = 521, durationMs = 21000)))
+            val footer = cache.project(completed, false, 521)!!
+            assertTrue(footer.label!!.startsWith("已完成 "))
+            assertTrue(footer.label!!.endsWith("耗时 21s"))
+            assertFalse(footer.label!!.contains("1m 51s"))
+        }
+    }
+
+    @Test fun newlyCompletedContinuationReplacesOldFooterDuringSyncWithoutLiveObservation() {
+        val cache = NativeTurnFooterCache()
+        val interrupted = turn.copy(status = "interrupted", completedAt = 211, durationMs = 111000)
+        cache.project(live.copy(status = "idle", activeTurnId = "", turnSettings = listOf(interrupted)), false, 211)
+        val completed = NativeTurnSettings("resumed", status = "completed", startedAt = 500, completedAt = 521, durationMs = 21000)
+        val snapshot = live.copy(status = "idle", activeTurnId = "t", turnSettings = listOf(interrupted, completed))
+        val footer = cache.project(snapshot, true, 522)!!
+        assertEquals("resumed", footer.turn!!.turnId)
+        assertTrue(footer.label!!.endsWith("耗时 21s"))
+        assertFalse(footer.label!!.contains("已中断"))
+        val history = nativeHistoricalTimingRows(emptyList(), snapshot.turnSettings, footer.turn!!.turnId).values.flatten()
+        assertEquals(listOf("t"), history.map { it.turnId })
+        assertTrue(history.single().label.endsWith("耗时 1m 51s"))
+    }
+
+    @Test fun clientClockIgnoresServerTimeMissingFieldsAndWallClockChanges() {
+        val cache = NativeTurnFooterCache()
+        val initial = cache.project(live.copy(turnSettings = listOf(turn.copy(startedAt = null))), false, 500, 1000)!!
+        assertEquals(0L, clientTurnElapsedSeconds(initial, 1000))
+        assertEquals(60L, clientTurnElapsedSeconds(initial, 61000))
+        val refreshed = cache.project(live.copy(turnSettings = listOf(turn.copy(startedAt = 1))), false, 5, 61000)!!
+        assertEquals(60L, clientTurnElapsedSeconds(refreshed, 61000))
+        val offline = cache.project(null, true, 999999, 121000)!!
+        assertEquals(120L, clientTurnElapsedSeconds(offline, 121000))
+        val next = cache.project(live.copy(activeTurnId = "next", turnSettings = listOf(turn.copy(turnId = "next"))), false, 600, 125000)!!
+        assertEquals(0L, clientTurnElapsedSeconds(next, 125000))
+    }
+
+    @Test fun explicitEndStopsTheLocalTimerEvenWhileTransportIsSyncing() {
+        val cache = NativeTurnFooterCache()
+        cache.project(live, false, 105, 1000)
+        val done = cache.project(live.copy(turnSettings = listOf(turn.copy(status = "completed", completedAt = 120, durationMs = 20000))), true, 120, 16000)!!
+        assertNotNull(done.label)
+        assertTrue(done.label!!.endsWith("耗时 20s"))
+    }
+
 }

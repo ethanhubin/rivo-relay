@@ -6,25 +6,31 @@ data class NativeTurnFooter(
     val label: String? = null,
     val synchronizing: Boolean = false,
     val observedAt: Long,
+    val clientStartedAtMillis: Long? = null,
 )
 
 /** Owned by one open conversation. Missing transport data must not erase its footer. */
 class NativeTurnFooterCache {
     private var retained: NativeTurnFooter? = null
 
-    fun project(snapshot: SessionSnapshot?, synchronizing: Boolean, nowSeconds: Long): NativeTurnFooter? {
+    fun project(snapshot: SessionSnapshot?, synchronizing: Boolean, nowSeconds: Long,
+        nowElapsedMillis: Long = System.nanoTime() / 1_000_000): NativeTurnFooter? {
         val previous = retained
         fun pending(): NativeTurnFooter? {
-            val frozen = previous?.copy(synchronizing = true,
-                observedAt = if (previous.synchronizing) previous.observedAt else nowSeconds)
-            retained = frozen
-            return frozen
+            val pending = previous?.copy(synchronizing = true)
+            retained = pending
+            return pending
         }
         if (snapshot == null) return pending()
         val uncertain = synchronizing || !snapshot.nativeReady || snapshot.recoveryRequired || snapshot.workspaceUnavailable
-        if (uncertain && previous != null) return pending()
-        val candidate = snapshot.turnSettings.firstOrNull { it.turnId == snapshot.activeTurnId }
-            ?: snapshot.turnSettings.lastOrNull()
+        // Native history is chronological. An interrupted turn can remain in the
+        // activity projection while its continuation already has a newer turn.
+        val candidate = snapshot.turnSettings.lastOrNull()
+        // Retain missing/same-turn observations, but never pin an older footer
+        // below a newly observed continuation (including during revalidation).
+        val candidateEnded = candidate?.status in setOf("completed", "failed", "interrupted", "canceled", "cancelled")
+        if (uncertain && previous != null && (candidate == null ||
+            candidate.turnId == previous.turn?.turnId && (!candidateEnded || previous.label != null))) return pending()
         if (candidate == null) {
             val label = sessionCompletionLabel(snapshot) ?: return pending()
             return NativeTurnFooter(null, label, uncertain, nowSeconds).also { retained = it }
@@ -47,6 +53,12 @@ class NativeTurnFooterCache {
             },
             nativeTurnElapsedSeconds(turn)?.let { "耗时 ${formatNativeElapsedDuration(it)}" }
         ).joinToString(" ") else null
-        return NativeTurnFooter(turn, label, uncertain, nowSeconds).also { retained = it }
+        val clientStart = previous?.takeIf { it.turn?.turnId == turn.turnId }?.clientStartedAtMillis
+            ?: nowElapsedMillis.takeIf { !terminal }
+        return NativeTurnFooter(turn, label, uncertain, nowSeconds, clientStart).also { retained = it }
     }
 }
+
+/** Live elapsed time belongs to the client, not native timestamps or transport state. */
+fun clientTurnElapsedSeconds(footer: NativeTurnFooter, nowElapsedMillis: Long): Long? =
+    footer.clientStartedAtMillis?.let { ((nowElapsedMillis - it).coerceAtLeast(0)) / 1000 }

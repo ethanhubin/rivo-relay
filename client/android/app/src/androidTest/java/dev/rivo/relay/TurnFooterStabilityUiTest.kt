@@ -42,7 +42,7 @@ class TurnFooterStabilityUiTest {
         }
         compose.runOnIdle { state.value = state.value.transition(SessionSyncEvent.StreamInterrupted) }
         visible()
-        compose.onNodeWithTag("turn_duration_t").assertTextContains("同步中", substring = true)
+        compose.onNodeWithTag("turn_duration_t").assertTextContains("已用时", substring = true)
         compose.runOnIdle { state.value = state.value.copy(snapshot = live.copy(activeTurnId = "", turnSettings = listOf(turn.copy(startedAt = null))))
             .transition(SessionSyncEvent.ReadSucceeded) }
         visible()
@@ -100,6 +100,56 @@ class TurnFooterStabilityUiTest {
         compose.mainClock.advanceTimeBy(64)
         compose.onNodeWithTag("historical_turn_timing_first").assertIsDisplayed().assertTextContains("耗时 1m 3s", substring = true)
         compose.onAllNodesWithTag("session_completion").assertCountEquals(1)
+    }
+
+    @Test fun interruptedContinuationNeverKeepsOldDurationBelowNewAnswer() {
+        val start = System.currentTimeMillis() / 1000 - 600
+        val old = NativeTurnSettings("old", status = "interrupted", startedAt = start, completedAt = start + 111, durationMs = 111000)
+        val resumed = NativeTurnSettings("resumed", status = "completed", startedAt = start + 400, completedAt = start + 421, durationMs = 21000)
+        val oldReply = NativeMessage("a", "old", "agentMessage", "中断前回答", JSONObject())
+        val newReply = NativeMessage("b", "resumed", "agentMessage", "继续后回答", JSONObject())
+        val stopped = SessionSnapshot("resume", "继续计时", "idle", "", listOf(oldReply), emptyList(), JSONObject(), turnSettings = listOf(old))
+        val state = mutableStateOf(SessionState(id = "resume", snapshot = stopped))
+        compose.mainClock.autoAdvance = false
+        compose.setContent { RivoTheme { Box(Modifier.systemBarsPadding()) {
+            ChatScreen(state.value, false, false, emptyList(), {}, onSend = { _, _, _, _ -> },
+                onStop = {}, onRespond = { _, _ -> }, onRefresh = {}, onLoadModels = {}, onEarlier = {}, readFile = { JSONObject() })
+        } } }
+        compose.mainClock.advanceTimeBy(64)
+        compose.onNodeWithTag("session_completion").assertTextContains("已中断", substring = true)
+        // Reconnect can deliver the new final answer before the activity ID converges.
+        compose.runOnIdle { state.value = state.value.copy(snapshot = stopped.copy(activeTurnId = "old",
+            messages = listOf(oldReply, newReply), turnSettings = listOf(old, resumed)))
+            .transition(SessionSyncEvent.StreamInterrupted) }
+        compose.mainClock.advanceTimeBy(64)
+        compose.onAllNodesWithTag("session_completion").assertCountEquals(1)
+        compose.onNodeWithTag("session_completion").assertIsDisplayed().assertTextContains("耗时 21s", substring = true)
+        compose.onNodeWithTag("historical_turn_timing_old").assertIsDisplayed().assertTextContains("耗时 1m 51s", substring = true)
+        compose.onNodeWithTag("historical_turn_timing_resumed").assertDoesNotExist()
+        compose.runOnIdle { state.value = state.value.copy(snapshot = state.value.snapshot!!.copy(activeTurnId = ""))
+            .transition(SessionSyncEvent.ReadSucceeded) }
+        compose.mainClock.advanceTimeBy(64)
+        compose.onNodeWithTag("session_completion").assertTextContains("已完成", substring = true).assertTextContains("耗时 21s", substring = true)
+    }
+
+    @Test fun localSecondsKeepAdvancingDuringLongSynchronization() {
+        var ticks = 1000L
+        val footer = mutableStateOf(NativeTurnFooter(NativeTurnSettings("clock", status = "inProgress"),
+            observedAt = 1, clientStartedAtMillis = 1000))
+        compose.mainClock.autoAdvance = false
+        compose.setContent { RivoTheme {
+            dev.rivo.relay.ui.chat.NativeTurnDuration(footer.value, elapsedRealtime = { ticks })
+        } }
+        compose.mainClock.advanceTimeBy(64)
+        compose.runOnIdle { footer.value = footer.value.copy(synchronizing = true); ticks = 6000 }
+        compose.mainClock.advanceTimeBy(1100)
+        compose.onNodeWithTag("turn_duration_clock").assertTextEquals("已用时 5 秒")
+        compose.runOnIdle { ticks = 66000 }
+        compose.mainClock.advanceTimeBy(1100)
+        compose.onNodeWithTag("turn_duration_clock").assertTextEquals("已用时 1 分5 秒")
+        compose.runOnIdle { footer.value = footer.value.copy(label = "已完成 耗时 1m 5s"); ticks = 126000 }
+        compose.mainClock.advanceTimeBy(1100)
+        compose.onNodeWithTag("session_completion").assertTextEquals("已完成 耗时 1m 5s")
     }
 
 }
