@@ -12,7 +12,7 @@
     </queries>
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
-    <application android:label="Rivo Relay" android:icon="@drawable/ic_launcher" android:theme="@style/Theme.Rivo" android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/data_extraction_rules" android:usesCleartextTraffic="false" android:networkSecurityConfig="@xml/network_security" android:supportsRtl="true">
+    <application android:label="Rivo Relay" android:icon="@drawable/ic_launcher" android:theme="@style/Theme.Rivo" android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/data_extraction_rules" android:usesCleartextTraffic="true" android:networkSecurityConfig="@xml/network_security" android:supportsRtl="true">
         <receiver android:name=".ui.todos.TodoReminderReceiver" android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
