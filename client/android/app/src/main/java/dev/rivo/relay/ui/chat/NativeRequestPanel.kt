@@ -60,7 +60,8 @@ private fun UserInputRequest(request: NativeRequest, enabled: Boolean, onRespond
     var questionIndex by remember(request.key) { mutableIntStateOf(0) }
     val questions = request.params.objects("questions")
     QuestionDialog("Codex 需要你的回应", "native_request", "toggle_native_request") {
-        NativeQuestionCard(questions, answers, questionIndex, enabled, { questionIndex = it }, { id, value -> answers[id] = value }) {
+        NativeQuestionCard(questions, answers, questionIndex, enabled, { questionIndex = it }, { id, value -> answers[id] = value },
+            modifier = Modifier.weight(1f, fill = false)) {
             val results = JSONObject()
             questions.forEach { q -> results.put(q.string("id"), JSONObject().put("answers", JSONArray().put(answers[q.string("id")]))) }
             onRespond(JSONObject().put("answers", results))

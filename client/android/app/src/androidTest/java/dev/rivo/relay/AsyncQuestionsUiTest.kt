@@ -117,4 +117,25 @@ class AsyncQuestionsUiTest {
         compose.onNodeWithTag("answer_questions").assertIsNotEnabled()
     }
 
+    @Test fun longQuestionScrollsOnlyTextWhileActionsStayVisibleWithKeyboard() {
+        val question = AsyncQuestion("long", (1..120).joinToString("\n") { "第 $it 行：需要完整阅读的问题说明。" }, emptyList())
+        compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize()) {
+            dev.rivo.relay.ui.chat.AsyncQuestionPanel(listOf(question), true, onSubmit = { _, _ -> })
+        } } }
+        compose.onNodeWithTag("question_answer_long").performTextInput("保留回答")
+        compose.onNodeWithTag("answer_questions").assertIsDisplayed()
+        val before = compose.onNodeWithTag("answer_questions").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithTag("question_text").performTouchInput { swipeUp() }
+        compose.onNodeWithTag("question_text").assert(
+            SemanticsMatcher("text has scrolled") {
+                it.config[androidx.compose.ui.semantics.SemanticsProperties.VerticalScrollAxisRange].value() > 0f
+            })
+        compose.onNodeWithTag("async_questions_panel").assert(
+            SemanticsMatcher.keyNotDefined(androidx.compose.ui.semantics.SemanticsActions.ScrollBy))
+        compose.onNodeWithTag("answer_questions").assertIsDisplayed()
+        assertEquals(before, compose.onNodeWithTag("answer_questions").fetchSemanticsNode().boundsInRoot)
+        compose.onNodeWithTag("question_answer_long").assertTextContains("保留回答")
+        compose.onNodeWithTag("toggle_async_questions").assertIsDisplayed()
+    }
+
 }

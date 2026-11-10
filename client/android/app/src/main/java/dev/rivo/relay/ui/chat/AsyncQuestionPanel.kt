@@ -1,5 +1,7 @@
 package dev.rivo.relay.ui.chat
 
+import androidx.compose.foundation.layout.*
+import androidx.compose.ui.Modifier
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -38,7 +40,7 @@ internal fun AsyncQuestionPanel(questions: List<AsyncQuestion>, enabled: Boolean
             { index = it }, { id, value ->
                 answerJson = JSONObject(answerJson).put(id, value.take(200000)).toString()
                 store?.enqueueDraft(draftKey, ConversationDraft(text = answerJson))
-            }, submitEnabled = enabled && loaded && !saving) {
+            }, submitEnabled = enabled && loaded && !saving, modifier = Modifier.weight(1f, fill = false)) {
             saving = true
             scope.launch {
                 try {

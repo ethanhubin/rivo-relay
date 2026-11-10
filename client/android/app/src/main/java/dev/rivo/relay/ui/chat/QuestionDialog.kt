@@ -12,27 +12,30 @@ import androidx.compose.ui.window.DialogProperties
 
 /** Questions live in their own window; closing it leaves the answer draft intact. */
 @Composable
-internal fun QuestionDialog(title: String, tag: String, toggleTag: String, content: @Composable () -> Unit) {
+internal fun QuestionDialog(title: String, tag: String, toggleTag: String, content: @Composable ColumnScope.() -> Unit) {
     var open by rememberSaveable { mutableStateOf(true) }
     if (!open) {
         TextButton(onClick = { open = true }, modifier = Modifier.testTag(toggleTag)) { Text(title) }
         return
     }
     Dialog(onDismissRequest = { open = false },
-        properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = false)) {
+        properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = false, decorFitsSystemWindows = false)) {
         ThemedTextContextMenu {
-            Surface(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp).widthIn(max = 560.dp)
-                    .fillMaxWidth().testTag(tag),
-                shape = MaterialTheme.shapes.extraLarge,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh
-            ) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                        Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                        TextButton(onClick = { open = false }, modifier = Modifier.testTag(toggleTag)) { Text("稍后回答") }
+            Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding(),
+                contentAlignment = androidx.compose.ui.Alignment.Center) {
+                Surface(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp).widthIn(max = 560.dp)
+                        .fillMaxWidth().testTag(tag),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh
+                ) {
+                    Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                            Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                            TextButton(onClick = { open = false }, modifier = Modifier.testTag(toggleTag)) { Text("稍后回答") }
+                        }
+                        content()
                     }
-                    content()
                 }
             }
         }
