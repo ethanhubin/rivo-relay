@@ -837,6 +837,53 @@ class CodexService:
             self.projects.invalidate()
             return receipt
 
+    def fork_session(self, thread_id, last_turn_id, worktree_ref=None):
+        self.start()
+        with self.operation_gate(thread_id):
+            source = self.connection.request('thread/read', {'threadId': thread_id, 'includeTurns': False})['thread']
+            cwd = source.get('cwd')
+            if not cwd:
+                raise CodexError('来源会话没有工作目录', code='invalid_request', http_status=409)
+            workspace_id = None
+            shared = None
+            if worktree_ref is not None:
+                project_id = source.get('projectId')
+                if not project_id or self.workspaces is None:
+                    raise CodexError('来源会话没有可用的工作树项目', code='invalid_request', http_status=409)
+                workspace_id, cwd = self.workspaces.create(project_id, cwd, worktree_ref)
+            elif self.workspaces is not None:
+                shared = self.workspaces.reserve_shared_directory(cwd)
+            try:
+                result = self.connection.request('thread/fork', {
+                    'threadId': thread_id, 'lastTurnId': last_turn_id,
+                    'cwd': cwd, 'excludeTurns': True,
+                })
+                selected = (result.get('thread') or {}).get('id')
+                if not isinstance(selected, str) or not selected or selected == thread_id:
+                    raise CodexError('分叉未返回新的会话身份', code='native_protocol', request_sent=True)
+            except Exception as error:
+                if shared is not None and isinstance(error, CodexError) and error.definite:
+                    self.workspaces.cancel_shared_directory(shared)
+                if workspace_id:
+                    uncertain = not isinstance(error, CodexError) or not error.definite
+                    retained = self.workspaces.abandon(workspace_id, uncertain=uncertain)
+                    if retained.get('status') != 'removed':
+                        raise CodexError('分叉未确认，工作树已保留：' + cwd,
+                            code='workspace_thread_unknown' if uncertain else 'workspace_thread_failed',
+                            http_status=409, request_sent=uncertain) from error
+                raise
+            with self._lock:
+                self._joined.add(selected)
+                self._settings[selected] = self._settings_from(result)
+            if workspace_id:
+                try:
+                    self.workspaces.link(workspace_id, selected)
+                except Exception as error:
+                    raise CodexError('分叉已创建但工作树关联未确认，请核对新会话：' + selected,
+                        code='workspace_thread_unknown', http_status=409, request_sent=True) from error
+            self.projects.invalidate()
+            return {'threadId': selected}
+
     @staticmethod
     def _input(text):
         if not isinstance(text, str) or not text.strip():

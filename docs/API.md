@@ -41,6 +41,8 @@
 | 方法与路径 | 请求 | HTTP 200 响应 |
 | --- | --- | --- |
 | `POST /v1/threads` | `{submissionId,projectId,worktreeRef?}` | 提交记录；接受时 `{threadId}` |
+| `POST /v1/threads/{id}/fork` | `{submissionId,lastTurnId,worktreeRef?}` | 分叉到指定已结束轮次（包含），返回提交记录及 `{threadId}`；不指定工作树时沿用来源 cwd |
+| `GET /v1/threads/{id}/fork-context` | — | 来源 `projectId`、`cwd` 和 Git 来源选项 |
 | `GET /v1/threads/{threadId}` | 可选 `cursor`、`limit`（默认 30，钳制到 1–100） | `{thread,requests,settings,activeTurnId,status,readOnly,nextCursor,backwardsCursor,queue,plan,tokenUsage,changes,turnSettings}`；`thread.turns` 是本页原生 turns |
 | `GET /v1/threads/{threadId}/history` | 同上 | `{turns,nextCursor,backwardsCursor}` |
 | `POST /v1/threads/{threadId}/turns` | `{submissionId,text,model?,effort?,mode?,serviceTier?,requireGoalSupport?}`，或用 `input` 数组 | 提交记录；接受时 `{threadId,turnId}` |
@@ -106,7 +108,10 @@
 | `GET /v1/threads/{threadId}/review-context` | Bearer | `{branch,branches:[…],commits:[{id,subject}]}`，最近 30 个提交 |
 | `POST /v1/threads/{threadId}/review` | `{submissionId,target:{…}}` | 提交记录；接受时 `{itemId}`，表示审查任务已入队 |
 
-创建会话时指定 `worktreeRef`，Relay 在节点上建立独立 Git worktree，再以该 cwd 启动原生会话。只允许清理 Relay 创建并关联的工作树。清理必须使用最新 `revision`，会拒绝活跃、被占用或仍有队列的会话；有改动时必须显式 `discard=true`。清理先归档会话，再把改动目录打包到节点上的 `archivePath`，复核内容指纹后才移除 worktree。调用结果不确定时保留状态供核对，不自动重试删除；已移除或待核对的工作树不能回退到来源目录继续执行。
+历史轮次分叉使用原生 `thread/fork` 的 `lastTurnId`，只包含选中轮次及之前的历史，不恢复历史文件状态。新建工作树从所选 Git 提交建立，不复制未提交改动；会保留来源 cwd 在仓库内的相对子目录，目标目录缺失或解析后越出工作树时拒绝创建。独立 writer 会检查实际 Codex 二进制的参数 schema；不支持的版本或尚不能核实此能力的 Desktop 桥接返回 `fork_unsupported`，不会退化为完整历史分叉。
+
+
+创建会话时指定 `worktreeRef`，Relay 在节点上建立独立 Git worktree，再以该 cwd 启动原生会话。只允许清理 Relay 创建并关联的工作树。被分叉会话共享或被派生工作树依赖的托管工作树禁止从单个会话清理；共享保护跨重启保留，分叉结果未知时也保留。清理必须使用最新 `revision`，会拒绝活跃、被占用或仍有队列的会话；有改动时必须显式 `discard=true`。清理先归档会话，再把改动目录打包到节点上的 `archivePath`，复核内容指纹后才移除 worktree。调用结果不确定时保留状态供核对，不自动重试删除；已移除或待核对的工作树不能回退到来源目录继续执行。
 
 `diff` 对比 HEAD，包含已跟踪改动及最多 100 个未跟踪文件，patch 上限 2 MiB。`truncated=true` 表示不能据此视为完整差异。`revision` 是该响应 patch 的摘要，与工作树清理的内容指纹 revision 不可互换。
 

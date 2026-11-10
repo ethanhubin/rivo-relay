@@ -676,6 +676,17 @@ class Handler(BaseHTTPRequestHandler):
             if len(path) == 4 and path[3] == "ownership" and method == "GET":
                 return codex.preview_handoff(path[2], query.get("operation", ["takeover"])[0], connection_id)
             thread_id = path[2]
+            if len(path) == 4 and path[3] == 'fork' and method == 'POST':
+                sid, turn_id = required(body, 'submissionId'), required(body, 'lastTurnId')
+                ref = required(body, 'worktreeRef') if 'worktreeRef' in body else None
+                return self.app.submit(connection_id, sid, 'thread.fork', thread_id, body,
+                    lambda: codex.fork_session(thread_id, turn_id, worktree_ref=ref))
+            if len(path) == 4 and path[3] == 'fork-context' and method == 'GET':
+                codex.start()
+                source = codex.connection.request('thread/read', {'threadId': thread_id, 'includeTurns': False})['thread']
+                from .codex.developer import project_git
+                return {'projectId': source.get('projectId'), 'cwd': source.get('cwd'),
+                        'git': project_git(codex.connection, source['cwd'])}
             if len(path) == 3 and method == "GET":
                 options = {'native_revision': query['nativeRevision'][0]} if query.get('nativeRevision') else {}
                 limit = int(query.get("limit", ["8"])[0])

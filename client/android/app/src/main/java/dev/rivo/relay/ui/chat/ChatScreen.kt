@@ -38,6 +38,7 @@ import dev.rivo.relay.codex.canResumeQueue
 import dev.rivo.relay.codex.canContinueTask
 import dev.rivo.relay.codex.canCompose
 import dev.rivo.relay.data.*
+import dev.rivo.relay.ui.projects.ProjectSummary
 import org.json.JSONObject
 import org.json.JSONArray
 import kotlinx.coroutines.launch
@@ -63,6 +64,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     onQueue: (JSONObject, () -> Unit) -> Unit = { _, _ -> },
     onGoal: (JSONObject) -> Unit = {},
     onContinue: () -> Unit = {},
+    onFork: ((String, String?) -> Unit)? = null,
     draftStore: ConversationStore? = null, onPersistDraft: (String, ConversationDraft) -> Unit = { _, _ -> },
     onSendWithMode: ((JSONArray, String?, String?, String?, () -> Unit) -> Unit)? = null,
     readTool: suspend (String) -> JSONObject = { error("节点工具不可用") },
@@ -83,6 +85,37 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val mediaContext = androidx.compose.ui.platform.LocalContext.current
     val mediaClient = remember(mediaApi, state.id) { mediaApi?.let { dev.rivo.relay.data.CodexMediaClient(it, state.id.orEmpty(), mediaContext) } }
     DisposableEffect(mediaClient) { onDispose { mediaClient?.close() } }
+    var forkTurn by remember(state.id) { mutableStateOf<String?>(null) }
+    var forkContext by remember(state.id, forkTurn) { mutableStateOf<JSONObject?>(null) }
+    var forkError by remember(state.id, forkTurn) { mutableStateOf<String?>(null) }
+    var forkRef by remember(state.id, forkTurn) { mutableStateOf<String?>(null) }
+    var forkReady by remember(state.id, forkTurn) { mutableStateOf(true) }
+    var forkRetry by remember(state.id, forkTurn) { mutableIntStateOf(0) }
+    LaunchedEffect(state.id, forkTurn, forkRetry) {
+        forkContext = null; forkError = null
+        if (forkTurn != null) try {
+            forkContext = readTool("/v1/threads/${encoded(state.id.orEmpty())}/fork-context")
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { forkError = e.message ?: "无法读取分叉工作区" }
+    }
+    if (forkTurn != null) AlertDialog(
+        onDismissRequest = { if (!busy) forkTurn = null },
+        title = { Text("从此轮之后分叉") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("保留此轮及之前的对话。文件不会恢复到该轮发生时的状态。")
+            forkError?.let { Text(it, color = MaterialTheme.colorScheme.error); TextButton(onClick = { forkRetry++ }) { Text("重试") } }
+            val context = forkContext
+            if (context == null && forkError == null) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (context != null && context.string("projectId").isNotBlank()) {
+                dev.rivo.relay.ui.projects.PendingWorkspaceSelector(
+                    ProjectSummary(context.string("projectId"), "分叉会话", context.string("cwd")),
+                    readGit = { context }, enabled = !busy && !blocked,
+                    onSelection = { ref, ready -> forkRef = ref; forkReady = ready })
+            } else Text("使用原会话当前目录")
+        } },
+        confirmButton = { TextButton(enabled = !busy && !blocked && forkContext != null && forkError == null && forkReady && !state.stale,
+            onClick = { forkTurn?.let { onFork?.invoke(it, forkRef) }; forkTurn = null }) { Text("分叉") } },
+        dismissButton = { TextButton(enabled = !busy, onClick = { forkTurn = null }) { Text("取消") } })
     val snapshot = state.snapshot
     androidx.compose.runtime.SideEffect { mediaClient?.updateRevision(state.mediaValidationEpoch) }
     var mediaAssets by remember(mediaClient) { mutableStateOf(emptyList<JSONObject>()) }
@@ -548,6 +581,29 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                         }
                     }
                 }
+                }
+                val rowTurn = when (row) {
+                    is NativeTimelineRow.Message -> row.message.turnId
+                    is NativeTimelineRow.Activities -> row.messages.first().turnId
+                    is NativeTimelineRow.Notice -> row.turn.turnId
+                }
+                val nextTurn = timeline.getOrNull(index + 1)?.let { next -> when (next) {
+                    is NativeTimelineRow.Message -> next.message.turnId
+                    is NativeTimelineRow.Activities -> next.messages.first().turnId
+                    is NativeTimelineRow.Notice -> next.turn.turnId
+                } }
+                val terminal = snapshot?.turnSettings?.any { it.turnId == rowTurn && it.status in setOf("completed", "interrupted", "failed") } == true
+                if (onFork != null && rowTurn.isNotBlank() && rowTurn != nextTurn && terminal) {
+                    IconButton(onClick = { forkTurn = rowTurn }, enabled = !busy && !blocked && !state.stale,
+                        modifier = Modifier.testTag("fork_turn_$rowTurn")) {
+                        androidx.compose.foundation.Canvas(Modifier.size(20.dp).semantics { contentDescription = "从此轮之后分叉" }) {
+                            val color = androidx.compose.ui.graphics.Color.Gray
+                            val stroke = 2.dp.toPx()
+                            drawLine(color, Offset(size.width * .25f, size.height * .8f), Offset(size.width * .25f, size.height * .2f), stroke)
+                            drawLine(color, Offset(size.width * .25f, size.height * .6f), Offset(size.width * .75f, size.height * .2f), stroke)
+                            listOf(Offset(size.width * .25f, size.height * .8f), Offset(size.width * .25f, size.height * .2f), Offset(size.width * .75f, size.height * .2f)).forEach { drawCircle(color, 2.5.dp.toPx(), it) }
+                        }
+                    }
                 }
             }
             snapshot?.reviewDiagnostics?.filter { diagnostic ->
