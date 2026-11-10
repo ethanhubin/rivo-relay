@@ -36,6 +36,17 @@ class RelayApi(private val base: String, private val token: String = "", private
             ?: throw IOException("此节点尚未配置 VPS 中转，请重新扫码配对")
         return dev.rivo.relay.ui.sites.SitesWebProxy(config, token)
     }
+    private val gatewaySpeech by lazy {
+        routes?.takeIf { it.relay.isNotBlank() }?.let {
+            GatewaySpeechClient(it, dns, issueAccess = { call("/v1/speech/access", "POST") })
+        }
+    }
+    suspend fun speechCapability(): JSONObject = gatewaySpeech?.capability() ?: call("/v1/media/capabilities")
+    suspend fun speechStart(context: String?): JSONObject = gatewaySpeech?.start(context)
+        ?: call("/v1/speech/streams", "POST", JSONObject().put("context", context.orEmpty().take(400)))
+    suspend fun speechFinish(id: String, cancel: Boolean = false): JSONObject = gatewaySpeech?.finish(id, cancel)
+        ?: call("/v1/speech/streams/${encoded(id)}/${if (cancel) "cancel" else "finish"}", "POST")
+    suspend fun speechChunk(id: String, pcm: ByteArray): JSONObject = gatewaySpeech?.chunk(id, pcm) ?: nodeSpeechChunk(id, pcm)
     private val connectionObserver = dev.rivo.relay.connection.ConnectionStatusObserver(routes, base)
     val connectionStatus = connectionObserver.status
     private val latencyProbe = dev.rivo.relay.connection.NetworkLatencyProbe(dns)
@@ -254,7 +265,7 @@ class RelayApi(private val base: String, private val token: String = "", private
     }
 
     /** PCM chunks are writes: cancellation propagates and the transport never retries. */
-    suspend fun speechChunk(streamId: String, pcm: ByteArray): JSONObject = suspendCancellableCoroutine { continuation ->
+    private suspend fun nodeSpeechChunk(streamId: String, pcm: ByteArray): JSONObject = suspendCancellableCoroutine { continuation ->
         val req = request("/v1/speech/streams/${encoded(streamId)}/chunks").newBuilder()
             .post(pcm.toRequestBody("application/octet-stream".toMediaType())).build()
         val call = client.newCall(req)

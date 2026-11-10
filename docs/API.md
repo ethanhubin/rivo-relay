@@ -349,12 +349,13 @@ for release as well as takeover. Changed/expired previews must be fetched again.
 | GET `/v1/media/library/{id}/content`、`thumbnail` | 已保存副本/缩略图，认证Range/ETag。 |
 | GET `/v1/media/library/{id}/provenance` | record含原生threadId/turnId/itemId及provenance.facts、promptKind（original/revised/unknown）。 |
 | GET `/v1/media/generated?threadId=...` 及 `/{id}/content`、`thumbnail`、`provenance` | 生成媒体查询/读取别名。 |
+| POST `/v1/speech/access` | 已配对手机获取 180 秒、仅限 VPS 语音接口的授权；不返回节点密钥或 ASR 密钥。 |
 | POST `/v1/speech/streams` | 创建当前配对连接拥有的转写流。 |
 | POST `/v1/speech/streams/{id}/chunks` | `application/octet-stream` 原始16kHz单声道PCM16LE，不自动重发。 |
 | POST `/v1/speech/streams/{id}/finish`、`cancel` | 完成或取消流；跨配对连接访问被拒绝。 |
 | POST `/v1/speech/transcriptions` | 有界multipart整段音频转写。 |
 
-媒体记录含 `id,source,threadId,turnId,itemId,status,mediaType,mimeType,favorite,hasGenerationInfo,originalUrl,thumbnailUrl`；API相对URL只在当前认证节点使用，不能当作远端原生文件路径。pending记录不能用于读取成品。公网图片40MiB，原生生成图片64MiB，媒体传输上限1GiB；缓存2GiB/24小时。ASR通过 `RIVO_SPEECH_BACKEND_URL` / `RIVO_SPEECH_BACKEND_TOKEN` 显式配置，不自动部署模型或服务。
+媒体记录含 `id,source,threadId,turnId,itemId,status,mediaType,mimeType,favorite,hasGenerationInfo,originalUrl,thumbnailUrl`；API相对URL只在当前认证节点使用，不能当作远端原生文件路径。pending记录不能用于读取成品。公网图片40MiB，原生生成图片64MiB，媒体传输上限1GiB；缓存2GiB/24小时。有 VPS 凭据的节点默认使用中转共享 ASR，由中转决定后端；独立节点可通过 `RIVO_SPEECH_BACKEND_URL` / `RIVO_SPEECH_BACKEND_TOKEN` 显式配置，不自动部署模型或服务。详见 [中转统一语音识别](shared-asr.md)。
 
 
 进程级 ownership takeover 仅适用于已核实的本地主机 daemon，描述符、原生HOME、PID启动时间/二进制/socket在预览和执行时重复核对。显式共享 Desktop 模式已有本连接订阅的 release 使用 `thread/unsubscribe`，返回 `releaseScope=relay-subscription`，Desktop/远程均不杀进程，也不宣称释放了其他客户端的锁。`nativeRuntime.handoffAvailable` 仅表达强制接管能力；正常释放不依赖该值。

@@ -425,6 +425,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {"todo": {"id": todo["id"], "completed": todo["completed"]}})
                 return
             token, connection = self.authenticate()
+            if self.command == 'POST' and path == ['v1', 'speech', 'access']:
+                from .gateway.speech_access import issue
+                self.read_body(limit=4096)
+                self.send_json(200, issue(self.app.config.workspace, connection['connection_id']))
+                return
+
             if self.command == 'GET' and path == ['v1', 'sites']:
                 from .codex.sites import list_sites
                 self.send_json(200, list_sites(self.app.codex.connection, query.get('cursor', [None])[0]))

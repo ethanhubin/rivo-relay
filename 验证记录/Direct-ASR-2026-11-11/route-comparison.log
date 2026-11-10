@@ -1,0 +1,19 @@
+{
+  "audioSeconds": 5.463,
+  "oldRoute": {
+    "text": "你好，请帮我查看今天的任务，并打开语音输入功能。",
+    "requests": 13,
+    "totalSeconds": 5.591,
+    "maxRequestSeconds": 1.765,
+    "finishSeconds": 0.551
+  },
+  "shortRoute": {
+    "text": "你好，请帮我查看今天的任务，并打开语音输入功能。",
+    "requests": 13,
+    "totalSeconds": 7.307,
+    "maxRequestSeconds": 1.826,
+    "finishSeconds": 0.446
+  },
+  "scope": "same synthetic clip, one sequential run per route; not a general latency benchmark"
+}
+Temporary pairing revoked; no audio or transcript sent as a chat message
