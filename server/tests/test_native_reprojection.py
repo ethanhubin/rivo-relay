@@ -535,6 +535,71 @@ class NativeHistoryReprojectorTests(unittest.TestCase):
             finally:
                 fcntl.flock(writer_lock.fileno(), fcntl.LOCK_UN)
 
+    def test_projection_backup_contains_only_affected_rows(self):
+        database = self.codex_home / 'thread_history_1.sqlite'
+        with sqlite_connection(database) as connection:
+            connection.execute("UPDATE thread_items SET value=? WHERE thread_id=?",
+                               ('x' * 2_000_000, OTHER_THREAD_ID))
+        result = self.reprojector().reproject(THREAD_ID, self.rollout, self.root)
+        with sqlite_connection(result.projection_backup) as connection:
+            for table in ('thread_items', 'thread_turns', 'thread_realtime_items',
+                          'thread_history_projection_state'):
+                self.assertEqual([(THREAD_ID,)], connection.execute(
+                    f'SELECT DISTINCT thread_id FROM {table}').fetchall())
+            self.assertEqual([('stale',)], connection.execute(
+                'SELECT value FROM thread_items').fetchall())
+        self.assertLess(result.projection_backup.stat().st_size, 100_000)
+
+    def test_oversized_backup_leaves_live_history_unchanged(self):
+        original = self.rollout.read_bytes()
+        with patch('rivo_relay.codex.native_reprojection.MAX_BACKUP_BYTES', 8192):
+            with self.assertRaises(NativeHistoryReprojectionError):
+                self.reprojector().reproject(THREAD_ID, self.rollout, self.root)
+        self.assertEqual(original, self.rollout.read_bytes())
+        with sqlite_connection(self.codex_home / 'thread_history_1.sqlite') as connection:
+            self.assertEqual(('stale',), connection.execute(
+                'SELECT value FROM thread_items WHERE thread_id=?', (THREAD_ID,)).fetchone())
+        self.assertEqual([], list(self.repair_dir.glob('*.sqlite')))
+        self.assertEqual([], list(self.repair_dir.glob('*.jsonl')))
+
+    def test_global_retention_expiry_capacity_and_incomplete_pairs(self):
+        self.repair_dir.mkdir()
+        def pair(stamp, owner, age, size=10):
+            base = self.repair_dir / f'{stamp}-{owner}-before-official-reprojection'
+            paths = [base.with_suffix(suffix) for suffix in ('.jsonl', '.sqlite')]
+            for path in paths:
+                path.write_bytes(b'x' * size)
+                os.utime(path, (2000 - age, 2000 - age))
+            return paths
+        expired = pair('old', THREAD_ID, 101)
+        older = pair('older', THREAD_ID, 20)
+        newest = pair('new', OTHER_THREAD_ID, 10)
+        orphan = pair('orphan', OTHER_THREAD_ID, 0)
+        orphan[0].unlink()
+        unrelated = self.repair_dir / 'unrelated.sqlite'
+        unrelated.write_bytes(b'keep')
+        with patch('rivo_relay.codex.native_reprojection.BACKUP_MAX_AGE_SECONDS', 100), \
+             patch('rivo_relay.codex.native_reprojection.MAX_BACKUP_BYTES', 30):
+            self.reprojector()._prune_backups()
+        self.assertTrue(all(path.exists() for path in newest))
+        self.assertTrue(all(not path.exists() for path in expired + older + orphan))
+        self.assertTrue(unrelated.exists())
+
+    def test_retention_protects_active_rollback_pair(self):
+        self.repair_dir.mkdir()
+        pairs = []
+        for index, owner in enumerate((THREAD_ID, OTHER_THREAD_ID)):
+            base = self.repair_dir / f'{index}-{owner}-before-official-reprojection'
+            paths = [base.with_suffix(suffix) for suffix in ('.jsonl', '.sqlite')]
+            for path in paths:
+                path.write_bytes(b'x' * 10)
+                os.utime(path, (index, index))
+            pairs.append(paths)
+        with patch('rivo_relay.codex.native_reprojection.MAX_BACKUP_BYTES', 20):
+            self.reprojector()._prune_backups(protected=pairs[0][0])
+        self.assertTrue(all(path.exists() for path in pairs[0]))
+        self.assertTrue(all(not path.exists() for path in pairs[1]))
+
     def test_backup_pairs_are_bounded_per_thread(self):
         self.repair_dir.mkdir()
         for index in range(4):
@@ -551,7 +616,7 @@ class NativeHistoryReprojectorTests(unittest.TestCase):
             timestamp = index + 1
             os.utime(rollout, ns=(timestamp, timestamp))
 
-        self.reprojector()._prune_backups(THREAD_ID)
+        self.reprojector()._prune_backups()
 
         self.assertEqual(
             2,
