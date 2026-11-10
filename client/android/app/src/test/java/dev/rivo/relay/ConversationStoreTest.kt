@@ -55,7 +55,7 @@ class ConversationStoreTest {
         val settings = store.sentDraftCheckpoints().getValue("send-goal").getJSONObject("settings")
         assertFalse(settings.has("pendingGoal"))
         assertEquals(goal, ConversationStore(directory.root).loadDraft("pending:new").pendingGoal)
-        store.markSentDraftResolved("send-goal", JSONObject().put("status", "accepted"))
+        store.markSentDraftResolved("send-goal", JSONObject().put("status", "accepted").put("receipt", JSONObject().put("threadId", "pending:new")))
         store.clearAcceptedSentDraft("send-goal")
         assertTrue(ConversationStore(directory.root).loadDraft("pending:new").empty)
     }

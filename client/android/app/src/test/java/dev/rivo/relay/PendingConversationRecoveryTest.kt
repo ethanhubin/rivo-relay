@@ -212,4 +212,60 @@ class PendingConversationRecoveryTest {
         assertEquals(listOf("t1", "t2"), merged.map { it.string("turnId") })
         assertEquals("changed", merged.first().string("status"))
     }
+    @Test fun createReceiptWithoutThreadCannotRetireDurableCheckpoint() = runBlocking {
+        val directory = Files.createTempDirectory("rivo-incomplete-create").toFile()
+        try {
+            val store = ConversationStore(directory)
+            val pending = store.createPending("project")
+            store.saveDraftOrdered("pending:$pending", ConversationDraft("keep this draft"))
+            store.checkpointPendingSubmission(pending, "create-id", "create")
+            assertThrows(IllegalArgumentException::class.java) {
+                store.resolvePendingSubmission("create-id", JSONObject("""{"status":"accepted","receipt":{"projectId":"project"}}"""))
+            }
+            val restarted = ConversationStore(directory)
+            assertTrue(restarted.pendingHasUnresolvedSubmission(pending))
+            assertNull(restarted.pendingThreadId(pending))
+            assertEquals("keep this draft", restarted.loadDraft("pending:$pending").text)
+        } finally { directory.deleteRecursively() }
+    }
+
+    @Test fun wrongThreadReceiptCannotClearAnOrphanedSentDraft() = runBlocking {
+        val directory = Files.createTempDirectory("rivo-wrong-receipt").toFile()
+        try {
+            val store = ConversationStore(directory)
+            store.saveDraftOrdered("original", ConversationDraft("preserve input"))
+            store.checkpointSentDraft("send", "original")
+            assertThrows(IllegalArgumentException::class.java) {
+                store.markSentDraftResolved("send", JSONObject("""{"status":"accepted","receipt":{"threadId":"other"}}"""))
+            }
+            val restarted = ConversationStore(directory)
+            assertEquals("pending", restarted.sentDraftCheckpoints().getValue("send").string("status"))
+            assertEquals("preserve input", restarted.loadDraft("original").text)
+        } finally { directory.deleteRecursively() }
+    }
+
+    @Test fun orphanedFirstSendRequiresMatchingThreadAndTurnBeforeCompletingDraft() = runBlocking {
+        val directory = Files.createTempDirectory("rivo-orphan-first-send").toFile()
+        try {
+            val store = ConversationStore(directory)
+            val pending = store.createPending("project")
+            store.saveDraftOrdered("pending:$pending", ConversationDraft("first input"))
+            store.checkpointPendingSubmission(pending, "create", "create")
+            store.resolvePendingSubmission("create", JSONObject("""{"status":"accepted","receipt":{"threadId":"native"}}"""))
+            store.checkpointPendingSubmission(pending, "send", "send")
+            for (receipt in listOf("""{"threadId":"native"}""", """{"threadId":"wrong","turnId":"turn"}""")) {
+                assertThrows(IllegalArgumentException::class.java) {
+                    store.resolvePendingSubmission("send", JSONObject().put("status", "accepted").put("receipt", JSONObject(receipt)))
+                }
+                val restarted = ConversationStore(directory)
+                assertTrue(restarted.pendingHasUnresolvedSubmission(pending))
+                assertFalse(restarted.pendingCompleted(pending))
+                assertEquals("first input", restarted.loadDraft("pending:$pending").text)
+            }
+            store.resolvePendingSubmission("send", JSONObject("""{"status":"accepted","receipt":{"threadId":"native","turnId":"turn"}}"""))
+            assertTrue(store.pendingCompleted(pending))
+            assertFalse(store.pendingHasUnresolvedSubmission(pending))
+        } finally { directory.deleteRecursively() }
+    }
+
 }

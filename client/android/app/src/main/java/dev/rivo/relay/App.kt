@@ -19,7 +19,6 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.rivo.relay.data.*
 import dev.rivo.relay.codex.BatchSubmission
-import dev.rivo.relay.codex.PendingSubmission
 import dev.rivo.relay.codex.SessionSynchronization
 import dev.rivo.relay.codex.SessionSyncEvent
 import dev.rivo.relay.codex.SessionState
@@ -29,6 +28,7 @@ import dev.rivo.relay.codex.canQueueOperation
 import dev.rivo.relay.codex.canContinueTask
 import dev.rivo.relay.codex.canCompose
 import dev.rivo.relay.codex.pinnedThreadsToObserve
+import dev.rivo.relay.ui.TransientNotice
 import dev.rivo.relay.ui.login.LoginScreen
 import dev.rivo.relay.ui.projects.*
 import dev.rivo.relay.ui.sessions.SessionsScreen
@@ -55,14 +55,14 @@ fun RelayApp(vm: AppViewModel = viewModel()) {
                     LoginScreen(app.pairing || app.reconnecting, app.error, vm::pair, vm::setError)
                 }
             }
-            else key(node) { ConnectedApp(node, app.error, vm::setError, app.pairing, vm::pair, vm::retryConnection, app.savedNodes, vm::selectNode, vm::settingsConnection, vm::setNodeConnectionMode) }
+            else key(node) { ConnectedApp(node, app.error, vm::setError, app.pairing, vm::pair, app.savedNodes, vm::selectNode, vm::settingsConnection, vm::setNodeConnectionMode) }
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) -> Unit, pairing: Boolean, pair: (String, String) -> Unit, retryConnection: () -> Unit,
+private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) -> Unit, pairing: Boolean, pair: (String, String) -> Unit,
     savedNodes: List<dev.rivo.relay.connection.SavedNode>, selectNode: (String) -> Unit, settingsConnection: (String) -> dev.rivo.relay.connection.NodeConnection?,
     setNodeConnectionMode: (String, dev.rivo.relay.connection.ConnectionMode) -> dev.rivo.relay.connection.NodeConnection?) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -90,7 +90,6 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
         }
     }
     var todoAttachment by remember { mutableStateOf<String?>(null) }
-    var endingPending by remember { mutableStateOf<PendingSubmission?>(null) }
     var handoffPrompt by remember { mutableStateOf<Triple<String, String, JSONObject>?>(null) }
     var handoffLoading by remember { mutableStateOf(false) }
     fun executeHandoff(id: String, operation: String, preview: JSONObject, confirmed: Boolean) {
@@ -148,6 +147,18 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     val network = transportNetwork.takeIf { recovery == RecoveryState.CONNECTED }
     val todos by node.todos.state.collectAsStateWithLifecycle()
     val submission by node.submissions.state.collectAsStateWithLifecycle()
+    var announcedPendingId by remember(node) { mutableStateOf<String?>(null) }
+    var recoveryToast by remember(node) { mutableStateOf<String?>(null) }
+    LaunchedEffect(submission.pending?.id, submission.busy) {
+        val pending = submission.pending
+        if (pending == null) {
+            announcedPendingId = null
+            recoveryToast = null
+        } else if (!submission.busy && announcedPendingId != pending.id) {
+            announcedPendingId = pending.id
+            recoveryToast = "${node.connection.name}：正在自动恢复“${pending.label}”的发送状态，请稍候。"
+        }
+    }
     val owner = LocalLifecycleOwner.current
     val writable = network != null && !submission.busy && submission.pending == null && !handoffLoading
     val projectsWritable = writable && catalog.projectsFresh
@@ -161,27 +172,9 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
         }
     }
     val currentError = error ?: if (route == "chat" && session.id == threadId) session.readError ?: session.historyError else null
-    val transientError = currentError?.takeIf { it == "记录不存在" }
-    var transientErrorVisible by remember(node, route, threadId, currentError) { mutableStateOf(true) }
-    LaunchedEffect(node, route, threadId, currentError) {
-        if (transientError != null) {
-            kotlinx.coroutines.delay(3000)
-            transientErrorVisible = false
-        }
-    }
-    val displayError = currentError?.takeUnless { it == transientError }
     LaunchedEffect(route, threadId) { handoffPrompt = null }
     LaunchedEffect(node, network) {
         if (network != null) node.reconcilePendingReceipts()
-    }
-    LaunchedEffect(submission.pending?.id, network) {
-        if (submission.pending != null && network != null) {
-            kotlinx.coroutines.delay(3000)
-            while (true) {
-                node.submissions.reconcile()
-                kotlinx.coroutines.delay(10000)
-            }
-        }
     }
     LaunchedEffect(submission.resolvedRevision) {
         if (submission.resolvedRevision > 0) {
@@ -609,60 +602,23 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     readDirectory = { path -> node.api.call("/v1/directories?path=" + encoded(path)) }, onOpenAttachment = { todoAttachment = it })
             }
         }
-        if (transientError != null && transientErrorVisible) {
-            Surface(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).testTag("transient_error_notice"),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.inverseSurface
-            ) {
-                Text("${node.connection.name}：$transientError",
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                    color = MaterialTheme.colorScheme.inverseOnSurface,
-                    style = MaterialTheme.typography.bodySmall)
-            }
-        }
         val cached = network != null && catalogCacheNoticeVisible(route, catalog, true)
-        // A durable pending ID also exists during normal sending; only show recovery UI after it finishes.
-        val pendingRecovery = submission.pending.takeIf { !submission.busy }
-        if (displayError != null || pendingRecovery != null || submission.notice != null || cached) {
-            Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).testTag("bottom_notice_panel"),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp), tonalElevation = 3.dp, shadowElevation = 4.dp,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh) {
-                Column(Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) {
-                    displayError?.let { message ->
-                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, modifier = Modifier.testTag("app_error")) {
-                            Text("${node.connection.name}：$message", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                            TextButton(onClick = retryConnection, modifier = Modifier.testTag("retry_connection")) { Text("重连") }
-                        }
-                    }
-                    pendingRecovery?.let { pending ->
-                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                            Text("${node.connection.name}：正在确认“${pending.label}”是否送达，暂时无法提交新操作。", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                            TextButton(onClick = { endingPending = pending }, enabled = !submission.busy,
-                                modifier = Modifier.testTag("finish_reconciliation")) { Text("处理记录") }
-                            pending.threadId?.takeIf { it.isNotBlank() && (route != "chat" || threadId != it) }?.let { id ->
-                                TextButton(onClick = { openChat(id, "projects") }) { Text("查看会话") }
-                            }
-                        }
-                    }
-                    if (submission.pending == null) submission.notice?.let { notice ->
-                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                            Text(notice, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                    if (cached) Text("${node.connection.name}：暂未同步，显示上次内容", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("catalog_cached_notice"))
-                    if (displayError != null || submission.pending == null && submission.notice != null) {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                            TextButton(onClick = {
-                                setError(null)
-                                node.session.dismissReadError()
-                                node.submissions.clearNotice()
-                            }, modifier = Modifier.testTag("dismiss_bottom_notice")) { Text("关闭") }
-                        }
-                    }
-                }
+        val resultNotice = submission.notice.takeIf { submission.pending == null }
+        val toastMessage = currentError?.let { "${node.connection.name}：$it" }
+            ?: recoveryToast
+            ?: resultNotice
+            ?: if (cached) "${node.connection.name}：暂未同步，显示上次内容" else null
+        // Notices expire without changing connection verification or releasing a pending submission.
+        toastMessage?.let { message ->
+            TransientNotice(message, modifier = Modifier.testTag(
+                if (currentError != null) "app_error" else if (recoveryToast != null || resultNotice != null) "submission_notice" else "catalog_cached_notice")) {
+                if (currentError != null) {
+                    if (error != null) setError(null) else node.session.dismissReadError()
+                } else if (recoveryToast != null) recoveryToast = null
+                else if (resultNotice != null) node.submissions.clearNotice()
             }
         }
+
         }
         if (showBottomNavigation) NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
             NavigationBarItem(selected = route == "projects", onClick = { route = "projects"; setError(null); node.catalog.refreshProjects() },
@@ -699,12 +655,6 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             }
         }
     }
-    endingPending?.let { pending -> AlertDialog(onDismissRequest = { endingPending = null }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("清除手机上的等待记录？") } },
-        text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("原操作可能仍在执行；请先检查原会话。此操作只解除手机等待，不取消或重新发送原任务，服务记录保留。")
-            Text("节点：${node.connection.name}\n操作：${pending.label}\n提交 ID：${pending.id}", style = MaterialTheme.typography.labelSmall)
-        } } }, confirmButton = { TextButton(onClick = { node.submissions.finishReconciliation(pending.id); endingPending = null }, enabled = !submission.busy && submission.pending?.id == pending.id,
-            modifier = Modifier.testTag("confirm_finish_reconciliation")) { Text("清除等待记录") } }, dismissButton = { TextButton(onClick = { endingPending = null }) { Text("返回") } }) }
     todoAttachment?.let { path -> dev.rivo.relay.ui.chat.FilePreviewDialog(path,
         { p -> node.api.call("/v1/files?path=" + encoded(p)) }, { p, output, progress -> node.api.downloadFile(p, output, progress) }) { todoAttachment = null } }
     if (addNode) androidx.compose.ui.window.Dialog(

@@ -26,7 +26,8 @@ def route(handler, path, query, body, connection):
         return handler.app.submit(connection_id, sid, "request.respond", key, body,
             lambda: codex.respond(key, response))
     if len(path) == 4 and path[:2] == ["v1", "submissions"] and path[3] == "reconcile" and method == "POST":
-        return public_submission(handler.app.submissions.reconcile(path[2], connection_id))
+        handler.app.submissions.reconcile(path[2], connection_id)
+        return public_submission(handler.app.submissions.recover_native(path[2], connection_id, codex))
     if len(path) == 3 and path[:2] == ["v1", "submissions"] and method == "GET":
-        return public_submission(handler.app.submissions.get(path[2], connection_id))
+        return public_submission(handler.app.submissions.recover_native(path[2], connection_id, codex))
     raise ApiError(404, "not_found", "Unknown endpoint")

@@ -255,7 +255,7 @@ class QiGuangStateParityTest {
             store.saveDraftOrdered("original", ConversationDraft("sent", model = "m", serviceTier = "priority"))
             store.checkpointSentDraft("submission", "original")
             store.saveDraftOrdered("other", ConversationDraft("other chat draft"))
-            assertTrue(store.markSentDraftResolved("submission", JSONObject().put("status", "accepted")))
+            assertTrue(store.markSentDraftResolved("submission", JSONObject().put("status", "accepted").put("receipt", JSONObject().put("threadId", "original"))))
             // An accepted checkpoint survives a restart before queued cleanup finishes.
             val restarted = ConversationStore(directory)
             assertEquals("", restarted.loadDraft("original").text)
@@ -265,7 +265,7 @@ class QiGuangStateParityTest {
             restarted.saveDraftOrdered("original", ConversationDraft("second send"))
             restarted.checkpointSentDraft("second", "original")
             restarted.enqueueDraft("original", ConversationDraft("newer typed text"))
-            restarted.markSentDraftResolved("second", JSONObject().put("status", "accepted"))
+            restarted.markSentDraftResolved("second", JSONObject().put("status", "accepted").put("receipt", JSONObject().put("threadId", "original")))
             restarted.clearAcceptedSentDraft("second")
             assertEquals("newer typed text", restarted.loadDraft("original").text)
             assertTrue(restarted.sentDraftCheckpoints().isEmpty())
@@ -321,7 +321,7 @@ class QiGuangStateParityTest {
             assertEquals("newer user edit", ConversationStore(directory).loadDraft("t").text)
             val frozenFile = directory.listFiles()!!.single { it.name.startsWith("sent-input-") }
             assertEquals("the submitted input", JSONObject(frozenFile.readText()).getString("text"))
-            store.markSentDraftResolved("request", JSONObject().put("status", "accepted"))
+            store.markSentDraftResolved("request", JSONObject().put("status", "accepted").put("receipt", JSONObject().put("threadId", "t")))
             store.clearAcceptedSentDraft("request")
             assertEquals("newer user edit", store.loadDraft("t").text)
             assertFalse(frozenFile.exists())

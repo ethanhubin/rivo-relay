@@ -787,6 +787,8 @@ class CodexService(SessionHandoffMixin):
         return {key: value for key, value in (('sandbox', sandbox), ('approvalPolicy', approval_policy)) if value is not None}
 
     def create_session(self, project_id, title="", worktree_ref=None, *, sandbox=None, approval_policy=None):
+        from ..submission_dispatch import creation_phase
+        creation_phase(project_id, 'preparing')
         if project_id == RECENT_PROJECT_ID:
             raise CodexError("请先选择项目再新建会话", code="invalid_request", http_status=400)
         permissions = self._permission_options(sandbox, approval_policy)
@@ -802,12 +804,14 @@ class CodexService(SessionHandoffMixin):
                     raise CodexError('工作树存储不可用')
                 workspace_id, cwd = self.workspaces.create(project_id, cwd, worktree_ref)
             try:
+                creation_phase(project_id, 'dispatching')
                 result = self.connection.request("thread/start", {
                     "cwd": cwd, "projectId": project_id, "historyMode": "paginated", **permissions,
                 })
                 thread_id = (result.get('thread') or {}).get('id')
                 if not isinstance(thread_id, str) or not thread_id:
                     raise CodexError('原生没有返回可核对的会话身份', code='native_protocol', request_sent=True)
+                creation_phase(project_id, 'received', {'threadId': thread_id})
             except Exception as error:
                 if workspace_id:
                     uncertain = not isinstance(error, CodexError) or not error.definite
@@ -836,6 +840,8 @@ class CodexService(SessionHandoffMixin):
             return receipt
 
     def fork_session(self, thread_id, last_turn_id, worktree_ref=None):
+        from ..submission_dispatch import creation_phase
+        creation_phase(thread_id, 'preparing')
         self.start()
         with self.operation_gate(thread_id):
             source = self.connection.request('thread/read', {'threadId': thread_id, 'includeTurns': False})['thread']
@@ -852,6 +858,7 @@ class CodexService(SessionHandoffMixin):
             elif self.workspaces is not None:
                 shared = self.workspaces.reserve_shared_directory(cwd)
             try:
+                creation_phase(thread_id, 'dispatching')
                 result = self.connection.request('thread/fork', {
                     'threadId': thread_id, 'lastTurnId': last_turn_id,
                     'cwd': cwd, 'excludeTurns': True,
@@ -859,6 +866,7 @@ class CodexService(SessionHandoffMixin):
                 selected = (result.get('thread') or {}).get('id')
                 if not isinstance(selected, str) or not selected or selected == thread_id:
                     raise CodexError('分叉未返回新的会话身份', code='native_protocol', request_sent=True)
+                creation_phase(thread_id, 'received', {'threadId': selected})
             except Exception as error:
                 if shared is not None and isinstance(error, CodexError) and error.definite:
                     self.workspaces.cancel_shared_directory(shared)

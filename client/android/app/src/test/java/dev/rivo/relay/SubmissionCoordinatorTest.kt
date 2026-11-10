@@ -1,5 +1,6 @@
 package dev.rivo.relay
 
+import dev.rivo.relay.codex.recoverPendingCheckpoints
 import dev.rivo.relay.codex.SubmissionCoordinator
 import dev.rivo.relay.connection.CredentialStorage
 import dev.rivo.relay.data.*
@@ -212,4 +213,185 @@ class SubmissionCoordinatorTest {
             assertEquals(0, server.requestCount)
         } finally { scope.cancel(); server.shutdown() }
     }
+    @Test fun restoredSubmissionAutomaticallyRecoversWithoutResending() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val vault = MemoryVault().apply {
+            value = """{"id":"persisted","path":"/v1/threads","label":"create"}"""
+        }
+        val statuses = mutableListOf<String>()
+        try {
+            server.enqueue(MockResponse().setBody("""{"status":"unknown"}"""))
+            server.enqueue(accepted())
+            val coordinator = SubmissionCoordinator(api(server), scope, vault, "key",
+                onResolved = { _, response -> statuses += response.string("status") },
+                recoveryDelayMillis = 10, recoveryIntervalMillis = 20, failure = { fail(it.message) })
+            coordinator.submit("/v1/threads", JSONObject(), "must not replay")
+            withTimeout(5000) { coordinator.state.first { it.pending == null } }
+            assertNull(vault.value)
+            assertEquals(listOf("unknown", "accepted"), statuses)
+            assertEquals(2, server.requestCount)
+            repeat(2) {
+                val request = server.takeRequest()
+                assertEquals("GET", request.method)
+                assertEquals("/v1/submissions/persisted", request.path)
+            }
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun automaticRecoveryRetriesTransientReadFailureAndRetiresDefinitiveFailure() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val vault = MemoryVault().apply {
+            value = """{"id":"persisted","path":"/v1/threads","label":"create"}"""
+        }
+        try {
+            server.enqueue(MockResponse().setResponseCode(503).setBody("""{"error":{"code":"unavailable","message":"restart"}}"""))
+            server.enqueue(MockResponse().setBody("""{"status":"failed","errorCode":"submission_not_received"}"""))
+            val coordinator = SubmissionCoordinator(api(server), scope, vault, "key",
+                recoveryDelayMillis = 10, recoveryIntervalMillis = 20, failure = { fail(it.message) })
+            withTimeout(5000) { coordinator.state.first { it.pending == null } }
+            assertNull(vault.value)
+            assertTrue(coordinator.state.value.notice.orEmpty().contains("草稿已保留"))
+            assertEquals(2, server.requestCount)
+            repeat(2) { assertEquals("GET", server.takeRequest().method) }
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun incompleteAcceptedReceiptRetainsWaitUntilValidReceiptArrives() = runBlocking {
+        for (bad in listOf(
+            """{"status":"accepted"}""",
+            """{"status":"accepted","receipt":{"threadId":"native"}}""",
+            """{"status":"accepted","receipt":{"threadId":"other","turnId":"turn"}}""",
+            """{"submissionId":"another","status":"failed"}"""
+        )) {
+            val server = MockWebServer(); server.start()
+            val scope = CoroutineScope(coroutineContext + SupervisorJob())
+            val vault = MemoryVault()
+            var completed = 0
+            val outcomes = mutableListOf<String>()
+            try {
+                server.enqueue(MockResponse().setBody(bad))
+                server.enqueue(MockResponse().setBody(bad))
+                server.enqueue(accepted())
+                val coordinator = SubmissionCoordinator(api(server), scope, vault, "key",
+                    onResolved = { _, response -> outcomes += response.string("status") }, failure = {})
+                coordinator.submit("/v1/threads/native/turns", JSONObject(), "send") { completed++ }
+                idle(coordinator)
+                coordinator.reconcile(); idle(coordinator)
+                assertNotNull(coordinator.state.value.pending)
+                assertNotNull(vault.value)
+                assertEquals(0, completed)
+                assertTrue(outcomes.isEmpty())
+                coordinator.reconcile(); idle(coordinator)
+                assertNull(coordinator.state.value.pending)
+                assertEquals(1, completed)
+                assertEquals(listOf("accepted"), outcomes)
+                assertEquals(listOf("POST", "GET", "GET"), (1..3).map { server.takeRequest().method })
+            } finally { scope.cancel(); server.shutdown() }
+        }
+    }
+
+    @Test fun corruptDurableWaitCannotSilentlyBecomeAnUnlockedCoordinator() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        try {
+            for (raw in listOf("broken", "{}", """{"id":"","path":"/v1/threads","label":"create"}""")) {
+                val vault = MemoryVault().apply { value = raw }
+                assertThrows(IllegalArgumentException::class.java) { SubmissionCoordinator(api(server), scope, vault, "key", failure = {}) }
+                assertEquals(raw, vault.value)
+            }
+            assertEquals(0, server.requestCount)
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun concurrentReconciliationHasOnlyOneInFlightOwner() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val vault = MemoryVault().apply { value = """{"id":"persisted","path":"/v1/threads","label":"create"}""" }
+        try {
+            server.enqueue(accepted().setBodyDelay(200, java.util.concurrent.TimeUnit.MILLISECONDS))
+            val coordinator = SubmissionCoordinator(api(server), scope, vault, "key", failure = {})
+            coroutineScope { repeat(40) { launch(Dispatchers.Default) { coordinator.reconcile() } } }
+            withTimeout(5000) { coordinator.state.first { it.pending == null && !it.busy } }
+            assertEquals(1, server.requestCount)
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun orphanedCheckpointsRetryReadAndPersistenceFailuresAutomatically() = runBlocking {
+        val pending = mutableSetOf("orphan")
+        var reads = 0
+        var attempts = 0
+        val errors = mutableListOf<Throwable>()
+        withTimeout(5000) {
+            recoverPendingCheckpoints(read = {
+                if (++reads == 1) throw IOException("temporary storage read failure")
+                pending.toSet()
+            }, resolve = { id ->
+                if (++attempts == 1) throw IOException("temporary receipt save failure")
+                pending.remove(id)
+            }, failure = { errors += it }, intervalMillis = 10)
+        }
+        assertEquals(2, errors.size)
+        assertEquals(2, attempts)
+        assertTrue(pending.isEmpty())
+    }
+
+    @Test fun restoredDisplayThreadCannotPoisonTheFrozenRequestTarget() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val vault = MemoryVault().apply {
+            value = """{"id":"id","path":"/v1/threads/native/turns","label":"send","threadId":"wrong-display-thread"}"""
+        }
+        try {
+            server.enqueue(accepted())
+            val coordinator = SubmissionCoordinator(api(server), scope, vault, "key", failure = { fail(it.message) })
+            coordinator.reconcile(); idle(coordinator)
+            assertNull(coordinator.state.value.pending)
+            assertEquals(1, server.requestCount)
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun preparationOwnsIdBeforeOrphanRecoveryCanFenceIt() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        try {
+            server.enqueue(accepted())
+            val coordinator = SubmissionCoordinator(api(server), scope, MemoryVault(), "key", failure = { fail(it.message) })
+            coordinator.submit("/v1/threads", JSONObject(), "create", submissionId = "preparing", prepareBody = {
+                entered.complete(Unit)
+                release.await()
+                it
+            })
+            withTimeout(5000) { entered.await() }
+            assertEquals("preparing", coordinator.state.value.pending?.id)
+            coordinator.reconcile()
+            assertEquals(0, server.requestCount)
+            release.complete(Unit)
+            idle(coordinator)
+            assertNull(coordinator.state.value.pending)
+            assertEquals(1, server.requestCount)
+            assertEquals("/v1/threads", server.takeRequest().path)
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun preparationFailureRetiresItsReservationWithoutNetworkSubmission() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val outcomes = mutableListOf<String>()
+        val errors = mutableListOf<Throwable>()
+        try {
+            val coordinator = SubmissionCoordinator(api(server), scope, MemoryVault(), "key",
+                onResolved = { _, response -> outcomes += response.string("status") }, failure = { errors += it })
+            coordinator.submit("/v1/threads", JSONObject(), "create", prepared = { throw IOException("local staging failed") })
+            idle(coordinator)
+            assertNull(coordinator.state.value.pending)
+            assertEquals(listOf("failed"), outcomes)
+            assertEquals(1, errors.size)
+            assertEquals(0, server.requestCount)
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
 }

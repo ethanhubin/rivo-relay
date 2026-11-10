@@ -263,12 +263,15 @@ internal fun NewSessionSettings(models: List<JSONObject>, model: String?, effort
     Column(Modifier.fillMaxWidth().heightIn(max = 340.dp)
         .verticalScroll(rememberScrollState()).testTag("new_session_settings"),
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        workspace?.invoke()
         Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("会话设置", style = MaterialTheme.typography.titleSmall)
             Surface(shape = RoundedCornerShape(24.dp), color = if (MaterialTheme.colorScheme.background == NightBackground)
                 MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.surfaceContainerLow) {
                 Column {
+                    workspace?.let {
+                        it()
+                        HorizontalDivider(Modifier.padding(horizontal = 16.dp))
+                    }
                     SettingsPanelRow("模型", model ?: capability?.string("displayName")?.takeIf(String::isNotBlank)
                         ?: capability?.string("model")?.takeIf(String::isNotBlank) ?: "正在读取默认模型",
                         models.map {

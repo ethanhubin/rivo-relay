@@ -65,6 +65,10 @@ def sqlite_transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Conne
     connection.execute(f"SAVEPOINT {savepoint}" if nested else "BEGIN IMMEDIATE")
     try:
         yield connection
+        if nested:
+            connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+        else:
+            connection.commit()
     except BaseException:
         if nested:
             connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
@@ -72,11 +76,6 @@ def sqlite_transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Conne
         else:
             connection.rollback()
         raise
-    else:
-        if nested:
-            connection.execute(f"RELEASE SAVEPOINT {savepoint}")
-        else:
-            connection.commit()
 
 
 class Database:

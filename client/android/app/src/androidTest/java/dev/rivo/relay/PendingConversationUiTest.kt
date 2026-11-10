@@ -121,16 +121,18 @@ class PendingConversationUiTest {
         compose.onNodeWithText("发送中…").assertDoesNotExist()
         compose.onNodeWithText("今天想从哪里开始？").assertIsDisplayed()
         compose.onNodeWithTag("send_message").assertIsNotEnabled()
-        compose.onNodeWithTag("new_session_model").assertIsNotEnabled()
-        compose.onNodeWithTag("new_session_effort").assertIsNotEnabled()
+        compose.onNodeWithTag("new_session_settings").assertDoesNotExist()
         compose.runOnIdle { pending.value = pending.value.map { it.copy(delivery = "unknown") }; busy.value = false }
         compose.onNodeWithTag("send_progress").assertDoesNotExist()
         compose.onNodeWithTag("message_input").assertTextEquals("先检查项目").assertIsNotEnabled()
+        compose.onNodeWithTag("new_session_settings").assertDoesNotExist()
         compose.onNodeWithTag("send_message").assertIsNotEnabled()
         compose.runOnIdle { pending.value = emptyList() }
         compose.onNodeWithTag("send_progress").assertDoesNotExist()
         compose.onNodeWithTag("message_input").assertTextEquals("先检查项目")
         compose.onNodeWithTag("send_message").assertIsEnabled()
+        compose.onNodeWithTag("new_session_settings").assertIsDisplayed()
+        compose.onNodeWithTag("new_session_model").assertIsEnabled()
     }
 
     @Test fun localWorkspaceDoesNotReadGitAndWorktreeFailureCanBeLeft() {

@@ -97,10 +97,19 @@ class RelayApp:
             return public_submission(claim["submission"])
         try:
             from .submission_dispatch import observe_dispatch
-            tracked = operation in {'thread.turns', 'thread.continue'}
-            with observe_dispatch(submission_id, target,
-                    lambda phase, receipt: self.submissions.record_dispatch(submission_id, phase, receipt)
-                    if tracked else None):
+            tracked = operation in {'thread.turns', 'thread.continue', 'thread.create', 'thread.fork'}
+            local = operation in {'thread.queue.enqueue', 'thread.queue.remove', 'thread.queue.dismiss',
+                                  'thread.queue.edit', 'thread.queue.reorder', 'thread.queue.recover'}
+            if local:
+                self.submissions.begin_local(submission_id)
+            def observe(phase, receipt):
+                if tracked:
+                    self.submissions.record_dispatch(submission_id, phase, receipt)
+                elif local and phase == 'committed':
+                    self.submissions.mark_accepted(submission_id, receipt)
+                elif operation == 'thread.queue.steer' and phase == 'checkpoint':
+                    self.submissions.checkpoint(submission_id, receipt)
+            with observe_dispatch(submission_id, target, observe):
                 receipt = action()
             if not receipt:
                 raise RuntimeError("Missing native identity receipt; reconcile before retry")
@@ -108,7 +117,8 @@ class RelayApp:
         except Exception as error:
             # Resolve a proven turn boundary first. For uninstrumented/sent
             # requests only an explicit definite rejection is safe to fail.
-            proven = self.submissions.resolve_dispatch(submission_id)
+            current = self.submissions.get(submission_id)
+            proven = current if current['status'] in {'accepted', 'failed'} else self.submissions.resolve_dispatch(submission_id)
             if proven is not None:
                 record = proven
             elif getattr(error, "definite", False):

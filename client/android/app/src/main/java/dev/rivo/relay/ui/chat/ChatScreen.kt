@@ -6,6 +6,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.*
 import androidx.compose.ui.semantics.contentDescription
@@ -701,7 +705,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             if (goalCapabilityError != null) TextButton(onClick = { goalCapabilityRetry++ }, enabled = !busy && !blocked) { Text("重新检查") }
         }
         if (pendingReceiptUnresolved && !busy && !blocked) Column(Modifier.padding(horizontal = 16.dp)) {
-            Text("该会话仍有未确认提交。结束手机等待不会取消原操作，请先核对结果。", style = MaterialTheme.typography.bodySmall)
+            Text("该会话仍有未确认提交。正在自动恢复发送状态，请稍候。", style = MaterialTheme.typography.bodySmall)
             onReconcilePending?.let { TextButton(onClick = it) { Text("核对新建结果") } }
         }
         if (pendingFirstTurnSent) Column(Modifier.padding(horizontal = 16.dp)) {
@@ -728,6 +732,12 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             onReorder = { ids, expected -> onQueue(JSONObject().put("operation", "reorder").put("ids", JSONArray(ids)).put("expectedIds", JSONArray(expected)), {}) })
         if (pendingTitle != null) {
             LaunchedEffect(state.id) { onLoadModels() }
+        }
+        AnimatedVisibility(
+            visible = pendingTitle != null && !busy && !pendingFirstTurnSent && !pendingReceiptUnresolved,
+            enter = expandVertically(animationSpec = tween(160), expandFrom = Alignment.Bottom),
+            exit = shrinkVertically(animationSpec = tween(160), shrinkTowards = Alignment.Bottom),
+        ) {
             NewSessionSettings(models, selectedModel, selectedEffort, selectedSandbox, selectedApproval,
                 enabled = !pendingReceiptUnresolved && !pendingFirstTurnSent && !busy && !blocked && !state.stale && pendingReady && draftLoaded,
                 permissionsEditable = pendingPermissionsEditable,

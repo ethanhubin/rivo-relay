@@ -11,6 +11,24 @@ data class PendingSubmission(val id: String, val path: String, val label: String
 data class SubmissionState(val busy: Boolean = false, val pending: PendingSubmission? = null, val notice: String? = null, val reconciling: Boolean = false, val resolvedRevision: Long = 0)
 data class BatchSubmission(val path: String, val body: JSONObject, val label: String)
 
+/** Retain and retry orphaned durable checkpoints after temporary read/save failures. */
+internal suspend fun recoverPendingCheckpoints(
+    read: suspend () -> Set<String>, resolve: suspend (String) -> Unit,
+    failure: (Throwable) -> Unit, intervalMillis: Long = 10_000,
+) {
+    while (currentCoroutineContext().isActive) {
+        try {
+            val ids = read()
+            if (ids.isEmpty()) return
+            for (id in ids) try { resolve(id) }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { failure(e) }
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { failure(e) }
+        delay(intervalMillis)
+    }
+}
+
 /** Never retire the durable submission ID when recording its outcome failed. */
 internal suspend fun recordSubmissionFailure(cause: Throwable, definitive: Boolean,
     record: suspend () -> Unit, clear: suspend () -> Unit): Throwable {
@@ -28,12 +46,55 @@ internal suspend fun recordSubmissionFailure(cause: Throwable, definitive: Boole
 class SubmissionCoordinator(private val api: RelayApi, private val scope: CoroutineScope, private val vault: CredentialStorage,
     private val storageKey: String,
     private val onResolved: suspend (PendingSubmission, JSONObject) -> Unit = { _, _ -> },
+    private val recoveryDelayMillis: Long = 3_000,
+    private val recoveryIntervalMillis: Long = 10_000,
     private val failure: (Throwable) -> Unit) {
-    private val mutable = MutableStateFlow(SubmissionState(pending = vault.read(storageKey)?.let { runCatching {
-        val j = JSONObject(it); PendingSubmission(j.getString("id"), j.getString("path"), j.getString("label"), j.string("threadId").takeIf(String::isNotBlank))
-    }.getOrNull() }))
+    private val mutable = MutableStateFlow(SubmissionState(pending = vault.read(storageKey)?.let {
+        try {
+            val j = JSONObject(it)
+            val id = j.getString("id"); val path = j.getString("path")
+            require(id.isNotBlank() && path.startsWith("/v1/"))
+            PendingSubmission(id, path, j.getString("label"), j.string("threadId").takeIf(String::isNotBlank))
+        } catch (e: Exception) {
+            throw IllegalArgumentException("无法读取未确认提交记录，已保留原记录，未允许重新提交", e)
+        }
+    }))
     val state = mutable.asStateFlow()
+    init {
+        require(recoveryDelayMillis >= 0 && recoveryIntervalMillis > 0)
+        // Recovery belongs to the node scope, not the currently composed screen.
+        // Only read/fence the original ID; never replay a mutation after uncertainty.
+        scope.launch {
+            state.map { it.pending?.id }.distinctUntilChanged().collectLatest { id ->
+                if (id != null) {
+                    delay(recoveryDelayMillis)
+                    while (isActive) {
+                        reconcile()
+                        delay(recoveryIntervalMillis)
+                    }
+                }
+            }
+        }
+    }
     private var afterAccepted: ((JSONObject) -> Unit)? = null
+    private fun validateResponse(pending: PendingSubmission, response: JSONObject) {
+        val returnedId = response.string("submissionId")
+        if (returnedId.isNotBlank() && returnedId != pending.id)
+            throw IllegalArgumentException("提交回执身份不一致，将继续自动核对")
+        val expectedThread = Regex("^/v1/threads/([^/]+)/").find(pending.path)?.groupValues?.get(1)
+            ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
+        val returnedThread = response.optJSONObject("receipt")?.string("threadId").orEmpty()
+        if (expectedThread != null && !pending.path.endsWith("/fork") && returnedThread.isNotBlank() && returnedThread != expectedThread)
+            throw IllegalArgumentException("回执对应其他会话，将继续自动核对")
+        if (response.string("status") != "accepted") return
+        val receipt = response.optJSONObject("receipt") ?: throw IllegalArgumentException("成功回执缺少身份信息，将继续自动核对")
+        val threadOperation = pending.path == "/v1/threads" || pending.path.startsWith("/v1/threads/")
+        if (receipt.length() == 0 || threadOperation && receipt.string("threadId").isBlank())
+            throw IllegalArgumentException("成功回执缺少会话身份，将继续自动核对")
+        if (pending.path.endsWith("/turns") || pending.path.endsWith("/continue") || pending.path.endsWith("/answers")) {
+            if (receipt.string("turnId").isBlank()) throw IllegalArgumentException("成功回执缺少任务身份，将继续自动核对")
+        }
+    }
     private fun failureMessage(response: JSONObject, label: String): String = when (response.string("errorCode")) {
         "submission_not_received" -> "节点未收到该操作，已解除等待；草稿已保留，请重新发送。"
         "native_auth_required" -> "Codex 登录已失效，请在后台重新授权并检查独立后台登录状态。无需重新配对手机。"
@@ -51,17 +112,6 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
         }
         mutable.update { it.copy(pending = pending) }
     }
-    /** Explicit user confirmation releases only this phone's wait. It never sends or cancels a native action. */
-    fun finishReconciliation(expectedId: String) {
-        if (mutable.value.busy || mutable.value.pending?.id != expectedId) return
-        afterAccepted = null
-        mutable.update { it.copy(busy = true) }
-        scope.launch {
-            try { save(null); mutable.update { it.copy(notice = "已结束手机等待。原操作未取消，节点记录仍保留。") } }
-            catch (e: Exception) { if (e !is CancellationException) failure(e) }
-            finally { mutable.update { it.copy(busy = false) } }
-        }
-    }
     private suspend fun retainReceipt(pending: PendingSubmission, response: JSONObject) {
         val threadId = response.optJSONObject("receipt")?.string("threadId")?.takeIf(String::isNotBlank) ?: pending.threadId
         if (threadId != pending.threadId) save(pending.copy(threadId = threadId))
@@ -69,31 +119,30 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
     fun submit(path: String, body: JSONObject, label: String, submissionId: String = UUID.randomUUID().toString(),
         prepared: (PendingSubmission) -> Unit = {}, beforeSend: suspend (PendingSubmission) -> Unit = {},
         prepareBody: suspend (JSONObject) -> JSONObject = { it }, accepted: (JSONObject) -> Unit = {}) {
-        if (mutable.value.busy || mutable.value.pending != null) return
         val originalThread = Regex("^/v1/threads/([^/]+)/").find(path)?.groupValues?.get(1)?.let { java.net.URLDecoder.decode(it, "UTF-8") }
         val pending = PendingSubmission(submissionId, path, label, originalThread)
         val frozenBody = copyJsonObject(body).put("submissionId", pending.id)
-        afterAccepted = accepted
-        mutable.update { it.copy(busy = true, notice = null) }
-        try { prepared(pending) }
-        catch (e: Exception) {
-            scope.launch { runCatching { onResolved(pending, JSONObject().put("status", "failed")) } }
-            afterAccepted = null
-            mutable.update { it.copy(busy = false) }
-            failure(e)
-            return
+        while (true) {
+            val current = mutable.value
+            if (current.busy || current.pending != null) return
+            // Publish ownership before prepared()/attachment staging can create
+            // durable overlays. Orphan recovery must not fence this live ID.
+            if (mutable.compareAndSet(current, current.copy(busy = true, pending = pending, notice = null))) break
         }
+        afterAccepted = accepted
         scope.launch {
             var completed: JSONObject? = null
             var requestStarted = false
             var terminalResponse = false
             try {
+                prepared(pending)
                 val requestBody = prepareBody(frozenBody)
                 save(pending)
                 beforeSend(pending)
                 requestStarted = true
                 val response = api.call(path, "POST", requestBody)
                 terminalResponse = response.string("status") in setOf("accepted", "failed")
+                validateResponse(pending, response)
                 when (response.string("status")) {
                     "accepted" -> { onResolved(pending, response); save(null); afterAccepted = null; mutable.update { it.copy(notice = null) }; completed = response.optJSONObject("receipt") ?: JSONObject() }
                     "failed" -> { onResolved(pending, response); save(null); afterAccepted = null; failure(ApiException(422, "submission_failed", failureMessage(response, label))) }
@@ -140,15 +189,23 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
         next(0)
     }
     fun reconcile() {
-        val pending = mutable.value.pending ?: return
-        if (mutable.value.busy) return
-        mutable.update { it.copy(busy = true, reconciling = true) }
+        val pending: PendingSubmission
+        while (true) {
+            val current = mutable.value
+            val candidate = current.pending ?: return
+            if (current.busy) return
+            if (mutable.compareAndSet(current, current.copy(busy = true, reconciling = true))) {
+                pending = candidate
+                break
+            }
+        }
         scope.launch {
             var completed: Pair<(JSONObject) -> Unit, JSONObject>? = null
             var receivedResponse = false
             try {
                 val response = api.reconcileSubmission(pending.id)
                 receivedResponse = true
+                validateResponse(pending, response)
                 when (response.string("status")) {
                     "accepted", "failed" -> {
                         onResolved(pending, response)
