@@ -1,6 +1,9 @@
 package dev.rivo.relay.ui.chat
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.key
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -21,20 +24,24 @@ import org.json.JSONObject
 /** QiGuang CodexInteractionCard presentation, keeping native question IDs and answer labels. */
 @Composable
 internal fun NativeQuestionCard(questions: List<JSONObject>, answers: Map<String, String>, index: Int, enabled: Boolean,
-    onIndex: (Int) -> Unit, onAnswer: (String, String) -> Unit, submitEnabled: Boolean = enabled, onSubmit: () -> Unit) {
+    onIndex: (Int) -> Unit, onAnswer: (String, String) -> Unit, submitEnabled: Boolean = enabled, modifier: Modifier = Modifier, onSubmit: () -> Unit) {
     if (questions.isEmpty()) { Text("请求尚未提供可回答的问题，请等待节点更新。"); return }
     val position = index.coerceIn(questions.indices)
     val question = questions[position]
     val id = question.string("id")
     val answer = answers[id].orEmpty()
     val options = question.objects("options")
-    Column(Modifier.fillMaxWidth().testTag("native_question_card"), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(modifier.fillMaxWidth().testTag("native_question_card"), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text(question.string("header").ifBlank { "需要你确认" }, Modifier.weight(1f), style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
             Text("${position + 1}/${questions.size}", Modifier.testTag("question_progress"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Text(question.string("question"), style = MaterialTheme.typography.bodyMedium)
+        key(id) {
+            Text(question.string("question"), style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f, fill = false).fillMaxWidth()
+                    .verticalScroll(rememberScrollState()).testTag("question_text"))
+        }
         options.forEachIndexed { optionIndex, option ->
             val label = option.string("label")
             val chosen = answer == label

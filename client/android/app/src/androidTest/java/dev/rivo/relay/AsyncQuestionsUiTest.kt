@@ -38,12 +38,23 @@ class AsyncQuestionsUiTest {
                 onRespond = { _, _ -> }, onRefresh = {}, onLoadModels = {}, onEarlier = {}, readFile = { JSONObject() },
                 onAnswerQuestions = { turn, input, accepted -> assertEquals("turn", turn); sent = input; accepted() })
         } } }
+        compose.onNode(isDialog()).assertExists()
+        compose.onNodeWithTag("toggle_async_questions").performClick()
         compose.onNodeWithTag("message_input").performTextInput("保留原草稿")
         compose.onNodeWithTag("send_message").assertIsNotEnabled()
-        compose.onNodeWithText("界面", useUnmergedTree = true).performScrollTo().performClick()
+        compose.onNodeWithTag("toggle_async_questions").performClick()
+        compose.onNodeWithText("界面", useUnmergedTree = true).performClick()
         val second = "[\"request_user_input_async\",\"question\",1]"
-        compose.onNodeWithTag("question_answer_$second").performScrollTo().performTextInput("请检查多题回答")
-        compose.onNodeWithTag("answer_questions").performScrollTo().assertIsEnabled().performClick()
+        compose.onNodeWithTag("question_answer_$second").performTextInput("请检查多题回答")
+        compose.onNodeWithTag("answer_questions").assertIsDisplayed().assertIsEnabled()
+        compose.waitForIdle()
+        val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+        instrumentation.uiAutomation.takeScreenshot()?.let { bitmap ->
+            val file = java.io.File(instrumentation.targetContext.getExternalFilesDir(null), "question-dialog.png")
+            file.outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+            bitmap.recycle()
+        }
+        compose.onNodeWithTag("answer_questions").performClick()
         compose.runOnIdle {
             val text = sent!!.getJSONObject(0).getString("text")
             assertTrue(text.contains("界面")); assertTrue(text.contains("请检查多题回答"))
@@ -60,10 +71,10 @@ class AsyncQuestionsUiTest {
                 onRespond = { _, _ -> }, onRefresh = {}, onLoadModels = {}, onEarlier = {}, readFile = { JSONObject() },
                 onAnswerQuestions = { _, _, _ -> error("unavailable route must not submit") })
         } } }
-        compose.onNodeWithTag("answer_questions").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithTag("answer_questions").assertIsNotEnabled()
         compose.onNodeWithText("当前节点暂不能连接问题所属会话，请刷新或在桌面回答。").assertExists()
         compose.runOnIdle { state.value = state.value.copy(snapshot = snapshot(), synchronization = dev.rivo.relay.codex.SessionSynchronization.pending()) }
-        compose.onNodeWithTag("answer_questions").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithTag("answer_questions").assertIsNotEnabled()
         val ids = pendingAsyncQuestions(snapshot()).map { it.id }
         compose.runOnIdle {
             state.value = SessionState(id = "desktop", snapshot = snapshot().copy(canAnswerQuestions = false,
@@ -89,8 +100,8 @@ class AsyncQuestionsUiTest {
                 onSubmit = { _, _ -> error("offline draft must not submit") })
         } } }
         compose.waitUntil { compose.onAllNodesWithTag("question_answer_$id").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithTag("question_answer_$id").performScrollTo().performTextInput("离线保留")
-        compose.onNodeWithTag("answer_questions").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithTag("question_answer_$id").performTextInput("离线保留")
+        compose.onNodeWithTag("answer_questions").assertIsNotEnabled()
         compose.runOnIdle { visible.value = false }
         kotlinx.coroutines.runBlocking {
             store.saveDraftOrdered("question:desktop:turn", store.loadDraft("question:desktop:turn"))
@@ -102,8 +113,29 @@ class AsyncQuestionsUiTest {
         compose.waitUntil {
             compose.onAllNodesWithText("离线保留", substring = true).fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithTag("question_answer_$id").performScrollTo().assertTextContains("离线保留")
-        compose.onNodeWithTag("answer_questions").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithTag("question_answer_$id").assertTextContains("离线保留")
+        compose.onNodeWithTag("answer_questions").assertIsNotEnabled()
+    }
+
+    @Test fun longQuestionScrollsOnlyTextWhileActionsStayVisibleWithKeyboard() {
+        val question = AsyncQuestion("long", (1..120).joinToString("\n") { "第 $it 行：需要完整阅读的问题说明。" }, emptyList())
+        compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize()) {
+            dev.rivo.relay.ui.chat.AsyncQuestionPanel(listOf(question), true, onSubmit = { _, _ -> })
+        } } }
+        compose.onNodeWithTag("question_answer_long").performTextInput("保留回答")
+        compose.onNodeWithTag("answer_questions").assertIsDisplayed()
+        val before = compose.onNodeWithTag("answer_questions").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithTag("question_text").performTouchInput { swipeUp() }
+        compose.onNodeWithTag("question_text").assert(
+            SemanticsMatcher("text has scrolled") {
+                it.config[androidx.compose.ui.semantics.SemanticsProperties.VerticalScrollAxisRange].value() > 0f
+            })
+        compose.onNodeWithTag("async_questions_panel").assert(
+            SemanticsMatcher.keyNotDefined(androidx.compose.ui.semantics.SemanticsActions.ScrollBy))
+        compose.onNodeWithTag("answer_questions").assertIsDisplayed()
+        assertEquals(before, compose.onNodeWithTag("answer_questions").fetchSemanticsNode().boundsInRoot)
+        compose.onNodeWithTag("question_answer_long").assertTextContains("保留回答")
+        compose.onNodeWithTag("toggle_async_questions").assertIsDisplayed()
     }
 
 }
