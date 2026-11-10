@@ -198,6 +198,15 @@ class RuntimeConnection:
                 raise CodexError('原生连接已变化，请核对结果', request_sent=True)
         return result
 
+    def sample_prediction(self, params):
+        with self._lock:
+            if self._closed: return {}
+            backend = self._backend(self._pins.get(params['threadId'], self._preferred))
+        sample = getattr(backend, 'sample_prediction', None)
+        if sample: return sample(params)
+        if params['threadId'] not in backend.request('thread/loaded/list', {}).get('data', []): return {}
+        return backend.request('thread/sample', params, timeout=30)
+
     def can_answer_questions(self, thread_id):
         with self._lock:
             if self._closed: return False

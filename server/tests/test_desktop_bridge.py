@@ -25,6 +25,12 @@ let hostProbes = 0;
 let reconnectRequests = 0;
 const publishState = value => {ready=value; for(const fn of state)fn(value)};
 const connection = {
+ sampleThread: async (params, signal) => new Promise((resolve, reject) => {
+   signal.addEventListener('abort', () => {
+     for(const fn of notify) fn({method:'test/predictionCancelled',params:{threadId:params.threadId}});
+     reject(new Error('aborted'));
+   }, {once:true});
+ }),
  getConnectionState: () => ready, getTransportKind: () => 'fixture',
  registerInternalNotificationHandler: fn => {notify.add(fn); return () => notify.delete(fn)},
  registerInternalConnectionStateHandler: fn => {state.add(fn); return () => state.delete(fn)},
@@ -87,6 +93,15 @@ class DesktopBridgeTests(unittest.TestCase):
             if predicate(): return
             time.sleep(.01)
         self.fail('fixture event was not dispatched')
+
+    def test_prediction_deadline_cancels_native_sample_without_closing_bridge(self):
+        from rivo_relay.read_budget import read_budget, ReadStopped
+        self.connection.start()
+        with self.assertRaises(ReadStopped), read_budget(seconds=.05):
+            self.connection.sample_prediction({'threadId': 'desktop-thread'})
+        self.wait_for(lambda: any(e.get('method') == 'test/predictionCancelled' for e in self.events))
+        self.assertTrue(self.connection.status()['connected'])
+        self.assertEqual('desktop-thread', self.connection.request('thread/start')['thread']['id'])
 
     def test_authenticated_rpc_notifications_and_human_response_share_connection(self):
         status = self.connection.start()

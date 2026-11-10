@@ -77,7 +77,7 @@ async function startDesktopBridge({ connection, directory, appVersion = null }) 
     } }),
   ];
   const server = net.createServer(socket => {
-    const peer = { socket, authenticated: false, buffer: Buffer.alloc(0), inFlight: 0 };
+    const peer = { socket, authenticated: false, buffer: Buffer.alloc(0), inFlight: 0, predictions: new Map() };
     peers.add(peer);
     const handshake = setTimeout(() => { if (!peer.authenticated) socket.destroy(); }, 5000);
     socket.on('close', () => { clearTimeout(handshake); peers.delete(peer); });
@@ -120,6 +120,21 @@ async function startDesktopBridge({ connection, directory, appVersion = null }) 
         throw new Error('Bridge already authenticated');
       } else if (!readyState(connection.getConnectionState())) {
         throw new Error('Desktop app-server is not connected');
+      } else if (message.method === 'prediction/cancel') {
+        peer.predictions.get(params.requestId)?.abort();
+        result = {};
+      } else if (message.method === 'prediction') {
+        if (typeof connection.sampleThread !== 'function') throw new Error('Prediction unavailable');
+        const abort = new AbortController();
+        peer.predictions.set(message.id, abort);
+        const cancel = () => abort.abort();
+        peer.socket.once('close', cancel);
+        const dispose = connection.registerInternalNotificationHandler(event => {
+          if (event.method === 'turn/started' && event.params?.threadId === params.threadId) cancel();
+        });
+        const timer = setTimeout(cancel, 29000);
+        try { result = await connection.sampleThread(params, abort.signal); }
+        finally { peer.predictions.delete(message.id); clearTimeout(timer); dispose(); peer.socket.removeListener('close', cancel); }
       } else if (message.method === 'rpc') {
         if (typeof params.method !== 'string' || ['initialize', 'initialized'].includes(params.method)) {
           throw new Error('Desktop owns native initialization');

@@ -85,6 +85,10 @@ class CodexService:
         self._lock = threading.RLock()
         self._gates = ThreadGates()
         self.operation_gate = self._gates.hold
+        self._prediction_lock = threading.Lock()
+        self._prediction_cache = {}
+        self._prediction_inflight = set()
+        self._prediction_epochs = {}
         self._live = OrderedDict()
         self._pending_terminal = set()
         self._completed_items = {}
@@ -1043,6 +1047,10 @@ class CodexService:
                 return None
             return self.send(thread_id, "", **kwargs)
 
+    def predict_message(self, thread_id, turn_id):
+        from .predictions import predict_message
+        return predict_message(self, thread_id, turn_id)
+
     def answer_questions(self, thread_id, expected_turn_id, answers, client_message_id):
         from .questions import answer_input
         self.start()
@@ -1724,6 +1732,8 @@ class CodexService:
         thread_id, turn_id = params.get("threadId", params.get('conversationId')), params.get("turnId")
         if (thread_id is not None and not isinstance(thread_id, str)) or (turn_id is not None and not isinstance(turn_id, str)):
             return
+        if method in {'turn/started', 'thread/settings/updated'} and thread_id:
+            self._prediction_epochs[thread_id] = self._prediction_epochs.get(thread_id, 0) + 1
         # Token usage does not change project membership or activity counters.
         # Invalidating on every usage notification discards expensive in-flight
         # catalog refreshes while an unrelated chat is generating.

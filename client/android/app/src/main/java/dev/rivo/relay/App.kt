@@ -537,6 +537,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             node.submissions.submit("/v1/requests/respond", JSONObject().put("key", request.key).put("response", response), "回答 Codex") { node.session.refresh() }
                         }
                     }, onRefresh = node.session::refresh, onLoadModels = { node.catalog.loadModels() }, onEarlier = node.session::loadEarlier,
+                    predictMessage = { id, turn -> node.api.call("/v1/threads/${encoded(id)}/prediction", "POST", JSONObject().put("expectedTurnId", turn), background = true) },
                     readFile = { path -> node.api.readFile(path) },
                     readDirectory = { path -> node.api.call("/v1/directories?path=" + encoded(path)) },
                     uploadFile = { id, name, file -> node.api.uploadFile(id, name, file) },

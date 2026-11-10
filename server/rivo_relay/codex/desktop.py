@@ -148,6 +148,9 @@ class DesktopConnection(NativeConnection):
                              code='fork_unsupported', http_status=409)
         return super().request('rpc', {'method': method, 'params': params or {}}, timeout=timeout)
 
+    def sample_prediction(self, params):
+        return super().request('prediction', params, timeout=30)
+
     def respond(self, request_id, result):
         if not self.status()['connected']:
             raise CodexError('Desktop 原生连接尚未就绪', code='desktop_not_ready')

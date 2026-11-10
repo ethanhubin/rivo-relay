@@ -432,6 +432,13 @@ class SessionWriters:
             self._close_writer(writer)
             raise
 
+    def sample_prediction(self, params):
+        tid = params['threadId']
+        with self._thread_lock(tid):
+            if not self.can_answer_questions(tid): return {}
+            backend = self._writers.get(tid, self.metadata)
+        return backend.request('thread/sample', params, timeout=30)
+
     def can_answer_questions(self, thread_id):
         if self._closed:
             return False

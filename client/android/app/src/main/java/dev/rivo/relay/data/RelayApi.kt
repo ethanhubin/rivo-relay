@@ -87,6 +87,7 @@ class RelayApi(private val base: String, private val token: String = "", private
     private fun backgroundClient() = reader.newBuilder()
         .dispatcher(Dispatcher().apply { maxRequestsPerHost = 2 }).build()
     private var backgroundReader = backgroundClient()
+    private val predictionClient = client.newBuilder().dispatcher(Dispatcher().apply { maxRequestsPerHost = 2 }).callTimeout(45, TimeUnit.SECONDS).build()
     // SSE callbacks remain active for the lifetime of the stream. They must not
     // consume a JSON dispatcher slot, and missing server heartbeats must expire.
     private fun eventClient() = reader.newBuilder().dispatcher(Dispatcher())
@@ -118,12 +119,13 @@ class RelayApi(private val base: String, private val token: String = "", private
         return builder.build()
     }
     suspend fun call(path: String, method: String = "GET", body: JSONObject? = null, background: Boolean = false, reconnectProbe: Boolean = false, diagnosticRequestId: String? = null): JSONObject = withContext(Dispatchers.Default) { suspendCancellableCoroutine { continuation ->
+        val optionalPrediction = path.endsWith("/prediction")
         val call = synchronized(transportLock) {
-            (if (reconnectProbe) probes else if (method != "GET") client else if (background) backgroundReader else if (path.substringBefore('?') in setOf("/v1/projects", "/v1/threads")) catalogReader else reader).newCall(request(path, method, body).newBuilder().apply { if (reconnectProbe) tag(ReconnectProbe::class.java, ReconnectProbe()); diagnosticRequestId?.takeIf { it.matches(Regex("[0-9a-f]{32}")) }?.let { header("X-Rivo-Request-Id", it) } }.build()).also { if (method == "GET") reads.add(it) }
+            (if (optionalPrediction) predictionClient else if (reconnectProbe) probes else if (method != "GET") client else if (background) backgroundReader else if (path.substringBefore('?') in setOf("/v1/projects", "/v1/threads")) catalogReader else reader).newCall(request(path, method, body).newBuilder().apply { if (reconnectProbe) tag(ReconnectProbe::class.java, ReconnectProbe()); diagnosticRequestId?.takeIf { it.matches(Regex("[0-9a-f]{32}")) }?.let { header("X-Rivo-Request-Id", it) } }.build()).also { if (method == "GET" || optionalPrediction) reads.add(it) }
         }
         continuation.invokeOnCancellation { call.cancel(); forgetRead(call) }
         call.enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) { forgetRead(call); if (continuation.isActive && !reconnectProbe && (!call.isCanceled() || e is InterruptedIOException)) recovery?.failed(e); if (continuation.isActive) continuation.resumeWithException(if (call.isCanceled() && e !is InterruptedIOException) CancellationException("Network route changed") else e) }
+            override fun onFailure(call: Call, e: IOException) { forgetRead(call); if (continuation.isActive && !optionalPrediction && !reconnectProbe && (!call.isCanceled() || e is InterruptedIOException)) recovery?.failed(e); if (continuation.isActive) continuation.resumeWithException(if (call.isCanceled() && e !is InterruptedIOException) CancellationException("Network route changed") else e) }
             override fun onResponse(call: Call, response: Response) {
                 try {
                     response.use {
@@ -135,7 +137,7 @@ class RelayApi(private val base: String, private val token: String = "", private
                         }
                         if (continuation.isActive) continuation.resume(json)
                     }
-                } catch (e: Exception) { if (continuation.isActive && !reconnectProbe && (!call.isCanceled() || e is InterruptedIOException)) recovery?.failed(e); if (continuation.isActive) continuation.resumeWithException(if (call.isCanceled() && e !is InterruptedIOException) CancellationException("Network route changed") else e) }
+                } catch (e: Exception) { if (continuation.isActive && !optionalPrediction && !reconnectProbe && (!call.isCanceled() || e is InterruptedIOException)) recovery?.failed(e); if (continuation.isActive) continuation.resumeWithException(if (call.isCanceled() && e !is InterruptedIOException) CancellationException("Network route changed") else e) }
                 finally { forgetRead(call) }
             }
         })
