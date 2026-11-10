@@ -4,7 +4,6 @@ import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -43,16 +42,10 @@ private fun FooterAction(description: String, tag: String, enabled: Boolean = tr
 @Composable
 private fun AssistantForkButton(turnId: String, enabled: Boolean, onClick: () -> Unit) {
     val color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 1f else .38f)
-    FooterAction("从此轮之后分叉", "fork_turn_$turnId", enabled, onClick) {
-        androidx.compose.foundation.Canvas(Modifier.size(16.dp)) {
-            val stroke = 1.5.dp.toPx()
-            val bottom = Offset(size.width * .25f, size.height * .8f)
-            val top = Offset(size.width * .25f, size.height * .2f)
-            val branch = Offset(size.width * .75f, size.height * .2f)
-            drawLine(color, bottom, top, stroke)
-            drawLine(color, Offset(size.width * .25f, size.height * .6f), branch, stroke)
-            listOf(bottom, top, branch).forEach { drawCircle(color, 2.dp.toPx(), it) }
-        }
+    FooterAction("从这里创建聊天分支", "fork_turn_$turnId", enabled, onClick) {
+        androidx.compose.material3.Icon(
+            painter = androidx.compose.ui.res.painterResource(dev.rivo.relay.R.drawable.ic_codex_branch),
+            contentDescription = null, tint = color, modifier = Modifier.size(16.dp))
     }
 }
 

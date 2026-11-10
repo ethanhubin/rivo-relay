@@ -38,7 +38,6 @@ import dev.rivo.relay.codex.canResumeQueue
 import dev.rivo.relay.codex.canContinueTask
 import dev.rivo.relay.codex.canCompose
 import dev.rivo.relay.data.*
-import dev.rivo.relay.ui.projects.ProjectSummary
 import org.json.JSONObject
 import org.json.JSONArray
 import kotlinx.coroutines.launch
@@ -89,8 +88,6 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     var forkTurn by remember(state.id) { mutableStateOf<String?>(null) }
     var forkContext by remember(state.id, forkTurn) { mutableStateOf<JSONObject?>(null) }
     var forkError by remember(state.id, forkTurn) { mutableStateOf<String?>(null) }
-    var forkRef by remember(state.id, forkTurn) { mutableStateOf<String?>(null) }
-    var forkReady by remember(state.id, forkTurn) { mutableStateOf(true) }
     var forkRetry by remember(state.id, forkTurn) { mutableIntStateOf(0) }
     LaunchedEffect(state.id, forkTurn, forkRetry) {
         forkContext = null; forkError = null
@@ -101,21 +98,35 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     }
     if (forkTurn != null) AlertDialog(
         onDismissRequest = { if (!busy) forkTurn = null },
-        title = { Text("从此轮之后分叉") },
-        text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("保留此轮及之前的对话。文件不会恢复到该轮发生时的状态。")
+        title = { Text("从这里创建聊天分支") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             forkError?.let { Text(it, color = MaterialTheme.colorScheme.error); TextButton(onClick = { forkRetry++ }) { Text("重试") } }
             val context = forkContext
+            val ready = !busy && !blocked && !state.stale && context != null && forkError == null
+            val git = context?.optJSONObject("git")
+            val head = git?.string("head")?.takeIf { it.isNotBlank() }
+            val canCreateWorktree = ready && context?.string("projectId").orEmpty().isNotBlank() &&
+                git?.optBoolean("available") == true && head != null
             if (context == null && forkError == null) LinearProgressIndicator(Modifier.fillMaxWidth())
-            if (context != null && context.string("projectId").isNotBlank()) {
-                dev.rivo.relay.ui.projects.PendingWorkspaceSelector(
-                    ProjectSummary(context.string("projectId"), "分叉会话", context.string("cwd")),
-                    readGit = { context }, enabled = !busy && !blocked,
-                    onSelection = { ref, ready -> forkRef = ref; forkReady = ready })
-            } else Text("使用原会话当前目录")
+            OutlinedButton(enabled = ready, modifier = Modifier.fillMaxWidth().testTag("fork_use_workspace"),
+                onClick = { forkTurn?.let { onFork?.invoke(it, null) }; forkTurn = null }) {
+                Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("使用工作空间", style = MaterialTheme.typography.titleSmall)
+                    Text("两个聊天共用同一组文件", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            OutlinedButton(enabled = canCreateWorktree, modifier = Modifier.fillMaxWidth().testTag("fork_create_worktree"),
+                onClick = { if (canCreateWorktree) { forkTurn?.let { onFork?.invoke(it, head) }; forkTurn = null } }) {
+                Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("创建新工作树", style = MaterialTheme.typography.titleSmall)
+                    Text(if (ready && !canCreateWorktree) "当前工作空间没有可用的 Git 工作树来源" else "新聊天将拥有独立的工作目录",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            Text("新工作树基于当前 HEAD，不复制未提交改动。", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         } },
-        confirmButton = { TextButton(enabled = !busy && !blocked && forkContext != null && forkError == null && forkReady && !state.stale,
-            onClick = { forkTurn?.let { onFork?.invoke(it, forkRef) }; forkTurn = null }) { Text("分叉") } },
+        confirmButton = {},
         dismissButton = { TextButton(enabled = !busy, onClick = { forkTurn = null }) { Text("取消") } })
     val snapshot = state.snapshot
     androidx.compose.runtime.SideEffect { mediaClient?.updateRevision(state.mediaValidationEpoch) }
