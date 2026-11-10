@@ -606,6 +606,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                             ReviewDiagnostic(snapshot.reviewDiagnostics.lastOrNull { it.string("turnId") == message.turnId })
                         }
                         AssistantMessageFooter(message.text, "${message.turnId}:${message.id}", timing.outputAt,
+                            completionLabel = turnFooter?.takeIf { isLastReply && it.turn?.turnId == message.turnId }?.label,
                             forkTurnId = message.turnId.takeIf { isLastReply && onFork != null &&
                                 snapshot?.turnSettings?.any { it.turnId == message.turnId && it.status in setOf("completed", "interrupted", "failed") } == true },
                             historicalTiming = if (isLastReply && message.turnId != turnFooter?.turn?.turnId)
@@ -661,7 +662,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     it.turnId == diagnostic.string("turnId") && it.type in setOf("agentMessage", "agent_message", "exitedReviewMode")
                 }
             }?.forEach { diagnostic -> item(key = "review-diagnostic:${diagnostic.string("turnId")}") { ReviewDiagnostic(diagnostic) } }
-            turnFooter?.let { footer -> item(key = "turn_footer") { NativeTurnDuration(footer) } }
+            turnFooter?.takeIf { it.label == null || lastReplyIds[it.turn?.turnId] == null }?.let { footer -> item(key = "turn_footer") { NativeTurnDuration(footer) } }
             if (executionActive && currentActivity == null && turnFooter == null) item(key = "execution_stage") {
                 ChatTimelineSummaryRow {
                     if (state.stale) Text("正在处理…", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("execution_stage_pending"))

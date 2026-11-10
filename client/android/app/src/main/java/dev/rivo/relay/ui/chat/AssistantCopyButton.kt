@@ -55,28 +55,33 @@ private fun AssistantForkButton(turnId: String, enabled: Boolean, onClick: () ->
 internal fun AssistantMessageFooter(text: String, identity: String, outputAt: Long?, completionLabel: String? = null,
     forkTurnId: String? = null, forkEnabled: Boolean = true, onFork: (() -> Unit)? = null,
     historicalTiming: NativeHistoricalTiming? = null) {
+    val date = outputAt?.let { runCatching {
+        java.time.Instant.ofEpochSecond(it).atZone(java.time.ZoneId.systemDefault())
+            .format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm"))
+    }.getOrNull() }
     androidx.compose.foundation.layout.Row(
         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
         horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
     ) {
         if (completionLabel != null) Text(
-            completionLabel,
+            completionLabel.substringBefore(" 耗时") +
+                (date?.let { " $it" } ?: "") +
+                completionLabel.substringAfter(" 耗时", "").takeIf { it.isNotEmpty() }?.let { " 耗时$it" }.orEmpty(),
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f, fill = false).testTag("session_completion"),
-        ) else if (outputAt != null) Text(
-            java.time.Instant.ofEpochSecond(outputAt).atZone(java.time.ZoneId.systemDefault())
-                .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm")),
+        ) else if (date != null) Text(
+            date,
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.testTag("message_output_time"),
         )
-        AssistantCopyButton(text, identity)
-        if (forkTurnId != null && onFork != null) AssistantForkButton(forkTurnId, forkEnabled, onFork)
         historicalTiming?.let { timing ->
             Text(timing.label, modifier = Modifier.weight(1f, fill = false).testTag("historical_turn_timing_${timing.turnId}"),
                 style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        AssistantCopyButton(text, identity)
+        if (forkTurnId != null && onFork != null) AssistantForkButton(forkTurnId, forkEnabled, onFork)
     }
 }
