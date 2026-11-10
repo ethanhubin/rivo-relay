@@ -47,6 +47,9 @@ fun projectedSessionMessages(snapshot: SessionSnapshot?, pending: List<PendingNa
         // An accepted older turn may have fallen outside the loaded history page.
         // Keep its receipt for exact handoff, without moving it after newer replies.
         if (message.nativeTurnId != null && native.isNotEmpty() && turnStart == null && anchor == null) return@forEach
+        // Failed sends have no native turn receipt. Their saved anchor still
+        // belongs to the original history page, never to the latest reply.
+        if (message.delivery == "failed" && message.anchorItemId != null && native.isNotEmpty() && anchor == null && turnStart == null) return@forEach
         var index = when {
             message.kind != "guidance" && turnStart != null -> turnStart
             anchor != null -> anchor + 1

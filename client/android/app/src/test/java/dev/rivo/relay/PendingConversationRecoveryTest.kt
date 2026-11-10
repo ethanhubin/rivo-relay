@@ -268,4 +268,23 @@ class PendingConversationRecoveryTest {
         } finally { directory.deleteRecursively() }
     }
 
+    @Test fun failedOverlayKeepsOriginalPositionAcrossPagingAndReopen() = runBlocking {
+        val directory = Files.createTempDirectory("rivo-failed-position").toFile()
+        try {
+            val failed = PendingNativeMessage("failed-submission", "failed-client", "t", input("failed input"),
+                delivery = "failed", anchorItemId = "old-user", createdAt = 1)
+            val store = ConversationStore(directory)
+            store.savePendingMessage(failed)
+            val restored = ConversationStore(directory).loadPendingMessages()
+            val full = sessionSnapshot(history())
+            assertEquals(listOf("old-user", "pending:failed-client", "canonical", "reply", "later"),
+                projectedSessionMessages(full, restored).map { it.id })
+            val recent = full.copy(messages = full.messages.filterNot { it.id == "old-user" })
+            assertEquals(recent.messages.map { it.id }, projectedSessionMessages(recent, restored).map { it.id })
+            assertEquals("pending:failed-client", projectedSessionMessages(full, restored)[1].id)
+            assertEquals("failed-client", ConversationStore(directory).loadPendingMessages().single().clientId)
+            assertEquals("pending:failed-client", projectedSessionMessages(null, restored).single().id)
+        } finally { directory.deleteRecursively() }
+    }
+
 }
