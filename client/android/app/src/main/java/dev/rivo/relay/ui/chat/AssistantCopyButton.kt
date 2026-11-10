@@ -60,6 +60,7 @@ internal fun AssistantMessageFooter(text: String, identity: String, outputAt: Lo
             .format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm"))
     }.getOrNull() }
     androidx.compose.foundation.layout.Row(
+        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
         horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
     ) {
