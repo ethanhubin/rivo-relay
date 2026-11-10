@@ -112,3 +112,44 @@ python scripts/node-update-status.py --workspace /原workspace --retry-sha256 <�
 ```
 
 只重置该包的更新状态；存在 pending 候选时拒绝重置，先完成回滚恢复。不会清除业务队列或不确定提交。
+
+## 提交阶段与历史 unknown 恢复
+
+`thread.turns` / `thread.continue` 在实际 `turn/start` 边界同步保存阶段：
+
+- `preparing`：尚未发送任务；恢复会话、读取状态、准备输入失败时，确认为 `turn_not_dispatched`。独占启动恢复也可将中断在此阶段的记录确认为失败。
+- `dispatching`：发送前已落盘；超时、断连或崩溃后仍是 `unknown`，不自动重试。
+- `received`：原生 thread/turn 回执已落盘；后续派生状态处理失败或重启时，恢复为 accepted。
+- 空阶段：旧记录或未接入阶段跟踪的其他操作，继续保留原有不确定性；不能根据记录年龄、空历史或节点空闲断言未执行。
+
+新字段为兼容性增列，不清空旧数据。手机普通 reconcile 仍不能将正在准备中的请求确认为失败。更新准入继续拒绝真正未核实的 pending/unknown，不通过放宽检查绕过它们。
+
+历史 turn 提交由本地管理员使用 `scripts/recover-submission.py` 核对；工具不会重发任务。先只读查看记录和指纹：
+
+```sh
+python scripts/recover-submission.py --workspace /节点/workspace --submission <提交ID>
+```
+
+核对原生请求/进程日志与回执，准备私有证据 JSON，例如：
+
+```json
+{
+  "expectedFingerprint": "上一步返回的 fingerprint",
+  "decision": "not_dispatched",
+  "reviewedBy": "实际核对人",
+  "reason": "说明提交与原生进程的关联，以及确认未发送 turn/start 的依据",
+  "dispatchNotSentVerified": true,
+  "files": [{"path": "/绝对路径/脱敏证据摘录.txt", "sha256": "摘录的 SHA-256"}]
+}
+```
+
+只有核实原生未收到任务发送，才能使用 `not_dispatched`。仅找不到历史或没有回执不够；工具检查文件完整性、记录一致性和声明，不代替操作者判断证据语义。确认已经接收时改用 `decision: accepted`，并提供 `receipt: {"threadId": "…", "turnId": "…"}` 与可关联该提交的原生回执证据。
+
+停止该 workspace 的 Relay 和 managed agent（不停止 Codex 原生运行时）后先预演，再应用：
+
+```sh
+python scripts/recover-submission.py --workspace /节点/workspace --submission <提交ID> --evidence /私有路径/evidence.json
+python scripts/recover-submission.py --workspace /节点/workspace --submission <提交ID> --evidence /私有路径/evidence.json --apply
+```
+
+恢复要求两把服务锁均空闲，拒绝已确认结果、指纹变化、证据文件变化及与已有 dispatch/receipt 矛盾的失败声明。应用前生成 SQLite 一致性备份、保存证据摘录和原记录；恢复结果与审计信息在同一数据库事务提交，同时在 `workspace/artifacts/submission-recovery-*` 保存记录。原提交 ID 与去重记录保留。完成后启动原服务并检查更新状态。证据与数据库备份含私有信息，不提交 Git。

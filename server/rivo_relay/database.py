@@ -118,6 +118,12 @@ class Database:
                     connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 elif current != SCHEMA_VERSION or tables != _TABLES:
                     raise RuntimeError("Unsupported Rivo Relay database schema; existing data was not migrated")
+                # NULL means legacy/uninstrumented; never infer that it was not sent.
+                columns = {row[1] for row in connection.execute("PRAGMA table_info(submissions)")}
+                if 'dispatch_phase' not in columns:
+                    connection.execute("ALTER TABLE submissions ADD COLUMN dispatch_phase TEXT")
+                if 'recovery_json' not in columns:
+                    connection.execute("ALTER TABLE submissions ADD COLUMN recovery_json TEXT")
                 # Ensure indexes also exist on current-version databases created
                 # before these query optimizations were introduced.
                 for statement in (

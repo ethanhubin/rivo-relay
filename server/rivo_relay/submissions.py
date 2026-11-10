@@ -67,6 +67,7 @@ def _public(row) -> dict:
         "receipt": json.loads(row["receipt_json"]) if row["receipt_json"] else None,
         "error_code": row["error_code"],
         "created_at": row["created_at"], "updated_at": row["updated_at"],
+        "dispatch_phase": row["dispatch_phase"],
     }
 
 
@@ -215,15 +216,50 @@ class SubmissionStore:
         _identifier(error_code, "error_code")
         return self._transition(submission_id, "failed", error_code=error_code)
 
+    def record_dispatch(self, submission_id, phase, receipt=None):
+        """Called synchronously at the actual turn boundary; failure prevents sending."""
+        with self.db.transaction() as db:
+            row = db.execute('SELECT * FROM submissions WHERE id=?', (submission_id,)).fetchone()
+            if row is None or row['status'] != 'pending' or row['operation'] not in {'thread.turns', 'thread.continue'}:
+                raise SubmissionConflict('Submission cannot advance dispatch')
+            expected = {'preparing': None, 'dispatching': 'preparing', 'received': 'dispatching'}
+            if phase not in expected or row['dispatch_phase'] != expected[phase]:
+                raise SubmissionConflict('Invalid dispatch phase transition')
+            merged = None
+            if phase == 'received':
+                merged = _merge_receipt(None, receipt)
+                if not merged or merged.get('threadId') != json.loads(row['target_json']) or not merged.get('turnId'):
+                    raise SubmissionConflict('Native turn receipt does not match the submission')
+            elif receipt is not None:
+                raise SubmissionConflict('Unexpected dispatch receipt')
+            db.execute('UPDATE submissions SET dispatch_phase=?,receipt_json=COALESCE(?,receipt_json),updated_at=? WHERE id=?',
+                       (phase, _json(merged) if merged else None, self.clock(), submission_id))
+
+    def resolve_dispatch(self, submission_id):
+        """Only after action exit, or with the service stopped. Never resolve a live preparation."""
+        with self.db.transaction() as db:
+            row = db.execute('SELECT * FROM submissions WHERE id=?', (submission_id,)).fetchone()
+            if row is None or row['status'] not in {'pending', 'unknown'}:
+                return None
+            if row['operation'] not in {'thread.turns', 'thread.continue'}:
+                return None
+            if row['dispatch_phase'] == 'preparing' and row['receipt_json'] is None:
+                return self.mark_failed(submission_id, 'turn_not_dispatched')
+            if row['dispatch_phase'] == 'received' and row['receipt_json']:
+                receipt = json.loads(row['receipt_json'])
+                if receipt.get('threadId') == json.loads(row['target_json']) and receipt.get('turnId'):
+                    return self.mark_accepted(submission_id, receipt)
+            return None
+
     def recover_pending(self) -> int:
-        """Call once at exclusive service startup, before accepting requests.
-
-        Do not invoke from ordinary CLI database opens while a server is active.
-        Recovery marks uncertainty and never replays an outbound operation.
-        """
+        """Exclusive startup recovery; preserve legacy and sent-but-unconfirmed claims."""
         with self.db.transaction() as connection:
-            return connection.execute(
-                "UPDATE submissions SET status='unknown',updated_at=? WHERE status='pending'",
-                (self.clock(),),
-            ).rowcount
-
+            rows = connection.execute("SELECT id,status FROM submissions WHERE status IN ('pending','unknown')").fetchall()
+            count = 0
+            for row in rows:
+                if self.resolve_dispatch(row['id']) is not None:
+                    count += 1
+                elif row['status'] == 'pending':
+                    self.mark_unknown(row['id'])
+                    count += 1
+            return count
