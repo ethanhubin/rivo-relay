@@ -6,8 +6,6 @@ import android.os.Handler
 import android.os.Looper
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
@@ -44,8 +42,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusProperties
@@ -71,7 +69,7 @@ import kotlinx.coroutines.flow.first
 import org.json.JSONObject
 
 /**
- * QiGuang Codex Composer layout with a focus-expanding, three-line BasicTextField,
+ * QiGuang Codex Composer layout with a content-expanding, three-line BasicTextField,
  * and one compact action row (8x6dp insets, 6dp spacing).
  * Source: QiGuang ui/main/ChatComposerContent.kt and AttachmentAddIcon.kt.
  * Rivo keeps draft ownership and native submission in ChatScreen. Mode icons,
@@ -126,7 +124,8 @@ fun MessageComposer(
     }
     val keyboard = LocalSoftwareKeyboardController.current
     val focusRequester = remember { FocusRequester() }
-    var inputFocused by remember { mutableStateOf(false) }
+    val density = LocalDensity.current
+    var visibleTextHeight by remember(density) { mutableStateOf(0.dp) }
     var inputValue by remember { mutableStateOf(TextFieldValue(text, selection = TextRange(text.length))) }
     val mediaClient = LocalCodexMediaClient.current
     val api = mediaClient?.api
@@ -274,24 +273,32 @@ fun MessageComposer(
                 shadowElevation = 8.dp,
             ) {
                 Column {
-                    Row(Modifier.fillMaxWidth().animateContentSize(tween(180)), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 2.dp),
+                        verticalAlignment = Alignment.Top) {
                         BasicTextField(
                             value = inputValue,
                             onValueChange = { if (it.text != inputValue.text) cancelVoice(); inputValue = it; onTextChange(it.text) },
                             enabled = textEditable,
                             modifier = Modifier.weight(1f).pasteImageAttachments(context, enabled && !preparing, onPasteImages)
-                                .focusRequester(focusRequester).onFocusChanged { inputFocused = it.isFocused }.heightIn(min = 52.dp)
-                                .padding(horizontal = 16.dp, vertical = 14.dp).testTag("message_input"),
+                                .focusRequester(focusRequester)
+                                .padding(horizontal = 16.dp).heightIn(min = visibleTextHeight).testTag("message_input"),
                             textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (textEditable) 1f else 0.38f)),
                             cursorBrush = SolidColor(MaterialTheme.colorScheme.onSurface),
-                            minLines = if (inputFocused) 2 else 1,
-                            maxLines = if (inputFocused) 3 else 1,
+                            minLines = 1,
+                            maxLines = 3,
+                            onTextLayout = { layout ->
+                                // Fallback fonts (including Chinese) can exceed the default
+                                // Latin-based maxLines height. Keep three complete line boxes.
+                                visibleTextHeight = with(density) {
+                                    kotlin.math.ceil(layout.getLineBottom(minOf(3, layout.lineCount) - 1)).toInt().toDp()
+                                }
+                            },
                             decorationBox = { inner ->
                                 Box {
                                     if (text.isEmpty()) Text(
                                         prediction ?: when { isRunning -> "输入下一项任务或实时引导"; discussionMode -> "输入想讨论的方案或问题"; else -> "描述要实现或修改的功能" },
                                         style = MaterialTheme.typography.bodyMedium,
-                                        maxLines = if (prediction != null) Int.MAX_VALUE else if (inputFocused) 2 else 1,
+                                        maxLines = 3,
                                         overflow = TextOverflow.Ellipsis,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -299,7 +306,7 @@ fun MessageComposer(
                                 }
                             },
                         )
-                        Box(Modifier.align(Alignment.Top).padding(end = 8.dp, top = 8.dp)) {
+                        Box(Modifier.padding(end = 8.dp)) {
                             VoiceInputButton(recording, voice.transcribing, voice.error,
                                 capability.available && controller != null && enabled && !preparing,
                                 capability.reason, amplitude, toggleVoice)
@@ -307,7 +314,7 @@ fun MessageComposer(
                     }
                     if (preparing) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp))
                     Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                        Modifier.fillMaxWidth().padding(start = 8.dp, top = 2.dp, end = 8.dp, bottom = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {

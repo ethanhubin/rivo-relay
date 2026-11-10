@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.platform.LocalDensity
@@ -25,6 +26,15 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class MessageComposerUiTest {
     @get:Rule val compose = createComposeRule()
+
+    private fun captureComposer(name: String) {
+        val context = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext
+        val folder = java.io.File(context.getExternalFilesDir(null), "composer-evidence").apply { mkdirs() }
+        val bitmap = compose.onNodeWithTag("composer_surface").captureToImage().asAndroidBitmap()
+        java.io.File(folder, "$name.png").outputStream().use {
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+        }
+    }
 
     @Test fun attachmentCardOpensWithoutRemovingAndHasSeparateRemoval() {
         val file = org.json.JSONObject().put("type", "mention").put("name", "report.pdf").put("path", "/workspace/report.pdf")
@@ -63,18 +73,30 @@ class MessageComposerUiTest {
         compose.onNodeWithTag("add_workspace_file").assertDoesNotExist()
         compose.onNodeWithTag("message_input").performClick()
         val focusedHeight = compose.onNodeWithTag("composer_surface").fetchSemanticsNode().boundsInRoot.height / density
-        assertTrue("Focus should expand empty input to two lines", focusedHeight > emptyHeight)
+        assertEquals("Focus should not reserve an unused text line", emptyHeight, focusedHeight, 1f)
         compose.onNodeWithTag("message_input").performTextInput("第一行\n第二行\n第三行")
         val threeLineHeight = compose.onNodeWithTag("composer_surface").fetchSemanticsNode().boundsInRoot.height / density
         assertTrue("Multiline input must grow from the single-line height", threeLineHeight > focusedHeight)
+        val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        compose.onNodeWithTag("message_input").performSemanticsAction(
+            androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        assertEquals(3, layouts.single().lineCount)
+        val inputHeight = compose.onNodeWithTag("message_input").fetchSemanticsNode().boundsInRoot.height
+        captureComposer("three-lines-focused")
+        assertTrue("Three complete text lines must fit inside the input: bottom=${layouts.single().getLineBottom(2)}, height=$inputHeight", layouts.single().getLineBottom(2) <= inputHeight + 1f)
         compose.onNodeWithTag("message_input").performTextReplacement("第一行\n第二行\n第三行\n第四行\n第五行")
         val fiveLineHeight = compose.onNodeWithTag("composer_surface").fetchSemanticsNode().boundsInRoot.height / density
         assertEquals("Long drafts should scroll within three visible lines", threeLineHeight, fiveLineHeight, 1f)
         compose.onNodeWithTag("send_message").assertIsEnabled()
         compose.runOnIdle { focusManager.clearFocus(force = true) }
-        val collapsedHeight = compose.onNodeWithTag("composer_surface").fetchSemanticsNode().boundsInRoot.height / density
-        assertEquals("Blur should collapse without discarding the draft", emptyHeight, collapsedHeight, 1f)
+        val blurredHeight = compose.onNodeWithTag("composer_surface").fetchSemanticsNode().boundsInRoot.height / density
+        assertEquals("Blur must preserve three visible lines for a long draft", threeLineHeight, blurredHeight, 1f)
         compose.onNodeWithTag("message_input").assertTextEquals("第一行\n第二行\n第三行\n第四行\n第五行")
+        captureComposer("long-draft-blurred")
+        compose.onNodeWithTag("message_input").performClick().performTextClearance()
+        compose.runOnIdle { focusManager.clearFocus(force = true) }
+        val clearedHeight = compose.onNodeWithTag("composer_surface").fetchSemanticsNode().boundsInRoot.height / density
+        assertEquals("An empty unfocused composer should return to its compact height", emptyHeight, clearedHeight, 1f)
     }
 
     @Test fun attachmentMenuAndRunningActionsRemainAvailableWithoutExtraRows() {
@@ -104,7 +126,6 @@ class MessageComposerUiTest {
         compose.onNodeWithTag("add_attachment").performClick()
         compose.onNodeWithTag("add_video").assertIsDisplayed().performClick()
         compose.onNodeWithTag("add_attachment").performClick()
-        compose.onNodeWithTag("attachment_tab_node").performClick()
         compose.onNodeWithTag("add_workspace_file").assertIsDisplayed().performClick()
         compose.onNodeWithTag("composer_settings").assertDoesNotExist()
         compose.onNodeWithTag("codex_task_mode").assertIsDisplayed().performClick()
