@@ -2,7 +2,9 @@ package dev.rivo.relay.ui.chat
 
 import android.widget.Toast
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -21,24 +23,42 @@ internal fun AssistantCopyButton(text: String, identity: String) {
     if (text.isBlank()) return
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
-    // Match QiGuang's compact copy action below assistant responses.
-    Text(
-        "⧉",
-        modifier = Modifier
-            .clickable(role = Role.Button, onClickLabel = "复制回复") {
-                clipboard.setText(AnnotatedString(text))
-                Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
-            }
-            .padding(horizontal = 2.dp, vertical = 2.dp)
-            .semantics { contentDescription = "复制回复" }
-            .testTag("assistant_copy_$identity"),
-        style = MaterialTheme.typography.titleMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
+    FooterAction("复制回复", "assistant_copy_$identity", onClick = {
+        clipboard.setText(AnnotatedString(text))
+        Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+    }) {
+        Text("⧉", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
 }
 
 @Composable
-internal fun AssistantMessageFooter(text: String, identity: String, outputAt: Long?, completionLabel: String? = null) {
+private fun FooterAction(description: String, tag: String, enabled: Boolean = true,
+    onClick: () -> Unit, content: @Composable () -> Unit) {
+    Box(Modifier.size(24.dp).clickable(enabled = enabled, role = Role.Button,
+        onClickLabel = description, onClick = onClick)
+        .semantics { contentDescription = description }.testTag(tag),
+        contentAlignment = Alignment.Center) { content() }
+}
+
+@Composable
+private fun AssistantForkButton(turnId: String, enabled: Boolean, onClick: () -> Unit) {
+    val color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 1f else .38f)
+    FooterAction("从此轮之后分叉", "fork_turn_$turnId", enabled, onClick) {
+        androidx.compose.foundation.Canvas(Modifier.size(16.dp)) {
+            val stroke = 1.5.dp.toPx()
+            val bottom = Offset(size.width * .25f, size.height * .8f)
+            val top = Offset(size.width * .25f, size.height * .2f)
+            val branch = Offset(size.width * .75f, size.height * .2f)
+            drawLine(color, bottom, top, stroke)
+            drawLine(color, Offset(size.width * .25f, size.height * .6f), branch, stroke)
+            listOf(bottom, top, branch).forEach { drawCircle(color, 2.dp.toPx(), it) }
+        }
+    }
+}
+
+@Composable
+internal fun AssistantMessageFooter(text: String, identity: String, outputAt: Long?, completionLabel: String? = null,
+    forkTurnId: String? = null, forkEnabled: Boolean = true, onFork: (() -> Unit)? = null) {
     androidx.compose.foundation.layout.Row(
         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
         horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
@@ -56,5 +76,6 @@ internal fun AssistantMessageFooter(text: String, identity: String, outputAt: Lo
             modifier = Modifier.testTag("message_output_time"),
         )
         AssistantCopyButton(text, identity)
+        if (forkTurnId != null && onFork != null) AssistantForkButton(forkTurnId, forkEnabled, onFork)
     }
 }
