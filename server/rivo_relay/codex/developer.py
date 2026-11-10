@@ -163,6 +163,29 @@ def worktree_presence(connection, source, path):
     return registered, metadata['exists']
 
 
+def canonical_directories(connection, paths, cwd=None):
+    raw = command(connection, ['python3', '-c',
+        'import json,os,sys; print(json.dumps([{ "path":os.path.realpath(p), "directory":os.path.isdir(p)} for p in sys.argv[1:]]))',
+        *paths], cwd, cap=CAP)
+    try:
+        result = json.loads(raw)
+        if len(result) != len(paths) or any(not isinstance(item.get('path'), str)
+                or type(item.get('directory')) is not bool for item in result):
+            raise ValueError('invalid directory metadata')
+        return result
+    except (ValueError, TypeError, AttributeError) as error:
+        raise CodexError('无法核对节点目录', code='native_protocol') from error
+
+
+def directory_contains(root, path):
+    paths = ntpath if ntpath.splitdrive(root)[0] else posixpath
+    root, path = paths.normcase(paths.normpath(root)), paths.normcase(paths.normpath(path))
+    try:
+        return paths.commonpath([root, path]) == root
+    except ValueError:
+        return False
+
+
 class Workspaces:
     def __init__(self, db, service):
         self.db, self.service = db, service
@@ -173,22 +196,41 @@ class Workspaces:
 
     def create(self, project_id, source, ref):
         with self._gate('project:' + project_id):
-            return self._create(project_id, source, ref)
+            # A derived checkout keeps source_path for later Git maintenance.
+            # Protect that dependency too when creating from a managed checkout.
+            shared = self.reserve_shared_directory(source)
+            try:
+                return self._create(project_id, source, ref)
+            except CodexError as error:
+                if error.definite and error.code != 'workspace_create_failed':
+                    self.cancel_shared_directory(shared)
+                raise
 
     def _create(self, project_id, source, ref):
+        source = canonical_directories(self.service.connection, [source], source)[0]['path']
+        root = git(self.service.connection, source, 'rev-parse', '--show-toplevel').strip()
+        root = canonical_directories(self.service.connection, [root], source)[0]['path']
+        paths = ntpath if ntpath.splitdrive(source)[0] else posixpath
+        if not directory_contains(root, source):
+            raise CodexError('来源目录不在仓库内', code='invalid_worktree_ref', http_status=409)
+        relative = paths.relpath(source, root)
         info = project_git(self.service.connection, source)
         if not any(r['id'] == ref for r in info['refs']):
             raise CodexError('来源版本已变化，请重新选择', code='invalid_worktree_ref', http_status=409)
         identity = uuid.uuid4().hex
-        paths = ntpath if ntpath.splitdrive(source)[0] else posixpath
-        parent = paths.join(paths.dirname(source.rstrip('/\\')), '.rivo-worktrees')
+        parent = paths.join(paths.dirname(root.rstrip('/\\')), '.rivo-worktrees')
         path = paths.join(parent, identity)
         self.service.connection.request('fs/createDirectory', {'path': parent, 'recursive': True})
         with self.db.transaction() as c:
             c.execute('INSERT INTO workspaces VALUES(?,?,NULL,?,?,?,?,NULL,?)',
-                      (identity, project_id, source, path, ref, 'creating', time.time()))
+                      (identity, project_id, root, path, ref, 'creating', time.time()))
         try:
-            git(self.service.connection, source, 'worktree', 'add', '--detach', '--', path, ref)
+            git(self.service.connection, root, 'worktree', 'add', '--detach', '--', path, ref)
+            destination = paths.normpath(paths.join(path, relative))
+            checkout, target = canonical_directories(self.service.connection, [path, destination], root)
+            if not target['directory'] or not directory_contains(checkout['path'], target['path']):
+                raise CodexError('所选版本缺少来源子目录或目录越出工作树', code='invalid_worktree_ref', http_status=409)
+            destination = target['path']
         except Exception as error:
             # A lost native reply may still be checking out files. Do not race
             # that command or automatically replay it with another directory.
@@ -201,7 +243,7 @@ class Workspaces:
             raise
         with self.db.transaction() as c:
             c.execute("UPDATE workspaces SET status='ready' WHERE id=?", (identity,))
-        return identity, path
+        return identity, destination
 
     def link(self, identity, thread_id):
         with self._gate('workspace:' + identity), self.db.transaction() as c:
@@ -248,26 +290,33 @@ class Workspaces:
             return {**row, 'status': status}
 
     def reserve_shared_directory(self, path):
-        # Persist before the native mutation: a lost fork reply must still protect
-        # the directory. The transaction serializes with cleanup's state change.
-        paths = ntpath if ntpath.splitdrive(path)[0] else posixpath
-        normalize = lambda value: paths.normcase(paths.normpath(value))
+        # Resolve aliases on the native host, not on the Relay machine. Protect
+        # every containing managed checkout, including nested repositories.
+        with self.db.read() as c:
+            rows = [dict(r) for r in c.execute('SELECT * FROM workspaces')]
+        if not rows:
+            return None
+        resolved = canonical_directories(self.service.connection, [path, *[r['path'] for r in rows]])
+        matches = [row for row, root in zip(rows, resolved[1:])
+                   if directory_contains(root['path'], resolved[0]['path'])]
+        reservations = []
+        # Serialize reservation insertion with cleanup's state change. Keep the
+        # reservation after success or uncertainty, including across restarts.
         with self.db.transaction() as c:
-            rows = c.execute('SELECT * FROM workspaces').fetchall()
-            row = next((r for r in rows if normalize(r['path']) == normalize(path)), None)
-            if row is None:
-                return None
-            if row['status'] != 'ready':
-                raise CodexError('来源工作树正在清理或已移除', code='workspace_changed', http_status=409)
-            reservation = uuid.uuid4().hex
-            c.execute("INSERT INTO native_observations VALUES(?,?,?,?,?)",
-                (row['thread_id'], 'workspace_share', reservation, json.dumps({'path': path}), time.time()))
-            return row['thread_id'], reservation
+            for row in matches:
+                current = c.execute('SELECT status FROM workspaces WHERE id=?', (row['id'],)).fetchone()
+                if not current or current['status'] != 'ready':
+                    raise CodexError('来源工作树正在清理或已移除', code='workspace_changed', http_status=409)
+                reservation = uuid.uuid4().hex
+                c.execute('INSERT INTO native_observations VALUES(?,?,?,?,?)',
+                    (row['thread_id'], 'workspace_share', reservation, json.dumps({'path': path}), time.time()))
+                reservations.append((row['thread_id'], reservation))
+        return reservations or None
 
-    def cancel_shared_directory(self, reservation):
-        if reservation is not None:
+    def cancel_shared_directory(self, reservations):
+        if reservations:
             with self.db.transaction() as c:
-                c.execute("DELETE FROM native_observations WHERE thread_id=? AND kind='workspace_share' AND turn_id=?", reservation)
+                c.executemany("DELETE FROM native_observations WHERE thread_id=? AND kind='workspace_share' AND turn_id=?", reservations)
 
     def row(self, thread_id):
         with self.db.read() as c:

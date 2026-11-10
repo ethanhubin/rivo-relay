@@ -298,6 +298,64 @@ class DeveloperTests(unittest.TestCase):
             c.execute("UPDATE workspaces SET status='cleaning' WHERE thread_id='thread'")
         self.assert_code('workspace_changed', lambda: self.workspaces.reserve_shared_directory(str(path)))
 
+    def test_subdirectory_creation_preserves_relative_cwd_and_root_record(self):
+        sub = self.source / 'apps' / 'android'
+        sub.mkdir(parents=True)
+        (sub / 'app.txt').write_text('app')
+        self.git('add', '.'); self.git('commit', '-m', 'subdirectory')
+        ref = self.git('rev-parse', 'HEAD').strip()
+        identity, cwd = self.workspaces.create('project', str(sub), ref)
+        self.workspaces.link(identity, 'sub')
+        row = self.workspaces.row('sub')
+        self.assertEqual(Path(row['path']) / 'apps' / 'android', Path(cwd))
+        self.assertEqual(self.source.resolve(), Path(row['source_path']))
+        self.assertEqual(self.root.resolve() / '.rivo-worktrees', Path(row['path']).parent)
+
+    def test_missing_subdirectory_rolls_back_checkout(self):
+        sub = self.source / 'new-sub'
+        sub.mkdir()
+        self.assert_code('invalid_worktree_ref', lambda: self.workspaces.create('project', str(sub), self.head))
+        with self.db.read() as c:
+            row = c.execute('SELECT * FROM workspaces').fetchone()
+        self.assertEqual('removed', row['status'])
+        self.assertFalse(Path(row['path']).exists())
+
+    def test_destination_symlink_escape_is_rejected(self):
+        sub = self.source / 'sub'
+        sub.symlink_to(self.root, target_is_directory=True)
+        self.git('add', '.'); self.git('commit', '-m', 'link')
+        ref = self.git('rev-parse', 'HEAD').strip()
+        sub.unlink(); sub.mkdir()
+        self.assert_code('invalid_worktree_ref', lambda: self.workspaces.create('project', str(sub), ref))
+
+    def test_shared_subdirectory_alias_and_prefix_collision(self):
+        path = self.create()
+        sub = path / 'sub'
+        sub.mkdir()
+        alias = self.root / 'alias'
+        alias.symlink_to(sub, target_is_directory=True)
+        self.assertIsNone(self.workspaces.reserve_shared_directory(str(path) + '-unrelated'))
+        reservation = self.workspaces.reserve_shared_directory(str(alias))
+        self.assertIsNotNone(reservation)
+        current = self.workspaces.inspect('thread')
+        self.assert_code('workspace_busy', lambda: self.workspaces.cleanup('thread', current['revision'], True))
+        self.assertTrue(path.exists())
+
+    def test_derived_checkout_keeps_managed_source_available(self):
+        source = self.create()
+        identity, child = self.workspaces.create('project', str(source), self.head)
+        self.workspaces.link(identity, 'child')
+        current = self.workspaces.inspect('thread')
+        self.assert_code('workspace_busy', lambda: self.workspaces.cleanup('thread', current['revision'], False))
+        self.assertTrue(source.is_dir())
+        self.assertTrue(Path(child).is_dir())
+
+    def test_directory_containment_uses_windows_path_components(self):
+        from rivo_relay.codex.developer import directory_contains
+        self.assertTrue(directory_contains('C:/Work/Tree', 'c:/work/tree/sub'))
+        self.assertFalse(directory_contains('C:/Work/Tree', 'C:/Work/Tree-other'))
+        self.assertFalse(directory_contains('C:/Work/Tree', 'D:/Work/Tree'))
+
     def test_dirty_cleanup_requires_confirmation_and_keeps_archive(self):
         path = self.create()
         (path / 'notes.txt').write_text('keep these changes\n')
