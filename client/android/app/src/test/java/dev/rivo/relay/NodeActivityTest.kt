@@ -9,7 +9,13 @@ class NodeActivityTest {
         val task = dev.rivo.relay.data.threadSummary(org.json.JSONObject("""{"id":"t","status":"running"}"""))
         val state = SessionState(id = "t", snapshot = snapshot)
         val running = NodeActivity(tasks = mapOf("t" to task), confirmed = true, known = setOf("t"))
-        assertTrue(state.withNodeActivity(running).executionActive)
+        // Even a confirmed aggregate can lag behind a newer conversation read.
+        assertFalse(state.withNodeActivity(running).executionActive)
+        assertNull(state.withNodeActivity(running).syncStatusLabel())
+        assertTrue(state.copy(snapshot = null).withNodeActivity(running).executionActive)
+        // Aggregate idle must likewise not hide a newly started conversation turn.
+        assertTrue(state.copy(snapshot = snapshot.copy(status = "running", activeTurnId = "next"))
+            .withNodeActivity(running.copy(tasks = emptyMap())).executionActive)
         assertFalse(state.withNodeActivity(running.copy(confirmed = false)).executionActive)
         assertFalse(state.withNodeActivity(running.copy(unknown = setOf("t"))).executionActive)
         assertFalse(state.withNodeActivity(running.copy(tasks = emptyMap())).executionActive)

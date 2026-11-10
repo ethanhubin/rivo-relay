@@ -89,9 +89,9 @@ fun SessionState.syncStatusLabel(): String? = when {
     else -> null
 }
 
-/** Unverified node caches cannot override the current conversation snapshot. */
+/** Fresh conversation details take precedence over independently refreshed node activity. */
 internal fun SessionState.withNodeActivity(activity: NodeActivity): SessionState =
-    copy(activityStatus = id?.let(activity::status))
+    copy(activityStatus = if (snapshot != null && !stale) null else id?.let(activity::status))
 
 val SessionState.executionActive: Boolean get() =
     (activityStatus?.let { it == "running" }
