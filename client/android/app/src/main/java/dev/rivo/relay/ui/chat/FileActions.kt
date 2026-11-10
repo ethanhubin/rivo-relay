@@ -168,6 +168,10 @@ internal suspend fun cacheFileSource(context: Context, source: String,
     download: suspend (String, OutputStream, (Long, Long) -> Unit) -> Unit,
     nativeCache: NativeCachedDownload? = null, progress: (Long, Long) -> Unit): File = withContext(Dispatchers.IO) {
     if (isHttpWebLink(source) && nativeCache != null && fileOpenKind(source) in setOf(FileOpenKind.IMAGE, FileOpenKind.VIDEO, FileOpenKind.AUDIO)) return@withContext nativeCache(source, progress)
+    if (isHttpWebLink(source)) {
+        dev.rivo.relay.data.PublicUpdateLink.download(source, File(context.cacheDir, "downloads"), publicFileClient, progress)
+            ?.let { return@withContext it }
+    }
     if (isHttpWebLink(source)) return@withContext ResumableDownload.get(File(context.cacheDir, "downloads"), "public", source,
         publicFileClient, Request.Builder().url(source).build(), progress)
     if (!source.startsWith("data:") && nativeCache != null) return@withContext nativeCache(source, progress)

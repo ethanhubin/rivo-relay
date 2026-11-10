@@ -55,7 +55,7 @@ class NodeAppUpdatesTest {
         }
         Unit
     }
-    @Test fun slowLiveConnectionReconnectsOnceAndResumesVerifiedBytes() = runBlocking {
+    @Test fun slowHealthyConnectionRemainsOpenUntilComplete() = runBlocking {
         val payload = ByteArray(3 * 1024 * 1024) { (it % 251).toByte() }
         val sha = MessageDigest.getInstance("SHA-256").digest(payload).joinToString("") { "%02x".format(it) }
         val ranges = mutableListOf<String?>()
@@ -80,8 +80,7 @@ class NodeAppUpdatesTest {
                 val progress = mutableListOf<Long>()
                 val release = updates.check("0.2.12")!!
                 assertArrayEquals(payload, updates.download(release, dir) { done, _ -> progress.add(done) }.readBytes())
-                assertEquals(2, ranges.size)
-                assertTrue(ranges[1]!!.matches(Regex("bytes=[1-9][0-9]*-")))
+                assertEquals(listOf<String?>(null), ranges)
                 assertTrue(progress.zipWithNext().all { (a, b) -> a <= b })
             } finally { dir.deleteRecursively() }
         }

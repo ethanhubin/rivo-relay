@@ -1,0 +1,20 @@
+[Unit]
+Description=Rivo public download TCP diagnostics
+After=network-online.target haproxy.service
+[Service]
+Type=simple
+User=rivo-gateway
+Group=rivo-gateway
+ExecStart=/usr/bin/python3 /opt/rivo-relay/diagnostics/sample-download-tcp.py --port 8443 --interval 1 --log /var/log/rivo-download/tcp.jsonl
+Restart=on-failure
+RestartSec=5
+LogsDirectory=rivo-download
+LogsDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+MemoryMax=64M
+[Install]
+WantedBy=multi-user.target
