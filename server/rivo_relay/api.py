@@ -673,6 +673,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.app.submit(connection_id, sid, "thread.create", project, body,
                     lambda: codex.create_session(project, **options))
         if len(path) >= 3 and path[:2] == ["v1", "threads"]:
+            if len(path) == 4 and path[3] == 'prediction' and method == 'POST':
+                return codex.predict_message(path[2], required(body, 'expectedTurnId'))
             if len(path) == 4 and path[3] == "ownership" and method == "GET":
                 return codex.preview_handoff(path[2], query.get("operation", ["takeover"])[0], connection_id)
             thread_id = path[2]

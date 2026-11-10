@@ -58,6 +58,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     onAnswerQuestions: (String, JSONArray, () -> Unit) -> Unit = { _, _, _ -> },
     onRespond: (NativeRequest, JSONObject) -> Unit, onRefresh: () -> Unit, onLoadModels: () -> Unit, onEarlier: () -> Unit,
     readFile: suspend (String) -> JSONObject,
+    predictMessage: suspend (String, String) -> JSONObject = { _, _ -> JSONObject() },
     readDirectory: suspend (String) -> JSONObject = { error("节点不支持目录浏览") },
     uploadFile: suspend (String, String, java.io.File) -> JSONObject = { _, _, _ -> error("节点不支持文件上传") },
     downloadFile: suspend (String, java.io.OutputStream, (Long, Long) -> Unit) -> Unit = { _, _, _ -> error("节点不支持文件下载") },
@@ -264,6 +265,23 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         }
         draftLoaded = true
     }
+    val predictionTurn = snapshot?.turnSettings?.lastOrNull()?.turnId
+    var prediction by remember(state.id, predictionTurn) { mutableStateOf<String?>(null) }
+    var predictionConsumed by remember(state.id, predictionTurn) { mutableStateOf(false) }
+    val predictionEligible = snapshot != null && !snapshot.isOngoing && !state.stale && !blocked && canOperate &&
+        pendingTitle == null && selectedMode != "plan" && !goalModeSelected && snapshot.goal?.string("status") != "active" && images.isEmpty() && files.isEmpty()
+    LaunchedEffect(state.id, predictionTurn, predictionEligible) {
+        prediction = null
+        val id = state.id
+        if (predictionEligible && id != null && predictionTurn != null) {
+            try {
+                val result = predictMessage(id, predictionTurn)
+                if (result.string("sourceTurnId") == predictionTurn) prediction = result.optString("text").takeUnless { it.isBlank() || it == "null" }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { }
+        }
+    }
+    val visiblePrediction = prediction.takeIf { predictionEligible && !predictionConsumed && draft.isEmpty() && !busy }
+    val sendText = if (draft.isEmpty()) visiblePrediction ?: draft else draft
     val currentDraft = ConversationDraft(draft, images.map { StoredDraftImage(it.id, it.bytes) }, files, selectedModel, selectedEffort, selectedMode, selectedServiceTier, selectedSandbox, selectedApproval, pendingGoal)
     var submittedDraft by remember(state.id) { mutableStateOf<ConversationDraft?>(null) }
     val unchangedSubmission = submittedDraft != null && submittedDraft == currentDraft
@@ -734,7 +752,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             onOpenFile = { reference -> nativeFilePath(reference.string("path"), cwd)?.let(::openFile) },
             preparing = preparing, error = attachmentError, enabled = !busy && !inputLocked && draftLoaded,
             textEditable = textEditable,
-            canSend = !(goalMode && displayedGoal == null) && !pendingReceiptUnresolved && !pendingFirstTurnSent && (pendingGoal == null || goalCapability == true) && (draft.isNotBlank() || images.isNotEmpty() || files.isNotEmpty() || pendingGoal != null) && !state.stale && (snapshot != null || pendingTitle != null && pendingReady),
+            prediction = visiblePrediction,
+            canSend = !(goalMode && displayedGoal == null) && !pendingReceiptUnresolved && !pendingFirstTurnSent && (pendingGoal == null || goalCapability == true) && (sendText.isNotBlank() || images.isNotEmpty() || files.isNotEmpty() || pendingGoal != null) && !state.stale && (snapshot != null || pendingTitle != null && pendingReady),
             canContinue = state.canContinueTask() && !blocked && !submissionInFlight, onContinue = onContinue,
             isRunning = snapshot?.activeTurnId?.isNotBlank() == true, canStop = !busy && !blocked && !state.stale && canOperate, busy = busy,
             onAddImage = { focus.clearFocus(); keyboard?.hide(); imagePickerTarget = state.id; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
@@ -780,6 +799,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             },
             onSend = {
                 val targetId = state.id
+                predictionConsumed = true
                 val sentDraft = currentDraft
                 submittedDraft = sentDraft
                 targetId?.let { onPersistDraft(it, sentDraft) }
@@ -788,15 +808,15 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     targetId?.let { onPersistDraft(it, ConversationDraft(model = sentDraft.model, effort = sentDraft.effort, mode = sentDraft.mode, serviceTier = sentDraft.serviceTier, sandbox = sentDraft.sandbox, approvalPolicy = sentDraft.approvalPolicy)) }
                 }
                     Unit }
-                if (onConfiguredSend != null) onConfiguredSend(nativeInputs(draft.ifBlank { pendingGoal?.let { JSONObject(it).string("objective") }.orEmpty() }, images, files), selectedModel, selectedEffort, selectedMode, selectedServiceTier, JSONObject().apply {
+                if (onConfiguredSend != null) onConfiguredSend(nativeInputs(sendText.ifBlank { pendingGoal?.let { JSONObject(it).string("objective") }.orEmpty() }, images, files), selectedModel, selectedEffort, selectedMode, selectedServiceTier, JSONObject().apply {
                     if (pendingTitle != null) {
                         pendingGoal?.let { put("goal", JSONObject(it)) }
                         selectedSandbox?.takeUnless { it == "inherit" }?.let { put("sandbox", it) }
                         selectedApproval?.takeUnless { it == "inherit" }?.let { put("approvalPolicy", it) }
                     }
                 }, accepted)
-                else if (onSendWithMode != null) onSendWithMode(nativeInputs(draft, images, files), selectedModel, selectedEffort, selectedMode, accepted)
-                else onSend(nativeInputs(draft, images, files), selectedModel, selectedEffort, accepted)
+                else if (onSendWithMode != null) onSendWithMode(nativeInputs(sendText, images, files), selectedModel, selectedEffort, selectedMode, accepted)
+                else onSend(nativeInputs(sendText, images, files), selectedModel, selectedEffort, accepted)
             },
             onStop = { stopConfirm = true },
             queueing = snapshot != null && canOperate && snapshot.shouldQueueInput,

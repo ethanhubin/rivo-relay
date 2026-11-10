@@ -85,6 +85,8 @@ class CodexService:
         self._lock = threading.RLock()
         self._gates = ThreadGates()
         self.operation_gate = self._gates.hold
+        self._prediction_lock = threading.Lock()
+        self._prediction_cache = {}
         self._live = OrderedDict()
         self._pending_terminal = set()
         self._completed_items = {}
@@ -1042,6 +1044,10 @@ class CodexService:
             if snapshot.get("readOnly") or snapshot.get("activeTurnId") or snapshot["status"] != "idle":
                 return None
             return self.send(thread_id, "", **kwargs)
+
+    def predict_message(self, thread_id, turn_id):
+        from .predictions import predict_message
+        return predict_message(self, thread_id, turn_id)
 
     def answer_questions(self, thread_id, expected_turn_id, answers, client_message_id):
         from .questions import answer_input

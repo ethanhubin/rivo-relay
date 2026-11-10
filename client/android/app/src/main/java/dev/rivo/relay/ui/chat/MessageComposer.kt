@@ -98,6 +98,7 @@ fun MessageComposer(
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
     queueing: Boolean = false,
+    prediction: String? = null,
     canContinue: Boolean = false,
     onContinue: () -> Unit = {},
     onEditImage: (DraftImage) -> Unit = {},
@@ -317,7 +318,7 @@ fun MessageComposer(
                             decorationBox = { inner ->
                                 Box {
                                     if (text.isEmpty()) Text(
-                                        when { isRunning -> "输入下一项任务或实时引导"; discussionMode -> "输入想讨论的方案或问题"; else -> "描述要实现或修改的功能" },
+                                        prediction ?: when { isRunning -> "输入下一项任务或实时引导"; discussionMode -> "输入想讨论的方案或问题"; else -> "描述要实现或修改的功能" },
                                         style = MaterialTheme.typography.bodyMedium,
                                         maxLines = if (inputFocused) 2 else 1,
                                         overflow = TextOverflow.Ellipsis,
@@ -378,7 +379,7 @@ fun MessageComposer(
                             onClick = onStop, enabled = canStop,
                             modifier = Modifier.width(80.dp).height(44.dp).testTag("stop_turn"), shape = RoundedCornerShape(22.dp),
                             contentPadding = PaddingValues(horizontal = 10.dp)) { Text("■ 停止", style = MaterialTheme.typography.labelLarge) }
-                        else if (canContinue && text.isBlank() && images.isEmpty() && files.isEmpty() && !voice.transcribing && !recording) Button(
+                        else if (canContinue && prediction == null && text.isBlank() && images.isEmpty() && files.isEmpty() && !voice.transcribing && !recording) Button(
                             onClick = onContinue, enabled = enabled && !busy && !preparing,
                             modifier = Modifier.width(80.dp).height(44.dp).testTag("continue_turn"),
                             shape = RoundedCornerShape(22.dp), contentPadding = PaddingValues(horizontal = 10.dp)
