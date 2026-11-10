@@ -72,7 +72,9 @@ class TurnFooterStabilityUiTest {
         val first = NativeTurnSettings("first", status = "completed", startedAt = started, completedAt = started + 63, durationMs = 63000)
         val next = NativeTurnSettings("next", status = "inProgress", startedAt = started + 70)
         val messages = listOf(NativeMessage("a", "first", "agentMessage", "第一轮回答", JSONObject()),
-            NativeMessage("b", "next", "agentMessage", "第二轮回答", JSONObject()))
+            NativeMessage("tool-first", "first", "commandExecution", "", JSONObject().put("command", "false").put("status", "completed").put("exitCode", 1), activity = NativeActivity("command", "命令执行", "false", "", "completed", exitCode = 1)),
+            NativeMessage("b", "next", "agentMessage", "第二轮回答", JSONObject()),
+            NativeMessage("tool-next", "next", "commandExecution", "", JSONObject().put("command", "true").put("status", "completed").put("exitCode", 0), activity = NativeActivity("command", "命令执行", "true", "", "completed", exitCode = 0)))
         val live = SessionSnapshot("history", "历史用时", "running", "next", messages, emptyList(), JSONObject(), turnSettings = listOf(first, next))
         val state = mutableStateOf(SessionState(id = "history", snapshot = live, activityStatus = "running"))
         compose.mainClock.autoAdvance = false
@@ -86,9 +88,9 @@ class TurnFooterStabilityUiTest {
         assertTrue(!compose.onNodeWithTag("historical_turn_timing_first").fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.Text].joinToString().contains("已完成"))
         val timingBounds = compose.onNodeWithTag("historical_turn_timing_first").fetchSemanticsNode().boundsInRoot
         val copyBounds = compose.onNodeWithTag("assistant_copy_first:a").fetchSemanticsNode().boundsInRoot
-        assertTrue(timingBounds.top < copyBounds.bottom && copyBounds.top < timingBounds.bottom)
-        assertTrue(timingBounds.right <= copyBounds.left)
-        compose.onNodeWithTag("message_output_time").assertTextContains("-", substring = true)
+        assertTrue(timingBounds.top >= copyBounds.bottom)
+        assertTrue(timingBounds.top >= compose.onNodeWithText("运行了 1 条命令 · 成功 0 · 失败 1").fetchSemanticsNode().boundsInRoot.bottom)
+        compose.onAllNodesWithTag("message_output_time")[0].assertTextContains("-", substring = true)
         compose.onNodeWithTag("turn_duration_next").assertIsDisplayed()
         compose.onNodeWithTag("turn_duration_spinner").assertIsDisplayed()
         compose.onNodeWithTag("session_completion").assertDoesNotExist()
@@ -99,8 +101,8 @@ class TurnFooterStabilityUiTest {
         compose.onNodeWithTag("session_completion").assertIsDisplayed().assertTextContains("已完成", substring = true)
         val completedBounds = compose.onNodeWithTag("session_completion").fetchSemanticsNode().boundsInRoot
         val completedCopyBounds = compose.onNodeWithTag("assistant_copy_next:b").fetchSemanticsNode().boundsInRoot
-        assertTrue(completedBounds.right <= completedCopyBounds.left)
-        assertTrue(completedBounds.top < completedCopyBounds.bottom && completedCopyBounds.top < completedBounds.bottom)
+        assertTrue(completedBounds.top >= completedCopyBounds.bottom)
+        assertTrue(completedBounds.top >= compose.onNodeWithText("运行了 1 条命令 · 成功 1 · 失败 0").fetchSemanticsNode().boundsInRoot.bottom)
         compose.onNodeWithTag("session_completion").assertTextContains("-", substring = true)
         compose.onNodeWithTag("historical_turn_timing_next").assertDoesNotExist()
         compose.onNodeWithTag("turn_duration_spinner").assertDoesNotExist()

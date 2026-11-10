@@ -9,6 +9,32 @@ class NativeTurnFooterTest {
     private val turn = NativeTurnSettings("t", status = "inProgress", startedAt = 100)
     private val live = SessionSnapshot("s", "", "running", "t", emptyList(), emptyList(), JSONObject(), turnSettings = listOf(turn))
 
+    @Test fun settledFooterStaysBeforeNextPendingOrFailedSendAndAfterLateTools() {
+        val footer = NativeTurnFooter(turn.copy(status = "completed"), "已完成", observedAt = 120)
+        val answer = NativeTimelineRow.Message(NativeMessage("answer", "t", "agentMessage", "done", JSONObject()))
+        val tool = NativeTimelineRow.Activities(listOf(NativeMessage("tool", "t", "commandExecution", "", JSONObject())))
+        for (delivery in listOf("submitting", "accepted", "failed")) {
+            val pending = NativeTimelineRow.Message(NativeMessage("pending", "pending:new", "userMessage", "next",
+                JSONObject().put("relayDelivery", delivery)))
+            assertEquals(1, nativeTurnFooterBoundary(listOf(answer, pending), footer))
+            assertEquals(2, nativeTurnFooterBoundary(listOf(answer, tool, pending), footer))
+            assertEquals(0, nativeTurnFooterBoundary(listOf(pending), footer))
+        }
+        assertEquals(2, nativeTurnFooterBoundary(listOf(answer, tool), footer))
+        assertEquals(0, nativeTurnFooterBoundary(emptyList(), footer))
+    }
+
+    @Test fun stoppedTurnDurationSurvivesControlStateConvergence() {
+        for (status in listOf("failed", "interrupted", "canceled", "cancelled")) {
+            val cache = NativeTurnFooterCache()
+            val stopping = live.copy(turnSettings = listOf(turn.copy(status = status, durationMs = 12000)))
+            val before = cache.project(stopping, false, 120)!!
+            val after = cache.project(stopping.copy(status = "idle", activeTurnId = ""), false, 121)!!
+            assertEquals(before.label, after.label)
+            assertTrue(after.label!!.endsWith("耗时 12s"))
+        }
+    }
+
     @Test fun revalidationAndDisconnectRetainTheClientTimer() {
         val cache = NativeTurnFooterCache()
         val first = cache.project(live, false, 105, 1000)!!
@@ -68,7 +94,7 @@ class NativeTurnFooterTest {
         assertEquals("本轮已结束 耗时 12s", result.label)
         val failed = cache.project(live.copy(status = "idle", activeTurnId = "", turnSettings = listOf(
             turn.copy(status = "failed", durationMs = 12000))), false, 121)!!
-        assertEquals("执行失败", failed.label)
+        assertEquals("执行失败 耗时 12s", failed.label)
     }
     @Test fun continuationUsesNewestTurnEvenWhenActivityStillPointsToInterruptedTurn() {
         val interrupted = turn.copy(status = "interrupted", completedAt = 211, durationMs = 111000)

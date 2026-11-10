@@ -62,3 +62,18 @@ class NativeTurnFooterCache {
 /** Live elapsed time belongs to the client, not native timestamps or transport state. */
 fun clientTurnElapsedSeconds(footer: NativeTurnFooter, nowElapsedMillis: Long): Long? =
     footer.clientStartedAtMillis?.let { ((nowElapsedMillis - it).coerceAtLeast(0)) / 1000 }
+
+/** A settled footer belongs to its turn, before any next-turn local send receipt. */
+fun nativeTurnFooterBoundary(rows: List<NativeTimelineRow>, footer: NativeTurnFooter): Int {
+    if (footer.label == null) return rows.size
+    val last = rows.indexOfLast { row ->
+        when (row) {
+            is NativeTimelineRow.Message -> row.message.turnId
+            is NativeTimelineRow.Activities -> row.messages.first().turnId
+            is NativeTimelineRow.Notice -> row.turn.turnId
+        } == footer.turn?.turnId
+    }
+    if (last >= 0) return last + 1
+    return rows.indexOfFirst { it is NativeTimelineRow.Message && it.message.raw.has("relayDelivery") }
+        .takeIf { it >= 0 } ?: rows.size
+}

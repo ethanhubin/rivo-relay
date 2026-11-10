@@ -381,6 +381,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         turnFooterCache.project(snapshot, state.stale || state.loading || state.readError != null,
             System.currentTimeMillis() / 1000, android.os.SystemClock.elapsedRealtime())
     }
+    val turnFooterBoundary = turnFooter?.let { nativeTurnFooterBoundary(timeline, it) }
     val historicalTiming = remember(timeline, snapshot?.turnSettings, turnFooter?.turn?.turnId) {
         nativeHistoricalTimingRows(timeline, snapshot?.turnSettings.orEmpty(), turnFooter?.turn?.turnId)
     }
@@ -502,7 +503,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             itemsIndexed(timeline, key = { _, row -> row.key }, contentType = { _, row ->
                 when (row) { is NativeTimelineRow.Message -> row.message.type; is NativeTimelineRow.Activities -> "activity_group"; is NativeTimelineRow.Notice -> "turn_notice" }
             }) { index, row ->
-                HistoricalTurnTiming(historicalTiming[index].orEmpty().filter { lastReplyIds[it.turnId] == null })
+                HistoricalTurnTiming(historicalTiming[index].orEmpty())
+                if (turnFooterBoundary == index && turnFooter != null) NativeTurnDuration(turnFooter)
                 val modelChange = modelChangeRows[row.key]
                 val consecutiveActivities = row is NativeTimelineRow.Activities &&
                     timeline.getOrNull(index - 1) is NativeTimelineRow.Activities && modelChange == null
@@ -606,13 +608,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                             ReviewDiagnostic(snapshot.reviewDiagnostics.lastOrNull { it.string("turnId") == message.turnId })
                         }
                         AssistantMessageFooter(message.text, "${message.turnId}:${message.id}", timing.outputAt,
-                            completionLabel = turnFooter?.takeIf { isLastReply && it.turn?.turnId == message.turnId }?.label,
                             forkTurnId = message.turnId.takeIf { isLastReply && onFork != null &&
                                 snapshot?.turnSettings?.any { it.turnId == message.turnId && it.status in setOf("completed", "interrupted", "failed") } == true },
-                            historicalTiming = if (isLastReply && message.turnId != turnFooter?.turn?.turnId)
-                                snapshot?.turnSettings?.firstOrNull { it.turnId == message.turnId }?.let { turn ->
-                                    nativeHistoricalTimingLabel(turn)?.let { NativeHistoricalTiming(turn.turnId, it) }
-                                } else null,
                             forkEnabled = !busy && !blocked && !state.stale,
                             onFork = { forkTurn = message.turnId })
                     }
@@ -655,14 +652,14 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 }
             }
             historicalTiming[timeline.size]?.let { timings ->
-                item(key = "historical_turn_timing_tail") { HistoricalTurnTiming(timings.filter { lastReplyIds[it.turnId] == null }) }
+                item(key = "historical_turn_timing_tail") { HistoricalTurnTiming(timings) }
             }
             snapshot?.reviewDiagnostics?.filter { diagnostic ->
                 diagnostic.string("status") != "verified" && snapshot.messages.none {
                     it.turnId == diagnostic.string("turnId") && it.type in setOf("agentMessage", "agent_message", "exitedReviewMode")
                 }
             }?.forEach { diagnostic -> item(key = "review-diagnostic:${diagnostic.string("turnId")}") { ReviewDiagnostic(diagnostic) } }
-            turnFooter?.takeIf { it.label == null || lastReplyIds[it.turn?.turnId] == null }?.let { footer -> item(key = "turn_footer") { NativeTurnDuration(footer) } }
+            turnFooter?.takeIf { turnFooterBoundary == timeline.size }?.let { footer -> item(key = "turn_footer") { NativeTurnDuration(footer) } }
             if (executionActive && currentActivity == null && turnFooter == null) item(key = "execution_stage") {
                 ChatTimelineSummaryRow {
                     if (state.stale) Text("正在处理…", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("execution_stage_pending"))

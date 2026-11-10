@@ -37,7 +37,7 @@ fun NativeTurnDuration(footer: NativeTurnFooter, elapsedRealtime: () -> Long = a
             Text(text, modifier = Modifier.weight(1f).testTag("turn_duration_${turn?.turnId}"),
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-    } else TurnTimingLine(text, "session_completion")
+    } else AssistantMessageFooter("", "turn:${turn?.turnId}", turn?.completedAt, completionLabel = text)
 }
 
 /** Historical rows omit the live conversation's completion status. */
