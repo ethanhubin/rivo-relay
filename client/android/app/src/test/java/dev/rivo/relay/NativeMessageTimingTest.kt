@@ -40,6 +40,34 @@ class NativeMessageTimingTest {
         assertNull(nativeTimestamp(JSONObject.NULL))
         assertNull(nativeTimestamp("invalid"))
     }
+    @Test fun wholeTurnUsesDurationBeforeBoundsEvenWithoutCompletionTimestamp() {
+        assertEquals(23L, nativeTurnElapsedSeconds(turn.copy(durationMs = 23999)))
+        assertEquals(23L, nativeTurnElapsedSeconds(turn.copy(durationMs = 23999, completedAt = null)))
+        assertEquals(16L, nativeTurnElapsedSeconds(turn.copy(durationMs = null)))
+        assertEquals(16L, nativeTurnElapsedSeconds(turn.copy(durationMs = -1)))
+        assertEquals(0L, nativeTurnElapsedSeconds(turn.copy(durationMs = 0)))
+    }
+
+    @Test fun stoppedTurnsFreezeAndNeverBorrowCurrentTime() {
+        for (status in listOf("completed", "failed", "interrupted", "canceled", "cancelled")) {
+            assertEquals(16L, nativeTurnElapsedSeconds(turn.copy(status = status), 999))
+            assertNull(nativeTurnElapsedSeconds(turn.copy(status = status, durationMs = null, completedAt = null), 999))
+        }
+        assertNull(nativeTurnElapsedSeconds(turn.copy(durationMs = null, startedAt = 200)))
+        assertNull(nativeTurnElapsedSeconds(turn.copy(durationMs = null, startedAt = null)))
+    }
+
+    @Test fun liveTimingRequiresExplicitRunningStateAndReliableStart() {
+        val live = turn.copy(status = "inProgress", completedAt = null, durationMs = null)
+        assertEquals(5L, nativeTurnElapsedSeconds(live, 105))
+        assertEquals(6L, nativeTurnElapsedSeconds(live, 106))
+        assertNull(nativeTurnElapsedSeconds(live))
+        assertNull(nativeTurnElapsedSeconds(live, 99))
+        assertNull(nativeTurnElapsedSeconds(live.copy(startedAt = null), 106))
+        assertNull(nativeTurnElapsedSeconds(live.copy(status = "unknown"), 106))
+        assertNull(nativeTurnElapsedSeconds(live.copy(completedAt = 104), 106))
+    }
+
     @Test fun completionFooterTracksLatestStoppedTurn() {
         val snapshot = SessionSnapshot("s", "", "idle", "", emptyList(), emptyList(), JSONObject(), turnSettings = listOf(turn))
         assertTrue(sessionCompletionLabel(snapshot)!!.matches(Regex("已完成 [0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}")))

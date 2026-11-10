@@ -390,6 +390,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         }
     }
     val executionActive = state.executionActive
+    val timedRunningTurn = snapshot?.turnSettings?.firstOrNull {
+        it.turnId == snapshot.activeTurnId && it.status == "inProgress" && it.startedAt != null && it.completedAt == null
+    }?.takeIf { executionActive && !state.stale && snapshot.nativeReady && !snapshot.recoveryRequired && !snapshot.workspaceUnavailable }
     val currentActivity = (timeline.lastOrNull() as? NativeTimelineRow.Activities)
         ?.takeIf { executionActive && it.messages.lastOrNull()?.turnId == snapshot?.activeTurnId }
     val modelChangeRows = remember(timeline, snapshot?.turnSettings) {
@@ -578,10 +581,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     } else if (assistant) {
                         val isLastReply = lastReplyIds[message.turnId] == message.id
                         val timing = nativeMessageTiming(message, snapshot?.turnSettings?.firstOrNull { it.turnId == message.turnId }, isLastReply)
-                        timing.elapsedSeconds?.let { seconds ->
-                            Text("已思考 ${formatNativeThinkingDuration(seconds)}", style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("message_thinking_time"))
-                        }
+                        if (isLastReply) snapshot?.turnSettings?.firstOrNull { it.turnId == message.turnId }
+                            ?.takeIf { it.status != "inProgress" }?.let { NativeTurnDuration(it) }
                         MessageContent(message.text, cwd, cacheBlocks = !(snapshot?.isOngoing == true && message.turnId == snapshot.activeTurnId), onQuoteText = quoteText, onSaveFile = saveFile, inlineImage = { source ->
                                 val target = if (isHttpWebLink(source)) source else nativeFilePath(source, cwd)
                                 target?.let { NativeImage(it, readFile, downloadFile = downloadFile) }
@@ -627,6 +628,10 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     is NativeTimelineRow.Activities -> next.messages.first().turnId
                     is NativeTimelineRow.Notice -> next.turn.turnId
                 } }
+                if (rowTurn.isNotBlank() && rowTurn != nextTurn && lastReplyIds[rowTurn] == null) {
+                    snapshot?.turnSettings?.firstOrNull { it.turnId == rowTurn }
+                        ?.takeIf { it.status != "inProgress" }?.let { NativeTurnDuration(it) }
+                }
                 val terminal = snapshot?.turnSettings?.any { it.turnId == rowTurn && it.status in setOf("completed", "interrupted", "failed") } == true
                 if (onFork != null && rowTurn.isNotBlank() && rowTurn != nextTurn && terminal && lastReplyIds[rowTurn] == null) {
                     AssistantMessageFooter("", rowTurn,
@@ -640,7 +645,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     it.turnId == diagnostic.string("turnId") && it.type in setOf("agentMessage", "agent_message", "exitedReviewMode")
                 }
             }?.forEach { diagnostic -> item(key = "review-diagnostic:${diagnostic.string("turnId")}") { ReviewDiagnostic(diagnostic) } }
-            if (executionActive && currentActivity == null) item(key = "execution_stage") {
+            timedRunningTurn?.let { turn -> item(key = "turn-duration:${turn.turnId}") { NativeTurnDuration(turn, running = true) } }
+            if (executionActive && currentActivity == null && timedRunningTurn == null) item(key = "execution_stage") {
                 ChatTimelineSummaryRow {
                     if (state.stale) Text("正在处理…", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("execution_stage_pending"))
                     else ShimmeringStageText("正在处理…", Modifier.testTag("execution_stage_shimmer"))
