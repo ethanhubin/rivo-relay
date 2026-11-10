@@ -7,12 +7,14 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 from unittest.mock import Mock, patch
 
 from rivo_relay.codex.connection import CodexError
 from rivo_relay.codex.external_worktrees import ExternalWorktrees, _DISCOVER
-from rivo_relay.read_budget import ReadStopped, read_budget
+from rivo_relay.read_budget import ReadStopped, read_budget, read_lock
 from relay_test_support.files import NativeHost
 
 
@@ -87,15 +89,87 @@ class DiscoveryBoundaryTests(unittest.TestCase):
             with self.assertRaises(CodexError) as raised:
                 self.worktrees.associations(self.threads, self.projects)
         self.assertEqual('history_changed', raised.exception.code)
-        self.assertIsNone(self.worktrees._cache)
+        self.assertFalse(self.worktrees._cache)
         self.observe.assert_not_called()
 
+    def response(self):
+        return {'exitCode': 0, 'stdout': '{"matches": {}, "missing": []}'}
+
+    def test_alternating_queries_reuse_both_cached_results(self):
+        with patch('rivo_relay.codex.external_worktrees.node_command', return_value=self.response()) as probe:
+            for _ in range(3):
+                self.worktrees.associations(self.threads, self.projects)
+                self.worktrees.associations([{'id': 'other', 'cwd': '/node/other'}], self.projects)
+            self.assertEqual(2, probe.call_count)
+
+    def test_cached_query_is_not_blocked_by_unrelated_probe(self):
+        started, release = threading.Event(), threading.Event()
+        def slow(*args, **kwargs):
+            started.set()
+            if not release.wait(3):
+                raise AssertionError('probe was not released')
+            return self.response()
+        with patch('rivo_relay.codex.external_worktrees.node_command', return_value=self.response()):
+            self.worktrees.associations(self.threads, self.projects)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            with patch('rivo_relay.codex.external_worktrees.node_command', side_effect=slow):
+                future = pool.submit(self.worktrees.associations, [{'id': 'other', 'cwd': '/node/other'}], self.projects)
+                try:
+                    self.assertTrue(started.wait(2))
+                    cached = pool.submit(self.worktrees.associations, self.threads, self.projects)
+                    self.assertEqual({}, cached.result(timeout=1))
+                finally:
+                    release.set()
+                future.result(timeout=2)
+
     def test_cancelled_waiter_does_not_start_another_native_probe(self):
-        self.worktrees._lock.acquire()
-        try:
+        request = {'projects': [{'id': 'project', 'roots': ['/node/project']}], 'paths': ['/node/worktree']}
+        key = ('first', json.dumps(request, sort_keys=True))
+        with self.worktrees._flight(key):
             with patch('rivo_relay.codex.external_worktrees.node_command') as probe:
                 with self.assertRaises(ReadStopped), read_budget(seconds=.02):
                     self.worktrees.associations(self.threads, self.projects)
                 probe.assert_not_called()
-        finally:
-            self.worktrees._lock.release()
+        self.assertFalse(self.worktrees._flights)
+
+    def test_concurrent_identical_queries_share_one_probe(self):
+        started, release, waiting = threading.Event(), threading.Event(), threading.Event()
+        def slow(*args, **kwargs):
+            started.set()
+            if not release.wait(3):
+                raise AssertionError('probe was not released')
+            return self.response()
+        @contextlib.contextmanager
+        def tracked_lock(lock):
+            if lock.locked():
+                waiting.set()
+            with read_lock(lock):
+                yield
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            with patch('rivo_relay.codex.external_worktrees.node_command', side_effect=slow) as probe, \
+                    patch('rivo_relay.codex.external_worktrees.read_lock', side_effect=tracked_lock):
+                first = pool.submit(self.worktrees.associations, self.threads, self.projects)
+                try:
+                    self.assertTrue(started.wait(2))
+                    second = pool.submit(self.worktrees.associations, self.threads, self.projects)
+                    self.assertTrue(waiting.wait(2))
+                finally:
+                    release.set()
+                self.assertEqual({}, first.result(timeout=2))
+                self.assertEqual({}, second.result(timeout=2))
+                self.assertEqual(1, probe.call_count)
+        self.assertFalse(self.worktrees._flights)
+
+    def test_cache_expiry_generation_and_capacity(self):
+        with patch('rivo_relay.codex.external_worktrees.node_command', return_value=self.response()) as probe:
+            with patch('rivo_relay.codex.external_worktrees.time.monotonic', return_value=0):
+                self.worktrees.associations(self.threads, self.projects)
+            with patch('rivo_relay.codex.external_worktrees.time.monotonic', return_value=16):
+                self.worktrees.associations(self.threads, self.projects)
+                self.native.generation = 'second'
+                self.worktrees.associations(self.threads, self.projects)
+                self.assertEqual(3, probe.call_count)
+                for i in range(12):
+                    self.worktrees.associations([{'id': str(i), 'cwd': f'/node/{i}'}], self.projects)
+                self.assertEqual(8, len(self.worktrees._cache))
+        self.assertFalse(self.worktrees._flights)
