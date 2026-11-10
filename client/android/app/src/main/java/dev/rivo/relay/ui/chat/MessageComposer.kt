@@ -14,6 +14,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -120,11 +121,8 @@ fun MessageComposer(
     var attachmentsOpen by remember { mutableStateOf(false) }
     LaunchedEffect(enabled) { if (!enabled) attachmentsOpen = false }
     val context = LocalContext.current
-    var cameraUri by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
-    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
-        val uri = cameraUri
-        cameraUri = null
-        if (success && uri != null) onPasteImages(listOf(android.net.Uri.parse(uri)))
+    val launchCamera = rememberAttachmentCamera({ onPasteImages(listOf(it)) }) { message ->
+        android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
     }
     val keyboard = LocalSoftwareKeyboardController.current
     val focusRequester = remember { FocusRequester() }
@@ -243,44 +241,17 @@ fun MessageComposer(
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             if (images.isNotEmpty() || files.isNotEmpty()) {
-                Column(Modifier.fillMaxWidth().alpha(if (enabled) 1f else 0.38f).heightIn(max = 164.dp).verticalScroll(rememberScrollState()).testTag("draft_attachments"),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(Modifier.fillMaxWidth().alpha(if (enabled) 1f else 0.38f).horizontalScroll(rememberScrollState()).testTag("draft_attachments"),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     images.forEach { image ->
-                        val bitmap = remember(image) {
-                            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                            android.graphics.BitmapFactory.decodeByteArray(image.bytes, 0, image.bytes.size, bounds)
-                            var sample = 1
-                            while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 128) sample *= 2
-                            android.graphics.BitmapFactory.decodeByteArray(image.bytes, 0, image.bytes.size,
-                                android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
-                                ?.let { orientDraftBitmap(it, image.bytes).asImageBitmap() }
-                        }
-                        Surface(Modifier.fillMaxWidth().clickable(enabled = enabled && !preparing) { onEditImage(image) },
-                            shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
-                        Row(Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            bitmap?.let {
-                                Image(it, "编辑待发送图片", Modifier.size(48.dp).clip(RoundedCornerShape(11.dp))
-                                    .testTag("draft_image"), contentScale = ContentScale.Crop)
-                            }
-                            Column(Modifier.weight(1f)) { Text("图片已准备好", style = MaterialTheme.typography.bodySmall)
-                                Text("点击查看与编辑", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                            TextButton(onClick = { onRemoveImage(image) }, enabled = enabled,
-                                modifier = Modifier.semantics { contentDescription = "移除图片" }) { Text("移除") }
-                        } }
+                        val bitmap = remember(image) { draftThumbnail(image.bytes) }
+                        ComposerImageAttachmentRow(bitmap, enabled, enabled && !preparing,
+                            { onEditImage(image) }, { onRemoveImage(image) })
                     }
                     files.forEach { file ->
-                        Surface(Modifier.fillMaxWidth().clickable(enabled = enabled && !preparing) { onOpenFile(file) }.testTag("draft_file_" + file.string("name")),
-                            shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
-                            Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Text("附", style = MaterialTheme.typography.labelLarge)
-                                Column(Modifier.weight(1f)) {
-                                    Text(file.string("name"), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Text("点击查看", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                                TextButton(onClick = { onRemoveFile(file) }, enabled = enabled,
-                                    modifier = Modifier.semantics { contentDescription = "移除文件：" + file.string("name") }) { Text("移除") }
-                            }
-                        }
+                        ComposerAttachmentRow(file.string("name"), enabled, enabled && !preparing,
+                            { onOpenFile(file) }, { onRemoveFile(file) },
+                            Modifier.testTag("draft_file_" + file.string("name")))
                     }
                 }
             }
@@ -345,18 +316,7 @@ fun MessageComposer(
                                 "添加附件", "add_attachment") { ComposerAddIcon() }
                             AttachmentSourceMenu(attachmentsOpen, 10 - images.size, 16 - files.size,
                                 onDismiss = { attachmentsOpen = false },
-                                onCamera = {
-                                    try {
-                                        val directory = java.io.File(context.cacheDir, "previews").apply { mkdirs() }
-                                        val photo = java.io.File.createTempFile("camera-", ".jpg", directory)
-                                        val uri = androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".files", photo)
-                                        cameraUri = uri.toString()
-                                        cameraLauncher.launch(uri)
-                                    } catch (error: Exception) {
-                                        cameraUri = null
-                                        android.widget.Toast.makeText(context, "无法打开相机", android.widget.Toast.LENGTH_SHORT).show()
-                                    }
-                                }, onImage = onAddImage, onVideo = onAddVideo, onFile = onAddFile,
+                                onCamera = launchCamera, onImage = onAddImage, onVideo = onAddVideo, onFile = onAddFile,
                                 onWorkspace = onAddWorkspaceFile)
                         }
                         ComposerModeSelector(if (goalMode) "goal" else if (discussionMode) "plan" else "default",
@@ -416,7 +376,7 @@ fun MessageComposer(
 }
 
 @Composable
-private fun ComposerToolButton(
+internal fun ComposerToolButton(
     onClick: () -> Unit,
     enabled: Boolean,
     description: String,
@@ -430,7 +390,7 @@ private fun ComposerToolButton(
 
 /** Same two round-cap strokes as QiGuang AttachmentAddIcon. */
 @Composable
-private fun ComposerAddIcon() {
+internal fun ComposerAddIcon() {
     val color = LocalContentColor.current
     Canvas(Modifier.size(28.dp)) {
         val stroke = size.minDimension * .10f
