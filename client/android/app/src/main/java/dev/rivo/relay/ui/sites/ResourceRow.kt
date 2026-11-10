@@ -15,6 +15,8 @@ import dev.rivo.relay.R
 import dev.rivo.relay.data.NativeResource
 import dev.rivo.relay.data.resourceWebUrl
 
+val LocalSitesApi = staticCompositionLocalOf<dev.rivo.relay.data.RelayApi?> { null }
+
 @Composable
 fun ConnectorIcon(connector: String?, modifier: Modifier = Modifier) {
     val resource = when(connector) {
@@ -50,5 +52,5 @@ fun ResourceRow(resource: NativeResource) {
         }
         if (url != null) Text("›")
     }
-    if (browsing && url != null) SiteBrowser(url, resource.title) { browsing = false }
+    if (browsing && url != null) SiteBrowser(url, resource.title, if (resource.connector == "appgarden") LocalSitesApi.current else null, resource.connector == "appgarden") { browsing = false }
 }

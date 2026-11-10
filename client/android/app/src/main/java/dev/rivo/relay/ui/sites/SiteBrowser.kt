@@ -14,12 +14,44 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.rivo.relay.data.resourceWebUrl
+import dev.rivo.relay.data.RelayApi
+import androidx.webkit.ProxyConfig
+import androidx.webkit.ProxyController
+import androidx.webkit.WebViewFeature
+import androidx.core.content.ContextCompat
+import androidx.compose.ui.platform.LocalContext
 
-/** Website browsing is isolated from Relay transport: no node headers or native JS bridge. */
+/** Website TLS and cookies remain owned by WebView; Relay auth only enters the tunnel. */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun SiteBrowser(initialUrl: String, title: String, onClose: () -> Unit) {
+fun SiteBrowser(initialUrl: String, title: String, api: RelayApi? = null, useRelay: Boolean = false, onClose: () -> Unit) {
     val safeUrl = resourceWebUrl(initialUrl) ?: return
+    val context = LocalContext.current
+    var proxyReady by remember(api, useRelay) { mutableStateOf(!useRelay) }
+    var proxyError by remember(api, useRelay) { mutableStateOf<String?>(null) }
+    DisposableEffect(api, useRelay) {
+        var disposed = false
+        var proxy: SitesWebProxy? = null
+        var configured = false
+        if (useRelay) {
+            try {
+                check(WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) { "请更新 Android System WebView 后使用 Sites 中转" }
+                check(api != null) { "Sites 中转需要已配对节点" }
+                proxy = api.sitesWebProxy()
+                val config = ProxyConfig.Builder().addProxyRule("http://127.0.0.1:${proxy.port}")
+                    .removeImplicitRules().build()
+                ProxyController.getInstance().setProxyOverride(config, ContextCompat.getMainExecutor(context)) {
+                    if (!disposed) proxyReady = true
+                }
+                configured = true
+            } catch (e: Exception) { proxy?.close(); proxyError = e.message ?: "无法建立 Sites 中转" }
+        }
+        onDispose {
+            disposed = true
+            if (configured) ProxyController.getInstance().clearProxyOverride(ContextCompat.getMainExecutor(context)) { proxy?.close() }
+            else proxy?.close()
+        }
+    }
     var webView by remember { mutableStateOf<WebView?>(null) }
     var currentUrl by remember(safeUrl) { mutableStateOf(safeUrl) }
     var loading by remember { mutableStateOf(true) }
@@ -36,12 +68,13 @@ fun SiteBrowser(initialUrl: String, title: String, onClose: () -> Unit) {
                         Text(Uri.parse(currentUrl).host.orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
                     }
                 }
-                if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (proxyError != null) Text(proxyError!!, modifier = Modifier.padding(16.dp))
+                if (loading && proxyError == null) LinearProgressIndicator(Modifier.fillMaxWidth())
                 if (error) Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
                     Text("网页加载失败", modifier = Modifier.weight(1f).padding(vertical = 12.dp))
                     TextButton(onClick = { error = false; webView?.reload() }) { Text("重试") }
                 }
-                AndroidView(modifier = Modifier.fillMaxWidth().weight(1f), factory = { ctx ->
+                if (proxyReady) AndroidView(modifier = Modifier.fillMaxWidth().weight(1f), factory = { ctx ->
                     WebView(ctx).apply {
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true

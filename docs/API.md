@@ -388,6 +388,8 @@ v1 配对保持兼容。`scripts/start-node.sh` 的 v2 二维码 fragment 增加
 
 ### Sites（只读）
 
+Sites 网页另使用 VPS 专属 `GET /relay/{slot}/v1/sites/tunnel?host=…` WebSocket 字节隧道，需节点设备 Bearer，每条连接重新鉴权，仅允许公网 IPv4 的 HTTPS 443。未配置代理返回 503、无效设备令牌返回 401；不会将节点凭据转发给网站。详见 [VPS 中转](vps-gateway.md#sites-网页中转2026-11-10)。
+
 `GET /v1/sites?cursor=…` 需要节点鉴权，返回 `{items:[{id,title,url,accessMode}],cursor}`。
 `url` 仅来自 `current_live_url`，未发布时为 null；分页 cursor 原样传递，客户端不解析。
 通过当前节点的辅助连接和临时会话调用固定的 `sites.list_sites`，结束时解除临时订阅并释放连接。

@@ -31,6 +31,11 @@ const val JSON_READ_IDLE_TIMEOUT_MILLIS = 30_000L
 
 /** Adapted from QiGuang HttpTransport: cancellable JSON and SSE, with Rivo envelopes and no write retry. */
 class RelayApi(private val base: String, private val token: String = "", private val dns: Dns = TailnetDns(), private val routes: NodeRoutes? = null, private val nodeId: String = "") {
+    fun sitesWebProxy(): dev.rivo.relay.ui.sites.SitesWebProxy {
+        val config = routes?.takeIf { it.relay.isNotBlank() }
+            ?: throw IOException("此节点尚未配置 VPS 中转，请重新扫码配对")
+        return dev.rivo.relay.ui.sites.SitesWebProxy(config, token)
+    }
     private val connectionObserver = dev.rivo.relay.connection.ConnectionStatusObserver(routes, base)
     val connectionStatus = connectionObserver.status
     @Volatile var recovery: ConnectionRecovery? = null
