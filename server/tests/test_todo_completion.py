@@ -78,16 +78,11 @@ class TodoCompletionTest(unittest.TestCase):
         self.assertTrue(all(item["completed"] for item in results))
         self.assertEqual(len(self.todos.list()), 3)
 
-    def test_version_four_migration_and_actual_restart(self):
+    def test_completion_token_survives_actual_restart(self):
         import tempfile
         from pathlib import Path
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.db"
-            db = Database(path)
-            with db.transaction() as connection:
-                connection.execute("DROP TABLE todo_completion")
-                connection.execute("PRAGMA user_version=4")
-            db.close()
             db = Database(path)
             todos = TodoStore(db)
             todo = todos.create("persisted")

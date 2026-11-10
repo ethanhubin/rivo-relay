@@ -9,8 +9,8 @@ from rivo_relay.database import Database
 from rivo_relay.codex.observations import Observations
 from rivo_relay.codex.sessions import CodexService
 from rivo_relay.codex.owned_writer import SessionWriters
-from test_owned_writer import Backend
-from test_codex import FakeNative
+from relay_test_support.native import Backend
+from relay_test_support.native import FakeNative
 
 
 class QuestionTests(unittest.TestCase):

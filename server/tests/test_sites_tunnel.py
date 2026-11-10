@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch, AsyncMock
 from aiohttp import web, WSMsgType
 from rivo_relay.gateway.sites_tunnel import public_address, socks_connect
-import test_gateway
+from relay_test_support.gateway import GatewayFixture
 
 
 class DestinationTests(unittest.IsolatedAsyncioTestCase):
@@ -23,10 +23,7 @@ class DestinationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual('1.1.1.1', await public_address('example.com'))
 
 
-class TunnelTests(unittest.IsolatedAsyncioTestCase):
-    asyncSetUp = test_gateway.GatewayTests.asyncSetUp
-    asyncTearDown = test_gateway.GatewayTests.asyncTearDown
-    start = test_gateway.GatewayTests.start
+class TunnelTests(GatewayFixture, unittest.IsolatedAsyncioTestCase):
     # The real gateway/control/data/Relay path is exercised for device authentication.
     async def test_sites_requires_bearer_before_opening_proxy(self):
         with patch.dict(os.environ, RIVO_SITES_SOCKS_PORT='17890'), patch('rivo_relay.gateway.sites_tunnel.socks_connect', AsyncMock()) as connect:

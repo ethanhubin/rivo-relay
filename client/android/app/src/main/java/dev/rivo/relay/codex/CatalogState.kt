@@ -96,7 +96,7 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
                 if (mutable.value.projects.isEmpty()) try {
                     store?.loadCatalog("projects")?.let { applyProjects(it, fresh = false) }
                 } catch (e: Exception) { if (e is CancellationException) throw e }
-                val response = api.call("/v1/projects?view=summary")
+                val response = api.call("/v1/projects")
                 applyProjects(response, fresh = true)
                 try { store?.saveCatalog("projects", response) } catch (e: Exception) { if (e is CancellationException) throw e }
             } catch (e: Exception) {

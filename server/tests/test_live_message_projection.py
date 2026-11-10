@@ -2,7 +2,7 @@
 import copy
 import unittest
 from rivo_relay.codex.sessions import CodexService
-from test_codex import FakeNative
+from relay_test_support.native import FakeNative
 
 
 class LiveMessageProjectionTests(unittest.TestCase):
@@ -91,3 +91,15 @@ class LiveMessageProjectionTests(unittest.TestCase):
         turns = self.service._merge_live('t', [])
         self.assertEqual('completed', turns[0]['status'])
         self.assertEqual('answer', turns[0]['items'][0]['text'])
+
+
+class LiveOffsetTests(unittest.TestCase):
+    def test_live_offsets_are_monotonic_and_native_event_is_unchanged(self):
+        events = []
+        service = CodexService(connection=FakeNative(), on_event=events.append)
+        event = {'method': 'item/agentMessage/delta', 'params': {
+            'threadId': 't', 'turnId': 'turn', 'itemId': 'i', 'delta': 'hi'}}
+        service._event(event)
+        service._event(event)
+        self.assertEqual([0, 2], [e['params']['relayOffset'] for e in events])
+        self.assertNotIn('relayOffset', event['params'])

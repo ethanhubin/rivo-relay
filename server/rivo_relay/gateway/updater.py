@@ -72,7 +72,7 @@ class Supervisor:
         self.root.mkdir(parents=True, exist_ok=True)
         self.state_file = self.root / 'state.json'
         self.state = json.loads(self.state_file.read_text()) if self.state_file.exists() else {
-            'active': {'python': sys.executable, 'versionCode': 0}, 'failed': []}
+            'active': {'python': sys.executable, 'versionCode': 0}}
         stored = json.loads((self.workspace / 'gateway-client.json').read_text())
         self.key = decode_key(stored['key'])
         if stored.get('mode') == 'direct' or args.attach or args.pair_only or args.configure:
@@ -85,13 +85,6 @@ class Supervisor:
         self.latest_code = None
         self.state.setdefault('retries', {})
         self.state.setdefault('quarantine', {})
-        # Old agents did not distinguish network failures from invalid packages.
-        # Re-evaluate old exclusions once under the new bounded retry policy.
-        if self.state.get('recoverySchema') != 2:
-            for digest in self.state.get('failed', []):
-                self.state['retries'][digest] = {'attempts': 0, 'retryAt': 0, 'reason': 'legacy_failure'}
-            self.state['failed'] = []
-            self.state['recoverySchema'] = 2
 
     def report(self, phase, reason=None, **fields):
         self.phase = phase
@@ -108,7 +101,6 @@ class Supervisor:
         reason = getattr(error, 'reason', 'interrupted_trial')
         if getattr(error, 'permanent', False):
             self.state['quarantine'][digest] = reason
-            self.state['failed'] = list(self.state['quarantine'])[-100:]
             self.report('quarantined', reason)
         else:
             attempts = self.state['retries'].get(digest, {}).get('attempts', 0) + 1

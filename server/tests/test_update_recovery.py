@@ -45,7 +45,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         with patch('rivo_relay.gateway.updater.time.time', return_value=100):
             self.agent.failed_candidate(self.candidate, UpdateFailure('candidate_readiness_timeout'))
             self.assertFalse(self.agent.eligible(self.item))
-        self.assertNotIn('a'*64, self.agent.state['failed'])
+        self.assertNotIn('a'*64, self.agent.state['quarantine'])
         with patch('rivo_relay.gateway.updater.time.time', return_value=161):
             self.assertTrue(self.agent.eligible(self.item))
         self.agent.failed_candidate(self.candidate, UpdateFailure('candidate_readiness_timeout'))
@@ -57,15 +57,16 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
     def test_permanent_failure_never_automatically_retries(self):
         self.agent.failed_candidate(self.candidate, UpdateFailure('candidate_exited', permanent=True))
         self.assertFalse(self.agent.eligible(self.item))
-        self.assertIn('a'*64, self.agent.state['failed'])
+        self.assertIn('a'*64, self.agent.state['quarantine'])
 
-    def test_old_undifferentiated_failure_gets_bounded_reassessment(self):
-        self.agent.state['failed'] = ['a'*64]
-        self.agent.state.pop('recoverySchema')
+    def test_restart_preserves_quarantine_and_retry_limits(self):
+        self.agent.failed_candidate(self.candidate, UpdateFailure('candidate_exited', permanent=True))
+        self.agent.state['retries']['b'*64] = {'attempts': 3, 'retryAt': None, 'reason': 'timeout'}
         self.agent.save()
         restored = Supervisor(self.args)
-        self.assertTrue(restored.eligible(self.item))
-        self.assertEqual(restored.state['retries']['a'*64]['reason'], 'legacy_failure')
+        self.assertFalse(restored.eligible(self.item))
+        self.assertFalse(restored.eligible({'versionCode': 96, 'node': {'sha256': 'b'*64}}))
+        self.assertEqual(restored.state['quarantine']['a'*64], 'candidate_exited')
 
     async def test_network_timeout_rolls_back_and_retains_retry(self):
         self.agent.local = AsyncMock(return_value={'ready': True, 'lease': 'permit'})
@@ -77,7 +78,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.agent.state['active']['versionCode'], 0)
         self.agent.restore.assert_called_once()
         self.assertNotIn('pending', self.agent.state)
-        self.assertNotIn('a'*64, self.agent.state['failed'])
+        self.assertNotIn('a'*64, self.agent.state['quarantine'])
         self.assertEqual(self.agent.state['retries']['a'*64]['attempts'], 1)
 
     async def test_failed_rollback_persistence_keeps_pending_and_does_not_start_old(self):
@@ -164,12 +165,13 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.agent.state_file.read_bytes(), before)
 
     def test_explicit_retry_keeps_other_candidates_and_user_work(self):
-        self.agent.state.update(failed=['a'*64,'b'*64], quarantine={'a'*64:'bad','b'*64:'bad'},
+        self.agent.state.update(quarantine={'a'*64:'bad','b'*64:'bad'},
                                 retries={'a'*64:{'attempts':3}}, unrelated={'preserve':True})
         self.agent.save()
         retry_candidate(self.workspace, 'a'*64)
         state = json.loads(self.agent.state_file.read_text())
-        self.assertEqual(state['failed'], ['b'*64])
+        self.assertEqual(state['quarantine'], {'b'*64: 'bad'})
+        self.assertEqual(state['retries'], {})
         self.assertEqual(state['unrelated'], {'preserve':True})
 
 

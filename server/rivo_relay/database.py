@@ -16,14 +16,8 @@ import uuid
 
 
 SCHEMA_VERSION = 5
-_V1_TABLES = {"pairing_codes", "connections", "submissions", "todos"}
-_V2_TABLES = _V1_TABLES | {"queued_tasks"}
-_TABLES = _V2_TABLES | {"native_observations", "workspaces"}
-_EXTRA_SCHEMA = (
-    "CREATE TABLE native_observations(thread_id TEXT NOT NULL,kind TEXT NOT NULL,turn_id TEXT NOT NULL DEFAULT '',payload_json TEXT NOT NULL,updated_at REAL NOT NULL,PRIMARY KEY(thread_id,kind,turn_id))",
-    "CREATE TABLE workspaces(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,thread_id TEXT UNIQUE,source_path TEXT NOT NULL,path TEXT NOT NULL,commit_id TEXT NOT NULL,status TEXT NOT NULL,archive_path TEXT,created_at REAL NOT NULL)",
-)
-_QUEUE_SCHEMA = """CREATE TABLE queued_tasks (id TEXT PRIMARY KEY, connection_id TEXT NOT NULL REFERENCES connections(id), thread_id TEXT NOT NULL, payload_json TEXT NOT NULL, status TEXT NOT NULL, position INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0, turn_id TEXT, error TEXT, created_at REAL NOT NULL)"""
+_TABLES = {"pairing_codes", "connections", "submissions", "todos", "queued_tasks",
+           "native_observations", "workspaces", "todo_completion"}
 _SCHEMA = (
     """CREATE TABLE pairing_codes (
         id TEXT PRIMARY KEY, code_hash TEXT NOT NULL UNIQUE,
@@ -51,8 +45,13 @@ _SCHEMA = (
         CHECK((project_id IS NULL AND thread_id IS NULL)
            OR (project_id IS NOT NULL AND thread_id IS NOT NULL))
     )""",
-    _QUEUE_SCHEMA,
-    *_EXTRA_SCHEMA,
+    "CREATE TABLE queued_tasks (id TEXT PRIMARY KEY, connection_id TEXT NOT NULL REFERENCES connections(id), thread_id TEXT NOT NULL, payload_json TEXT NOT NULL, status TEXT NOT NULL, position INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0, turn_id TEXT, error TEXT, created_at REAL NOT NULL)",
+    "CREATE TABLE native_observations(thread_id TEXT NOT NULL,kind TEXT NOT NULL,turn_id TEXT NOT NULL DEFAULT '',payload_json TEXT NOT NULL,updated_at REAL NOT NULL,PRIMARY KEY(thread_id,kind,turn_id))",
+    "CREATE TABLE workspaces(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,thread_id TEXT UNIQUE,source_path TEXT NOT NULL,path TEXT NOT NULL,commit_id TEXT NOT NULL,status TEXT NOT NULL,archive_path TEXT,created_at REAL NOT NULL)",
+    """CREATE TABLE todo_completion (
+        token_hash TEXT PRIMARY KEY, todo_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
+        used INTEGER NOT NULL DEFAULT 0)""",
     "CREATE INDEX todos_order ON todos(completed, created_at DESC, id)",
     "CREATE INDEX submissions_connection ON submissions(connection_id, created_at DESC)",
 )
@@ -117,30 +116,10 @@ class Database:
                     for statement in _SCHEMA:
                         connection.execute(statement)
                     connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-                elif current == 1 and tables == _V1_TABLES:
-                    connection.execute("ALTER TABLE todos ADD COLUMN extra_json TEXT NOT NULL DEFAULT '{}'")
-                    connection.execute(_QUEUE_SCHEMA)
-                    for statement in _EXTRA_SCHEMA:
-                        connection.execute(statement)
-                    connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-                elif current == 2 and tables == _V2_TABLES:
-                    connection.execute("ALTER TABLE todos ADD COLUMN extra_json TEXT NOT NULL DEFAULT '{}'")
-                    for statement in _EXTRA_SCHEMA:
-                        connection.execute(statement)
-                    connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-                elif current == 3 and tables == _TABLES:
-                    connection.execute("ALTER TABLE todos ADD COLUMN extra_json TEXT NOT NULL DEFAULT '{}'")
-                    connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-                elif current == 4 and tables == _TABLES:
-                    connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-                elif current != SCHEMA_VERSION or tables != _TABLES | {"todo_completion"}:
-                    raise RuntimeError("Not a compatible Rivo Relay database; existing data was not migrated")
-                connection.execute("""CREATE TABLE IF NOT EXISTS todo_completion (
-                    token_hash TEXT PRIMARY KEY, todo_id TEXT NOT NULL,
-                    thread_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
-                    used INTEGER NOT NULL DEFAULT 0)""")
-                # Additive indexes are compatible with the existing schema and
-                # old services; keep durable claims and completed queue records.
+                elif current != SCHEMA_VERSION or tables != _TABLES:
+                    raise RuntimeError("Unsupported Rivo Relay database schema; existing data was not migrated")
+                # Ensure indexes also exist on current-version databases created
+                # before these query optimizations were introduced.
                 for statement in (
                     "CREATE INDEX IF NOT EXISTS queue_active_thread_order ON queued_tasks(thread_id,position,created_at,id) WHERE status NOT IN ('done','cancelled')",
                     "CREATE INDEX IF NOT EXISTS queue_poll_threads ON queued_tasks(thread_id) WHERE status IN ('waiting','running','unknown')",

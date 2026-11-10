@@ -1,3 +1,6 @@
+from unittest.mock import Mock
+from relay_test_support.native import FakeNative
+from rivo_relay.codex.sessions import CodexService
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -607,3 +610,15 @@ class ActivityIsolationTests(unittest.TestCase):
         self.assertFalse(registry.reconcile())
         self.assertEqual(registry.snapshot()['tasks'], [])
         self.assertIn('t', registry.snapshot()['knownThreadIds'])
+
+
+class ActivityProbeTests(unittest.TestCase):
+    def test_activity_uses_running_probe_while_session_states_remain_complete(self):
+        service = CodexService(connection=FakeNative())
+        service.native_journal.execution_states = Mock(return_value={})
+        threads = [{'id': 'unloaded', 'status': {'type': 'notLoaded'}}]
+        service._external_running(threads)
+        service.native_journal.execution_states.assert_called_once_with(['unloaded'], running_only=True)
+        service.native_journal.execution_states.reset_mock()
+        service._external_execution(threads)
+        service.native_journal.execution_states.assert_called_once_with(['unloaded'])

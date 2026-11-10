@@ -3,7 +3,7 @@ from unittest.mock import Mock, patch
 from contextlib import nullcontext
 from rivo_relay.codex.sessions import CodexService
 from rivo_relay.codex.connection import CodexError
-from test_codex import FakeNative
+from relay_test_support.native import FakeNative
 
 class ForkNative(FakeNative):
     def request(self, method, params, **kwargs):

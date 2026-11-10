@@ -1,6 +1,6 @@
 """Permission selection must reach native calls without changing inherited defaults."""
 import unittest
-from test_codex import FakeNative
+from relay_test_support.native import FakeNative
 from rivo_relay.codex.sessions import CodexService
 from rivo_relay.codex.connection import CodexError
 

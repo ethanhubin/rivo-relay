@@ -44,7 +44,7 @@ class PredictionTests(unittest.TestCase):
 
     def test_sampling_never_creates_writer(self):
         from rivo_relay.codex.owned_writer import SessionWriters
-        from test_owned_writer import Backend
+        from relay_test_support.native import Backend
         backend = Backend()
         pool = SessionWriters(backend)
         self.addCleanup(pool.close)

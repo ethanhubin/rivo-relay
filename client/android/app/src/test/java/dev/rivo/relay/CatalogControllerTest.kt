@@ -191,15 +191,15 @@ class CatalogControllerTest {
         } finally { observer.cancel(); scope.cancel(); server.shutdown() }
     }
 
-    @Test fun projectSummaryDoesNotRequestStatistics() = runBlocking {
+    @Test fun projectMetadataDoesNotRequestLegacyViews() = runBlocking {
         val server = MockWebServer()
         val statsStarted = CountDownLatch(1)
         val releaseStats = CountDownLatch(1)
         val name = AtomicReference("Initial")
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when {
-                request.path == "/v1/projects?view=summary" -> MockResponse().setBody("""{"projects":[{"id":"p","name":"${name.get()}","path":"/p","statsReady":false}]}""")
-                request.path == "/v1/projects" -> {
+                request.path == "/v1/projects" -> MockResponse().setBody("""{"projects":[{"id":"p","name":"${name.get()}","path":"/p"}]}""")
+                request.path?.startsWith("/v1/projects?") == true -> {
                     statsStarted.countDown(); releaseStats.await(10, TimeUnit.SECONDS)
                     MockResponse().setBody("""{"projects":[{"id":"p","name":"Initial","path":"/p","threadCount":99}]}""")
                 }
@@ -537,7 +537,7 @@ class CatalogControllerTest {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when {
                 !healthy.get() -> MockResponse().setResponseCode(503).setBody("""{"error":{"message":"offline"}}""")
-                request.path == "/v1/projects?view=summary" -> projects(0)
+                request.path == "/v1/projects" -> projects(0)
                 else -> MockResponse().setBody("""{"threads":[{"id":"t","name":"Fresh thread","pinned":true}]}""")
             }
         }
@@ -596,7 +596,7 @@ class CatalogControllerTest {
             assertEquals(listOf("active", "old", "invalid"), result.map { it.id })
             assertTrue(result.none { it.isRunning })
             assertNull(failure.get())
-            assertEquals("/v1/projects?view=summary", server.takeRequest().path)
+            assertEquals("/v1/projects", server.takeRequest().path)
         } finally { scope.cancel(); server.shutdown() }
     }
 
@@ -693,7 +693,7 @@ class CatalogControllerTest {
             repeat(2) {
                 val request = server.takeRequest()
                 assertEquals("GET", request.method)
-                assertEquals("/v1/projects?view=summary", request.path)
+                assertEquals("/v1/projects", request.path)
             }
             assertNull(failure.get())
         } finally { releaseSecond.countDown(); observer.cancel(); scope.cancel(); server.shutdown() }

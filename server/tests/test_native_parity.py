@@ -8,7 +8,7 @@ from rivo_relay.codex.sessions import CodexService
 from rivo_relay.database import Database
 from rivo_relay.events import EventBus
 from rivo_relay.queue import ExecutionQueue, QueueConflict
-from test_codex import FakeNative
+from relay_test_support.native import FakeNative
 
 
 class ParityNative(FakeNative):

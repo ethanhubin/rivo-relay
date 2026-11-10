@@ -57,6 +57,39 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT value FROM existing_data").fetchone()[0], "keep")
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 0)
 
+    def test_old_versions_are_rejected_without_changing_schema_or_rows(self):
+        for version in range(1, SCHEMA_VERSION):
+            with self.subTest(version=version):
+                path = Path(self.directory.name) / f"version-{version}.db"
+                with closing(Database(path)) as db, db.transaction() as connection:
+                    connection.execute("INSERT INTO connections VALUES ('one','digest','Phone',1,NULL)")
+                    connection.execute("DROP TABLE todo_completion")
+                    if version < 4:
+                        connection.execute("ALTER TABLE todos DROP COLUMN extra_json")
+                    if version < 3:
+                        connection.execute("DROP TABLE native_observations")
+                        connection.execute("DROP TABLE workspaces")
+                    if version < 2:
+                        connection.execute("DROP TABLE queued_tasks")
+                    connection.execute(f"PRAGMA user_version={version}")
+                with closing(sqlite3.connect(path)) as connection:
+                    before = list(connection.iterdump())
+                with self.assertRaisesRegex(RuntimeError, "Unsupported Rivo Relay database schema"):
+                    Database(path)
+                with closing(sqlite3.connect(path)) as connection:
+                    self.assertEqual(list(connection.iterdump()), before)
+                    self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], version)
+
+    def test_current_database_reopens_and_restores_missing_query_index(self):
+        with self.db.transaction() as connection:
+            connection.execute("INSERT INTO connections VALUES ('one','digest','Phone',1,NULL)")
+            connection.execute("DROP INDEX queue_active_thread_order")
+        with closing(Database(self.path)) as db, db.read() as connection:
+            self.assertEqual(connection.execute("SELECT token_hash FROM connections").fetchone()[0], "digest")
+            self.assertIsNotNone(connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name='queue_active_thread_order'"
+            ).fetchone())
+
     def test_future_schema_is_rejected(self):
         with self.db.transaction() as connection:
             connection.execute("PRAGMA user_version=999")

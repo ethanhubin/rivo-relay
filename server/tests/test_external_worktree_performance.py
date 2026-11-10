@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 from rivo_relay.codex.connection import CodexError
 from rivo_relay.codex.external_worktrees import ExternalWorktrees, _DISCOVER
 from rivo_relay.read_budget import ReadStopped, read_budget
-from test_native_files_worktrees import NativeHost
+from relay_test_support.files import NativeHost
 
 
 class DiscoveryReuseTests(unittest.TestCase):

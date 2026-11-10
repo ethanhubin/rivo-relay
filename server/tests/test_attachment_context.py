@@ -6,7 +6,7 @@ from unittest.mock import patch
 from rivo_relay.codex.attachment_context import attachment_context, MAX_TEXT_BYTES
 from rivo_relay.codex.connection import CodexError
 from rivo_relay.codex.sessions import CodexService
-from test_codex import FakeNative
+from relay_test_support.native import FakeNative
 
 
 class AttachmentNative(FakeNative):

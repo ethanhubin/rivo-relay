@@ -1,4 +1,5 @@
 """Focused regression tests for native identity, settings and delivery semantics."""
+from relay_test_support.native import FakeNative
 import copy
 import io
 import base64
@@ -13,40 +14,7 @@ from rivo_relay.codex.connection import CodexError, NativeConnection
 from rivo_relay.codex.interactions import Interactions
 from rivo_relay.codex.sessions import CodexService
 from rivo_relay.codex.history import NativeHistoryAdapter
-from rivo_relay.codex.files import read_file, read_directory, download_file, upload_attachment_stream, stream_download
-
-
-class FakeNative:
-    generation = "connection-one"
-
-    def __init__(self):
-        self.calls = []
-        self.replies = []
-        self.thread = {"id": "thread", "status": {"type": "idle"}, "turns": []}
-
-    def start(self):
-        return self.status()
-
-    def status(self):
-        return {"connected": True}
-
-    def request(self, method, params, **kwargs):
-        self.calls.append((method, copy.deepcopy(params)))
-        if method == "project/read":
-            return {"project": {"id": "project", "roots": [{"path": "/workspace"}]}}
-        if method in {"thread/start", "thread/resume", "thread/read"}:
-            return {"thread": self.thread, "model": "native-model",
-                    "approvalPolicy": "on-request", "sandbox": {"type": "readOnly"}}
-        if method == "turn/start":
-            return {"turn": {"id": "turn", "status": "inProgress"}}
-        if method == "turn/steer":
-            return {"turnId": "turn"}
-        if method == "thread/turns/list":
-            return {"data": [], "nextCursor": None, "backwardsCursor": None}
-        return {}
-
-    def respond(self, request_id, result):
-        self.replies.append((request_id, result))
+from rivo_relay.codex.files import read_file, read_directory, upload_attachment_stream, stream_download
 
 
 class NativeSemanticsTests(unittest.TestCase):
@@ -314,47 +282,6 @@ class NativeSemanticsTests(unittest.TestCase):
         with self.assertRaises(CodexError):
             service.get_session("thread")
 
-    def test_project_activity_uses_native_goals_and_project_assignment(self):
-        native = FakeNative()
-        calls = []
-        goal_status = 'active'
-        threads = [
-            {"id": "running", "cwd": "/workspace", "projectId": "project", "status": {"type": "active", "activeFlags": []}},
-            {"id": "waiting", "cwd": "/workspace", "projectId": "project", "status": {"type": "active", "activeFlags": ["waitingOnApproval", "waitingOnUserInput"]}},
-            {"id": "worktree", "cwd": "/worktree", "projectId": "project", "status": {"type": "active", "activeFlags": []}},
-            {"id": "legacy", "cwd": "/workspace", "projectId": None, "status": {"type": "active", "activeFlags": []}},
-            {"id": "other-project", "cwd": "/workspace", "projectId": "other", "status": {"type": "active", "activeFlags": []}},
-            *[{"id": status, "cwd": "/workspace", "projectId": "project", "status": {"type": status}}
-              for status in ("idle", "notLoaded", "systemError")],
-        ]
-
-        def request(method, params, **kwargs):
-            calls.append(method)
-            if method == "project/list":
-                data = [{"id": "project", "name": "Project", "roots": [{"path": "/workspace"}]},
-                        {"id": "empty", "name": "Empty", "roots": [{"path": "/empty"}]}]
-            elif method == "thread/list":
-                data = threads
-            elif method == "thread/goal/get":
-                return {"goal": {"status": goal_status} if params["threadId"] in {"notLoaded", "running"} else None}
-            else:
-                self.fail("Project activity must not request thread history or resume")
-            return {"data": data, "nextCursor": None}
-
-        native.request = request
-        service = CodexService(connection=native)
-        projects = service.list_projects()
-        self.assertEqual(7, projects[0]["threadCount"])
-        self.assertEqual(5, projects[0]["outstandingWorkCount"])
-        self.assertEqual(4, projects[0]["runningTurnCount"])
-        self.assertEqual(2, projects[0]["activeGoalCount"])
-        self.assertEqual(0, projects[1]["outstandingWorkCount"])
-        self.assertEqual(["project/list", "thread/list", "thread/list"] + ["thread/goal/get"] * len(threads), calls)
-        for goal_status in ('paused', 'complete', 'blocked', 'budgetLimited', 'usageLimited'):
-            service._event({'method': 'thread/goal/updated', 'params': {'threadId': 'notLoaded'}})
-            projects = service.list_projects()
-            self.assertEqual(4, projects[0]['outstandingWorkCount'])
-            self.assertEqual(0, projects[0]['activeGoalCount'])
 
     def test_shared_cwd_does_not_override_native_project_assignment(self):
         native = FakeNative()
@@ -384,7 +311,6 @@ class NativeSemanticsTests(unittest.TestCase):
         sessions = service.list_sessions("project")
         self.assertEqual({"assigned", "legacy", "worktree"}, {t["id"] for t in sessions})
         self.assertEqual(3, len(sessions))
-        self.assertEqual(len(sessions), service.list_projects()[0]["threadCount"])
 
     def test_recent_lists_only_threads_without_a_visible_project(self):
         native = FakeNative()
@@ -407,7 +333,6 @@ class NativeSemanticsTests(unittest.TestCase):
             recent = service.list_projects()[-1]
             listed = service.list_sessions(recent["id"])
         self.assertEqual("最近", recent["name"])
-        self.assertEqual(2, recent["threadCount"])
         self.assertEqual({"unlisted", "orphan"}, {t["id"] for t in listed})
         with self.assertRaises(CodexError):
             service.create_session(recent["id"])
