@@ -364,6 +364,12 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     }
     val list = key(state.id) { rememberLazyListState() }
     var followLatest by remember(state.id) { mutableStateOf(true) }
+    var scrollingTowardLatest by remember(state.id) { mutableStateOf(false) }
+    val followThresholdPx = with(LocalDensity.current) { 24.dp.roundToPx() }
+    val latestAssistant = snapshot?.messages?.lastOrNull { it.type in setOf("agentMessage", "agent_message") }
+    val streamingIdentity = latestAssistant?.let { "${state.id}:${it.turnId}:${it.id}" }
+    val streamingText = rememberStreamingMessageText(streamingIdentity, latestAssistant?.text.orEmpty(),
+        shouldBufferMessage(latestAssistant, snapshot))
     val timelineCache = remember(state.id) { NativeTimelineCache() }
     // Transport/permission revalidation must not regroup the visible running turn.
     val timeline = remember(state.id, snapshot?.messages, snapshot?.turnSettings, state.pendingMessages, snapshot?.activeTurnId, pendingTitle) {
@@ -426,38 +432,26 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 if (available.y < 0f || list.firstVisibleItemIndex > 0) historyAnchor = null
                 if (available.y > 0f) {
                     followLatest = false
+                    scrollingTowardLatest = false
                     // Continued upward input on the paging row loads the previous page.
                     if (list.firstVisibleItemIndex == 0) loadEarlierWithAnchor()
                 }
+                if (available.y < 0f) scrollingTowardLatest = true
             }
             return Offset.Zero
         }
         override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-            if (consumed.y < 0f && !list.canScrollForward) followLatest = true
+            if (scrollingTowardLatest && consumed.y < 0f &&
+                (list.layoutInfo.distanceFromBottom() ?: Int.MAX_VALUE) <= followThresholdPx) followLatest = true
             return Offset.Zero
         }
     } }
-    // A trailing anchor reaches the end even when the final message is taller
-    // than the viewport. Layout observation also covers streaming text, images,
-    // approval cards and keyboard/queue height changes without counting messages.
-    LaunchedEffect(list) {
-        snapshotFlow {
-            val layout = list.layoutInfo
-            listOf(followLatest, list.isScrollInProgress, list.canScrollForward,
-                layout.totalItemsCount, layout.viewportEndOffset,
-                layout.visibleItemsInfo.lastOrNull()?.let { it.offset + it.size })
-        }.collect {
-            if (followLatest && !list.isScrollInProgress && list.canScrollForward && list.layoutInfo.totalItemsCount > 0)
-                // Layout snapshots can be delivered while LazyColumn is placing/discarding items.
-                // Request the next measurement instead of forcing a nested synchronous remeasure.
-                list.requestScrollToItem(list.layoutInfo.totalItemsCount - 1)
-        }
-    }
     LaunchedEffect(list, state.id, state.historyCursor, state.loading, state.loadingEarlier, state.stale, snapshot?.historyReady) {
         snapshotFlow { list.layoutInfo.visibleItemsInfo.size > 0 && !list.canScrollForward && !list.canScrollBackward }
             .collect { unfilled -> if (unfilled && !state.loading && !state.loadingEarlier && !state.stale && snapshot?.historyReady == true && state.historyCursor != null) onFillHistory() }
     }
-    val showLatest by remember(list) { derivedStateOf { list.canScrollForward } }
+    // A content-growth layout is not a user leaving the bottom; don't flash the jump button.
+    val showLatest by remember(list) { derivedStateOf { !followLatest && list.canScrollForward } }
     val quoteText: ((String) -> Unit)? = if (!busy && !inputLocked && draftLoaded) ({ text ->
         draft = appendQuoteToDraft(draft, text); inputFocusRequest++
     }) else null
@@ -488,16 +482,34 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         }
         var bottomOverlayHeight by remember { mutableIntStateOf(0) }
         val bottomOverlayPadding = with(LocalDensity.current) { bottomOverlayHeight.toDp() }
+        val trailingDiagnostics = snapshot?.reviewDiagnostics.orEmpty().filter { diagnostic ->
+            diagnostic.string("status") != "verified" && snapshot?.messages.orEmpty().none {
+                it.turnId == diagnostic.string("turnId") && it.type in setOf("agentMessage", "agent_message", "exitedReviewMode")
+            }
+        }
+        val showPendingIntro = pendingTitle != null && timeline.isEmpty()
+        val showEmptyIntro = !state.loading && snapshot != null && timeline.isEmpty()
+        val showTimingTail = historicalTiming[timeline.size] != null
+        val showTurnFooter = turnFooter != null && turnFooterBoundary == timeline.size
+        val showExecutionStage = executionActive && currentActivity == null && turnFooter == null
+        // All ordinary rows plus the keyed trailing anchor. Compute the new count before layout,
+        // rather than using the previous layout's count when a tool/footer is inserted or removed.
+        val lastItemIndex = timeline.size + trailingDiagnostics.size +
+            listOf(showPendingIntro, state.historyCursor != null, showEmptyIntro,
+                showTimingTail, showTurnFooter, showExecutionStage).count { it }
+        FollowChatContent(list, followLatest, lastItemIndex,
+            listOf(timeline, streamingIdentity, streamingText, turnFooter, historicalTiming,
+                trailingDiagnostics, lastItemIndex, bottomOverlayHeight))
         Box(Modifier.weight(1f).fillMaxWidth()) {
         // Draw history behind the rounded composer; reserve scroll space for the final message.
         LazyColumn(state = list, modifier = Modifier.fillMaxSize().padding(bottom = 20.dp).nestedScroll(scrollConnection).testTag("chat_history"), contentPadding = PaddingValues(start = 20.dp, top = 20.dp, end = 20.dp, bottom = bottomOverlayPadding + 20.dp), verticalArrangement = Arrangement.spacedBy(chatActivitySpacing)) {
-            if (pendingTitle != null && timeline.isEmpty()) item {
+            if (showPendingIntro) item {
                 Text("今天想从哪里开始？", Modifier.padding(vertical = 24.dp), style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (state.historyCursor != null) item { TextButton(onClick = {
                 loadEarlierWithAnchor()
             }, enabled = !state.loadingEarlier && snapshot?.historyReady == true, modifier = Modifier.fillMaxWidth().testTag("load_earlier")) { Text(if (snapshot?.historyReady != true) "历史同步中…" else if (state.loadingEarlier) "正在加载…" else "加载更早的消息") } }
-            if (!state.loading && snapshot != null && timeline.isEmpty()) item {
+            if (showEmptyIntro) item {
                 Text("继续这个项目中的工作", Modifier.padding(vertical = 24.dp), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             itemsIndexed(timeline, key = { _, row -> row.key }, contentType = { _, row ->
@@ -599,7 +611,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     } else if (assistant) {
                         val isLastReply = lastReplyIds[message.turnId] == message.id
                         val timing = nativeMessageTiming(message, snapshot?.turnSettings?.firstOrNull { it.turnId == message.turnId }, isLastReply)
-                        MessageContent(message.text, cwd, cacheBlocks = !(snapshot?.isOngoing == true && message.turnId == snapshot.activeTurnId), onQuoteText = quoteText, onSaveFile = saveFile, inlineImage = { source ->
+                        val visibleText = if (message.id == latestAssistant?.id && message.turnId == latestAssistant.turnId) streamingText else message.text
+                        MessageContent(visibleText, cwd, cacheBlocks = !(snapshot?.isOngoing == true && message.turnId == snapshot.activeTurnId), onQuoteText = quoteText, onSaveFile = saveFile, inlineImage = { source ->
                                 val target = if (isHttpWebLink(source)) source else nativeFilePath(source, cwd)
                                 target?.let { NativeImage(it, readFile, downloadFile = downloadFile) }
                             }, onFile = ::openFile)
@@ -654,13 +667,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             historicalTiming[timeline.size]?.let { timings ->
                 item(key = "historical_turn_timing_tail") { HistoricalTurnTiming(timings) }
             }
-            snapshot?.reviewDiagnostics?.filter { diagnostic ->
-                diagnostic.string("status") != "verified" && snapshot.messages.none {
-                    it.turnId == diagnostic.string("turnId") && it.type in setOf("agentMessage", "agent_message", "exitedReviewMode")
-                }
-            }?.forEach { diagnostic -> item(key = "review-diagnostic:${diagnostic.string("turnId")}") { ReviewDiagnostic(diagnostic) } }
-            turnFooter?.takeIf { turnFooterBoundary == timeline.size }?.let { footer -> item(key = "turn_footer") { NativeTurnDuration(footer) } }
-            if (executionActive && currentActivity == null && turnFooter == null) item(key = "execution_stage") {
+            trailingDiagnostics.forEach { diagnostic -> item(key = "review-diagnostic:${diagnostic.string("turnId")}") { ReviewDiagnostic(diagnostic) } }
+            if (showTurnFooter) item(key = "turn_footer") { NativeTurnDuration(requireNotNull(turnFooter)) }
+            if (showExecutionStage) item(key = "execution_stage") {
                 ChatTimelineSummaryRow {
                     if (state.stale) Text("正在处理…", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("execution_stage_pending"))
                     else ShimmeringStageText("正在处理…", Modifier.testTag("execution_stage_shimmer"))
@@ -669,7 +678,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             item(key = "relay_latest_anchor") { Spacer(Modifier.fillMaxWidth().height(1.dp).testTag("latest_message_anchor")) }
         }
         if (showLatest) SmallFloatingActionButton(
-            onClick = { followLatest = true; scope.launch { list.animateScrollToItem((list.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)) } },
+            onClick = { followLatest = true; scrollingTowardLatest = false; scope.launch { list.animateScrollToItem((list.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)) } },
             modifier = Modifier.align(Alignment.BottomEnd).padding(bottom = bottomOverlayPadding).padding(12.dp).testTag("jump_to_latest")
                 .semantics { contentDescription = "回到最新消息" },
             containerColor = MaterialTheme.colorScheme.secondaryContainer
