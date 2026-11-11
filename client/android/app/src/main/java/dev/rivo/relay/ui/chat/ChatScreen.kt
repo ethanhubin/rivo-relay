@@ -794,6 +794,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             Text(if (displayedGoal == null) "设置持续目标" else "编辑持续目标")
         }
         MessageComposer(
+            tokenUsage = snapshot?.tokenUsage, contextThreadId = state.id,
             text = if (hideSubmitted) "" else draft, onTextChange = { if (textEditable) draft = it }, images = if (hideSubmitted) emptyList() else images,
             onEditImage = { focus.clearFocus(); keyboard?.hide(); editingImage = it },
             onRemoveImage = { image -> images = images.filterNot { it.id == image.id } },
