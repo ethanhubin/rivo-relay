@@ -37,6 +37,8 @@ class RelayApp:
         self.config = config
         from .update_gate import UpdateGate
         self.update_gate = UpdateGate()
+        from .presence import Presence
+        self.presence = Presence()
         self.node_name = NodeName()
         self.codex = codex
         self.events = events or EventBus()

@@ -296,6 +296,8 @@ class Handler(BaseHTTPRequestHandler):
         connection = self.app.pairing.authenticate(token)
         if connection is None:
             raise ApiError(401, "unauthorized", "连接已失效，请重新授权")
+        self._presence_id = connection["connection_id"]
+        self.app.presence.begin(self._presence_id)
         return token, connection
 
     def do_GET(self):
@@ -312,6 +314,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_api(self):
         self._request_id = request_id(self.headers.get("X-Rivo-Request-Id"))
+        self._presence_id = None
         self._response_status = None
         self._error_code = None
         self._read_stop_reason = None
@@ -319,7 +322,7 @@ class Handler(BaseHTTPRequestHandler):
         self._request_started = started
         outcome = "handler_returned"
         path = urlsplit(self.path).path
-        gated = path not in ('/health', '/internal/update-lease', '/internal/update-stop', '/internal/update-activate', '/v1/events')
+        gated = path not in ('/health', '/internal/monitor', '/internal/update-lease', '/internal/update-stop', '/internal/update-activate', '/v1/events')
         if gated and not self.app.update_gate.enter():
             self.close_connection = True
             self.send_json(503, {'error': {'code': 'node_updating', 'message': '节点正在更新，请稍后重试'}})
@@ -331,6 +334,8 @@ class Handler(BaseHTTPRequestHandler):
             outcome = type(error).__name__
             raise
         finally:
+            if self._presence_id is not None:
+                self.app.presence.end(self._presence_id)
             if gated:
                 self.app.update_gate.leave()
             if self._read_stop_reason:
@@ -380,6 +385,18 @@ class Handler(BaseHTTPRequestHandler):
                 if ready and path[-1] == 'update-stop':
                     import threading
                     threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
+            if self.command == 'GET' and path == ['internal', 'monitor']:
+                if self.client_address[0] not in ('127.0.0.1', '::1'):
+                    raise ApiError(403, 'forbidden', 'Local monitor required')
+                from .gateway.update_status import public_status
+                authorized = {c['connection_id'] for c in self.app.pairing.list_connections()}
+                self.send_json(200, {'kind': 'relay', 'nodeId': self.app.config.node_id,
+                    'name': self.app.node_name.get(),
+                    'releaseCode': int(os.environ.get('RIVO_RELEASE_CODE', '0')),
+                    'nativeConnected': bool(self.app.codex.status().get('connected')),
+                    'apps': self.app.presence.snapshot(authorized),
+                    'update': public_status(self.app.config.workspace)})
                 return
             if self.command == "GET" and path == ["health"]:
                 self.send_json(200, {"status": "ok", "nodeId": self.app.config.node_id, "releaseCode": int(os.environ.get("RIVO_RELEASE_CODE", "0")), "nativeConnected": bool(self.app.codex.status().get("connected"))})
