@@ -14,7 +14,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
-from release_tools import common as c, deployment as d, workflow as w
+from release_tools import common as c, deployment as d, workflow as w, asr
 import release as cli
 
 
@@ -56,16 +56,27 @@ class ReleaseCliTest(unittest.TestCase):
         release.state['commit'] = c.git(self.root, 'rev-parse', 'HEAD')
         def command(args, log, **kwargs):
             if log == 'gateway-publication.log': raise RuntimeError('VPS unavailable')
-        with patch.object(release, 'source_unchanged'), patch.object(w, 'verify_http', return_value={}), \
+        with patch.object(asr, 'deploy'), patch.object(release, 'source_unchanged'), patch.object(w, 'verify_http', return_value={}), \
                 patch.object(release, 'command', side_effect=command):
             with self.assertRaisesRegex(RuntimeError, 'VPS unavailable'): release.publish()
         self.assertEqual(release.state['phase'], 'publishing-gateway')
         self.assertNotIn('gateway', release.state['steps'])
-        with patch.object(release, 'source_unchanged'), patch.object(w, 'verify_http', return_value={}), \
+        with patch.object(asr, 'deploy'), patch.object(release, 'source_unchanged'), patch.object(w, 'verify_http', return_value={}), \
                 patch.object(release, 'command'):
             release.publish()
         self.assertEqual(release.state['phase'], 'complete')
         self.assertTrue(release.state['steps']['gateway']['verified'])
+
+    def test_asr_failure_blocks_both_update_sources(self):
+        release = self.ready()
+        with patch.object(release, 'source_unchanged'), \
+                patch.object(asr, 'deploy', side_effect=RuntimeError('ASR unavailable')), \
+                patch.object(release, 'command') as command:
+            with self.assertRaisesRegex(RuntimeError, 'ASR unavailable'):
+                release.publish()
+        command.assert_not_called()
+        self.assertNotIn('http', release.state['steps'])
+        self.assertNotIn('gateway', release.state['steps'])
 
     def test_retry_recovers_crash_after_log_rename(self):
         release = self.ready()

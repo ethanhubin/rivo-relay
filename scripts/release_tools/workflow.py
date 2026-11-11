@@ -258,6 +258,8 @@ class Release:
 
     def publish(self):
         self.source_unchanged()
+        from .asr import deploy as deploy_asr
+        deploy_asr(self)
         self.record('publishing')
         self.command([self.python, self.root / 'scripts/publish-update.py',
                       '--workspace', self.root / 'workspace/local-node', '--apk', self.apk,
