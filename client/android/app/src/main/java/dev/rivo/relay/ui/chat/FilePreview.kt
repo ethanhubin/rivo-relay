@@ -358,7 +358,7 @@ internal fun FilePreviewDialog(path: String, readFile: suspend (String) -> JSONO
                             Text(error!!, color = MaterialTheme.colorScheme.error)
                             Row { TextButton(onClick = { previewAttempt++ }) { Text("重试") }; TextButton(onClick = { performAction(FileAction.OPEN) }) { Text("用其他应用打开") } }
                         }
-                        file == null -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                        file == null -> LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = dev.rivo.relay.ui.theme.RivoSpacing.Page))
                         kind == FileOpenKind.PDF -> PdfFilePreview(Base64.decode(file!!.string("dataBase64"), Base64.DEFAULT), Modifier.weight(1f))
                         else -> {
                             val text = if (file!!.string("encoding") == "base64") Base64.decode(file!!.string("dataBase64"), Base64.DEFAULT).toString(Charsets.UTF_8) else file!!.string("text")
@@ -442,6 +442,6 @@ private fun PdfFilePreview(bytes: ByteArray, modifier: Modifier = Modifier) {
         }
         error?.let { Text(it, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error) }
         if (bitmap != null) Image(bitmap!!, "PDF 第 ${page + 1} 页", Modifier.fillMaxWidth().weight(1f), contentScale = ContentScale.Fit)
-        else if (error == null) LinearProgressIndicator(Modifier.fillMaxWidth())
+        else if (error == null) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = dev.rivo.relay.ui.theme.RivoSpacing.Page))
     }
 }

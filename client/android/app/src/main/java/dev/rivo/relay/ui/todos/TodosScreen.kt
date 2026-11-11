@@ -138,7 +138,7 @@ fun TodosScreen(state: TodosState, projects: List<ProjectSummary>, canDispatch: 
                     if (search.isNotEmpty()) TextButton(onClick = { search = "" }) { Text("清除") }
                 }
             }
-            if (state.loading || state.mutating) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
+            if (state.loading || state.mutating) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = RivoSpacing.Page).padding(top = 8.dp))
             LazyColumn(Modifier.weight(1f).testTag("todo_list"), state = listState,
                 contentPadding = PaddingValues(start = RivoSpacing.Md, end = RivoSpacing.Md, top = RivoSpacing.Lg, bottom = 104.dp), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Md)) {
                 if (shown.isEmpty() && !state.loading) item { Text(if (query.isBlank()) "还没有待办，点击＋创建" else "没有匹配的待办", Modifier.padding(vertical = 24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }

@@ -482,11 +482,14 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         } else NativeChatHeader(state, usage, onBack, ::openSettings, onRefresh, { developerOpen = true }, { stopConfirm = true },
             !busy && !blocked && !state.stale && canOperate, pinned, canManage, onPin, onArchive,
             onWriterAction, writerBusy || busy || blocked, takeoverBlockedReason, recoveryState, onDelete)
-        if (pendingTitle == null && state.displayControl().state == ControlState.EXTERNAL) NativeWriterStatus(state, nodeName, writerBusy || busy || blocked, onWriterAction, takeoverBlockedReason, onRefresh)
-        // Reserve the loading strip so revalidation never changes the viewport height.
-        Box(Modifier.fillMaxWidth().height(4.dp)) {
-            if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+        // Keep a 2.dp gap below the quota bar and reserve the strip during revalidation.
+        Box(Modifier.fillMaxWidth()
+            .padding(horizontal = dev.rivo.relay.ui.theme.RivoSpacing.Page)
+            .padding(top = 2.dp)
+            .height(4.dp)) {
+            if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth().height(4.dp))
         }
+        if (pendingTitle == null && state.displayControl().state == ControlState.EXTERNAL) NativeWriterStatus(state, nodeName, writerBusy || busy || blocked, onWriterAction, takeoverBlockedReason, onRefresh)
         var bottomOverlayHeight by remember { mutableIntStateOf(0) }
         val bottomOverlayPadding = with(LocalDensity.current) { bottomOverlayHeight.toDp() }
         val trailingDiagnostics = snapshot?.reviewDiagnostics.orEmpty().filter { diagnostic ->

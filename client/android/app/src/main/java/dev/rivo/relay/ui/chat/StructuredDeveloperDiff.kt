@@ -82,7 +82,7 @@ internal fun StructuredDeveloperDiffContent(threadId: String, initial: JSONObjec
         }
         if (refreshed) Text("工作区已变化，已刷新差异。", Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.labelSmall)
         if (snapshot.optBoolean("truncated")) Text("内容超过上限，部分差异未展示。", Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.labelSmall)
-        if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = dev.rivo.relay.ui.theme.RivoSpacing.Page))
         error?.let { Text(it, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.error) }
         if (files.isEmpty() && !loading && error == null) Text("当前工作空间没有未提交改动", Modifier.padding(24.dp).testTag("codex_diff_empty"))
         else {
