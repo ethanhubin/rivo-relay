@@ -20,6 +20,8 @@ class GatewayFixture:
         self.writes = 0
         self.cancelled = asyncio.Event()
         async def handler(request):
+            if request.path == '/internal/monitor' and hasattr(self, 'monitor_report'):
+                return web.json_response(self.monitor_report)
             if request.path == '/v1/staged':
                 await request.read()
                 await asyncio.sleep(.04)

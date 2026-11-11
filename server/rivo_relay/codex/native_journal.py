@@ -12,6 +12,7 @@ import time
 
 from .connection import CodexError
 from .host_probe import read_identity
+from .history import NativeHistoryProtocolError
 from ..read_budget import checkpoint
 from .native_convergence import (NativeHistoryConverger, NativeJournalWatermark,
                                  NativeProjectionWatermark, NativeConvergenceResult)
@@ -59,7 +60,8 @@ class NativeJournal:
         self._inspections = OrderedDict()
         self._converger = NativeHistoryConverger(journal_watermark=self._journal,
             projection_watermark=self._projection, projection_contains=self._contains,
-            has_live_writer=self._busy, reproject_projection=self._repair)
+            has_live_writer=self._busy, reproject_projection=self._repair,
+            interruption_confirmed=self._interruption_confirmed)
 
     @property
     def connection(self):
@@ -82,6 +84,7 @@ class NativeJournal:
         generation = pinned.generation
         if previous is None:
             self._local.read_epoch = None
+            self._local.settled_turn = None
         try:
             with self.history_adapter.read_scope(head_limit=head_limit):
                 yield
@@ -93,6 +96,7 @@ class NativeJournal:
             if previous is None:
                 self._local.__dict__.pop('connection', None)
                 self._local.__dict__.pop('read_epoch', None)
+                self._local.__dict__.pop('settled_turn', None)
             else:
                 self._local.connection = previous
 
@@ -109,9 +113,17 @@ class NativeJournal:
             return None
         inspection = getattr(self._local, 'inspection', None) or {}
         journal = inspection.get('journal') or {}
+        if getattr(self._local, 'settled_turn', None) == (str(self.connection.generation), thread_id, journal.get('turnId')):
+            return None
         if (inspection.get('available') and inspection.get('writerBusy')
                 and not inspection.get('changing') and journal.get('status') == 'inProgress'):
             return journal.get('turnId')
+        return None
+
+    def settled_interruption(self, thread_id):
+        value = getattr(self._local, 'settled_turn', None)
+        if value and value[:2] == (str(self.connection.generation), thread_id):
+            return value[2]
         return None
 
     def _remember(self, key, result):
@@ -165,11 +177,29 @@ class NativeJournal:
                 for tid, inspection in result.get('inspections', {}).items():
                     if tid in ids:
                         self._remember((generation, tid), inspection)
-            except CodexError:
+                        watermark = inspection.get('journal') or {}
+                        if (inspection.get('available') and not inspection.get('changing')
+                                and watermark.get('status') == 'inProgress'
+                                and (not inspection.get('writerBusy')
+                                     or connection.status().get('runtime') == 'relay-session-writer')):
+                            self._local.inspection = inspection
+                            self._local.inspection_key = (generation, tid)
+                            with self.history_adapter.read_scope():
+                                head = self.history_adapter.read_head(connection, tid).turns
+                                if (head and head[-1]['id'] == watermark.get('turnId')
+                                        and head[-1]['status'] == 'interrupted'
+                                        and self._interruption_confirmed(tid, head[-1]['id'])):
+                                    states[tid] = 'idle'
+                if generation != str(connection.generation):
+                    raise CodexError('原生运行时已更换', code='history_changed')
+            except (CodexError, NativeHistoryProtocolError):
                 # Unverified hosts cannot turn unknown execution into idle.
-                pass
+                for tid in ids:
+                    states.pop(tid, None)
             finally:
                 self._local.__dict__.pop('connection', None)
+                self._local.__dict__.pop('settled_turn', None)
+                self._local.__dict__.pop('inspection_key', None)
         # Batch helpers still verify the process before/after each dispatch and
         # recheck every writer lock. Only socket/lsof locality proof is shared
         # within this read. Re-attest it before returning any collected states;
@@ -279,6 +309,37 @@ class NativeJournal:
         turn = page.turns[-1]
         return NativeProjectionWatermark(turn['id'], turn['status'])
 
+    def _interruption_confirmed(self, thread_id, turn_id):
+        """Confirm a missing abort without rewriting a valid official history."""
+        generation = str(self.connection.generation)
+        if getattr(self._local, 'inspection_key', None) != (generation, thread_id):
+            return False
+        inspection = self._local.inspection or {}
+        def matches(value):
+            return (value.get('available') and not value.get('changing')
+                    and value.get('journal') == {'turnId': turn_id, 'status': 'inProgress'})
+        if not matches(inspection):
+            return False
+        if not inspection.get('writerBusy'):
+            # Recheck after reading the projection: a writer may have acquired
+            # the lock or appended a new turn in between those two reads.
+            current = self._inspect(thread_id)
+            if (not matches(current) or current.get('fingerprint') != inspection.get('fingerprint')):
+                return False
+            inspection = current
+        if inspection.get('writerBusy'):
+            status = self.connection.status()
+            if not status.get('connected') or status.get('runtime') != 'relay-session-writer':
+                return False
+            thread = self.connection.request('thread/read', {
+                'threadId': thread_id, 'includeTurns': False})['thread']
+            if thread.get('id') != thread_id or (thread.get('status') or {}).get('type') != 'idle':
+                return False
+        if generation != str(self.connection.generation):
+            raise CodexError('原生运行时已更换，请重新读取历史', code='history_changed', http_status=409)
+        self._local.settled_turn = (generation, thread_id, turn_id)
+        return True
+
     def _contains(self, thread_id, turn_id):
         if turn_id in getattr(self._local, 'projection_ids', ()):
             return True
@@ -330,6 +391,7 @@ class NativeJournal:
         self._local.inspection_key = None
         self._local.projection_ids = set()
         self._local.journal_check = 'verified'
+        self._local.settled_turn = None
         try:
             # Probe, filesystem helper and persisted RPC must use the exact
             # pinned writer even if auto preference changes during this read.

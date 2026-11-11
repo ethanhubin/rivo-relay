@@ -354,6 +354,20 @@ class SessionHandoffMixin:
                 progress(stage)
                 try:
                     self.writers.terminate(snapshot)
+                    # Retire only the terminated owner's state, before the new
+                    # writer can emit requests. Also clear on acquisition failure.
+                    for affected_id in affected:
+                        self.interactions.discard_thread(affected_id)
+                        with self._lock:
+                            self._joined.discard(affected_id)
+                            self._active.pop(affected_id, None)
+                            self._created.pop(affected_id, None)
+                            self._materializing.pop(affected_id, None)
+                            self._settings.pop(affected_id, None)
+                            self._unmaterialized.discard(affected_id)
+                            for key in [key for key in self._live if key[0] == affected_id]:
+                                self._live.pop(key, None)
+                            self._pending_terminal = {key for key in self._pending_terminal if key[0] != affected_id}
                     early_response = None
                     if acquire is not None:
                         stage = 'acquire'
@@ -362,15 +376,6 @@ class SessionHandoffMixin:
                         if rebind_workspace is not None:
                             params['cwd'] = rebind_workspace
                         early_response = acquire(params)
-                    for affected_id in affected:
-                        with self._lock:
-                            self._joined.discard(affected_id)
-                            self._active.pop(affected_id, None)
-                            self._created.pop(affected_id, None)
-                            self._materializing.pop(affected_id, None)
-                            for key in [key for key in self._live if key[0] == affected_id]:
-                                self._live.pop(key, None)
-                                self._pending_terminal.discard(key)
                     # A supervisor may already have restored the same endpoint. Otherwise
                     # replace only the daemon we just terminated using its verified argv.
                     stage = 'runtime'

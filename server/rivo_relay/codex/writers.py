@@ -224,6 +224,8 @@ class WriterProcesses:
     def verify_local_runtime(self, runtime_id, socket_path):
         # A forwarded Unix socket can expose a remote PID. Never interpret that
         # number as a local process or report a remote lock as locally released.
+        if not socket_path:
+            raise conflict('缺少可核实的本机原生 socket，不能执行进程级交接', 'handoff_host_unverified')
         try:
             pid = int(runtime_id)
         except (TypeError, ValueError):
@@ -241,8 +243,8 @@ class WriterProcesses:
         if os.name == 'nt':
             raise conflict('Windows 外部 writer 请在其所属客户端释放', 'handoff_external_unsupported')
         # Matching PID numbers or home paths alone do not establish locality.
-        # Require the remote attestation, exact local process identity, and
-        # selected socket ownership before examining/terminating local holders.
+        # Require the attestation, exact local process identity, and either
+        # socket ownership or verified Relay parentage before inspecting holders.
         if (descriptor.get('hostName') != socket.gethostname()
                 or descriptor.get('platform') != sys.platform
                 or Path(str(descriptor.get('codexHome') or '')).resolve() != self.home):
@@ -253,7 +255,16 @@ class WriterProcesses:
         if (identity is None or identity['start'] != descriptor.get('processStart')
                 or Path(identity['executable']).resolve() != Path(str(descriptor.get('executable') or '')).resolve()):
             raise conflict('原生运行时身份已变化，未结束任何进程', 'handoff_host_changed')
-        self.verify_local_runtime(runtime_id, socket_path)
+        if socket_path is None and descriptor.get('identityMethod') == 'relay-owned-child':
+            # Stdio has no Unix socket. OwnedWriter attests its live Popen child
+            # and pinned identity; independently verify the OS parent here.
+            # Never treat a missing socket alone as evidence of locality.
+            self.validate_executable(identity, inspecting_runtime=True)
+            parent = self.run(['ps', '-p', str(identity['pid']), '-o', 'ppid=']).strip()
+            if parent != str(os.getpid()) or self.identity(identity['pid']) != identity:
+                raise conflict('stdio 原生子进程身份无法核对，不能执行进程级交接', 'handoff_host_unverified')
+        else:
+            self.verify_local_runtime(runtime_id, socket_path)
 
     def restart_command(self, snapshot, runtime_id, socket_path):
         holder = next((h for h in snapshot['holders'] if str(h['pid']) == str(runtime_id)), None)

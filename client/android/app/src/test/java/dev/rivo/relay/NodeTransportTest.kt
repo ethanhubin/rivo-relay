@@ -90,6 +90,53 @@ class NodeTransportTest {
             assertTrue(observer.status.value.checkedAt > 0)
         } }
     }
+    @Test fun cancelledReadKeepsVerifiedRouteForNextRequest() {
+        MockWebServer().use { direct -> MockWebServer().use { relay ->
+            direct.enqueue(MockResponse().setBody("{}"))
+            direct.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+            direct.enqueue(MockResponse().setBody("next"))
+            // A regression consumes this extra response after an unnecessary probe.
+            direct.enqueue(MockResponse().setBody("next"))
+            val base = direct.url("/").toString().trimEnd('/')
+            val transport = client(base, NodeRoutes(base, relay.url("/").toString().trimEnd('/')))
+            val call = transport.newCall(Request.Builder().url("$base/v1/obsolete").build())
+            val finished = java.util.concurrent.CountDownLatch(1)
+            val failure = java.util.concurrent.atomic.AtomicReference<IOException>()
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) { failure.set(e); finished.countDown() }
+                override fun onResponse(call: Call, response: Response) { response.close(); finished.countDown() }
+            })
+            assertEquals("/health", direct.takeRequest(5, java.util.concurrent.TimeUnit.SECONDS)?.path)
+            assertEquals("/v1/obsolete", direct.takeRequest(5, java.util.concurrent.TimeUnit.SECONDS)?.path)
+            call.cancel()
+            assertTrue(finished.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            assertNotNull(failure.get())
+            transport.newCall(Request.Builder().url("$base/v1/next").build()).execute().use {
+                assertEquals("next", it.body!!.string())
+            }
+            assertEquals("/v1/next", direct.takeRequest(5, java.util.concurrent.TimeUnit.SECONDS)?.path)
+            assertEquals(3, direct.requestCount)
+            assertEquals(0, relay.requestCount)
+        } }
+    }
+    @Test fun actualReadFailureStillInvalidatesVerifiedRoute() {
+        MockWebServer().use { direct ->
+            direct.enqueue(MockResponse().setBody("{}"))
+            direct.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+            direct.enqueue(MockResponse().setBody("{}"))
+            direct.enqueue(MockResponse().setBody("recovered"))
+            val base = direct.url("/").toString().trimEnd('/')
+            val transport = client(base, NodeRoutes(direct = base, mode = ConnectionMode.DIRECT))
+            assertThrows(IOException::class.java) {
+                transport.newCall(Request.Builder().url("$base/v1/read").build()).execute().close()
+            }
+            transport.newCall(Request.Builder().url("$base/v1/next").build()).execute().use {
+                assertEquals("recovered", it.body!!.string())
+            }
+            assertEquals(listOf("/health", "/v1/read", "/health", "/v1/next"),
+                (1..4).map { direct.takeRequest(5, java.util.concurrent.TimeUnit.SECONDS)?.path })
+        }
+    }
     @Test fun directModeDoesNotFallBack() {
         MockWebServer().use { relay ->
             assertThrows(IOException::class.java) {

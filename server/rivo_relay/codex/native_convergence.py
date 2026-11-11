@@ -75,6 +75,7 @@ class NativeHistoryConverger:
         projection_contains: Callable[[str, str], bool],
         has_live_writer: Callable[[str], bool],
         reproject_projection: Callable[[str], bool],
+        interruption_confirmed: Callable[[str, str], bool] = lambda _thread, _turn: False,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._journal_watermark = journal_watermark
@@ -82,6 +83,7 @@ class NativeHistoryConverger:
         self._projection_contains = projection_contains
         self._has_live_writer = has_live_writer
         self._reproject_projection = reproject_projection
+        self._interruption_confirmed = interruption_confirmed
         self._clock = clock
         self._state_lock = threading.RLock()
         # Waiters retain a strong reference. Idle thread locks do not accumulate
@@ -193,6 +195,10 @@ class NativeHistoryConverger:
         if projection is None or projection.turn_id != journal.turn_id:
             return False
         if projection.unfinished != journal.unfinished:
+            # A killed writer need not append turn_aborted. Accept the official
+            # interruption only with fresh ownership/execution evidence.
+            if journal.unfinished and projection.status == 'interrupted':
+                return self._interruption_confirmed(thread_id, journal.turn_id)
             return False
         if not journal.unfinished:
             projected_status = projection.status.casefold()

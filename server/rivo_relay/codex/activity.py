@@ -364,7 +364,11 @@ class ActivityRegistry:
         with self.lock:
             self._generation()
             self.snapshot_version += 1
-            return {'version': self.snapshot_version, 'tasks': copy.deepcopy(list(self.tasks.values())),
+            # Activity is node-wide and is embedded in unrelated conversation reads.
+            # Recovery input belongs only to its owning conversation, not this summary.
+            tasks = [{key: value for key, value in row.items() if key != 'recoveryTask'}
+                     for row in self.tasks.values()]
+            return {'version': self.snapshot_version, 'tasks': copy.deepcopy(tasks),
                     'knownThreadIds': sorted(self.known), 'unknownThreadIds': sorted(self.unknown),
                     'generation': self.epoch, 'revision': self.revision,
                     # Each row has explicit uncertainty, even before first discovery.

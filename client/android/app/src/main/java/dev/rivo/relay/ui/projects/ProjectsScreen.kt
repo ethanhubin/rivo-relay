@@ -135,9 +135,9 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                 Surface(modifier = Modifier.fillMaxWidth().testTag("project_${project.id}").combinedClickable(
                     onClick = { onProject(project) }, onLongClickLabel = "项目操作", onLongClick = { projectMenuOpen = true }),
                     shape = RoundedCornerShape(RivoRadius.Card), color = MaterialTheme.colorScheme.listItemBackground) {
-                    Row(Modifier.heightIn(min = 74.dp).padding(10.dp), verticalAlignment = Alignment.CenterVertically,
+                    Row(Modifier.heightIn(min = 56.dp).padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(RivoSpacing.Md)) {
-                        Surface(Modifier.size(44.dp), shape = RoundedCornerShape(RivoRadius.Control), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
+                        Surface(Modifier.size(36.dp), shape = RoundedCornerShape(RivoRadius.Control), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
                             Box(contentAlignment = Alignment.Center) { Text("C", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleMedium) }
                         }
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {

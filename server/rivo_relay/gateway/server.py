@@ -40,6 +40,7 @@ class Gateway:
     def __init__(self, keys_file: Path):
         self.keys_file = keys_file
         self.nodes = {}
+        self.reports = {}
         self.registering = set()
         self.claimed = set()
         self.pending = {}
@@ -64,8 +65,16 @@ class Gateway:
             self.nodes[slot] = ws
             event('gateway_node_connected', node=slot)
             await ws.send_json({'ready': True})
-            async for _ in ws:
-                pass
+            self.reports.pop(slot, None)
+            async for message in ws:
+                if message.type == WSMsgType.TEXT:
+                    from .monitor import clean_report
+                    try:
+                        report = clean_report(json.loads(message.data))
+                    except (ValueError, TypeError):
+                        report = None
+                    if report is not None:
+                        self.reports[slot] = (report, time.time())
         finally:
             event('gateway_node_disconnected', node=slot)
             self.registering.discard(slot)
@@ -233,6 +242,9 @@ class Gateway:
 
     def application(self):
         app = web.Application(client_max_size=MAX_BODY)
+        from .monitor import handle
+        app['fleet_gateway'] = self
+        app.router.add_get('/admin/monitor', handle)
         from .update_store import routes
         routes(app, self.keys_file.parent)
         from .speech import routes as speech_routes

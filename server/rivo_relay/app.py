@@ -39,6 +39,8 @@ class RelayApp:
         self.config = config
         from .update_gate import UpdateGate
         self.update_gate = UpdateGate()
+        from .presence import Presence
+        self.presence = Presence()
         self.node_name = NodeName()
         self.backend = codex
         self.codex = codex  # Compatibility for optional services still being migrated.

@@ -16,7 +16,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import dev.rivo.relay.data.NativeHistoricalTiming
 
 @Composable
@@ -79,7 +78,7 @@ internal fun AssistantMessageFooter(text: String, identity: String, outputAt: Lo
         )
         historicalTiming?.let { timing ->
             Text(timing.label, modifier = Modifier.weight(1f, fill = false).testTag("historical_turn_timing_${timing.turnId}"),
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
+                style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         AssistantCopyButton(text, identity)
