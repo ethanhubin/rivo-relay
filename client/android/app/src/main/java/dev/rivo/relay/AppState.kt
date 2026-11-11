@@ -44,7 +44,7 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
         onResolved = { pending, response ->
             session.invalidateControl()
             session.resolveSubmissionDurably(pending.id, response)
-            if (response.string("status") == "accepted" && pending.path.endsWith("/archive")) {
+            if (response.string("status") == "accepted" && (pending.path.endsWith("/archive") || pending.path.endsWith("/delete"))) {
                 // Per-operation reconciliation also runs after process restart and partial batches.
                 pending.threadId?.let { catalog.forgetCreatedThreads(listOf(it)) }
                 catalog.refreshThreads(force = true)

@@ -46,6 +46,17 @@ class PausingEventBus(EventBus):
 
 class ApiTests(RelayHTTPFixture, unittest.TestCase):
 
+    def test_delete_session_requires_auth_and_deduplicates_submission(self):
+        self.native.delete_session = Mock(return_value={'threadId': 'thread-1'})
+        path = '/v1/threads/thread-1/delete'
+        body = {'submissionId': 'delete-1'}
+        self.assertEqual(401, self.request('POST', path, body)[0])
+        first = self.request('POST', path, body, token=self.token)
+        second = self.request('POST', path, body, token=self.token)
+        self.assertEqual('accepted', first[1]['status'])
+        self.assertEqual(first[1], second[1])
+        self.native.delete_session.assert_called_once_with('thread-1')
+
     def test_route_families_preserve_authentication_and_unknown_endpoints(self):
         paths = (
             '/v1/node/unknown', '/v1/media/unknown', '/v1/speech/unknown',

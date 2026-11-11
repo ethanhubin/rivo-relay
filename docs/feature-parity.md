@@ -4,7 +4,7 @@
 
 | 范围 | Relay 当前代码行为 | 实现入口 |
 | --- | --- | --- |
-| 会话整理 | 最近/归档切换，单个会话置顶/取消置顶，长按多选、批量归档/恢复；运行中会话不允许归档；批量写操作逐个核对 | `CatalogState.kt`、`SessionsScreen.kt`、`SubmissionCoordinator.kt` |
+| 会话整理 | 最近/归档切换，单个会话置顶/取消置顶，长按多选、批量归档/恢复/永久删除（含确认）；运行中会话不允许归档；批量写操作逐个核对 | `CatalogState.kt`、`SessionsScreen.kt`、`SubmissionCoordinator.kt` |
 | 未读与恢复 | 按节点保存会话已读更新时间；新更新出现未读点；项目列表/会话列表/最近历史使用私有缓存，缓存不代替权威历史或分页游标 | `CatalogState.kt`、`ConversationStore.kt`、`SessionController.kt` |
 | 项目目录 | 浏览所选节点的目录、返回上级、选择已有目录；可在当前目录创建单层文件夹后注册项目 | `ProjectDirectoryDialog.kt`、`codex/developer.py` |
 | 工作树 | 新会话从已提交 ref 创建独立工作树；开发工具展示路径、来源、提交、脏状态；清理绑定工作树状态，丢弃有改动的工作树需明确确认 | `NewConversationDialog.kt`、`DeveloperTools.kt`、`codex/developer.py` |
@@ -24,7 +24,7 @@ Android 路径均位于 `client/android/app/src/main/java/dev/rivo/relay/`，服
 | --- | --- | --- |
 | 项目与会话列表 | `HomeScreen`、`SessionScreens` | 64dp 双行会话头部、2dp 额度条、实心搜索、最近/归档胶囊、左侧状态图标、单行卡片、62dp 新建悬浮按钮；会话页收起底部导航。长按选择、置顶、批量归档及缓存禁写继续按真实状态执行。 |
 | 新会话与项目目录 | `CodexProjectBrowserDialog`、pending workspace settings | 全屏目录浏览、上级返回、隐藏目录提示、新文件夹单独确认、紧凑工作区/分支选择、加载/空/失败重试。提交错误显示在弹窗内，结果未知时仍能返回核对。 |
-| 聊天输入与设置 | `ChatComposerContent`、`SessionScreens` | 常驻普通/讨论模式、运行中空草稿显示停止、非空草稿加入队列；设置浮层保留输入焦点，标题显示真实模型/思考强度/上下文。更多菜单保留原生会话 ID、置顶与归档动作。 |
+| 聊天输入与设置 | `ChatComposerContent`、`SessionScreens` | 常驻普通/讨论模式、运行中空草稿显示停止、非空草稿加入队列；设置浮层保留输入焦点，标题显示真实模型/思考强度/上下文。更多菜单保留原生会话 ID、置顶、归档与永久删除动作。 |
 | 正文、链接与代码 | `SelectableReadOnlyText`、`ChatWebLinks`、`CodexReviewScreen` | 选择文本、全选/复制/引用浮栏、表格卡片与网格、网页打开/分享/保存；文件引用保留行号。Diff 支持统一/按文件、增删底色和新旧行号、二进制/截断提示；复制代码/补丁。 |
 | APK 与文件 | `ChatResourceResolver`、`MainScreen`、`FileTransfer`、`ChatTimelineContent` | APK 使用“保存到本机 / 取消 / 打开”紧凑弹窗，普通外部文件可分享；打开菜单不读取/下载。文本、Markdown、禁用脚本的 HTML、图片、PDF、音视频各进入对应预览。下载可取消/失败重试，显示字节与进度；公开链接不携带节点凭据；APK 交给 Android 安装器确认。 |
 | 图片与附件 | `ChatTimelineContent`、`AttachmentSourcePicker`、`AttachmentImageEditor` | 本地/节点来源卡片、多选照片/文件、独立视频入口、全屏节点文件浏览；附件预览与移除分开。图片放大/缩放/保存/分享与长按复制。图片编辑工具、裁剪、标注、撤销主体已与源逐段核对，保留 Relay 的草稿字节适配。 |

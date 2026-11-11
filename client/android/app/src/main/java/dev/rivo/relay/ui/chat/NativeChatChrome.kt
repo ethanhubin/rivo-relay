@@ -108,9 +108,16 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
 internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: () -> Unit, onSettings: () -> Unit,
     onRefresh: () -> Unit, onReview: () -> Unit, onStop: () -> Unit, canStop: Boolean,
     pinned: Boolean, canManage: Boolean, onPin: ((Boolean) -> Unit)?, onArchive: (() -> Unit)?,
-    onWriterAction: ((String) -> Unit)? = null, writerBusy: Boolean = false, writerBlockedReason: String? = null, recoveryState: RecoveryState? = null) {
+    onWriterAction: ((String) -> Unit)? = null, writerBusy: Boolean = false, writerBlockedReason: String? = null, recoveryState: RecoveryState? = null, onDelete: (() -> Unit)? = null) {
     val snapshot = state.snapshot
     val context = LocalContext.current
+    var confirmDelete by remember(state.id) { mutableStateOf(false) }
+    val canDelete = canManage && snapshot != null && snapshot.activeTurnId.isBlank() && snapshot.requests.isEmpty() && snapshot.queue.isEmpty()
+    if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text("永久删除会话？") },
+        text = { Text("此会话及其派生子会话将被永久删除，无法恢复。") },
+        confirmButton = { TextButton(enabled = canDelete, onClick = { confirmDelete = false; onDelete?.invoke() },
+            modifier = Modifier.testTag("confirm_delete_session")) { Text("永久删除", color = MaterialTheme.colorScheme.error) } },
+        dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } })
     var menu by remember(state.id) { mutableStateOf(false) }
     val activeSettings = snapshot?.let { current -> current.turnSettings.firstOrNull { it.turnId == current.activeTurnId } }
     val model = activeSettings?.model ?: snapshot?.settings?.string("model").orEmpty()
@@ -168,6 +175,8 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
                     if (onArchive != null) ConversationMenuItem(icon = "archive", text = { Text("归档") }, onClick = { menu = false; onArchive() },
                         enabled = canManage && snapshot != null && snapshot.activeTurnId.isBlank() && snapshot.requests.isEmpty() && snapshot.queue.isEmpty(),
                         modifier = Modifier.testTag("archive_session"))
+                    if (onDelete != null) ConversationMenuItem(icon = "delete", text = { Text("永久删除", color = MaterialTheme.colorScheme.error) },
+                        onClick = { menu = false; confirmDelete = true }, enabled = canDelete, modifier = Modifier.testTag("delete_session"))
                     ConversationMenuItem(icon = "release", text = { Text("释放权限") },
                         onClick = { menu = false; onWriterAction?.invoke("release") },
                         enabled = state.showRelease() && onWriterAction != null && !writerBusy && writerBlockedReason == null &&
@@ -308,7 +317,7 @@ private fun SettingsSelector(title: String, selected: String, options: List<Pair
 @Composable
 private fun ConversationMenuItem(icon: String, text: @Composable () -> Unit, onClick: () -> Unit,
     enabled: Boolean = true, modifier: Modifier = Modifier) {
-    val color = if (icon == "archive") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+    val color = if (icon in setOf("archive", "delete")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
     DropdownMenuItem(text = text, onClick = onClick, enabled = enabled,
         modifier = modifier.heightIn(min = 52.dp), contentPadding = PaddingValues(horizontal = 24.dp, vertical = 8.dp),
         colors = MenuDefaults.itemColors(textColor = color, leadingIconColor = color),
@@ -332,6 +341,7 @@ private fun ConversationMenuIcon(kind: String) {
             androidx.compose.ui.geometry.Size(w*u,h*u), androidx.compose.ui.geometry.CornerRadius(2*u), style = stroke)
         when (kind) {
             "copy" -> { box(8f,3f,13f,14f); box(3f,8f,13f,13f) }
+            "delete" -> { line(4f,6f,20f,6f); box(6f,6f,12f,15f); line(9f,6f,9f,3f,15f,3f,15f,6f); line(10f,10f,10f,17f); line(14f,10f,14f,17f) }
             "archive" -> { box(3f,3f,18f,5f); box(4f,8f,16f,13f); line(9f,12f,15f,12f) }
             "pin" -> { line(4f,21f,9f,16f); line(8f,5f,15f,3f,21f,9f,17f,12f,15f,18f,6f,9f,8f,5f) }
             "refresh" -> {
