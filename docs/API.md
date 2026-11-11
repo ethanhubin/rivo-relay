@@ -23,7 +23,9 @@
 | `GET /v1/projects/{projectId}/git` | Bearer | `{git:{available,head?,branch?,dirty?,refs:[{id,commit,name}],reason?}}` |
 | `GET /v1/models` | Bearer | `{models:[…],catalog:{source,stale,updatedAt}}`，原生模型目录及最近成功缓存；不使用固定模型清单 |
 | `GET /v1/goals/capabilities` | Bearer；只读，不创建会话 | `{goalSupported:boolean}`；能力读取故障返回错误，不等同于不支持 |
-| `GET /v1/usage` | Bearer | `{usage:{…}}`；原生 `account/rateLimits/read` 响应 |
+| `GET /v1/usage` | Bearer | `{usage:{…}}`；原生 `account/rateLimits/read` 的公开额度字段及 `resetSupported` |
+| `POST /v1/usage/reset` | `{submissionId}` | 提交记录；消费一次已有重置机会 |
+| `POST /v1/usage/reset/reconcile` | `{submissionId}` | 核对原操作；仅结果未知时以原账户绑定、原幂等键恢复兑换 |
 | `GET /v1/threads?projectId=…&archived=false` | 必填 projectId；archived 仅接受 `true` / `false`，默认 false | `{threads:[{id,name,preview,status,updatedAt,cwd,projectId,pinned}]}` |
 
 配对码只由电脑本地 `pair` CLI 生成，没有远程生成码路由。默认 5 分钟且只兑换一次；大小写和分组连字符可归一化，过期/已消费/无效码均返回 401，限流返回 429。节点连接 token 与 OpenAI/Codex 登录 token 不同。
@@ -33,6 +35,12 @@
 添加项目时，省略 `folderName` 表示添加已有目录；提供它则在 path 下新建单层文件夹并添加项目。名称不能是 `.`、`..` 或包含路径分隔符、NUL。Git 信息中的 refs 最多包含当前 HEAD 和 200 条本地/远程分支；`worktreeRef` 使用其 commit ID，不传用户拼接的工作树路径。项目列表只返回项目元数据；运行状态由 `/v1/activity` 提供。
 
 额度对象保留原生 `rateLimits` / `rateLimitsByLimitId`、窗口 `usedPercent`、`windowDurationMins`、`resetsAt` 等字段。缺失值表示尚无数据，不能推断剩余 100%。账户额度与下述单会话 `tokenUsage` 是不同数据。
+
+额度重置：`rateLimitResetCredits` 保留原生 `availableCount` 和可选 `credits` 明细（包含有效期）；次数未知、明细未知与空明细分别保留，不根据明细条数推断次数。`resetSupported=true` 表示节点已读到重置能力数据；字段缺失或 false 时不开放客户端重置操作。额度重置统一从“设置 → 额度重置”进入，弹窗优先展示可用重置次数和有效期，提交前刷新并确认消耗一次机会；离线、读取失败或有未确认提交时禁止再次提交。
+
+重置调用原生 `account/rateLimitResetCredit/consume`，由原生选择可用机会。提交记录先于原生请求持久化；同 ID 的普通 POST 和 GET 只返回已知状态，不再次兑换。成功回执为 `{requestId:submissionId,resetOutcome}`，结果仅接受 `reset`、`alreadyRedeemed`、`nothingToReset`、`noCredit`。前两者表示兑换完成，后两者说明没有符合条件的窗口或没有可用次数；四者均为已确认的终态，`accepted` 不等同于一定恢复额度。
+
+此操作使用原生明确支持的幂等协议：Android 遇到 unknown 时通过专用 POST 核对，节点只使用原 `submissionId` 作为 `idempotencyKey`，不生成新的兑换键。节点重启后同样复用持久记录；同账户存在未知记录时拒绝其他 ID 的新重置。首次提交与恢复均核对原生 ChatGPT 账户身份字段指纹（只保存哈希，不向手机返回账户身份）；账户信息不完整或变化时不执行兑换，原请求未知状态继续保留；核对响应的 `recoveryErrorCode` 提供恢复原账户、重新登录或升级节点的提示，不把核对失败冒充原操作失败。重置后的真实额度和次数必须重新读取；刷新失败保留旧数据并标明失败，不伪造 100%，不自动继续任务。本流程不购买额度或发送邀请。原生协议见 [App Server](https://learn.chatgpt.com/docs/app-server#8-earned-rate-limit-resets-chatgpt)。
 
 `requireGoalSupport=true` 用于带持续目标的新建流程：服务端在首轮发送前检查原生目标接口，不支持则拒绝发送。客户端在首轮 accepted 后单独提交目标设置；失败只恢复目标设置，不重复首轮。
 

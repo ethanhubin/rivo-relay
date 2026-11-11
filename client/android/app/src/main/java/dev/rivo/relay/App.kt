@@ -166,6 +166,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
         }
     }
     val owner = LocalLifecycleOwner.current
+    var usageOpen by remember(node) { mutableStateOf(false) }
     val writable = network != null && !submission.busy && submission.pending == null && !handoffLoading
     val projectsWritable = writable && catalog.projectsFresh
     val threadsWritable = writable && catalog.threadsFresh
@@ -275,6 +276,12 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             try { awaitCancellation() } finally { node.session.pause() }
         } else node.session.close()
     }
+    if (usageOpen) dev.rivo.relay.ui.common.UsageDetailsDialog(catalog.usage, catalog.usageLoading, catalog.usageError,
+        onRefresh = { node.catalog.refreshUsage(true) }, onDismiss = { usageOpen = false }, nodeName = node.connection.name,
+        canReset = writable, resetPending = submission.pending?.path == USAGE_RESET_PATH,
+        resetNotice = if (submission.pending?.path == USAGE_RESET_PATH) submission.notice else catalog.usageResetNotice,
+        onReset = { if (writable) { node.catalog.clearUsageResetNotice(); node.submissions.submit(USAGE_RESET_PATH, JSONObject(), "重置额度") } },
+        onReconcile = { node.submissions.reconcile() })
     val showBottomNavigation = route in setOf("projects", "sites", "todos", "settings")
     // NavigationBar draws behind the system gesture area and applies its own insets.
     Column(Modifier.fillMaxSize()
@@ -287,6 +294,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                 "settings" -> SettingsScreen(connection = node.connection, api = node.api,
                     resolveConnection = settingsConnection, setNodeConnectionMode = setNodeConnectionMode,
                     savedNodes = savedNodes,
+                    onOpenUsage = { usageOpen = true; node.catalog.refreshUsage(true) },
                     onAddNode = { setError(null); addNode = true }, canAddNode = !submission.busy && !handoffLoading)
                 "projects" -> ProjectsScreen(catalog.projects, node.connection.name, catalog.loading, { project -> node.catalog.project(project); route = "sessions"; setError(null) },
                     { route = "settings"; setError(null) }, { node.catalog.refreshProjects() }, { if (node.catalog.state.value.projectsFresh) addProject = true },

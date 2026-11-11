@@ -37,6 +37,7 @@ fun SettingsScreen(
     setNodeConnectionMode: ((String, dev.rivo.relay.connection.ConnectionMode) -> dev.rivo.relay.connection.NodeConnection?)? = null,
     onAddNode: () -> Unit = {},
     canAddNode: Boolean = true,
+    onOpenUsage: (() -> Unit)? = null,
     checkUpdate: (suspend () -> AppRelease?)? = null,
     downloadAndInstall: (suspend (AppRelease) -> Unit)? = null,
     updates: UpdateViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
@@ -108,6 +109,9 @@ fun SettingsScreen(
                     resolveConnection(base)?.let { inspectedConnection = it }
                 }, onAddNode, canAddNode)
             }
+        }
+        onOpenUsage?.let { open ->
+            SettingsEntry("额度重置", dev.rivo.relay.R.drawable.ic_openai, "open_usage_details", actionLabel = "查看", onEdit = open)
         }
         SettingsEntry("通知", dev.rivo.relay.R.drawable.ic_notifications, "edit_notification_settings") {
             notificationEditorOpen = true

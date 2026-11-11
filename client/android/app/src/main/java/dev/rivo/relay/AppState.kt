@@ -38,7 +38,11 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
     private val pendingRevisionMutable = MutableStateFlow(0L)
     val pendingRevision = pendingRevisionMutable.asStateFlow()
     val submissions = SubmissionCoordinator(api, scope, vault, "pending:${connection.nodeId}:${connection.deviceId}:${connection.storageBase}",
-        onResolved = { pending, response ->
+        onResolved = resolved@{ pending, response ->
+            if (pending.path == USAGE_RESET_PATH) {
+                catalog.usageResetResolved(response)
+                return@resolved
+            }
             session.invalidateControl()
             session.resolveSubmissionDurably(pending.id, response)
             if (response.string("status") == "accepted" && (pending.path.endsWith("/archive") || pending.path.endsWith("/delete"))) {

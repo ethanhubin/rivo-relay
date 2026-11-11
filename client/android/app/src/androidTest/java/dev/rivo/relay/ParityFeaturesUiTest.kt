@@ -2,6 +2,7 @@ package dev.rivo.relay
 
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.*
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Button
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -150,6 +151,44 @@ class ParityFeaturesUiTest {
         compose.onNodeWithTag("archive_sessions").assertTextContains("恢复").performClick()
         compose.runOnIdle { assertEquals(setOf("b") to false, action) }
         evidence("archived-sessions")
+    }
+
+    @Test fun quotaResetRequiresExplicitConfirmationAndKnownAvailableCount() {
+        var resets = 0
+        var details by mutableStateOf(false)
+        val now = System.currentTimeMillis() / 1000
+        val usage = dev.rivo.relay.data.catalogUsage(JSONObject("""{"usage":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":${now + 5400}},"secondary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":${now + 172800}}},"resetSupported":true,"rateLimitResetCredits":{"availableCount":2,"credits":[{"id":"fixture-credit","status":"available","expiresAt":${now + 864000}}]}}}"""))
+        compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize()) {
+            Column {
+                Box(Modifier.weight(1f)) {
+                    dev.rivo.relay.ui.settings.SettingsScreen(onOpenUsage = { details = true })
+                }
+                androidx.compose.material3.NavigationBar {
+                    NavigationBarItem(false, {}, icon = { Text("⌘") }, label = { Text("Codex") })
+                    NavigationBarItem(false, {}, icon = { dev.rivo.relay.ui.sites.ConnectorIcon("appgarden") }, label = { Text("Sites") })
+                    NavigationBarItem(false, {}, icon = { Text("✓") }, label = { Text("待办") })
+                    NavigationBarItem(true, {}, icon = { Text("⚙") }, label = { Text("设置") })
+                }
+            }
+            if (details) dev.rivo.relay.ui.common.UsageDetailsDialog(usage, false, null, {}, { details = false }, nodeName = "演示节点",
+                canReset = true, onReset = { resets++ })
+        } } }
+        compose.onNodeWithTag("open_usage_details").performScrollTo().assertIsDisplayed()
+        android.os.SystemClock.sleep(700)
+        evidence("quota-reset-entry")
+        compose.onNodeWithTag("open_usage_details").performClick()
+        compose.onNodeWithTag("usage_reset_count").assertTextEquals("可用重置次数：2")
+        android.os.SystemClock.sleep(700)
+        evidence("quota-reset-details")
+        compose.onNodeWithTag("reset_usage").performClick()
+        compose.runOnIdle { assertEquals(0, resets) }
+        android.os.SystemClock.sleep(700)
+        evidence("quota-reset-confirm")
+        compose.onNodeWithText("取消").performClick()
+        compose.runOnIdle { assertEquals(0, resets) }
+        compose.onNodeWithTag("reset_usage").performClick()
+        compose.onNodeWithTag("confirm_usage_reset").performClick()
+        compose.runOnIdle { assertEquals(1, resets) }
     }
 
     @Test fun quotaContextAndPlanDetailsShowTheirAuthoritativeValues() {

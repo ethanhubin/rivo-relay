@@ -44,12 +44,18 @@ _IDENTITY_KEYS = {
 
 
 def _merge_receipt(existing: dict | None, incoming: dict | None) -> dict | None:
-    """Keep known identities without storing native response bodies."""
+    """Keep identities and the closed quota-reset outcome; never store native response bodies."""
     if incoming is not None and (not isinstance(incoming, dict) or not incoming):
         raise ValueError("A native receipt with identity fields is required")
     merged = dict(existing or {})
     identities = {}
     for key, value in [*merged.items(), *(incoming or {}).items()]:
+        if key == 'resetOutcome':
+            if value not in {'reset', 'alreadyRedeemed', 'nothingToReset', 'noCredit'}:
+                raise ValueError('Invalid quota reset outcome')
+            if key in merged and merged[key] != value:
+                raise SubmissionConflict('A recorded quota reset outcome cannot be replaced')
+            continue
         kind = _IDENTITY_KEYS.get(key)
         if kind is None or not isinstance(value, str) or not value or len(value) > 2048:
             raise ValueError("Native receipt must contain only nonempty identity fields")
