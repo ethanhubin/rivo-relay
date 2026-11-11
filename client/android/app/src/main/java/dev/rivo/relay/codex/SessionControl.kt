@@ -51,7 +51,7 @@ fun SessionState.takeoverControl(blockedReason: String? = null): TakeoverControl
     if (runtime?.optBoolean("handoffCheckAvailable") == true)
         return TakeoverControl(true, "接管前将重新核验实际运行主机和持锁进程")
     if (runtime?.has("handoffAvailable") == true && !runtime.optBoolean("handoffAvailable"))
-        return TakeoverControl(false, runtime.string("handoffUnavailableReason").ifBlank { "服务器暂不能确认接管条件，请刷新后重试" })
+        return TakeoverControl(true, "上次核验未通过；点击后重新核验接管条件：" + runtime.string("handoffUnavailableReason").ifBlank { "运行时暂不可用" })
     return TakeoverControl(true, "接管前会核验并展示影响范围，确认后执行")
 }
 
@@ -61,7 +61,7 @@ fun SessionState.displayControl(): SessionControl =
     control().takeUnless { it.state == ControlState.UNKNOWN }
         ?: lastConfirmedControl ?: SessionControl(ControlState.UNKNOWN)
 
-fun SessionState.showTakeover(): Boolean = control().state == ControlState.EXTERNAL
+fun SessionState.showTakeover(): Boolean = displayControl().state == ControlState.EXTERNAL
 
 fun SessionState.showRelease(): Boolean = control().let { it.canOperate && it.action == "release" }
 

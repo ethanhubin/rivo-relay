@@ -107,17 +107,21 @@ class WriterProcesses:
             return {'threadId': thread_id, 'holders': []}
         output = self.run(['lsof', '-t', '--', str(self.path(thread_id))])
         pids = sorted({int(line) for line in output.splitlines() if line.isdigit()})
-        # Open handles alone cannot distinguish multiple competing holders.
-        if len(pids) != 1:
-            raise conflict('持锁进程不唯一或无法识别，未结束任何进程')
-        identity = self.identity(pids[0])
-        if identity is None:
-            raise conflict('持锁进程已变化，请重新操作')
-        self.validate_executable(identity)
-        threads = self.open_threads(pids[0])
-        if thread_id not in threads:
-            raise conflict('会话锁已变化，请重新操作')
-        return {'threadId': thread_id, 'holders': [{**identity, 'threads': threads, 'children': self.descendants(pids[0])}]}
+        # lsof lists open handles, not exclusively the lock owner. An explicit
+        # preview may include every verified Codex candidate and its full scope.
+        if not pids:
+            raise conflict('无法识别持锁进程，未结束任何进程')
+        holders = []
+        for pid in pids:
+            identity = self.identity(pid)
+            if identity is None:
+                raise conflict('持锁进程已变化，请重新操作')
+            self.validate_executable(identity)
+            threads = self.open_threads(pid)
+            if thread_id not in threads:
+                raise conflict('会话锁已变化，请重新操作')
+            holders.append({**identity, 'threads': threads, 'children': self.descendants(pid)})
+        return {'threadId': thread_id, 'holders': holders}
 
     def preview(self, thread_id, owner, action):
         if action not in ('takeover', 'release'):
@@ -131,7 +135,7 @@ class WriterProcesses:
                 raise conflict('交接请求过多，请稍后重试')
             self._tickets[ticket] = {'snapshot': snapshot, 'owner': owner, 'action': action, 'expires': self.clock() + 120}
         return {'ticket': ticket, 'threadId': thread_id, 'operation': action,
-                'requiresConfirmation': len(affected) > 1, 'affectedThreadIds': affected,
+                'requiresConfirmation': len(affected) > 1 or len(snapshot['holders']) > 1, 'affectedThreadIds': affected,
                 'processIds': [h['pid'] for h in snapshot['holders']], 'childProcessCount': sum(len(h['children']) for h in snapshot['holders'])}
 
     @staticmethod
@@ -140,16 +144,13 @@ class WriterProcesses:
         if current['threadId'] != expected['threadId']:
             return False
         old = {h['pid']: h for h in expected['holders']}
-        if not releasing and set(old) != {h['pid'] for h in current['holders']}:
-            return False
         for holder in current['holders']:
             previous = old.get(holder['pid'])
             if previous is None:
                 return False
             if any(holder[key] != previous[key] for key in ('pid', 'start', 'command', 'executable')):
                 return False
-            if (not set(holder['threads']) <= set(previous['threads']) if releasing
-                    else set(holder['threads']) != set(previous['threads'])):
+            if not set(holder['threads']) <= set(previous['threads']):
                 return False
             if any(child not in previous['children'] for child in holder['children']):
                 return False
@@ -176,8 +177,8 @@ class WriterProcesses:
         if not self.compatible(expected, current, releasing=action == 'release'):
             raise conflict('持锁进程或关联会话已变化，请重新确认')
         affected = {thread_id, *(t for h in expected['holders'] for t in h['threads'])}
-        if len(affected) > 1 and confirmed is not True:
-            raise conflict('此进程还持有其他会话，需要确认影响范围', 'handoff_confirmation_required')
+        if (len(affected) > 1 or len(expected['holders']) > 1) and confirmed is not True:
+            raise conflict('将结束多个进程或影响其他会话，需要确认影响范围', 'handoff_confirmation_required')
         return expected
 
     def terminate(self, snapshot):
@@ -188,6 +189,11 @@ class WriterProcesses:
         approved_children = [child for holder in snapshot['holders'] for child in holder['children']]
         for holder in current['holders']:
             pid = holder['pid']
+            identity = self.identity(pid)
+            if identity is None:
+                continue
+            if identity != {k: holder[k] for k in ('pid', 'start', 'command', 'executable')}:
+                raise conflict('持锁进程已变化，未结束该进程')
             try:
                 os.kill(pid, signal.SIGTERM)
             except ProcessLookupError:

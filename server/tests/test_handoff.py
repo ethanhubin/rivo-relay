@@ -450,6 +450,71 @@ class PreviewTests(unittest.TestCase):
         manager.snapshot = Mock(return_value=copy.deepcopy(snapshot))
         return manager, snapshot
 
+    def test_multiple_codex_candidates_are_previewed_and_require_confirmation(self):
+        manager = WriterProcesses('/fixture')
+        manager.busy = Mock(return_value=True)
+        manager.run = Mock(return_value='123\n456\n')
+        manager.identity = lambda pid: {
+            'pid': pid, 'start': 'start', 'command': 'codex app-server', 'executable': '/bin/codex'}
+        manager.open_threads = Mock(return_value=[TID])
+        manager.descendants = Mock(return_value=[])
+        preview = manager.preview(TID, 'phone', 'takeover')
+        self.assertEqual([123, 456], preview['processIds'])
+        self.assertTrue(preview['requiresConfirmation'])
+        with self.assertRaises(CodexError):
+            manager.consume(TID, 'phone', 'takeover', preview['ticket'], False)
+        preview = manager.preview(TID, 'phone', 'takeover')
+        snapshot = manager.consume(TID, 'phone', 'takeover', preview['ticket'], True)
+        self.assertEqual([123, 456], [h['pid'] for h in snapshot['holders']])
+
+    def test_multiple_candidates_are_terminated_and_rechecked_individually(self):
+        import signal
+        for replaced in (False, True):
+            manager, snapshot = self.manager()
+            second = {**copy.deepcopy(snapshot['holders'][0]), 'pid': 456}
+            snapshot['holders'].append(second)
+            manager.snapshot.return_value = copy.deepcopy(snapshot)
+            first_identity = {k: snapshot['holders'][0][k] for k in ('pid', 'start', 'command', 'executable')}
+            second_identity = {k: second[k] for k in ('pid', 'start', 'command', 'executable')}
+            if replaced:
+                second_identity['start'] = 'reused'
+            manager.identity = Mock(side_effect=[first_identity, None, None, second_identity, None, None])
+            manager.busy = Mock(return_value=False)
+            with patch('rivo_relay.codex.writers.os.kill') as kill:
+                if replaced:
+                    with self.assertRaises(CodexError):
+                        manager.terminate(snapshot)
+                else:
+                    manager.terminate(snapshot)
+            self.assertEqual([(123, signal.SIGTERM)] + ([] if replaced else [(456, signal.SIGTERM)]),
+                             [call.args for call in kill.call_args_list])
+
+    def test_non_codex_candidate_still_blocks_entire_preview(self):
+        manager = WriterProcesses('/fixture')
+        manager.busy = Mock(return_value=True)
+        manager.run = Mock(return_value='123\n456\n')
+        manager.identity = lambda pid: {
+            'pid': pid, 'start': 'start', 'command': 'process',
+            'executable': '/bin/codex' if pid == 123 else '/bin/other'}
+        manager.open_threads = Mock(return_value=[TID])
+        manager.descendants = Mock(return_value=[])
+        with self.assertRaises(CodexError):
+            manager.preview(TID, 'phone', 'takeover')
+        self.assertFalse(manager._tickets)
+
+    def test_takeover_allows_naturally_shrinking_scope(self):
+        for exited in (False, True):
+            manager, snapshot = self.manager()
+            preview = manager.preview(TID, 'phone', 'takeover')
+            current = copy.deepcopy(snapshot)
+            if exited:
+                current['holders'] = []
+            else:
+                current['holders'][0]['threads'] = [TID]
+            manager.snapshot.return_value = current
+            self.assertEqual(snapshot, manager.consume(
+                TID, 'phone', 'takeover', preview['ticket'], True))
+
     def test_preview_has_impact_but_no_command_or_credentials(self):
         manager, snapshot = self.manager()
         preview = manager.preview(TID, 'phone', 'takeover')
@@ -537,7 +602,7 @@ class PreviewTests(unittest.TestCase):
         manager.busy = Mock(return_value=False)
         with patch('rivo_relay.codex.writers.os.kill') as kill:
             manager.terminate(snapshot)
-        self.assertEqual(1, kill.call_count)
+        kill.assert_not_called()
 
 class RealProcessTests(unittest.TestCase):
     def test_real_file_lock_and_child_process_are_released(self):

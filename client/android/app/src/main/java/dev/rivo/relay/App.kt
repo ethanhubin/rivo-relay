@@ -654,11 +654,15 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
         ModalBottomSheet(onDismissRequest = { handoffPrompt = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp).navigationBarsPadding()) {
                 val rebound = preview.optJSONObject("workspaceRebind")
-                Text(if (rebound != null) "确认接管与工作区恢复" else if (operation == "release") "确认释放权限及影响范围" else "确认强制接管及影响范围", style = MaterialTheme.typography.titleLarge)
+                Text(if (rebound != null) "接管并恢复工作区？" else if (operation == "release") "释放权限？" else "强制接管？", style = MaterialTheme.typography.titleLarge)
                 Text("节点：${node.connection.name}", style = MaterialTheme.typography.bodyMedium)
-                if (rebound != null) Text("原工作树已不存在，将改用 ${rebound.string("path")} 目录。原路径：${rebound.string("missingPath")}",
+                if (rebound != null) Text("原目录已失效，将改用：${rebound.string("path")}",
                     modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.error)
-                Text("继续会结束列出的持锁进程及其子进程，停止这些会话的运行任务；不会自动重发。", modifier = Modifier.padding(vertical = 12.dp))
+                Text("将结束相关进程，中断下列会话。未保存进度可能丢失，任务不会自动重发。", modifier = Modifier.padding(vertical = 12.dp))
+                preview.optJSONArray("processIds")?.let { ids ->
+                    Text("将结束进程：" + (0 until ids.length()).joinToString("、") { ids.get(it).toString() },
+                        style = MaterialTheme.typography.bodySmall)
+                }
                 Column(Modifier.heightIn(max = 280.dp).verticalScroll(androidx.compose.foundation.rememberScrollState())) {
                     val affected = preview.getJSONArray("affectedThreads")
                     for (i in 0 until affected.length()) {
