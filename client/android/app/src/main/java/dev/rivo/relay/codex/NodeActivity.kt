@@ -56,7 +56,9 @@ internal fun activityInvalidatedThreads(event: RelayEvent): Set<String>? {
     return id.takeIf(String::isNotBlank)?.let { setOf(it) }
 }
 
-fun nodeActivity(api: RelayApi, sync: NodeSessionSync, scope: CoroutineScope): StateFlow<NodeActivity> = channelFlow {
+fun nodeActivity(api: RelayApi, sync: NodeSessionSync, scope: CoroutineScope,
+    activeIntervalMillis: Long = 5000, idleIntervalMillis: Long = 60_000): StateFlow<NodeActivity> = channelFlow {
+    require(activeIntervalMillis > 0 && idleIntervalMillis > 0)
     var previous = NodeActivity()
     var epoch = 0L
     val lock = Mutex()
@@ -64,6 +66,7 @@ fun nodeActivity(api: RelayApi, sync: NodeSessionSync, scope: CoroutineScope): S
         val signals = Channel<Unit>(Channel.CONFLATED)
         val events = launch {
             suspend fun invalidate(threads: Set<String>? = null) {
+                if (threads?.isEmpty() == true) return
                 if (threads == null || threads.isNotEmpty()) lock.withLock {
                     epoch++
                     previous = if (threads == null) previous.copy(confirmed = false)
@@ -94,6 +97,7 @@ fun nodeActivity(api: RelayApi, sync: NodeSessionSync, scope: CoroutineScope): S
         try {
             while (currentCoroutineContext().isActive) {
                 val readEpoch = lock.withLock { epoch }
+                var failed = false
                 try {
                     val response = api.call("/v1/activity")
                     lock.withLock {
@@ -103,11 +107,18 @@ fun nodeActivity(api: RelayApi, sync: NodeSessionSync, scope: CoroutineScope): S
                         send(previous)
                     }
                 } catch (e: CancellationException) { throw e }
-                catch (_: Exception) { lock.withLock {
-                    if (readEpoch == epoch) previous = previous.copy(confirmed = false)
-                    send(previous)
-                } }
-                withTimeoutOrNull(5000) { signals.receive() }
+                catch (e: Exception) {
+                    failed = true
+                    if (e is ApiException && e.status in setOf(401, 403)) lock.withLock {
+                        previous = previous.copy(confirmed = false)
+                        send(previous)
+                    }
+                }
+                val interval = lock.withLock {
+                    if (failed || !previous.confirmed || previous.unknown.isNotEmpty() || previous.tasks.isNotEmpty())
+                        activeIntervalMillis else idleIntervalMillis
+                }
+                withTimeoutOrNull(interval) { signals.receive() }
             }
         } finally { events.cancel(); snapshots.cancel(); signals.close() }
     }

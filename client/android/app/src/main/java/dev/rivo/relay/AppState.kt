@@ -39,13 +39,16 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
     val pendingRevision = pendingRevisionMutable.asStateFlow()
     val submissions = SubmissionCoordinator(api, scope, vault, "pending:${connection.nodeId}:${connection.deviceId}:${connection.storageBase}",
         onResolved = { pending, response ->
-            session.invalidateControl()
+            val refresh = submissionRefresh(pending, response)
+            session.invalidateControlFor(refresh.threads)
+            if (refresh.projects) catalog.refreshProjects(changed = true)
+            if (refresh.todos) todos.refreshAfterChange()
             session.resolveSubmissionDurably(pending.id, response)
             if (response.string("status") == "accepted" && (pending.path.endsWith("/archive") || pending.path.endsWith("/delete"))) {
                 // Per-operation reconciliation also runs after process restart and partial batches.
                 pending.threadId?.let { catalog.forgetCreatedThreads(listOf(it)) }
-                catalog.refreshThreads(force = true)
             }
+            if (refresh.catalog) catalog.refreshChangedThreads()
             val (acceptedDraft, pendingChanged) = withContext(Dispatchers.IO) {
                 val changed = conversations.resolvePendingSubmission(pending.id, response)
                 conversations.markSentDraftResolved(pending.id, response) to changed
@@ -102,7 +105,7 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
     val todos = TodosController(api, scope, failure, store = conversations, onChanged = { items ->
         todoReminders.update(items)
         if (items.any { !it.completed && it.details.optLong("reminderAt", 0) > System.currentTimeMillis() }) requestNotificationPermission()
-    })
+    }, sync = sync)
     private val navigationMutable = MutableStateFlow<String?>(null)
     val navigation = navigationMutable.asStateFlow()
     private val todoNavigationMutable = MutableStateFlow(false)

@@ -547,7 +547,7 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
         synchronized(lock) {
             val text = value.toString()
             require(text.toByteArray().size <= DRAFT_LIMIT) { "待办离线数据过大，请先连接节点同步" }
-            write("todos-state", text)
+            if (read("todos-state", DRAFT_LIMIT)?.toString() != text) write("todos-state", text)
         }
     }
     suspend fun loadCatalog(key: String): JSONObject? = withContext(Dispatchers.IO) {
@@ -556,7 +556,8 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
     suspend fun saveCatalog(key: String, value: JSONObject) = withContext(Dispatchers.IO) {
         synchronized(lock) {
             val text = value.toString()
-            if (text.toByteArray().size <= SNAPSHOT_LIMIT) write("catalog-${digest(key)}", text)
+            if (text.toByteArray().size <= SNAPSHOT_LIMIT && read("catalog-${digest(key)}", SNAPSHOT_LIMIT)?.toString() != text)
+                write("catalog-${digest(key)}", text)
             prune("catalog-", 20)
         }
     }

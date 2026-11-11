@@ -384,6 +384,9 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         mutable.update { it.transition(SessionSyncEvent.Revalidate(notice)) }
         refresh()
     }
+    fun invalidateControlFor(threadIds: Set<String>) {
+        if (mutable.value.id in threadIds && activeJob?.isActive == true) invalidateControl()
+    }
     fun refresh() { updates?.trySend(Unit) }
     private fun handlePageAccessFailure(error: Exception, requestControlEpoch: Long): Boolean {
         if (error !is ApiException || error.status !in setOf(401, 403, 404, 410)) return false

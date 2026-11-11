@@ -1,6 +1,7 @@
 package dev.rivo.relay.ui.todos
 
 import dev.rivo.relay.data.*
+import dev.rivo.relay.codex.NodeSessionSync
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
@@ -32,7 +33,7 @@ private fun keepLocalAttachments(remote: List<Todo>, current: List<Todo>): List<
 }
 
 data class TodosState(val items: List<Todo> = emptyList(), val loading: Boolean = false, val mutating: Boolean = false,
-    val syncing: Boolean = false, val pendingCount: Int = 0, val online: Boolean = false, val syncError: String? = null)
+    val syncing: Boolean = false, val dispatching: Boolean = false, val refreshing: Boolean = false, val pendingCount: Int = 0, val online: Boolean = false, val syncError: String? = null)
 
 private data class TodoOperation(val id: String, val todoId: String, val method: String, val body: JSONObject) {
     fun json() = JSONObject().put("id", id).put("todoId", todoId).put("method", method).put("body", body)
@@ -42,12 +43,16 @@ private data class TodoOperation(val id: String, val todoId: String, val method:
  * Codex dispatch is deliberately excluded: it still uses SubmissionCoordinator and is never retried here.
  */
 class TodosController(private val api: RelayApi, private val scope: CoroutineScope, private val failure: (Throwable) -> Unit,
-    private val store: ConversationStore? = null, private val onChanged: (List<Todo>) -> Unit = {}) {
+    private val store: ConversationStore? = null, private val onChanged: (List<Todo>) -> Unit = {},
+    private val sync: NodeSessionSync? = null) {
     private val mutable = MutableStateFlow(TodosState())
     val state = mutable.asStateFlow()
     private val stateLock = Mutex()
     private val syncLock = Mutex()
     private var loaded = false
+    private var syncJob: Deferred<Boolean>? = null
+    private var syncGeneration = 0L
+    private var savedState: String? = null
     @Volatile private var outbox = emptyList<TodoOperation>()
 
     init { scope.launch { runCatching { stateLock.withLock { restore() } }.onFailure(failure) } }
@@ -63,6 +68,7 @@ class TodosController(private val api: RelayApi, private val scope: CoroutineSco
                 TodoOperation(it.string("id"), it.string("todoId"), method, it.optJSONObject("body") ?: JSONObject())
             }
             mutable.update { it.copy(items = saved.objects("items").map(::todo), pendingCount = outbox.size) }
+            savedState = saved.toString()
             onChanged(mutable.value.items)
         }
         loaded = true
@@ -71,28 +77,57 @@ class TodosController(private val api: RelayApi, private val scope: CoroutineSco
     private suspend fun commit(items: List<Todo>, operations: List<TodoOperation>) {
         val saved = JSONObject().put("version", 1).put("items", JSONArray(items.map(::todoJson)))
             .put("operations", JSONArray(operations.map(TodoOperation::json)))
+        val serialized = saved.toString()
+        if (serialized == savedState) return
         store?.saveTodoState(saved) // Must succeed before either the UI accepts the edit or a network write starts.
+        savedState = serialized
         outbox = operations
         mutable.update { it.copy(items = items, pendingCount = operations.size) }
         onChanged(items)
     }
 
-    fun refresh() = scope.launch { synchronize() }
-    fun synchronizeNow() { scope.launch { synchronize() } }
-    suspend fun observe(pollIntervalMillis: Long = 30_000) {
-        require(pollIntervalMillis > 0)
-        while (currentCoroutineContext().isActive) {
-            synchronize()
-            delay(pollIntervalMillis)
+    /** Readers join a single request; mutations/events require at most one dirty follow-up. */
+    @Synchronized private fun requestSync(changed: Boolean = false): Deferred<Boolean> {
+        if (changed) syncGeneration++
+        syncJob?.takeUnless { it.isCompleted }?.let { return it }
+        val job = scope.async(start = CoroutineStart.LAZY) {
+            var result: Boolean
+            do {
+                val generation = syncGeneration
+                result = synchronize()
+            } while (result && generation != syncGeneration)
+            result
         }
+        syncJob = job
+        job.start()
+        return job
+    }
+    fun refresh(): Job = requestSync()
+    fun refreshAfterChange(): Job = requestSync(changed = true)
+    fun synchronizeNow() { requestSync() }
+    suspend fun observe(pollIntervalMillis: Long = 60_000) = coroutineScope {
+        require(pollIntervalMillis > 0)
+        val events = sync?.let { source -> launch {
+            source.events(onInterrupted = {}).collect { event ->
+                if (event.type in setOf("connected", "reset") || event.type == "native" &&
+                    event.payload.string("method") == "relay/todos") requestSync(changed = true)
+            }
+        } }
+        try {
+            while (currentCoroutineContext().isActive) {
+                requestSync().await()
+                delay(pollIntervalMillis)
+            }
+        } finally { events?.cancel() }
     }
 
     private suspend fun synchronize(): Boolean = syncLock.withLock {
-        mutable.update { it.copy(loading = it.items.isEmpty(), syncing = true, syncError = null) }
+        mutable.update { it.copy(loading = it.items.isEmpty(), refreshing = true, syncError = null) }
         try {
             stateLock.withLock { restore() }
             while (true) {
                 val operation = stateLock.withLock { outbox.firstOrNull() } ?: break
+                mutable.update { it.copy(syncing = true) }
                 try {
                     api.call(if (operation.method == "POST") "/v1/todos" else "/v1/todos/${encoded(operation.todoId)}", operation.method, operation.body.withoutLocalAttachments())
                 } catch (e: ApiException) {
@@ -116,9 +151,9 @@ class TodosController(private val api: RelayApi, private val scope: CoroutineSco
             val message = if (e is ApiException && e.status in 400..499) "节点未接受更改：${e.message}"
                 else if (mutable.value.pendingCount > 0) "更改已保存在手机，联网后可继续同步"
                 else "当前无法连接节点，显示本机保存的待办"
-            mutable.update { it.copy(online = false, syncError = message) }
+            mutable.update { it.copy(online = if (e is ApiException && e.status in setOf(401, 403)) false else it.online, syncError = message) }
             false
-        } finally { mutable.update { it.copy(loading = false, syncing = false) } }
+        } finally { mutable.update { it.copy(loading = false, syncing = false, refreshing = false) } }
     }
 
     fun save(existing: Todo?, title: String, notes: String, finished: () -> Unit) =
@@ -148,7 +183,7 @@ class TodosController(private val api: RelayApi, private val scope: CoroutineSco
                     commit(applyOperation(mutable.value.items, operation), outbox + operation)
                 }
                 committed = true
-                scope.launch { synchronize() }
+                requestSync(changed = true)
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { failure(e) }
             finally { mutable.update { it.copy(mutating = false) } }
@@ -181,11 +216,17 @@ class TodosController(private val api: RelayApi, private val scope: CoroutineSco
 
     /** A successful online read follows the whole outbox before a native task may be dispatched. */
     fun prepareDispatch(todoId: String, ready: (Todo) -> Unit) {
+        if (mutable.value.dispatching) return
+        mutable.update { it.copy(dispatching = true) }
         scope.launch {
-            if (!synchronize()) return@launch
-            val item = mutable.value.items.firstOrNull { it.id == todoId } ?: return@launch
-            if (mutable.value.pendingCount == 0 && !item.completed) ready(item)
+            try {
+                if (!requestSync(changed = true).await()) return@launch
+                val current = mutable.value
+                val item = current.items.firstOrNull { it.id == todoId } ?: return@launch
+                if (current.pendingCount == 0 && !current.mutating && !item.completed && item.threadId.isBlank()) ready(item)
+            } finally { mutable.update { it.copy(dispatching = false) } }
         }
+
     }
 }
 

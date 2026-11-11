@@ -122,7 +122,7 @@ fun TodosScreen(state: TodosState, projects: List<ProjectSummary>, canDispatch: 
                     Text(if (state.pendingCount > 0) "${state.pendingCount} 项更改保存在手机，等待同步" else "本机待办副本", style = MaterialTheme.typography.labelLarge)
                     state.syncError?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                     Row {
-                        TextButton(onClick = { (onSynchronize ?: onRefresh)() }, enabled = !state.syncing, modifier = Modifier.testTag("sync_todos")) { Text(if (state.syncing) "同步中…" else "同步") }
+                        TextButton(onClick = { (onSynchronize ?: onRefresh)() }, enabled = !state.refreshing, modifier = Modifier.testTag("sync_todos")) { Text(if (state.refreshing) "同步中…" else "同步") }
                         if (onDiscardLocal != null && state.pendingCount > 0 && state.syncError != null) TextButton(onClick = { discardConfirm = true }, enabled = !state.syncing) { Text("使用节点版本") }
                     }
                 }
@@ -171,11 +171,11 @@ fun TodosScreen(state: TodosState, projects: List<ProjectSummary>, canDispatch: 
     }
     if (editor) TodoDetailsEditor(editing, state.mutating, projects, readDirectory, onDismiss = { editor = false },
         onSave = { title, notes, details -> save(title, notes, details, false) }, onDelete = { editing?.let { item -> onDelete(item) { editor = false } } },
-        onStartCodex = if (canDispatch && state.online && state.pendingCount == 0 && !state.syncing && editing?.completed != true && editing?.threadId.orEmpty().isBlank())
+        onStartCodex = if (canDispatch && !state.dispatching && state.online && state.pendingCount == 0 && !state.syncing && editing?.completed != true && editing?.threadId.orEmpty().isBlank())
             { { title, notes, details -> save(title, notes, details, true) } } else null,
         onOpenAttachment = onOpenAttachment,
         onOpenThread = editing?.takeIf { it.threadId.isNotBlank() }?.let { item -> { editor = false; onOpenThread(item) } })
-    delivery?.let { item -> DispatchSheet(item, projects, canDispatch && state.online && state.pendingCount == 0 && !state.syncing, loadThreads, { delivery = null }) { project, thread -> onDispatch(item, project, thread) { delivery = null } } }
+    delivery?.let { item -> DispatchSheet(item, projects, canDispatch && !state.dispatching && state.online && state.pendingCount == 0 && !state.syncing, loadThreads, { delivery = null }) { project, thread -> onDispatch(item, project, thread) { delivery = null } } }
     if (deleteConfirm) AlertDialog(onDismissRequest = { deleteConfirm = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("删除 ${selectedIds.size} 项待办？") } },
         text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("所选待办及其清单项目将被永久删除。已关联的 Codex 会话仍会保留。") } },
         confirmButton = { Button(onClick = {

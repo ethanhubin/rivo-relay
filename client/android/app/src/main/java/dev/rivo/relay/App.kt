@@ -182,11 +182,6 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     LaunchedEffect(node, network) {
         if (network != null) node.reconcilePendingReceipts()
     }
-    LaunchedEffect(submission.resolvedRevision) {
-        if (submission.resolvedRevision > 0) {
-            node.catalog.refreshProjects(); node.catalog.refreshThreads(force = true); node.todos.refresh(); node.session.refresh()
-        }
-    }
     fun openChat(id: String, parent: String) { node.conversations.putMetadata("lastThreadId", id); threadId = id; chatParent = parent; route = "chat"; setError(null) }
     fun forwardLink(projectId: String, targetThreadId: String?, source: String, name: String) {
         val project = node.catalog.state.value.projects.firstOrNull { it.id == projectId }
@@ -307,9 +302,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     loadDraftText = { id -> node.conversations.loadDraft(id).text },
                     canManageThreads = threadsWritable, showCreate = catalog.selectedProject?.id != "__rivo_recent__", catalogComplete = catalog.threadsComplete,
                     onPin = { thread, pinned ->
-                        node.submissions.submit("/v1/threads/${encoded(thread.id)}/pin", JSONObject().put("pinned", pinned), if (pinned) "置顶会话" else "取消置顶") {
-                            node.catalog.refreshThreads(force = true)
-                        }
+                        node.submissions.submit("/v1/threads/${encoded(thread.id)}/pin", JSONObject().put("pinned", pinned), if (pinned) "置顶会话" else "取消置顶")
                     }, archived = catalog.archived, onArchivedChanged = node.catalog::setArchived,
                     onArchive = { threads, archived ->
                         if (node.catalog.state.value.threadsFresh) node.submissions.submitBatch(threads.map { BatchSubmission("/v1/threads/${encoded(it.id)}/archive", JSONObject().put("archived", archived), if (archived) "归档会话" else "恢复会话") })
@@ -468,7 +461,6 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             val body = JSONObject().put("lastTurnId", turn)
                             ref?.let { body.put("worktreeRef", it) }
                             node.submissions.submit("/v1/threads/${encoded(id)}/fork", body, "分叉会话") { receipt ->
-                                node.catalog.refreshThreads(force = true)
                                 if (threadId == id && route == "chat") openChat(receipt.string("threadId"), chatParent)
                             }
                         }
@@ -555,15 +547,13 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         node.submissions.submit(path, body, "更新会话") { receipt ->
                             targetThreadId?.let { node.notifications.watch(it, requestPermission = true, turnId = receipt.string("turnId")) }
                             if (threadId == targetThreadId && route == "chat") { accepted(); node.session.refresh() }
-                            node.catalog.refreshThreads(force = true)
+                            node.catalog.refreshChangedThreads()
                         }
                     }, pinned = catalog.threads.firstOrNull { it.id == threadId }?.pinned == true,
                     canManage = !session.stale && session.id == threadId && session.snapshot?.id == threadId && session.control().canOperate && writable,
                     onPin = { pinned ->
                         threadId?.let { id ->
-                            node.submissions.submit("/v1/threads/${encoded(id)}/pin", JSONObject().put("pinned", pinned), if (pinned) "置顶会话" else "取消置顶") {
-                                node.catalog.refreshThreads(force = true)
-                            }
+                            node.submissions.submit("/v1/threads/${encoded(id)}/pin", JSONObject().put("pinned", pinned), if (pinned) "置顶会话" else "取消置顶")
                         }
                     }, onArchive = {
                         val current = node.session.state.value
@@ -571,7 +561,6 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         val snapshot = current.snapshot
                         if (id != null && !current.stale && current.id == id && snapshot?.id == id && writable && current.control().canOperate && snapshot.activeTurnId.isBlank() && snapshot.queue.isEmpty() && snapshot.requests.isEmpty())
                             node.submissions.submit("/v1/threads/${encoded(id)}/archive", JSONObject().put("archived", true), "归档会话") {
-                                node.catalog.refreshThreads(force = true)
                                 if (route == "chat" && threadId == id) back()
                             }
                     }, onDelete = {
@@ -580,7 +569,6 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         val snapshot = current.snapshot
                         if (id != null && !current.stale && current.id == id && snapshot?.id == id && writable && current.control().canOperate && snapshot.activeTurnId.isBlank() && snapshot.queue.isEmpty() && snapshot.requests.isEmpty())
                             node.submissions.submit("/v1/threads/${encoded(id)}/delete", JSONObject(), "永久删除会话") {
-                                node.catalog.refreshThreads(force = true)
                                 if (route == "chat" && threadId == id) back()
                             }
                     }, onGoal = { body ->
@@ -611,7 +599,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         node.todos.prepareDispatch(todo.id) { fresh ->
                             node.submissions.submit("/v1/todos/${encoded(fresh.id)}/dispatch", body, "交付待办",
                                 prepareBody = { request -> stageTodoAttachments(context, node.api, fresh, request) }) { receipt ->
-                                accepted(); node.todos.refresh(); val id = receipt.string("threadId")
+                                accepted(); val id = receipt.string("threadId")
                                 if (id.isNotBlank()) { node.notifications.watch(id, requestPermission = true, turnId = receipt.string("turnId")); openChat(id, "todos") }
                             }
                         }
@@ -698,6 +686,6 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
         submissionError = error ?: submission.notice, nodeName = node.connection.name, busy = submission.busy,
         onDismiss = { addProject = false }, onAdd = { path, folderName ->
             val body = JSONObject().put("path", path).put("trustConfirmed", true); folderName?.let { body.put("folderName", it) }
-            if (node.catalog.state.value.projectsFresh) node.submissions.submit("/v1/projects", body, "添加项目") { addProject = false; node.catalog.refreshProjects() }
+            if (node.catalog.state.value.projectsFresh) node.submissions.submit("/v1/projects", body, "添加项目") { addProject = false }
         })
 }
