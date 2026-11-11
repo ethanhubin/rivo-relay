@@ -31,9 +31,6 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
     }
     val api = connection.api()
     private var transportNetwork = defaultNetwork(context)
-    val network = observeDefaultNetwork(context).onEach {
-        if (it != transportNetwork) { transportNetwork = it; api.resetTransport() }
-    }.stateIn(scope, SharingStarted.Eagerly, transportNetwork)
     private val sync = NodeSessionSync(api, scope)
     val notifications = TaskNotifications(context.applicationContext, api, scope, connection.base, connection.name, requestNotificationPermission, failure, sync)
     val catalog = CatalogController(api, scope, failure, store = conversations, sync = sync)
@@ -130,6 +127,12 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
             reconcilePendingReceipts()
         })
     init { api.recovery = recovery }
+    val network = observeDefaultNetwork(context).onEach { next ->
+        if (next != transportNetwork) {
+            transportNetwork = next
+            if (next != null) recovery.networkAvailable() else api.resetTransport()
+        }
+    }.stateIn(scope, SharingStarted.Eagerly, transportNetwork)
     fun persistDraft(threadId: String, draft: ConversationDraft) {
         conversations.enqueueDraft(threadId, draft) { error ->
             scope.launch { failure(IllegalArgumentException(error.message ?: "无法保存手机草稿，请检查可用空间")) }

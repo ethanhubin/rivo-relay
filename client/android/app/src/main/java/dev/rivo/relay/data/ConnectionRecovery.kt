@@ -13,7 +13,7 @@ fun isConnectionFailure(error: Throwable): Boolean =
     error is IOException && error !is ApiException || error is ApiException &&
         error.status in 502..504 && error.code != "native_history_unavailable"
 
-/** Retries a read-only probe, never the failed operation. Exhaustion requires manual recovery. */
+/** Retries a read-only probe, never the failed operation. A new route or explicit action can reopen an exhausted round. */
 class ConnectionRecovery(private val scope: CoroutineScope, private val probe: suspend () -> Unit,
     private val reset: suspend () -> Unit, private val restored: suspend () -> Unit,
     private val rejected: (Throwable) -> Unit, private val timeoutMillis: Long = 12_000,
@@ -74,6 +74,15 @@ class ConnectionRecovery(private val scope: CoroutineScope, private val probe: s
                 if (mutable.value == RecoveryState.CONNECTING) mutable.value = RecoveryState.DISCONNECTED
             }
         }
+    }
+
+    /** Replace obsolete probes/backoff immediately when the OS supplies a new route.
+     * Join cancellation before starting so the old round cannot overwrite the new state.
+     * Only health checks and synchronization are retried, never business mutations.
+     */
+    suspend fun networkAvailable() {
+        job?.cancelAndJoin()
+        reconnect(manual = true)
     }
 
     /** Returning to the app should synchronize, not tear down healthy requests. */
