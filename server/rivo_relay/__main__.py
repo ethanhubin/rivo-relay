@@ -21,6 +21,8 @@ from .pairing import PairingStore
 def parser():
     root = argparse.ArgumentParser(prog="rivo-relay")
     commands = root.add_subparsers(dest="command", required=True)
+    from .release_management.setup import add_arguments
+    add_arguments(commands.add_parser('setup-manager', help='将本机初始化为发布管理节点'))
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--workspace", type=Path, default=Path("workspace"))
     for name in ("serve", "pair", "connections", "revoke"):
@@ -52,6 +54,14 @@ def parser():
 def main(argv=None):
     args = parser().parse_args(argv)
     os.umask(0o077)
+    if args.command == 'setup-manager':
+        from .release_management.setup import install
+        try:
+            print(json.dumps(install(args), ensure_ascii=False, indent=2))
+            return 0
+        except Exception as error:
+            print(json.dumps({'error': str(error)}, ensure_ascii=False), file=sys.stderr)
+            return 1
     config = Config(workspace=args.workspace.resolve(), host=getattr(args, "host", "127.0.0.1"),
         port=getattr(args, "port", 8765),
         public_url=getattr(args, "url", "http://10.0.2.2:8765"),
