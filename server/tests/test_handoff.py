@@ -122,6 +122,52 @@ class HandoffTests(unittest.TestCase):
         self.assertNotIn('thread/resume', [method for method, _ in native.calls])
         self.assertNotIn(('ownership', ''), service.observations_for(TID))
 
+    def test_takeover_retires_old_state_before_new_requests_even_if_acquire_fails(self):
+        for fail in (False, True):
+            with self.subTest(fail=fail):
+                service, native, writers = self.service(restart=True)
+                unaffected = 'unaffected'
+                for tid in (TID, OTHER, unaffected):
+                    service.interactions.receive({'id': tid, 'method': 'item/tool/requestUserInput',
+                                                  'params': {'threadId': tid, 'turnId': 'old'}})
+                    service._active[tid] = 'old'
+                    service._live[(tid, 'old')] = {'id': 'old', 'status': 'inProgress'}
+                    service._settings[tid] = {'cwd': 'old'}
+                    service._pending_terminal.add((tid, 'old'))
+                @contextmanager
+                def prepare(thread_id):
+                    def acquire(params):
+                        for tid in (TID, OTHER):
+                            self.assertEqual([], service.interactions.list(tid))
+                            self.assertNotIn(tid, service._active)
+                            self.assertNotIn((tid, 'old'), service._live)
+                            self.assertNotIn((tid, 'old'), service._pending_terminal)
+                            self.assertNotIn(tid, service._settings)
+                        if fail:
+                            raise CodexError('acquisition failed')
+                        service.interactions.receive({'id': 'new', 'method': 'item/tool/requestUserInput',
+                                                      'params': {'threadId': TID, 'turnId': 'new'}})
+                        return {'thread': {'id': thread_id}}
+                    yield acquire
+                native.prepare_takeover = prepare
+                if fail:
+                    with self.assertRaises(CodexError):
+                        service.handoff(TID, 'takeover', owner='phone', ticket='ticket', confirmed=True)
+                else:
+                    service.handoff(TID, 'takeover', owner='phone', ticket='ticket', confirmed=True)
+                    self.assertEqual(['new'], [r['id'] for r in service.interactions.list(TID)])
+                self.assertEqual('old', service._active[unaffected])
+                self.assertEqual(1, len(service.interactions.list(unaffected)))
+
+    def test_failed_termination_does_not_discard_still_live_question(self):
+        service, native, writers = self.service()
+        service.interactions.receive({'id': 1, 'method': 'item/tool/requestUserInput',
+                                      'params': {'threadId': TID}})
+        writers.terminate.side_effect = CodexError('not terminated')
+        with self.assertRaises(CodexError):
+            service.handoff(TID, 'takeover', owner='phone', ticket='ticket', confirmed=True)
+        self.assertEqual([1], [r['id'] for r in service.interactions.list(TID)])
+
     def test_missing_history_host_cache_can_request_live_handoff_preview(self):
         service, native, writers = self.service()
         service.native_journal.cached_host = Mock(return_value=None)
