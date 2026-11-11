@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 import copy
+import os
 import unittest
 import socket
 import sys
@@ -429,6 +430,110 @@ class HandoffTests(unittest.TestCase):
         self.assertTrue(service.observations_for(TID)[('ownership', '')]['released'])
         self.assertEqual(1, native.request.call_count)
         writers.terminate.assert_not_called()
+
+class StdioHandoffTests(unittest.TestCase):
+    def setUp(self):
+        self.service, self.native, _ = HandoffTests().service()
+        self.native.socket_path = None
+        self.native.status = lambda: {'connected': True, 'runtimeId': 20,
+                                     'runtime': 'relay-stdio-metadata', 'transport': 'stdio'}
+        self.descriptor = {'generation': self.native.generation, 'pid': 20,
+            'hostName': socket.gethostname(), 'platform': sys.platform, 'codexHome': '/fixture',
+            'processStart': 'start', 'processStartMethod': 'ps-lstart',
+            'executable': '/bin/codex', 'identityMethod': 'relay-owned-child'}
+        self.native.native_host_info = lambda: copy.deepcopy(self.descriptor)
+        self.manager = self.service.writers = WriterProcesses('/fixture')
+        self.identity = {'pid': 20, 'start': 'start', 'command': 'codex app-server --stdio',
+                         'executable': '/bin/codex'}
+        self.manager.identity = Mock(return_value=self.identity)
+        self.manager.run = Mock(return_value=str(os.getpid()))
+        self.snapshot = {'threadId': TID, 'holders': [{**self.identity, 'pid': 10,
+                         'threads': [TID, OTHER], 'children': []}]}
+        self.manager.snapshot = Mock(side_effect=lambda _: copy.deepcopy(self.snapshot))
+        self.manager.terminate = Mock()
+        self.manager.restart = Mock()
+        self.service.native_journal.cached_host = Mock(return_value=self.descriptor)
+
+    def preview(self):
+        return self.service.preview_handoff(TID, 'takeover', 'phone')
+
+    def execute(self, preview, confirmed=True):
+        return self.service.handoff(TID, 'takeover', owner='phone',
+                                    ticket=preview['ticket'], confirmed=confirmed)
+
+    def test_stdio_preview_and_confirmed_takeover_preserve_impact(self):
+        self.assertTrue(self.service._thread_runtime(TID)['handoffAvailable'])
+        preview = self.preview()
+        self.assertEqual([10], preview['processIds'])
+        self.assertEqual(sorted([TID, OTHER]), preview['affectedThreadIds'])
+        self.assertTrue(preview['requiresConfirmation'])
+        self.manager.terminate.assert_not_called()
+        def terminate(snapshot):
+            self.assertEqual(self.snapshot, snapshot)
+            self.snapshot = {'threadId': TID, 'holders': [{**self.identity, 'threads': [TID], 'children': []}]}
+        self.manager.terminate.side_effect = terminate
+        self.assertEqual({'threadId': TID}, self.execute(preview))
+        self.manager.terminate.assert_called_once()
+        self.manager.restart.assert_not_called()
+        self.assertNotIn(('ownership', ''), self.service.observations_for(TID))
+        self.assertEqual('takeover', self.service.observations_for(OTHER)[('ownership', '')]['releaseState'])
+        self.assertIn('thread/resume', [m for m, _ in self.native.calls])
+
+    def test_stdio_shared_holder_still_requires_confirmation(self):
+        with self.assertRaises(CodexError) as caught:
+            self.execute(self.preview(), confirmed=False)
+        self.assertEqual('handoff_confirmation_required', caught.exception.code)
+        self.manager.terminate.assert_not_called()
+
+    def test_stdio_holder_changes_reject_before_termination(self):
+        for field, value in (('pid', 11), ('start', 'reused'), ('executable', '/bin/other'),
+                             ('threads', [TID, OTHER, 'extra'])):
+            with self.subTest(field=field):
+                preview = self.preview()
+                old = self.snapshot['holders'][0][field]
+                self.snapshot['holders'][0][field] = value
+                with self.assertRaises(CodexError):
+                    self.execute(preview)
+                self.snapshot['holders'][0][field] = old
+        self.manager.terminate.assert_not_called()
+
+    def test_stdio_parent_is_rechecked_at_execution(self):
+        preview = self.preview()
+        self.manager.run.return_value = '1'
+        with self.assertRaises(CodexError) as caught:
+            self.execute(preview)
+        self.assertEqual('handoff_host_unverified', caught.exception.code)
+        self.manager.terminate.assert_not_called()
+
+    def test_stdio_rejects_unverified_or_changed_host(self):
+        original = self.descriptor.copy()
+        for changed in ({'identityMethod': 'remote'}, {'hostName': 'remote'},
+                        {'codexHome': '/other'}, {'pid': 999}, {'processStart': 'reused'},
+                        {'executable': '/bin/other'}):
+            with self.subTest(changed=changed):
+                self.descriptor = {**original, **changed}
+                with self.assertRaises(CodexError):
+                    self.preview()
+        self.manager.terminate.assert_not_called()
+
+    def test_stdio_rejects_pid_reuse_during_parent_check(self):
+        self.manager.identity.side_effect = [self.identity, {**self.identity, 'start': 'reused'}]
+        with self.assertRaises(CodexError):
+            self.preview()
+        self.manager.terminate.assert_not_called()
+
+    def test_stdio_cannot_skip_codex_executable_validation(self):
+        self.descriptor['executable'] = '/bin/other'
+        self.manager.identity.return_value = {**self.identity, 'executable': '/bin/other'}
+        with self.assertRaises(CodexError):
+            self.preview()
+        self.manager.terminate.assert_not_called()
+
+    def test_missing_socket_without_child_proof_is_controlled_error(self):
+        with self.assertRaises(CodexError) as caught:
+            self.manager.verify_local_runtime(20, None)
+        self.assertEqual('handoff_host_unverified', caught.exception.code)
+
 
 class PreviewTests(unittest.TestCase):
     def test_verified_host_requires_local_home_identity_and_socket_before_inspection(self):

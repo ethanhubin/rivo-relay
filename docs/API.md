@@ -361,7 +361,7 @@ for release as well as takeover. Changed/expired previews must be fetched again.
 媒体记录含 `id,source,threadId,turnId,itemId,status,mediaType,mimeType,favorite,hasGenerationInfo,originalUrl,thumbnailUrl`；API相对URL只在当前认证节点使用，不能当作远端原生文件路径。pending记录不能用于读取成品。公网图片40MiB，原生生成图片64MiB，媒体传输上限1GiB；缓存2GiB/24小时。有 VPS 凭据的节点默认使用中转共享 ASR，由中转决定后端；独立节点可通过 `RIVO_SPEECH_BACKEND_URL` / `RIVO_SPEECH_BACKEND_TOKEN` 显式配置，不自动部署模型或服务。详见 [中转统一语音识别](shared-asr.md)。
 
 
-进程级 ownership takeover 仅适用于已核实的本地主机 daemon，描述符、原生HOME、PID启动时间/二进制/socket在预览和执行时重复核对。显式共享 Desktop 模式已有本连接订阅的 release 使用 `thread/unsubscribe`，返回 `releaseScope=relay-subscription`，Desktop/远程均不杀进程，也不宣称释放了其他客户端的锁。`nativeRuntime.handoffAvailable` 仅表达强制接管能力；正常释放不依赖该值。
+进程级 ownership takeover 适用于已核实的 POSIX 本机运行时，描述符、原生 HOME、PID 启动时间和二进制在预览和执行时重复核对。Unix socket 模式继续核对 socket 归属；stdio 模式要求 `relay-owned-child` 身份证明，并通过操作系统重复确认该进程是当前 Relay 的直接子进程，缺少 socket 本身不能作为本机证明。持锁进程与关联会话的影响范围校验及确认规则保持不变。显式共享 Desktop 模式已有本连接订阅的 release 使用 `thread/unsubscribe`，返回 `releaseScope=relay-subscription`，Desktop/远程均不杀进程，也不宣称释放了其他客户端的锁。`nativeRuntime.handoffAvailable` 仅表达强制接管能力；正常释放不依赖该值。
 
 强制接管允许预览同一锁文件的多个已核实 Codex 进程（包括打开锁文件但未实际持锁的进程），返回完整的进程及关联会话范围；多个进程即使只涉及一个会话也必须确认。预览后进程自然退出、关联会话减少不再使票据失效；新增进程、会话、子进程或进程身份变化仍要求重新预览。客户端不再因缓存中的 `handoffAvailable=false` 禁止重新核验，刷新期间保留已确认的外部占用接管入口；共享 Desktop、断网和正在提交的操作仍按现有条件限制。Windows 外部 writer 和未核实的远程主机仍不支持进程级接管。
 
