@@ -41,7 +41,7 @@ Windows 创建 Limited/S4U 无窗口计划任务；macOS 创建登录用户 Laun
 
 ## 日常发布
 
-沿用 `scripts/release.py prepare/run/resume` 的版本递增、相关测试、APK 签名和主节点发布流程。最后新增 VPS 发布及 HTTP 验收，只有两者都成功才记录 complete。VPS 清单采用单次原子替换，同一清单同时指定 App 与节点程序包；相同 versionCode 不得替换不同内容，不得降级。
+沿用 `scripts/release.py prepare/run/resume` 的版本递增、相关测试、APK 签名和主节点发布流程。发布主节点/VPS 更新清单之前，必须完成 e2mac 独立 ASR 同步与验收；随后完成 VPS 发布及 HTTP 验收，全部成功才记录 complete。VPS 清单采用单次原子替换，同一清单同时指定 App 与节点程序包；相同 versionCode 不得替换不同内容，不得降级。
 
 底层 `scripts/publish-gateway-update.py --commit <发布提交>` 仅导出已锁定提交的 server 代码，并复用已通过签名验证的本地主节点 APK；不能把它当成跳过构建/签名检查的通用发布入口。上传只通过管理员 SSH，节点接入密钥没有发布权限。上传后经固定证书验证的 HTTPS 完整下载 APK 和节点包核验大小与 SHA-256。中断可复用同一提交/产物重跑，仍不创建 GitHub 发布。
 
@@ -161,3 +161,15 @@ python scripts/recover-submission.py --workspace /节点/workspace --submission 
 ```
 
 恢复要求两把服务锁均空闲，拒绝已确认结果、指纹变化、证据文件变化及与已有 dispatch/receipt 矛盾的失败声明。应用前生成 SQLite 一致性备份、保存证据摘录和原记录；恢复结果与审计信息在同一数据库事务提交，同时在 `workspace/artifacts/submission-recovery-*` 保存记录。原提交 ID 与去重记录保留。完成后启动原服务并检查更新状态。证据与数据库备份含私有信息，不提交 Git。
+
+### 发布时同步共享 ASR
+
+发布 CLI 固定通过 SSH 别名 `e2-mac-mini` 同步 `/Users/e2/Services/rivo-asr`，使用目标独立虚拟环境和 `local.rivo-asr` LaunchAgent。发布电脑须事先配置非交互 SSH 登录；E2 不可达时停止发布，不跳过语音规则更新。
+
+- 从本次构建对应的 Git commit 提取 `scripts/asr/mac_asr.py` 和 `server.py`，不读取工作区副本；权重、token、gateway.json 和连接器不变。
+- 校验目标 `requirements.lock` 与发布提交一致；依赖变化需先单独升级环境和锁文件，本流程不自动安装依赖。
+- 保存持久化恢复记录，再替换代码并仅重启 `local.rivo-asr`；健康检查与源码 SHA-256 验收通过后记录 `steps.asr` 和 `asr-verification.json`。ASR 代码未变且已验收时不重启，仍检查健康。
+- 服务不健康则恢复旧代码并重启验收；恢复失败保留 `release-pending.json`。`resume` 会先恢复未完成的切换，再重试，不将 SSH 中断视为成功。最近一次切换备份在 E2 的 `release-backup.json`。
+- 拒绝 ASR 版本降级或同 versionCode 替换不同内容。ASR 同步失败不会开始发布本次 App/节点清单；此时主节点可能已切换到新代码，修复后继续原发布计划。
+
+此步骤只随使用新版 CLI 的发布执行；合并 PR 本身不会同步线上 ASR。首次纳管会重启 ASR 以确认加载版本，可能中断当时的录音；后续仅 ASR 代码变化时重启。依赖锁一致性和健康检查不代替真实录音识别验证。
