@@ -39,6 +39,23 @@ internal fun NodeActivity.accept(response: org.json.JSONObject): NodeActivity {
         retiredGenerations + setOf(generation).filter { it.isNotBlank() && it != response.string("generation") })
 }
 
+/** null means node-wide uncertainty; an empty set changes no execution state. */
+internal fun activityInvalidatedThreads(event: RelayEvent): Set<String>? {
+    if (!catalogLifecycleEvent(event)) return emptySet()
+    if (event.type in setOf("reset", "connected", "revoked")) return null
+    val method = event.payload.string("method")
+    if (method == "relay/nativeDisconnected") return null
+    // Project metadata can require a catalog refresh without invalidating execution.
+    if (method.startsWith("project/")) return emptySet()
+    val params = event.payload.optJSONObject("params") ?: return null
+    params.optJSONArray("threadIds")?.let { ids ->
+        return (0 until ids.length()).map { ids.optString(it) }.filter(String::isNotBlank).toSet()
+    }
+    val id = params.string("threadId").ifBlank { params.string("conversationId") }
+        .ifBlank { params.optJSONObject("thread")?.string("id").orEmpty() }
+    return id.takeIf(String::isNotBlank)?.let { setOf(it) }
+}
+
 fun nodeActivity(api: RelayApi, sync: NodeSessionSync, scope: CoroutineScope): StateFlow<NodeActivity> = channelFlow {
     var previous = NodeActivity()
     var epoch = 0L
@@ -46,16 +63,17 @@ fun nodeActivity(api: RelayApi, sync: NodeSessionSync, scope: CoroutineScope): S
     coroutineScope {
         val signals = Channel<Unit>(Channel.CONFLATED)
         val events = launch {
-            suspend fun invalidate() {
-                lock.withLock {
+            suspend fun invalidate(threads: Set<String>? = null) {
+                if (threads == null || threads.isNotEmpty()) lock.withLock {
                     epoch++
-                    previous = previous.copy(confirmed = false)
+                    previous = if (threads == null) previous.copy(confirmed = false)
+                        else previous.copy(unknown = previous.unknown + threads)
                     send(previous)
                 }
                 signals.trySend(Unit)
             }
             sync.events(onInterrupted = { invalidate() }).collect {
-                if (catalogLifecycleEvent(it)) invalidate()
+                if (catalogLifecycleEvent(it)) invalidate(activityInvalidatedThreads(it))
             }
         }
         val snapshots = launch {

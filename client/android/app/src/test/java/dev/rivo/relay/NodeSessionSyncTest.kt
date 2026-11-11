@@ -4,6 +4,7 @@ import dev.rivo.relay.codex.NodeSessionSync
 import dev.rivo.relay.data.RelayApi
 import dev.rivo.relay.data.string
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.collect
 import okhttp3.mockwebserver.*
@@ -17,17 +18,23 @@ class NodeSessionSyncTest {
     private fun api(server: MockWebServer) = RelayApi(server.url("/").newBuilder().host("127.0.0.1").build().toString())
     private suspend fun await(latch: CountDownLatch) = withContext(Dispatchers.IO) { assertTrue(latch.await(5, TimeUnit.SECONDS)) }
 
-    @Test fun lifecycleEventFencesLateDetailActivity() = runBlocking {
-        for (method in listOf("turn/started", "turn/completed")) {
+    @Test fun executionEventsFenceLateDetailActivityButUnrelatedMetadataDoesNot() = runBlocking {
+        for ((method, params, expected) in listOf(
+            Triple("turn/started", """{"threadId":"t"}""", 0),
+            Triple("turn/completed", """{"threadId":"t"}""", 0),
+            Triple("relay/writerDisconnected", """{"threadIds":["t"]}""", 0),
+            Triple("relay/writerDisconnected", """{"threadIds":[]}""", 1),
+            Triple("project/updated", """{"projectId":"p"}""", 1)
+        )) {
             val server = MockWebServer()
             val started = CountDownLatch(1)
             val release = CountDownLatch(1)
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     if (request.requestUrl?.encodedPath == "/v1/events") {
-                        started.await(5, TimeUnit.SECONDS)
                         return MockResponse().setHeader("Content-Type", "text/event-stream")
-                            .setBody("event: native\ndata: {\"method\":\"$method\",\"params\":{\"threadId\":\"t\"}}\n\n" + ":".repeat(4096))
+                            .setBodyDelay(1, TimeUnit.SECONDS)
+                            .setBody("event: native\ndata: {\"method\":\"$method\",\"params\":$params}\n\n" + ":".repeat(4096))
                             .throttleBody(160, 1, TimeUnit.SECONDS)
                     }
                     started.countDown()
@@ -43,13 +50,17 @@ class NodeSessionSyncTest {
                 val collector = scope.launch(start = CoroutineStart.UNDISPATCHED) {
                     sync.activitySnapshots.collect { received.incrementAndGet() }
                 }
-                val event = async { sync.events().first { it.type == "native" } }
+                val connected = CompletableDeferred<Unit>()
+                val event = async { sync.events().onEach {
+                    if (it.type == "connected") connected.complete(Unit)
+                }.first { it.type == "native" } }
+                withTimeout(5000) { connected.await() }
                 val detail = async { sync.read("t") }
                 withTimeout(5000) { event.await() }
                 release.countDown()
                 withTimeout(5000) { detail.await() }
                 yield()
-                assertEquals(0, received.get())
+                assertEquals(method, expected, received.get())
                 collector.cancel()
             } finally { release.countDown(); scope.cancel(); server.shutdown() }
         }
