@@ -78,7 +78,9 @@ fun nativeAgentDetailsByMessage(messages: List<NativeMessage>): Map<Pair<String,
                 latest[agent.threadId] = agent.copy(
                     name = if (agent.name == "代理" || agent.name == "代理 ${agent.threadId.take(8)}") previous?.name ?: agent.name else agent.name,
                     status = agent.status.takeUnless { it == "unknown" } ?: previous?.status ?: "unknown",
-                    message = agent.message.ifBlank { if (agent.status in setOf("running", "pendingInit")) "" else previous?.message.orEmpty() })
+                    message = agent.message.ifBlank {
+                        if (agent.status !in setOf("running", "pendingInit") && (agent.status == "unknown" || agent.status == previous?.status))
+                            previous?.message.orEmpty() else "" })
             }
         }
         items.forEach detailLoop@{ message ->

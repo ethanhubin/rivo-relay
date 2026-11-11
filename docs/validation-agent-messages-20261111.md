@@ -21,4 +21,4 @@ REA 记录 `ev_8b59eb430dcfedb01a0c39976321c21654dbdfe30a3cc1972ad1bd515e277bbd`
 
 ## 验证
 
-Android 相关 JVM 测试 30 项通过（NativeAgentsTest、NativeActivityProjectionTest、NativeMessageFormatsTest），Debug Kotlin 编译通过，git diff --check 通过。首轮编译未包含编译启动后补充的中断状态修正，相关用例失败；最终代码重新编译并复测全部通过。未运行 lint，未进行真机或模拟器验证，未发布、未提交或推送。
+Android 相关 JVM 测试 32 项通过（NativeAgentsTest、NativeActivityProjectionTest、NativeMessageFormatsTest），Debug Kotlin 编译通过，git diff --check 通过。首轮编译未包含编译启动后补充的中断状态修正，相关用例失败；最终代码重新编译并复测全部通过。未运行 lint，未进行真机或模拟器验证，未发布。审查补充修复：代理终态变化且新事件无结果文本时清除旧状态结果；同一终态的重复事件仍保留结果。两项新增回归及相关测试全部通过。

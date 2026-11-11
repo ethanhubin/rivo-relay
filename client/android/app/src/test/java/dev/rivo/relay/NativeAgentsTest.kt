@@ -63,4 +63,20 @@ class NativeAgentsTest {
         assertEquals("interrupted", nativeActivity(item("""{"type":"subAgentActivity","kind":"interrupted"}"""))!!.status)
     }
 
+    @Test fun terminalStatusChangeDoesNotCarryEarlierErrorIntoSuccess() {
+        val events = messages(
+            item("""{"id":"spawn","type":"collabAgentToolCall","tool":"spawnAgent","status":"completed","receiverThreadIds":["child"],"agentsStates":{"child":{"status":"errored","message":"旧错误"}}}"""),
+            item("""{"id":"done","type":"subAgentActivity","kind":"completed","agentThreadId":"child","agentPath":"/root/review"}"""))
+        val child = nativeAgentDetailsByMessage(events)["turn" to "spawn"]!!.agents.single()
+        assertEquals("completed", child.status)
+        assertEquals("", child.message)
+    }
+
+    @Test fun repeatedTerminalEventRetainsResultForSameStatus() {
+        val events = messages(
+            item("""{"id":"spawn","type":"collabAgentToolCall","tool":"spawnAgent","status":"completed","receiverThreadIds":["child"],"agentsStates":{"child":{"status":"completed","message":"检查通过"}}}"""),
+            item("""{"id":"done","type":"subAgentActivity","kind":"completed","agentThreadId":"child","agentPath":"/root/review"}"""))
+        assertEquals("检查通过", nativeAgentDetailsByMessage(events)["turn" to "spawn"]!!.agents.single().message)
+    }
+
 }
