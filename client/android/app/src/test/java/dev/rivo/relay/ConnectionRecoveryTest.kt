@@ -11,6 +11,60 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ConnectionRecoveryTest {
+    @Test fun networkSwitchCancelsStalledProbeWithoutWaitingForTimeout() = runTest {
+        var probes = 0
+        var restored = 0
+        var cancelled = false
+        val recovery = ConnectionRecovery(this, {
+            if (++probes == 1) try { awaitCancellation() } finally { cancelled = true }
+        }, {}, { restored++ }, { throw it })
+        recovery.failed(IOException("old route"))
+        runCurrent()
+        recovery.networkAvailable()
+        runCurrent()
+        assertTrue(cancelled)
+        assertEquals(0L, testScheduler.currentTime)
+        assertEquals(2, probes)
+        assertEquals(1, restored)
+        assertEquals(RecoveryState.CONNECTED, recovery.state.value)
+    }
+
+    @Test fun networkSwitchInterruptsBackoffAndRecoversExhaustedRounds() = runTest {
+        var offline = true
+        var probes = 0
+        var restored = 0
+        val recovery = ConnectionRecovery(this, { probes++; if (offline) throw IOException("offline") },
+            {}, { restored++ }, { throw it })
+        recovery.reconnect(manual = true)
+        runCurrent()
+        offline = false
+        recovery.networkAvailable()
+        runCurrent()
+        assertEquals(0L, testScheduler.currentTime)
+        assertEquals(2, probes)
+        assertEquals(RecoveryState.CONNECTED, recovery.state.value)
+        offline = true
+        recovery.reconnect(manual = true)
+        advanceUntilIdle()
+        assertEquals(RecoveryState.DISCONNECTED, recovery.state.value)
+        offline = false
+        recovery.networkAvailable()
+        runCurrent()
+        assertEquals(RecoveryState.CONNECTED, recovery.state.value)
+        assertEquals(2, restored)
+    }
+
+    @Test fun directNetworkSwitchSynchronizesEvenWhenConnectionStillLooksHealthy() = runTest {
+        var resets = 0
+        var restored = 0
+        val recovery = ConnectionRecovery(this, {}, { resets++ }, { restored++ }, { throw it })
+        recovery.networkAvailable()
+        runCurrent()
+        assertEquals(1, resets)
+        assertEquals(1, restored)
+        assertEquals(RecoveryState.CONNECTED, recovery.state.value)
+    }
+
     @Test fun foregroundSynchronizesHealthyNodeWithoutResettingTransport() = runTest {
         var probes = 0
         var resets = 0
