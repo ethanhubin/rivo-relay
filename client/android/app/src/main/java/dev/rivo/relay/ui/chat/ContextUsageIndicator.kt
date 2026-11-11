@@ -45,10 +45,11 @@ internal fun ContextUsageIndicator(usage: JSONObject?, threadId: String?) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 trackColor = MaterialTheme.colorScheme.outlineVariant)
         }
-        // Keep the anchor clickable. Outside-touch dismissal can close on DOWN and
-        // immediately reopen on the anchor's UP; the button owns toggle dismissal.
+        // A focusable popup consumes the outside tap, so tapping the anchor closes
+        // the tip without passing the same gesture through and reopening it.
         if (expanded) Popup(popupPositionProvider = remember(gap) { ModeMenuPosition(gap) },
-            properties = PopupProperties(focusable = false, dismissOnClickOutside = false)) {
+            onDismissRequest = { expanded = false },
+            properties = PopupProperties(focusable = true, dismissOnClickOutside = true)) {
             Surface(modifier = Modifier.widthIn(max = 280.dp).testTag("context_usage_tip"),
                 shape = MaterialTheme.shapes.medium,
                 color = MaterialTheme.colorScheme.surfaceContainerHigh, shadowElevation = 8.dp) {
@@ -58,8 +59,6 @@ internal fun ContextUsageIndicator(usage: JSONObject?, threadId: String?) {
                         style = MaterialTheme.typography.bodySmall)
                     Text("已使用：${count(context.used)} tokens", style = MaterialTheme.typography.bodySmall)
                     Text("窗口容量：${count(context.window)} tokens", style = MaterialTheme.typography.bodySmall)
-                    Text("最近一次模型调用的统计；上下文压缩后会更新。",
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
