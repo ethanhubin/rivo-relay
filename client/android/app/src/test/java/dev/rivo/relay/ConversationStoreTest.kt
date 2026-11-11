@@ -12,6 +12,19 @@ import java.io.File
 
 class ConversationStoreTest {
     @get:Rule val directory = TemporaryFolder()
+    @Test fun unchangedCatalogAndTodosDoNotWriteAgainEvenAfterReopen() = runBlocking {
+        val writes = mutableListOf<String>()
+        val store = ConversationStore(directory.root, writes::add)
+        val todos = JSONObject().put("version", 1).put("items", JSONArray()).put("operations", JSONArray())
+        val catalog = JSONObject().put("threads", JSONArray())
+        store.saveTodoState(todos); store.saveCatalog("p", catalog)
+        val reopened = ConversationStore(directory.root, writes::add)
+        reopened.saveTodoState(todos); reopened.saveCatalog("p", catalog)
+        assertEquals(2, writes.size)
+        reopened.saveCatalog("p", JSONObject().put("threads", JSONArray().put(JSONObject().put("id", "new"))))
+        assertEquals(3, writes.size)
+        assertEquals("new", reopened.loadCatalog("p")!!.objects("threads").single().string("id"))
+    }
     @Test fun failedMessageSurvivesReopenWithoutReceiptPolling() = runBlocking {
         val store = ConversationStore(directory.root)
         store.savePendingMessage(PendingNativeMessage("submission", "client", "thread",

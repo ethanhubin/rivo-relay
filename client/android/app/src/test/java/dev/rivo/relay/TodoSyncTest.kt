@@ -76,7 +76,7 @@ class TodoSyncTest {
         try {
             val first = TodosController(api(server), firstScope, failure::set, ConversationStore(folder))
             first.saveDetails(null, "Offline task", "Notes", JSONObject().put("dueDate", "2026-11-01")) {}
-            withTimeout(5_000) { first.state.first { it.pendingCount == 1 && it.syncError != null && !it.syncing } }
+            withTimeout(5_000) { first.state.first { it.pendingCount == 1 && it.syncError != null && !it.syncing && !it.dispatching } }
             val stored = ConversationStore(folder).loadTodoState()!!
             assertEquals(1, stored.objects("operations").size)
             assertEquals("Offline task", stored.objects("items").single().string("title"))
@@ -142,7 +142,7 @@ class TodoSyncTest {
         try {
             val controller = TodosController(api(server), scope, { throw it })
             controller.prepareDispatch("todo") { called.incrementAndGet() }
-            withTimeout(5_000) { controller.state.first { it.syncError != null && !it.syncing } }
+            withTimeout(5_000) { controller.state.first { it.syncError != null && !it.syncing && !it.dispatching } }
             assertEquals(0, called.get())
             controller.prepareDispatch("todo") { called.incrementAndGet() }
             withTimeout(5_000) { controller.state.first { it.online && !it.syncing } }

@@ -192,15 +192,26 @@ class IdleSessionSyncTest {
         val scope = CoroutineScope(coroutineContext + SupervisorJob())
         val transport = api(server)
         val sync = NodeSessionSync(transport, scope)
-        val existingSubscriber = scope.launch { sync.events(onInterrupted = {}).collect {} }
+        val reconnected = CompletableDeferred<Int>()
+        var connections = 0
+        val existingSubscriber = scope.launch {
+            sync.events(onInterrupted = {}).collect {
+                if (it.type == "connected" && ++connections == 2) reconnected.complete(reads.get())
+            }
+        }
         withTimeout(1500) { while (!sync.streamInterrupted) delay(10) }
         // The chat joins after the shared stream's interruption, without replayed error events.
         val controller = SessionController(transport, scope, pollIntervalMillis = 60, sync = sync) { fail(it.message) }
         try {
             controller.open("t")
             withTimeout(1500) { while (reads.get() < 3) delay(10) }
-            withTimeout(3000) { while (streams.get() < 2) delay(10) }
-            delay(1000) // Reconnect headers plus the final authoritative refresh.
+            val beforeReconnectRead = withTimeout(5000) { reconnected.await() }
+            withTimeout(3000) { controller.state.first {
+                !it.stale && (it.snapshot?.name?.removePrefix("read-")?.toIntOrNull() ?: 0) > beforeReconnectRead
+            } }
+            // Wait for the actual connected event and its successful read, not
+            // a wall-clock guess based on when MockWebServer accepted the request.
+            delay(250)
             val settled = reads.get()
             delay(700)
             assertEquals(settled, reads.get())
