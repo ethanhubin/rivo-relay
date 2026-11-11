@@ -132,8 +132,11 @@ class NodeRouteInterceptor(
             response.close()
             return chain.proceed(routed(request, alternate))
         } catch (error: IOException) {
+            // Navigation and subscription replacement cancel healthy requests too.
+            // Preserve the verified route instead of making other reads wait for a probe.
+            if (chain.call().isCanceled()) throw error
             verifiedAt = 0L
-            if (request.method != "GET" || routes.mode != ConnectionMode.AUTO || chain.call().isCanceled()) throw error
+            if (request.method != "GET" || routes.mode != ConnectionMode.AUTO) throw error
             val alternate = try { choose(endpoint) } catch (_: IOException) { throw error }
             return chain.proceed(routed(request, alternate))
         }
