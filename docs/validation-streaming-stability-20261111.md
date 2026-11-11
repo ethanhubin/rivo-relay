@@ -33,3 +33,4 @@
 - 修复后 `StreamingTextBufferTest` 7 项与 `MarkdownMessageBoundaryTest` 7 项通过，Android debug Kotlin 编译通过。服务端 `test_live_message_projection`、`test_client_projection`、`test_history_read_optimization.ReadScopeTests` 共 30 项通过，覆盖无状态完成、会话/轮次隔离、原生数据不变、同步状态和分页版本不受影响。
 - 本轮复用此前 8 项滚动模拟器结果；深入审查阶段另有前后台、关闭动画、完成及切换会话、手势恢复跟随共 4 项临时补测通过。最初默认滑动起点受输入区影响，调整起点并确认到底后的手势测试通过。临时测试和日志保存在忽略目录 `workspace/diagnostics/streaming-boundary-review/`，测试源码已从源码目录清理。
 - 修复后的完成边界由服务端投影回归及 Android 单元测试验证，本轮未重跑模拟器、未进行真机或真实节点端到端流式验证；未发布。
+- 合并前将最新 `origin/main`（`c100d44`，包含会话删除和计时动画）无冲突合入功能分支；已检查交叉文件的兼容性，并在合并后代码上重跑上述 Android 14 项与服务端 30 项定向回归。
