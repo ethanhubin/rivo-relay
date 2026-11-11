@@ -56,8 +56,8 @@ class SessionControlTest {
         assertTrue(pending.takeoverControl().enabled)
         val unavailable = base.copy(snapshot = base.snapshot!!.copy(nativeRuntime = JSONObject()
             .put("handoffAvailable", false).put("handoffUnavailableReason", "实际主机不可操作")))
-        assertFalse(unavailable.takeoverControl().enabled)
-        assertEquals("实际主机不可操作", unavailable.takeoverControl().reason)
+        assertTrue(unavailable.takeoverControl().enabled)
+        assertTrue(unavailable.takeoverControl().reason.contains("实际主机不可操作"))
         val desktop = base.copy(snapshot = base.snapshot!!.copy(nativeRuntime = JSONObject().put("desktopShared", true)))
         assertFalse(desktop.takeoverControl().enabled)
         assertTrue(desktop.takeoverControl().reason.contains("Desktop"))
@@ -77,7 +77,7 @@ class SessionControlTest {
         assertFalse(refreshing.control().canOperate)
         val external = session("external")
         assertTrue(external.showTakeover())
-        assertFalse(external.copy(synchronization = SessionSynchronization.pending(), lastConfirmedControl = external.control()).showTakeover())
+        assertTrue(external.copy(synchronization = SessionSynchronization.pending(), lastConfirmedControl = external.control()).showTakeover())
         assertFalse(writable.copy(lastConfirmedControl = external.control()).showTakeover())
     }
     @Test fun pendingReleaseIsNotReportedAsReleased() {

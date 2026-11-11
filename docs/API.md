@@ -363,6 +363,9 @@ for release as well as takeover. Changed/expired previews must be fetched again.
 
 进程级 ownership takeover 仅适用于已核实的本地主机 daemon，描述符、原生HOME、PID启动时间/二进制/socket在预览和执行时重复核对。显式共享 Desktop 模式已有本连接订阅的 release 使用 `thread/unsubscribe`，返回 `releaseScope=relay-subscription`，Desktop/远程均不杀进程，也不宣称释放了其他客户端的锁。`nativeRuntime.handoffAvailable` 仅表达强制接管能力；正常释放不依赖该值。
 
+强制接管允许预览同一锁文件的多个已核实 Codex 进程（包括打开锁文件但未实际持锁的进程），返回完整的进程及关联会话范围；多个进程即使只涉及一个会话也必须确认。预览后进程自然退出、关联会话减少不再使票据失效；新增进程、会话、子进程或进程身份变化仍要求重新预览。客户端不再因缓存中的 `handoffAvailable=false` 禁止重新核验，刷新期间保留已确认的外部占用接管入口；共享 Desktop、断网和正在提交的操作仍按现有条件限制。Windows 外部 writer 和未核实的远程主机仍不支持进程级接管。
+
+
 ### 会话权限选择
 
 `POST /v1/threads` 与 `POST /v1/threads/{id}/settings` 可分别传入 `sandbox`（`read-only`、`workspace-write`、`danger-full-access`）和 `approvalPolicy`（`on-request`、`untrusted`、`never`、兼容旧版的 `on-failure`）。省略表示沿用原生设置，两个选项互不隐式覆盖。新建传给原生 `thread/start`；已有会话映射为 `thread/settings/update` 的 `sandboxPolicy`，保留已有显式网络开关。讨论模式下拒绝修改已有会话的文件权限，避免覆盖退出讨论后的恢复基线；审批仍可修改。
