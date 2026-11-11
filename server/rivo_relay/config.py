@@ -29,8 +29,19 @@ class Config:
     desktop_bridge_dir: Path | None = None
 
     codex_executable: Path | None = None
+    runtime: str = 'codex'
+    dsh_bridge_socket: Path | None = None
 
     def validate(self) -> None:
+        if self.runtime not in {'codex', 'dsh'}:
+            raise ValueError('runtime must be codex or dsh')
+        if self.runtime == 'dsh':
+            if not self.dsh_bridge_socket or not self.dsh_bridge_socket.is_absolute():
+                raise ValueError('DSH requires an absolute --dsh-bridge-socket path')
+            if self.codex_runtime != 'auto' or self.codex_executable or self.desktop_bridge_dir:
+                raise ValueError('DSH cannot use Codex runtime options')
+        elif self.dsh_bridge_socket:
+            raise ValueError('--dsh-bridge-socket requires --runtime dsh')
         if self.codex_runtime not in {'auto', 'desktop', 'app_server', 'stdio'}:
             raise ValueError('codex_runtime must be auto, desktop, app_server or stdio')
         if self.codex_runtime == 'stdio' and (not self.codex_executable or not self.codex_executable.is_absolute() or not self.codex_executable.is_file()):

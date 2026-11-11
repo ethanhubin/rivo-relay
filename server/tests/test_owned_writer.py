@@ -88,7 +88,7 @@ class OwnedRoutingTests(unittest.TestCase):
         writer = self.created[0]
         writer.on_event({'id': 1, 'method': 'item/tool/requestUserInput', 'params': {'threadId': 'a'}})
         request_id = events[-1]['id']
-        def respond(*args):
+        def respond(*args, **kwargs):
             writer.close()
             raise CodexError('closed before delivery')
         writer.respond = respond
@@ -97,6 +97,61 @@ class OwnedRoutingTests(unittest.TestCase):
         self.assertEqual({}, self.pool._requests)
         with self.assertRaises(CodexError):
             self.pool.respond(request_id, {})
+
+    def test_response_claim_does_not_deadlock_synchronous_writer_retirement(self):
+        runtime = RuntimeConnection(native=self.pool, desktop=Backend(), mode='app_server')
+        service = CodexService(connection=runtime)
+        service.start()
+        service._resume('a')
+        writer = self.created[0]
+        writer.on_event({'id': 7, 'method': 'item/commandExecution/requestApproval',
+            'params': {'threadId': 'a', 'availableDecisions': ['accept', 'cancel']}})
+        view = service.interactions.snapshot('a')['interactions'][0]
+        retiring, responding = threading.Event(), threading.Event()
+        response_errors, release_errors = [], []
+        close_writer, respond = self.pool._close_writer, self.pool.respond
+        def held_writer_close(selected):
+            retiring.set()
+            if not responding.wait(2):
+                raise AssertionError('Response did not reach the writer pool')
+            # Fail instead of hanging the test if the inverted pending lock is
+            # held while respond is waiting for this thread's writer lock.
+            if not service.interactions._lock.acquire(blocking=False):
+                raise AssertionError('Response holds pending lock while waiting for writer retirement')
+            service.interactions._lock.release()
+            return close_writer(selected)
+        def waiting_respond(*args, **kwargs):
+            responding.set()
+            return respond(*args, **kwargs)
+        def release():
+            try:
+                self.pool.release('a', writer)
+            except Exception as error:
+                release_errors.append(error)
+        def answer():
+            try:
+                service.respond_interaction('a', runtime.generation, view['id'], view['revision'],
+                    {'choiceId': view['choices'][0]['id']})
+            except Exception as error:
+                response_errors.append(error)
+        with patch.object(self.pool, '_close_writer', side_effect=held_writer_close), \
+             patch.object(self.pool, 'respond', side_effect=waiting_respond):
+            retiring_worker = threading.Thread(target=release, daemon=True)
+            answering_worker = threading.Thread(target=answer, daemon=True)
+            retiring_worker.start()
+            self.assertTrue(retiring.wait(2))
+            answering_worker.start()
+            retiring_worker.join(3)
+            answering_worker.join(3)
+        self.assertFalse(retiring_worker.is_alive())
+        self.assertFalse(answering_worker.is_alive())
+        self.assertEqual([], release_errors)
+        self.assertEqual(1, len(response_errors))
+        self.assertIsInstance(response_errors[0], CodexError)
+        self.assertTrue(response_errors[0].definite)
+        self.assertEqual([], writer.replies)
+        self.assertEqual([], service.interactions.list('a'))
+        self.assertEqual({}, self.pool._requests)
 
     def test_shutdown_during_acquisition_cannot_register_or_leak_writer(self):
         entered, finish = threading.Event(), threading.Event()

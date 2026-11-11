@@ -116,6 +116,7 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
 
     def send_file(self, path):
+        self.app.require_capability('files.read')
         if not self.app.file_transfer_slots.acquire(blocking=False):
             raise ApiError(429, "transfer_busy", "文件传输繁忙，请稍后重试")
         try:
@@ -192,6 +193,7 @@ class Handler(BaseHTTPRequestHandler):
             self.app.file_transfer_slots.release()
 
     def receive_file(self, target_id, query, *, project=False):
+        self.app.require_capability('files.upload')
         if self.headers.get("Transfer-Encoding"):
             raise ApiError(400, "invalid_request", "不支持无长度上传")
         lengths = self.headers.get_all("Content-Length", [])
@@ -432,6 +434,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             if self.command == 'GET' and path == ['v1', 'sites']:
+                self.app.require_capability('sites.read')
                 from .codex.sites import list_sites
                 self.send_json(200, list_sites(self.app.codex.connection, query.get('cursor', [None])[0]))
                 return
@@ -441,6 +444,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, public_status(self.app.config.workspace))
                 return
             if self.command == 'GET' and path == ['v1', 'media', 'versions']:
+                self.app.require_capability('files.read')
                 source = required({'source': query.get('source', [None])[0]}, 'source', 8192)
                 parts = source.strip('/').split('/')
                 stored = len(parts) == 5 and parts[:3] in (['v1', 'media', 'library'], ['v1', 'media', 'generated']) and parts[4] in ('content', 'thumbnail')
@@ -453,10 +457,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, versions)
                 return
             if self.command == 'GET' and path in (['v1', 'media', 'content'], ['v1', 'media', 'thumbnail']):
+                self.app.require_capability('files.read')
                 source = required({'source': query.get('source', [None])[0]}, 'source', 8192)
                 self.send_media(self.app.media.open_source(source, thumbnail=path[-1] == 'thumbnail'))
                 return
             if self.command == 'GET' and len(path) == 5 and path[:3] in (['v1', 'media', 'library'], ['v1', 'media', 'generated']) and path[4] in ('content', 'thumbnail'):
+                self.app.require_capability('files.read')
                 self.send_media(self.app.media.open_stored(path[3], thumbnail=path[4] == 'thumbnail'))
                 return
             if self.command == 'POST' and path == ['v1', 'speech', 'transcriptions']:

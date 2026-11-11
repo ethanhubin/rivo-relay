@@ -28,7 +28,7 @@ class NodeSessionSync(private val api: RelayApi, private val scope: CoroutineSco
         val affected = activityInvalidatedThreads(event)
         if (affected == null || affected.isNotEmpty()) synchronized(lock) { activityEpoch++ }
         val params = event.payload.optJSONObject("params")
-        val thread = params?.string("threadId").orEmpty().ifBlank { params?.string("conversationId").orEmpty() }
+        val thread = params?.string("sessionId").orEmpty().ifBlank { params?.string("threadId").orEmpty() }.ifBlank { params?.string("conversationId").orEmpty() }
         val threads = params?.optJSONArray("threadIds")
         when {
             event.type in setOf("reset", "connected", "revoked") -> invalidate()

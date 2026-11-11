@@ -1,0 +1,14 @@
+{
+  "backend": "dsh",
+  "scenario": "approval",
+  "runId": "dsh-approval-705e4a1b",
+  "threadId": "session-0d1361b1-535d-440d-96e1-a5f6207dac11",
+  "submissionId": "6bd2bf8ea1ac4e1d9003e5772865b348",
+  "schemaVersion": 1,
+  "lastStatus": "idle",
+  "pendingCount": 0,
+  "proofMatches": true,
+  "assistantMarker": true,
+  "inputCount": 1,
+  "passed": true
+}

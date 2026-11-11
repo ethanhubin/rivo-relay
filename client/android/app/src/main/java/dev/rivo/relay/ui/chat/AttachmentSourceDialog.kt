@@ -33,7 +33,7 @@ import androidx.compose.ui.window.DialogProperties
 @Composable
 internal fun AttachmentSourceMenu(expanded: Boolean, imageSlots: Int, fileSlots: Int, onDismiss: () -> Unit,
     onCamera: () -> Unit, onImage: () -> Unit, onFile: () -> Unit, onVideo: () -> Unit,
-    onWorkspace: () -> Unit, workspaceEnabled: Boolean = true) {
+    onWorkspace: () -> Unit, workspaceEnabled: Boolean = true, uploadEnabled: Boolean = true) {
     androidx.activity.compose.BackHandler(expanded) { onDismiss() }
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss,
         properties = PopupProperties(focusable = false),
@@ -43,8 +43,8 @@ internal fun AttachmentSourceMenu(expanded: Boolean, imageSlots: Int, fileSlots:
         listOf(
             Option("拍照", "camera", "add_camera", imageSlots > 0, onCamera),
             Option("照片", "image", "add_image", imageSlots > 0, onImage),
-            Option("视频", "video", "add_video", fileSlots > 0, onVideo),
-            Option("本地文件", "folder", "add_file", fileSlots > 0, onFile),
+            Option("视频", "video", "add_video", fileSlots > 0 && uploadEnabled, onVideo),
+            Option("本地文件", "folder", "add_file", fileSlots > 0 && uploadEnabled, onFile),
             Option("工作区文件", "folder", "add_workspace_file", fileSlots > 0 && workspaceEnabled, onWorkspace),
         ).forEach { option ->
             DropdownMenuItem(text = { Text(option.label) }, onClick = { onDismiss(); option.action() },

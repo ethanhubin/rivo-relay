@@ -69,6 +69,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
     onResumePending: (String) -> Unit = {}, onDiscardPending: (String) -> Unit = {},
     canManageThreads: Boolean = canCreate, showCreate: Boolean = true, catalogComplete: Boolean = true,
     loadDraftText: suspend (String) -> String = { "" }) {
+    val capabilities = dev.rivo.relay.data.LocalRuntimeCapabilities.current
     var deleteIds by remember(projectKey, archived) { mutableStateOf<Set<String>?>(null) }
     val context = LocalContext.current
     var selectedIds by remember(projectKey, archived) { mutableStateOf(emptySet<String>()) }
@@ -136,7 +137,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                 SessionSearchField(search) { search = it }
                 Row(horizontalArrangement = Arrangement.spacedBy(RivoSpacing.Sm)) {
                     SessionFilter(if (archived || !catalogComplete || (loading && threads.isEmpty())) "最近会话" else "最近会话 ${threads.size + pendingConversations.size}", !archived, { onArchivedChanged?.invoke(false) }, "sessions_recent")
-                    if (onArchivedChanged != null) SessionFilter("已归档", archived, { onArchivedChanged(true) }, "sessions_archived")
+                    if (onArchivedChanged != null && capabilities.allows("session.archive")) SessionFilter("已归档", archived, { onArchivedChanged(true) }, "sessions_archived")
                 }
                 if (selectedIds.isNotEmpty()) Surface(Modifier.fillMaxWidth().testTag("sessions_selection"),
                     shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
@@ -144,15 +145,15 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                         horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text("已选择 ${selected.size} 项", Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
                         val singleSelected = selected.singleOrNull()
-                        if (!archived && singleSelected != null) TextButton(onClick = {
+                        if (!archived && singleSelected != null && capabilities.allows("session.pin")) TextButton(onClick = {
                             onPin(singleSelected, !singleSelected.pinned)
                             selectedIds = emptySet()
                         }, enabled = true, modifier = Modifier.testTag("pin_session"),
                             contentPadding = PaddingValues(horizontal = 6.dp)) { Text(if (singleSelected.pinned) "取消置顶" else "置顶") }
-                        if (onArchive != null) TextButton(onClick = { onArchive(selected, !archived); selectedIds = emptySet() },
+                        if (onArchive != null && capabilities.allows("session.archive")) TextButton(onClick = { onArchive(selected, !archived); selectedIds = emptySet() },
                             enabled = canManageThreads && selected.isNotEmpty(), modifier = Modifier.testTag("archive_sessions"),
                             contentPadding = PaddingValues(horizontal = 6.dp)) { Text(if (archived) "恢复" else "归档") }
-                        if (onDelete != null) TextButton(onClick = { deleteIds = selectedIds.toSet() },
+                        if (onDelete != null && capabilities.allows("session.delete")) TextButton(onClick = { deleteIds = selectedIds.toSet() },
                             enabled = canManageThreads && selected.isNotEmpty() && selected.all(::canDeleteThread),
                             modifier = Modifier.testTag("delete_sessions"), contentPadding = PaddingValues(horizontal = 6.dp)) { Text("删除", color = MaterialTheme.colorScheme.error) }
                         TextButton(onClick = { selectedIds = emptySet() }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("取消") }
@@ -160,7 +161,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                 }
                 if (loading && shown.isEmpty() && shownPending.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(28.dp)) }
                 else if (shown.isEmpty() && shownPending.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                    if (catalogComplete) Text(when { search.isNotBlank() -> "没有匹配的会话"; archived -> "没有已归档会话"; !showCreate -> "暂无会话"; else -> "还没有 Codex 会话，点击右下角新建" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (catalogComplete) Text(when { search.isNotBlank() -> "没有匹配的会话"; archived -> "没有已归档会话"; !showCreate -> "暂无会话"; else -> "还没有会话，点击右下角新建" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else LazyColumn(Modifier.fillMaxWidth().weight(1f), state = listState, contentPadding = PaddingValues(bottom = 100.dp), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Xs)) {
                     items(shownPending, key = { "pending:${it.id}" }, contentType = { "pending" }) { pending ->
                         Surface(onClick = { onResumePending(pending.id) }, shape = MaterialTheme.shapes.large,
@@ -227,7 +228,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
             }
         }
         // Surface supplies the same round FAB geometry while preserving the disabled-write contract.
-        if (showCreate) Surface(onClick = onNew, enabled = canCreate, modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp).size(62.dp)
+        if (showCreate && capabilities.allows("session.create")) Surface(onClick = onNew, enabled = canCreate, modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp).size(62.dp)
             .testTag("new_thread").semantics { contentDescription = "新建会话" }, shape = CircleShape,
             color = if (canCreate) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHighest,
             contentColor = if (canCreate) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, shadowElevation = 6.dp) {

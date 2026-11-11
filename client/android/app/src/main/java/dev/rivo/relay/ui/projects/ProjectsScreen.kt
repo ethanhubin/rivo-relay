@@ -101,7 +101,7 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                             }
                         }
                     }
-                    if (onAdd != null) Surface(onClick = onAdd, enabled = canAdd, modifier = Modifier.size(48.dp).testTag("add_project")
+                    if (onAdd != null && dev.rivo.relay.data.LocalRuntimeCapabilities.current.let { it.allows("project.create") && it.allows("project.browse") }) Surface(onClick = onAdd, enabled = canAdd, modifier = Modifier.size(48.dp).testTag("add_project")
                         .semantics { contentDescription = "新建项目" },
                         shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.primaryContainer) {
                         Box(contentAlignment = Alignment.Center) { Text("＋", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Light, color = MaterialTheme.colorScheme.onPrimaryContainer) }
@@ -121,7 +121,7 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                 }
             }
         }
-        if (loading && projects.isEmpty()) item { Text("正在同步 Codex Desktop 项目…", Modifier.fillMaxWidth().padding(vertical = RivoSpacing.Md), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        if (loading && projects.isEmpty()) item { Text("正在同步节点项目…", Modifier.fillMaxWidth().padding(vertical = RivoSpacing.Md), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         if (!loading && projects.isEmpty()) item {
             Column(Modifier.fillMaxWidth().padding(vertical = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("暂无可访问的项目", color = MaterialTheme.colorScheme.onSurfaceVariant)

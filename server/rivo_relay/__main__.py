@@ -32,6 +32,9 @@ def parser():
             sub.add_argument("--cert", type=Path)
             sub.add_argument("--key", type=Path)
             sub.add_argument("--native-socket", type=Path)
+            sub.add_argument('--runtime', choices=('codex', 'dsh'), default='codex')
+            sub.add_argument('--dsh-bridge-socket', type=Path,
+                             help='Unix socket of the Rivo plugin in an existing DSH runtime')
             sub.add_argument("--codex-home", type=Path, default=Path.home() / ".codex")
             sub.add_argument('--codex-runtime', choices=('auto', 'desktop', 'app_server', 'stdio'),
                              default=os.environ.get('RIVO_CODEX_RUNTIME', 'auto'))
@@ -59,7 +62,9 @@ def main(argv=None):
         codex_home=getattr(args, "codex_home", Path.home() / ".codex"),
         codex_runtime=getattr(args, 'codex_runtime', 'auto'),
         desktop_bridge_dir=getattr(args, 'desktop_bridge_dir', None),
-        codex_executable=getattr(args, 'codex_executable', None))
+        codex_executable=getattr(args, 'codex_executable', None),
+        runtime=getattr(args, 'runtime', 'codex'),
+        dsh_bridge_socket=getattr(args, 'dsh_bridge_socket', None))
     try:
         config.prepare()
         if args.command == "serve":
@@ -119,8 +124,14 @@ def serve(config: Config, native_socket: Path | None):
         except BlockingIOError:
             raise ValueError("A Relay service already owns this workspace")
         bus = EventBus()
-        native = CodexService(socket_path=native_socket, codex_home=config.codex_home, on_event=bus.publish,
-                              runtime_mode=config.codex_runtime, desktop_bridge_dir=config.desktop_bridge_dir, codex_executable=config.codex_executable)
+        if config.runtime == 'dsh':
+            if native_socket:
+                raise ValueError('--native-socket is only supported by Codex')
+            from .dsh import DshService
+            native = DshService(socket_path=config.dsh_bridge_socket, on_event=bus.publish)
+        else:
+            native = CodexService(socket_path=native_socket, codex_home=config.codex_home, on_event=bus.publish,
+                                  runtime_mode=config.codex_runtime, desktop_bridge_dir=config.desktop_bridge_dir, codex_executable=config.codex_executable)
         app = RelayApp(config, native, bus)
         server = None
         try:
@@ -128,8 +139,9 @@ def serve(config: Config, native_socket: Path | None):
                 native.start()
             except Exception:
                 print(json.dumps({"time": datetime.datetime.now(datetime.timezone.utc).isoformat(), "event": "native_unavailable"}), file=sys.stderr, flush=True)
-            native.activity.start()
-            app.queue.start()
+            if config.runtime == 'codex':
+                native.activity.start()
+                app.queue.start()
             tls = None
             if config.cert:
                 tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

@@ -29,6 +29,11 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
         connection = updated
         notifications.nodeName = updated.name
     }
+    var capabilities by mutableStateOf(RuntimeCapabilities.Unavailable)
+        private set
+    fun updateCapabilities(info: org.json.JSONObject) {
+        if (info.opt("id") == connection.nodeId) capabilities = RuntimeCapabilities.from(info.optJSONObject("capabilities"))
+    }
     val api = connection.api()
     private var transportNetwork = defaultNetwork(context)
     private val sync = NodeSessionSync(api, scope)
@@ -112,7 +117,7 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
     fun consumeTodoNavigation() { todoNavigationMutable.value = false }
     fun consumeNavigation() { navigationMutable.value = null }
     val recovery = ConnectionRecovery(scope,
-        probe = { api.call("/v1/node", reconnectProbe = true) },
+        probe = { api.call("/v1/node", reconnectProbe = true).also(::updateCapabilities) },
         reset = { api.resetTransport() },
         restored = {
             session.refresh()
@@ -187,7 +192,9 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
     private fun syncNodeName(node: NodeRuntime, scope: CoroutineScope) {
         scope.launch {
             try {
-                val updated = node.connection.withNodeInfo(node.api.call("/v1/node"))
+                val info = node.api.call("/v1/node")
+                node.updateCapabilities(info)
+                val updated = node.connection.withNodeInfo(info)
                 if (mutable.value.node !== node || updated === node.connection) return@launch
                 pairing.updateName(updated)
                 node.updateName(updated)

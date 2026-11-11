@@ -20,13 +20,13 @@ data class NodeActivity(val tasks: Map<String, ThreadSummary> = emptyMap(), val 
 }
 
 /** Old HTTP responses cannot roll back a newer node snapshot from a detail read. */
-internal fun NodeActivity.accept(response: org.json.JSONObject): NodeActivity {
+internal fun NodeActivity.accept(response: org.json.JSONObject, allowSameVersionReconfirmation: Boolean = false): NodeActivity {
     require(response.optBoolean("complete", false) && response.string("generation").isNotBlank())
     require(response.optJSONArray("tasks") != null && response.optJSONArray("knownThreadIds") != null &&
         response.optJSONArray("unknownThreadIds") != null)
     if (response.string("generation") in retiredGenerations) return this
     val nextVersion = response.optLong("version", -1)
-    if (generation == response.string("generation") && version >= 0 && nextVersion <= version) return this
+    if (generation == response.string("generation") && version >= 0 && (nextVersion < version || nextVersion == version && !allowSameVersionReconfirmation)) return this
     fun ids(key: String) = response.getJSONArray(key).let { values ->
         (0 until values.length()).map { values.getString(it) }.toSet()
     }
@@ -51,7 +51,7 @@ internal fun activityInvalidatedThreads(event: RelayEvent): Set<String>? {
     params.optJSONArray("threadIds")?.let { ids ->
         return (0 until ids.length()).map { ids.optString(it) }.filter(String::isNotBlank).toSet()
     }
-    val id = params.string("threadId").ifBlank { params.string("conversationId") }
+    val id = params.string("sessionId").ifBlank { params.string("threadId") }.ifBlank { params.string("conversationId") }
         .ifBlank { params.optJSONObject("thread")?.string("id").orEmpty() }
     return id.takeIf(String::isNotBlank)?.let { setOf(it) }
 }
@@ -98,15 +98,18 @@ fun nodeActivity(api: RelayApi, sync: NodeSessionSync, scope: CoroutineScope): S
                     val response = api.call("/v1/activity")
                     lock.withLock {
                         if (readEpoch == epoch && response.optBoolean("complete", false)) {
-                            previous = previous.accept(response)
+                            previous = previous.accept(response, allowSameVersionReconfirmation = true)
                         } else if (readEpoch == epoch) previous = previous.copy(confirmed = false)
                         send(previous)
                     }
-                } catch (e: CancellationException) { throw e }
-                catch (_: Exception) { lock.withLock {
-                    if (readEpoch == epoch) previous = previous.copy(confirmed = false)
-                    send(previous)
-                } }
+                } catch (error: Exception) {
+                    // A transport reset cancels an HTTP read without cancelling this producer.
+                    if (error is CancellationException) currentCoroutineContext().ensureActive()
+                    lock.withLock {
+                        if (readEpoch == epoch) previous = previous.copy(confirmed = false)
+                        send(previous)
+                    }
+                }
                 withTimeoutOrNull(5000) { signals.receive() }
             }
         } finally { events.cancel(); snapshots.cancel(); signals.close() }

@@ -94,7 +94,7 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
                     add(runtime.string("handoffUnavailableReason"))
             }
         }.map(String::trim).filter(String::isNotBlank).distinct()
-        AlertDialog(onDismissRequest = { runtimeDetails = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("Codex 连接") } },
+        AlertDialog(onDismissRequest = { runtimeDetails = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("运行时连接") } },
             text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Column(Modifier.testTag("writer_runtime_details").verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 details.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
@@ -108,7 +108,7 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
 internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: () -> Unit, onSettings: () -> Unit,
     onRefresh: () -> Unit, onReview: () -> Unit, onStop: () -> Unit, canStop: Boolean,
     pinned: Boolean, canManage: Boolean, onPin: ((Boolean) -> Unit)?, onArchive: (() -> Unit)?,
-    onWriterAction: ((String) -> Unit)? = null, writerBusy: Boolean = false, writerBlockedReason: String? = null, recoveryState: RecoveryState? = null, onDelete: (() -> Unit)? = null) {
+    onWriterAction: ((String) -> Unit)? = null, writerBusy: Boolean = false, writerBlockedReason: String? = null, recoveryState: RecoveryState? = null, onDelete: (() -> Unit)? = null, capabilities: dev.rivo.relay.data.RuntimeCapabilities = dev.rivo.relay.data.RuntimeCapabilities.Legacy) {
     val snapshot = state.snapshot
     val context = LocalContext.current
     var confirmDelete by remember(state.id) { mutableStateOf(false) }
@@ -122,7 +122,7 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
     val activeSettings = snapshot?.let { current -> current.turnSettings.firstOrNull { it.turnId == current.activeTurnId } }
     val model = activeSettings?.model ?: snapshot?.settings?.string("model").orEmpty()
     val effort = activeSettings?.effort ?: snapshot?.settings?.string("reasoningEffort").orEmpty()
-    val configuration = listOf(model, effort).filter(String::isNotBlank).joinToString(" · ").ifBlank { "Codex" }
+    val configuration = listOf(model, effort).filter(String::isNotBlank).joinToString(" · ").ifBlank { snapshot?.nativeRuntime?.string("displayName")?.takeIf(String::isNotBlank) ?: "运行时" }
     val status = state.syncStatusLabel()
     Box(Modifier.fillMaxWidth().height(64.dp).testTag("conversation_header")) {
         Row(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically,
@@ -138,7 +138,7 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
                     drawLine(arrowColor, tip, Offset(size.width * .49f, size.height * .77f), stroke, StrokeCap.Round)
                 }
             }
-            Column(Modifier.weight(1f).fillMaxHeight().clickable(onClick = onSettings).padding(horizontal = 8.dp).testTag("conversation_status"), verticalArrangement = Arrangement.Center) {
+            Column(Modifier.weight(1f).fillMaxHeight().clickable(enabled = capabilities.allows("session.settings"), onClick = onSettings).padding(horizontal = 8.dp).testTag("conversation_status"), verticalArrangement = Arrangement.Center) {
                 SelectionContainer { Text(snapshot?.name ?: if (state.readError != null && !state.loading) "会话读取失败" else "正在读取会话…",
                     Modifier.testTag("conversation_title"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium,
                     maxLines = 1, overflow = TextOverflow.Ellipsis) }
@@ -167,24 +167,24 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
                 DropdownMenu(menu, { menu = false }, modifier = Modifier.width(248.dp),
                     shape = RoundedCornerShape(28.dp), containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
                     tonalElevation = 0.dp, shadowElevation = 12.dp) {
-                    ConversationMenuItem(icon = "review", text = { Text("改动与代码审查") }, onClick = { menu = false; onReview() }, enabled = snapshot != null,
+                    if (capabilities.allows("session.review")) ConversationMenuItem(icon = "review", text = { Text("改动与代码审查") }, onClick = { menu = false; onReview() }, enabled = snapshot != null,
                         modifier = Modifier.testTag("open_codex_review"))
                     ConversationMenuItem(icon = "refresh", text = { Text("刷新会话") }, onClick = { menu = false; onRefresh() }, modifier = Modifier.testTag("refresh_conversation"))
-                    if (onPin != null) ConversationMenuItem(icon = "pin", text = { Text(if (pinned) "取消置顶" else "置顶") },
+                    if (onPin != null && capabilities.allows("session.pin")) ConversationMenuItem(icon = "pin", text = { Text(if (pinned) "取消置顶" else "置顶") },
                         onClick = { menu = false; onPin(!pinned) }, enabled = true, modifier = Modifier.testTag("set_session_pinned"))
-                    if (onArchive != null) ConversationMenuItem(icon = "archive", text = { Text("归档") }, onClick = { menu = false; onArchive() },
+                    if (onArchive != null && capabilities.allows("session.archive")) ConversationMenuItem(icon = "archive", text = { Text("归档") }, onClick = { menu = false; onArchive() },
                         enabled = canManage && snapshot != null && snapshot.activeTurnId.isBlank() && snapshot.requests.isEmpty() && snapshot.queue.isEmpty(),
                         modifier = Modifier.testTag("archive_session"))
-                    if (onDelete != null) ConversationMenuItem(icon = "delete", text = { Text("永久删除", color = MaterialTheme.colorScheme.error) },
+                    if (onDelete != null && capabilities.allows("session.delete")) ConversationMenuItem(icon = "delete", text = { Text("永久删除", color = MaterialTheme.colorScheme.error) },
                         onClick = { menu = false; confirmDelete = true }, enabled = canDelete, modifier = Modifier.testTag("delete_session"))
-                    ConversationMenuItem(icon = "release", text = { Text("释放权限") },
+                    if (capabilities.allows("session.ownership")) ConversationMenuItem(icon = "release", text = { Text("释放权限") },
                         onClick = { menu = false; onWriterAction?.invoke("release") },
                         enabled = state.showRelease() && onWriterAction != null && !writerBusy && writerBlockedReason == null &&
                             releaseUnavailableReason(snapshot?.nativeRuntime) == null,
                         modifier = Modifier.testTag("release_session_permission"))
                     ConversationMenuItem(icon = "copy", text = { Text("复制会话 ID") }, enabled = state.id != null, modifier = Modifier.testTag("copy_session_id"),
                         onClick = { menu = false; state.id?.let { id -> context.getSystemService(ClipboardManager::class.java)
-                            .setPrimaryClip(ClipData.newPlainText("Codex 会话 ID", id)); Toast.makeText(context, "已复制会话 ID", Toast.LENGTH_SHORT).show() } })
+                            .setPrimaryClip(ClipData.newPlainText("会话 ID", id)); Toast.makeText(context, "已复制会话 ID", Toast.LENGTH_SHORT).show() } })
                 }
             }
         }

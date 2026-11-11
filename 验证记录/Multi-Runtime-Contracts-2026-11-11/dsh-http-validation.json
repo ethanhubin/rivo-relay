@@ -1,0 +1,63 @@
+{
+  "node": "127.0.0.1:18785",
+  "threadId": "session-3144d4ed-f5d2-4106-b973-5a19884ae335",
+  "startedAt": 1794388160.3807502,
+  "checks": {
+    "httpPairing": true,
+    "credentialOwnerOnly": true,
+    "chatNeutralInputReceipt": true,
+    "duplicateSubmissionIdentical": true,
+    "historyOneSubmittedInput": true,
+    "historyAssistantReply": true,
+    "approvalNeutralInputReceipt": true,
+    "permissionAppliedToDedicatedSession": true,
+    "approvalReadyForApp": true,
+    "appApprovalSucceeded": true,
+    "approvalProofContent": true
+  },
+  "updatedAt": 1794388306.9177501,
+  "chatReceipt": {
+    "acceptance": "input",
+    "kind": "input-accepted",
+    "requestId": "4b37c836634246ccb88e98a3beb39acd",
+    "runtime": "dsh",
+    "submissionId": "4b37c836634246ccb88e98a3beb39acd",
+    "threadId": "session-3144d4ed-f5d2-4106-b973-5a19884ae335"
+  },
+  "status": "waiting",
+  "pendingApprovalCount": 1,
+  "approvalCapability": {
+    "supported": true,
+    "available": true
+  },
+  "nativeSync": {
+    "state": "ready"
+  },
+  "approvalCards": [
+    {
+      "method": "runtime/approval",
+      "title": "DSH 请求操作授权",
+      "availableDecisions": [
+        "accept",
+        "decline",
+        "cancel"
+      ],
+      "runtime": "dsh"
+    }
+  ],
+  "matchingInputCount": 1,
+  "assistantReplyCount": 1,
+  "approvalReceipt": {
+    "acceptance": "input",
+    "kind": "input-accepted",
+    "requestId": "d21f57b6a3be411ca84bb572a4b978e3",
+    "runtime": "dsh",
+    "submissionId": "d21f57b6a3be411ca84bb572a4b978e3",
+    "threadId": "session-3144d4ed-f5d2-4106-b973-5a19884ae335"
+  },
+  "permissionPreset": "workspace-write",
+  "approvalDecisionSubmittedByHttpTest": false,
+  "appApprovalDurationSeconds": 14.086,
+  "appApprovalEvidence": "Parent agent reported real APP approval instrumentation succeeded; local proof file content verified.",
+  "passed": true
+}

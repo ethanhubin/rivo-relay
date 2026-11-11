@@ -227,8 +227,10 @@ class RuntimeConnection:
             raise CodexError('回答连接已变化，请核对结果', request_sent=True)
         return result
 
-    def respond(self, request_id, result):
+    def respond(self, request_id, result, *, expected_generation=None):
         with self._lock:
+            if expected_generation is not None and expected_generation != self.generation:
+                raise CodexError('原生交互连接已变化', code='interaction_expired', http_status=409)
             selected = self._requests.get(request_id)
             if selected is None:
                 raise CodexError('原生交互已失效', code='interaction_expired', http_status=409)
@@ -236,7 +238,7 @@ class RuntimeConnection:
             backend = self._backend(name)
             if generation != backend.generation:
                 raise CodexError('原生交互连接已变化', code='interaction_expired', http_status=409)
-        answer = backend.respond(native_id, result)
+        answer = backend.respond(native_id, result, expected_generation=generation)
         with self._lock:
             self._requests.pop(request_id, None)
         return answer

@@ -20,6 +20,7 @@ class NodeSessionSyncTest {
 
     @Test fun executionEventsFenceLateDetailActivityButUnrelatedMetadataDoesNot() = runBlocking {
         for ((method, params, expected) in listOf(
+            Triple("session/invalidated", """{"sessionId":"t","runtimeGeneration":"g","scope":"interactions"}""", 0),
             Triple("turn/started", """{"threadId":"t"}""", 0),
             Triple("turn/completed", """{"threadId":"t"}""", 0),
             Triple("relay/writerDisconnected", """{"threadIds":["t"]}""", 0),

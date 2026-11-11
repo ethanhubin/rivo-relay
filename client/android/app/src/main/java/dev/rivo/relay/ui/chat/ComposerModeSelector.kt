@@ -35,7 +35,7 @@ internal fun TaskModeIcon(mode: String) {
 }
 
 @Composable
-internal fun ComposerModeSelector(mode: String, enabled: Boolean, goalEnabled: Boolean, onSelect: (String) -> Unit) {
+internal fun ComposerModeSelector(mode: String, enabled: Boolean, goalEnabled: Boolean, planEnabled: Boolean = true, onSelect: (String) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     androidx.activity.compose.BackHandler(expanded) { expanded = false }
     LaunchedEffect(enabled) { if (!enabled) expanded = false }
@@ -54,7 +54,7 @@ internal fun ComposerModeSelector(mode: String, enabled: Boolean, goalEnabled: B
                 color = MaterialTheme.colorScheme.surfaceContainerLow, shadowElevation = 8.dp) {
                 Column(Modifier.padding(6.dp)) {
                     labels.forEach { (value, label) ->
-                        val available = value != "goal" || goalEnabled
+                        val available = when (value) { "goal" -> goalEnabled; "plan" -> planEnabled; else -> true }
                         Surface(shape = RoundedCornerShape(12.dp), color = if (mode == value) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerLow) {
                             DropdownMenuItem(text = { Column {
                                 Text(label)

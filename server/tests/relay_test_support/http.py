@@ -32,9 +32,15 @@ class NativeStub:
         self.first_create = threading.Event()
         self.second_create = threading.Event()
         self.lock = threading.Lock()
+        from rivo_relay.codex.receipts import HistoryReceiptRecovery
+        self.receipt_recovery = HistoryReceiptRecovery()
 
     def status(self):
         return {"connected": True, "capabilities": {"nativeTestStub": True}}
+
+    def runtime_capabilities(self, *, snapshot=None, connected=None):
+        from rivo_relay.codex.capabilities import capabilities
+        return capabilities(connected=True if connected is None else connected, snapshot=snapshot)
 
     def list_projects(self):
         self.read_count += 1
@@ -52,6 +58,9 @@ class NativeStub:
     def history(self, thread, *, cursor=None, limit=30):
         self.history_reads.append((thread, cursor, limit))
         return {"turns": [{"id": "synthetic-turn"}], "nextCursor": "next-page"}
+
+    def recover_submission(self, record):
+        return self.receipt_recovery.recover(record, self.history)
 
     def create_session(self, project, title=None):
         with self.lock:

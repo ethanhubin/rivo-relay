@@ -505,7 +505,7 @@ internal fun catalogLifecycleEvent(event: RelayEvent): Boolean {
     val method = event.payload.string("method")
     return (method.startsWith("thread/") && method != "thread/tokenUsage/updated" && !method.endsWith("/delta")) ||
         method.startsWith("project/") || method.startsWith("goal/") || method.startsWith("queue/") ||
-        method in setOf("turn/started", "turn/completed", "turn/failed", "turn/interrupted", "serverRequest/resolved",
+        method in setOf("session/invalidated", "turn/started", "turn/completed", "turn/failed", "turn/interrupted", "serverRequest/resolved",
             "relay/queueUpdated", "relay/queueChanged", "relay/historyInvalidated", "relay/ownershipChanged", "relay/writerDisconnected", "relay/nativeDisconnected") ||
         (method.startsWith("item/") && (method.endsWith("/requestApproval") || method.endsWith("/requestUserInput")))
 }

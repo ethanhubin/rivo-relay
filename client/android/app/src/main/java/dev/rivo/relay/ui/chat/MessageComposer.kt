@@ -113,6 +113,7 @@ fun MessageComposer(
     settingsExpanded: Boolean = false,
     onDismissSettings: () -> Unit = {},
     settingsContent: (@Composable () -> Unit)? = null,
+    capabilities: dev.rivo.relay.data.RuntimeCapabilities = dev.rivo.relay.data.RuntimeCapabilities.Legacy,
     goalMode: Boolean = false,
     goalModeEnabled: Boolean = false,
     onSelectMode: ((String) -> Unit)? = null,
@@ -282,7 +283,7 @@ fun MessageComposer(
                             value = inputValue,
                             onValueChange = { if (it.text != inputValue.text) cancelVoice(); inputValue = it; onTextChange(it.text) },
                             enabled = textEditable,
-                            modifier = Modifier.weight(1f).pasteImageAttachments(context, enabled && !preparing, onPasteImages)
+                            modifier = Modifier.weight(1f).pasteImageAttachments(context, enabled && !preparing && capabilities.allows("attachments.images"), onPasteImages)
                                 .focusRequester(focusRequester)
                                 .padding(horizontal = 16.dp).heightIn(min = visibleTextHeight).testTag("message_input"),
                             textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (textEditable) 1f else 0.38f)),
@@ -322,20 +323,20 @@ fun MessageComposer(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         Box {
-                            ComposerToolButton({ attachmentsOpen = true }, enabled && !preparing,
+                            ComposerToolButton({ attachmentsOpen = true }, enabled && !preparing && (capabilities.allows("attachments.images") || capabilities.allows("files.upload") || capabilities.allows("files.browse")),
                                 "添加附件", "add_attachment") { ComposerAddIcon() }
-                            AttachmentSourceMenu(attachmentsOpen, 10 - images.size, 16 - files.size,
+                            AttachmentSourceMenu(attachmentsOpen, if (capabilities.allows("attachments.images")) 10 - images.size else 0, 16 - files.size,
                                 onDismiss = { attachmentsOpen = false },
                                 onCamera = launchCamera, onImage = onAddImage, onVideo = onAddVideo, onFile = onAddFile,
-                                onWorkspace = onAddWorkspaceFile)
+                                onWorkspace = onAddWorkspaceFile, workspaceEnabled = capabilities.allows("files.browse"), uploadEnabled = capabilities.allows("files.upload"))
                         }
                         ComposerModeSelector(if (goalMode) "goal" else if (discussionMode) "plan" else "default",
-                            enabled, goalModeEnabled) { mode ->
+                            enabled && (capabilities.allows("session.plan") || goalModeEnabled), goalModeEnabled, capabilities.allows("session.plan")) { mode ->
                             if (onSelectMode != null) onSelectMode(mode)
                             else if ((mode == "plan") != discussionMode) onToggleMode()
                         }
                         Spacer(Modifier.weight(1f))
-                        if (settingsExpanded && settingsContent != null) Dialog(onDismissRequest = onDismissSettings) {
+                        if (capabilities.allows("session.settings") && settingsExpanded && settingsContent != null) Dialog(onDismissRequest = onDismissSettings) {
  dev.rivo.relay.ui.chat.ThemedTextContextMenu {
 
                             Surface(Modifier.fillMaxWidth().heightIn(max = 560.dp).testTag("composer_settings_panel"),

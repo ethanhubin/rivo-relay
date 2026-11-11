@@ -68,4 +68,16 @@ class NodeActivityTest {
         assertEquals("idle", NodeActivity(confirmed = true, known = setOf("t")).status("t"))
         assertNull(NodeActivity(unknown = setOf("t"), confirmed = true).status("t"))
     }
+    @Test fun onlyFreshAuthoritativeReadsCanReconfirmSameVersionAfterInvalidation() {
+        fun response(version: Int) = org.json.JSONObject("""{"complete":true,"generation":"g","version":$version,
+            "tasks":[],"knownThreadIds":["t"],"unknownThreadIds":[]}""")
+        val invalidated = NodeActivity().accept(response(7)).copy(confirmed = false, unknown = setOf("t"))
+        assertEquals(invalidated, invalidated.accept(response(7)))
+        assertEquals(invalidated, invalidated.accept(response(6), allowSameVersionReconfirmation = true))
+        val restored = invalidated.accept(response(7), allowSameVersionReconfirmation = true)
+        assertTrue(restored.confirmed)
+        assertEquals("idle", restored.status("t"))
+        assertTrue(restored.unknown.isEmpty())
+    }
+
 }

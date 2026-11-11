@@ -32,7 +32,9 @@ class FakeNative:
             return {"data": [], "nextCursor": None, "backwardsCursor": None}
         return {}
 
-    def respond(self, request_id, result):
+    def respond(self, request_id, result, *, expected_generation=None):
+        if expected_generation is not None and expected_generation != self.generation:
+            raise CodexError('generation changed', code='interaction_expired', http_status=409)
         self.replies.append((request_id, result))
 
 

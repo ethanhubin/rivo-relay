@@ -1,0 +1,142 @@
+{
+  "finalScenarioCount": 8,
+  "allFinalScenariosPassed": true,
+  "device": "emulator-5554",
+  "physicalDeviceTested": false,
+  "pairingDataPreserved": true,
+  "cases": [
+    {
+      "backend": "codex",
+      "scenario": "network",
+      "runId": "codex-network-c2ab608f",
+      "passed": true,
+      "singleNativeInput": true,
+      "finalConfirmedIdle": true,
+      "proofMatches": true,
+      "offlineCachePreservedInput": true,
+      "disconnectDuringExecution": true,
+      "instrumentationSeconds": {
+        "executionNetworkRecovery": 60.838
+      }
+    },
+    {
+      "backend": "codex",
+      "scenario": "approval",
+      "runId": "codex-approval-c1e232bf",
+      "passed": true,
+      "singleNativeInput": true,
+      "finalConfirmedIdle": true,
+      "proofMatches": true,
+      "offlineCachePreservedInput": true,
+      "sameInteractionAfterNetworkAndActivityRecreation": true,
+      "oldInteractionRejected": "interaction_expired",
+      "instrumentationSeconds": {
+        "approvalNetworkRecoveryAndActivityRecreate": 28.112
+      }
+    },
+    {
+      "backend": "codex",
+      "scenario": "restart",
+      "runId": "codex-restart-e2dba5f2",
+      "passed": true,
+      "singleNativeInput": true,
+      "finalConfirmedIdle": true,
+      "proofMatches": true,
+      "liveProcessForceStopped": true,
+      "stoppedPid": "13492",
+      "restartedPid": 13551,
+      "samePendingInteractionRestored": true,
+      "oldInteractionRejected": "interaction_expired",
+      "instrumentationSeconds": {
+        "verifyAfterProcessRestart": 26.119,
+        "checkpointBeforeProcessRestart": 16.154
+      }
+    },
+    {
+      "backend": "codex",
+      "scenario": "other",
+      "runId": "codex-other-faeeeb2c",
+      "passed": true,
+      "singleNativeInput": true,
+      "finalConfirmedIdle": true,
+      "proofMatches": true,
+      "otherController": "relay-client",
+      "oldInteractionRejected": "interaction_expired",
+      "instrumentationSeconds": {
+        "observeOtherControllerResolution": 20.771
+      }
+    },
+    {
+      "backend": "dsh",
+      "scenario": "network",
+      "runId": "dsh-network-06934da4",
+      "passed": true,
+      "singleNativeInput": true,
+      "finalConfirmedIdle": true,
+      "proofMatches": true,
+      "offlineCachePreservedInput": true,
+      "disconnectDuringExecution": true,
+      "instrumentationSeconds": {
+        "executionNetworkRecovery": 63.047
+      }
+    },
+    {
+      "backend": "dsh",
+      "scenario": "approval",
+      "runId": "dsh-approval-705e4a1b",
+      "passed": true,
+      "singleNativeInput": true,
+      "finalConfirmedIdle": true,
+      "proofMatches": true,
+      "offlineCachePreservedInput": true,
+      "sameInteractionAfterNetworkAndActivityRecreation": true,
+      "oldInteractionRejected": "interaction_expired",
+      "instrumentationSeconds": {
+        "captureCompletedSession": 8.94,
+        "approvalNetworkRecoveryAndActivityRecreate": 19.033
+      }
+    },
+    {
+      "backend": "dsh",
+      "scenario": "restart",
+      "runId": "dsh-restart-f13edbb8",
+      "passed": true,
+      "singleNativeInput": true,
+      "finalConfirmedIdle": true,
+      "proofMatches": true,
+      "liveProcessForceStopped": true,
+      "stoppedPid": "13879",
+      "restartedPid": 13939,
+      "samePendingInteractionRestored": true,
+      "oldInteractionRejected": "interaction_expired",
+      "instrumentationSeconds": {
+        "verifyAfterProcessRestart": 44.349,
+        "checkpointBeforeProcessRestart": 19.103
+      }
+    },
+    {
+      "backend": "dsh",
+      "scenario": "other",
+      "runId": "dsh-other-585be7bf",
+      "passed": true,
+      "singleNativeInput": true,
+      "finalConfirmedIdle": true,
+      "proofMatches": true,
+      "otherController": "bridge-client",
+      "oldInteractionRejected": "interaction_expired",
+      "instrumentationSeconds": {
+        "observeOtherControllerResolution": 19.371
+      }
+    }
+  ],
+  "additionalEvidence": {
+    "failedBeforeFix": "codex-approval-8b39aaf0",
+    "instrumentationExitRestartOnly": "dsh-restart-28e6ba89",
+    "approvalRaceScreenshot": "dsh-approval-705e4a1b/race-capture.png"
+  },
+  "localOnlyEvidence": [
+    "instrumentationExitRestartOnly",
+    "approvalRaceScreenshot"
+  ],
+  "localEvidenceDirectory": "workspace/verification-archives/Runtime-Recovery-2026-11-11"
+}

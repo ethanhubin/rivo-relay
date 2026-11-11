@@ -1,0 +1,71 @@
+{
+  "node": "127.0.0.1:18786",
+  "projectId": "01a1c9d9-c816-77b0-8fb0-2a08a205dfe8",
+  "startedAt": 1794388344.361538,
+  "checks": {
+    "appChatSessionHasNoSentInput": true,
+    "readOnlyOnRequestConfirmed": true,
+    "neutralReceipt": true,
+    "approvalReadyForApp": false
+  },
+  "appChatThreadId": "01a1c9e1-4035-7363-a16e-f0617931c91b",
+  "approvalThreadId": "01a1c9e1-4406-7141-a029-73330186514f",
+  "permissionSettings": {
+    "sandbox": {
+      "type": "readOnly",
+      "networkAccess": false
+    },
+    "approvalPolicy": "on-request"
+  },
+  "approvalSubmissionId": "76bd36c7b46f4206bacb59242adc2fb7",
+  "receipt": {
+    "executionId": "01a1c9e1-4592-7092-a5a7-798c293c9170",
+    "kind": "execution-started",
+    "submissionId": "76bd36c7b46f4206bacb59242adc2fb7",
+    "threadId": "01a1c9e1-4406-7141-a029-73330186514f",
+    "turnId": "01a1c9e1-4592-7092-a5a7-798c293c9170"
+  },
+  "sendStatus": "accepted",
+  "updatedAt": 1794388500.603016,
+  "status": "idle",
+  "nativeSync": {
+    "state": "converging",
+    "generation": 0,
+    "checked_at": 1794388500,
+    "journalCheck": "verified",
+    "historyReady": true
+  },
+  "pendingApprovalCount": 0,
+  "approvalCapability": {
+    "supported": true,
+    "available": false,
+    "reasonCode": "session_stale"
+  },
+  "approvalCards": [],
+  "approvalDecisionSubmittedByHttpTest": false,
+  "defect": {
+    "description": "Live native approval was disabled because converging history was treated as stale despite historyReady=true.",
+    "nativeSync": {
+      "state": "converging",
+      "generation": 0,
+      "checked_at": 1794388495,
+      "journalCheck": "verified",
+      "historyReady": true
+    },
+    "approvalCapability": {
+      "supported": true,
+      "available": false,
+      "reasonCode": "session_stale"
+    }
+  },
+  "cancellation": {
+    "submissionId": "4cd611603f6c4af3abf5107bd09d17ac",
+    "expectedTurnId": "01a1c9e1-4592-7092-a5a7-798c293c9170",
+    "status": "accepted",
+    "receipt": {
+      "threadId": "01a1c9e1-4406-7141-a029-73330186514f",
+      "turnId": "01a1c9e1-4592-7092-a5a7-798c293c9170"
+    },
+    "at": 1794388495.764561
+  }
+}

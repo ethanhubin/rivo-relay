@@ -89,7 +89,10 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     val handoffScope = rememberCoroutineScope()
     var draftReloadKey by remember(node) { mutableLongStateOf(0L) }
     var defaultSettings by remember(node) { mutableStateOf(node.conversations.defaultSettings()) }
+    fun canOperateRuntime(operation: String): Boolean = node.capabilities.withOverrides(
+        node.session.state.value.snapshot?.takeIf { route == "chat" && it.id == threadId }?.capabilities).allows(operation)
     fun saveDefaults(settings: JSONObject) {
+        if (!canOperateRuntime("session.settings")) return
         handoffScope.launch {
             try { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { node.conversations.saveDefaultSettings(settings) }; defaultSettings = node.conversations.defaultSettings() }
             catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; setError(e.message ?: "无法保存默认模型设置") }
@@ -99,6 +102,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     var handoffPrompt by remember { mutableStateOf<Triple<String, String, JSONObject>?>(null) }
     var handoffLoading by remember { mutableStateOf(false) }
     fun executeHandoff(id: String, operation: String, preview: JSONObject, confirmed: Boolean) {
+        if (!canOperateRuntime("session.ownership")) return
         if (route != "chat" || threadId != id || (operation != "takeover" && node.session.state.value.stale) || node.network.value == null || node.session.state.value.id != id || node.submissions.state.value.pending != null || node.submissions.state.value.busy) return
         node.submissions.submit("/v1/threads/${encoded(id)}/ownership",
             JSONObject().put("operation", operation).put("ticket", preview.getString("ticket")).put("confirmed", confirmed).apply {
@@ -107,6 +111,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             when (operation) { "takeover" -> "强制接管"; "resume" -> "恢复操作"; else -> "主动释放" }) { node.session.refresh() }
     }
     fun requestHandoff(operation: String) {
+        if (!canOperateRuntime("session.ownership")) return
         val id = threadId ?: return
         val current = node.session.state.value
         if (route != "chat" || current.id != id || (operation != "takeover" && current.stale) || node.network.value == null || handoffLoading || node.submissions.state.value.busy || node.submissions.state.value.pending != null) return
@@ -125,6 +130,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
         }
     }
     fun openPending(project: ProjectSummary, resumeId: String? = null) {
+        if (resumeId == null && !node.capabilities.allows("session.create")) return
         val generation = ++pendingGeneration
         val expectedRoute = route
         val expectedProject = node.catalog.state.value.selectedProject?.id
@@ -280,18 +286,18 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     Column(Modifier.fillMaxSize()
         .then(if (showBottomNavigation) Modifier else Modifier.navigationBarsPadding())
         .imePadding()) {
-        CompositionLocalProvider(dev.rivo.relay.ui.sites.LocalSitesApi provides node.api) {
+        CompositionLocalProvider(dev.rivo.relay.ui.sites.LocalSitesApi provides node.api, LocalRuntimeCapabilities provides node.capabilities) {
         Box(Modifier.weight(1f)) {
             when (route) {
-                "sites" -> dev.rivo.relay.ui.sites.SitesScreen(node.api, node.connection.name)
+                "sites" -> if (node.capabilities.allows("sites.read")) dev.rivo.relay.ui.sites.SitesScreen(node.api, node.connection.name)
                 "settings" -> SettingsScreen(connection = node.connection, api = node.api,
                     resolveConnection = settingsConnection, setNodeConnectionMode = setNodeConnectionMode,
                     savedNodes = savedNodes,
                     onAddNode = { setError(null); addNode = true }, canAddNode = !submission.busy && !handoffLoading)
                 "projects" -> ProjectsScreen(catalog.projects, node.connection.name, catalog.loading, { project -> node.catalog.project(project); route = "sessions"; setError(null) },
-                    { route = "settings"; setError(null) }, { node.catalog.refreshProjects() }, { if (node.catalog.state.value.projectsFresh) addProject = true },
+                    { route = "settings"; setError(null) }, { node.catalog.refreshProjects() }, { if (node.capabilities.allows("project.create") && node.catalog.state.value.projectsFresh) addProject = true },
                     usage = catalog.usage, usageLoading = catalog.usageLoading, usageError = catalog.usageError,
-                    onRefreshUsage = { node.catalog.refreshUsage(true) }, canAdd = projectsWritable,
+                    onRefreshUsage = { node.catalog.refreshUsage(true) }, canAdd = projectsWritable && node.capabilities.allows("project.create"),
                     savedNodes = savedNodes, currentBase = node.connection.base,
                     pinnedProjectIds = catalog.pinnedProjectIds, onPinProject = node.catalog::setProjectPinned,
                     nodeConnected = when (connectionIndicator) {
@@ -302,7 +308,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     // A stalled request must not trap the user on this node; pending IDs are stored per node.
                     onSelectNode = selectNode,
                     onAddNode = { setError(null); addNode = true }, canAddNode = !submission.busy && !handoffLoading)
-                "sessions" -> SessionsScreen(catalog.selectedProject?.name ?: "会话", catalog.threads.filterNot { thread -> visiblePending.any { node.conversations.pendingThreadId(it.id) == thread.id } }, catalog.loading, writable && catalog.selectedProject != null && catalog.selectedProject?.id != "__rivo_recent__",
+                "sessions" -> SessionsScreen(catalog.selectedProject?.name ?: "会话", catalog.threads.filterNot { thread -> visiblePending.any { node.conversations.pendingThreadId(it.id) == thread.id } }, catalog.loading, writable && node.capabilities.allows("session.create") && catalog.selectedProject != null && catalog.selectedProject?.id != "__rivo_recent__",
                     ::back, { openChat(it.id, "sessions") }, { if (writable) node.catalog.state.value.selectedProject?.let { openPending(it) } }, { node.catalog.refreshThreads(force = true) },
                     loadDraftText = { id -> node.conversations.loadDraft(id).text },
                     canManageThreads = threadsWritable, showCreate = catalog.selectedProject?.id != "__rivo_recent__", catalogComplete = catalog.threadsComplete,
@@ -372,6 +378,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                                 } else pendingReady = true
                            } },
                         onConfiguredSend = sendPending@{ input, model, effort, mode, serviceTier, permissions, accepted ->
+                            if (!node.capabilities.allows("session.send")) return@sendPending
                             if (node.conversations.pendingCompleted(localId)) {
                                 node.conversations.completedPendingThreadId(localId)?.let { openChat(it, "sessions") }
                                 return@sendPending
@@ -488,7 +495,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         val current = currentState.snapshot
                         val id = threadId
                         if (current != null && id != null && currentState.id == id && current.id == id && !currentState.stale &&
-                            current.requests.isEmpty() && currentState.canCompose() && writable) {
+                            current.requests.isEmpty() && currentState.canCompose() && writable && canOperateRuntime("session.send") && (!current.shouldQueueInput || canOperateRuntime("session.queue"))) {
                             val queued = currentState.control().canOperate && current.shouldQueueInput
                             val body = JSONObject().put("input", input)
                             if (queued) body.put("operation", "enqueue")
@@ -508,8 +515,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     }, onAnswerQuestions = { expectedTurn, input, accepted ->
                         val current = node.session.state.value
                         val id = threadId
-                        if (writable && id != null && current.id == id && !current.stale &&
-                            current.snapshot?.canAnswerQuestions == true &&
+                        if (canOperateRuntime("interaction.respond") && writable && id != null && current.id == id && !current.stale &&
+                            current.snapshot?.runtimeSessionValid != false && current.snapshot?.canAnswerQuestions == true &&
                             current.snapshot.activeTurnId.ifBlank { current.snapshot.turnSettings.lastOrNull()?.turnId.orEmpty() } == expectedTurn &&
                             current.snapshot.requests.isEmpty()) {
                             val text = input.getJSONObject(0).getString("text")
@@ -523,22 +530,22 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     }, onSettingsChange = { settings ->
                         val current = node.session.state.value
                         val id = threadId
-                        if (id != null && current.id == id && current.snapshot?.id == id && !current.stale && current.control().canOperate && writable)
+                        if (canOperateRuntime("session.settings") && id != null && current.id == id && current.snapshot?.id == id && !current.stale && current.control().canOperate && writable)
                             node.submissions.submit("/v1/threads/${encoded(id)}/settings", settings, "更新会话设置") { if (threadId == id) node.session.refresh() }
                     }, onContinue = {
                         val current = node.session.state.value
-                        if (writable && current.id == threadId && current.canContinueTask()) {
+                        if (canOperateRuntime("session.continue") && writable && current.id == threadId && current.canContinueTask()) {
                             node.submissions.submit("/v1/threads/${encoded(threadId!!)}/continue",
                                 JSONObject().put("expectedTurnId", current.snapshot!!.resumeTurnId), "继续任务") { node.session.refresh() }
                         }
                     }, onStop = {
-                        node.session.state.value.let { current -> current.snapshot?.takeIf { writable && current.control().canOperate && it.id == threadId && current.id == threadId } }?.let { snapshot ->
+                        node.session.state.value.let { current -> current.snapshot?.takeIf { canOperateRuntime("session.interrupt") && writable && current.control().canOperate && it.id == threadId && current.id == threadId } }?.let { snapshot ->
                             node.submissions.submit("/v1/threads/${encoded(snapshot.id)}/interrupt", JSONObject().put("turnId", snapshot.activeTurnId), "停止任务") { node.session.refresh() }
                         }
                     }, onRespond = { request, response ->
                         val current = node.session.state.value
-                        if (writable && !current.stale && (current.control().canOperate || request.method.endsWith("requestUserInput")) && current.id == threadId && current.snapshot?.id == threadId && current.snapshot?.requests?.any { it.key == request.key && it.method == request.method } == true) {
-                            node.submissions.submit("/v1/requests/respond", JSONObject().put("key", request.key).put("response", response), "回答 Codex") { node.session.refresh() }
+                        if (canOperateRuntime("interaction.respond") && writable && !current.stale && (current.control().canOperate || request.interaction?.kind == "questions" || request.method.endsWith("requestUserInput")) && current.id == threadId && current.snapshot?.id == threadId && current.snapshot?.requests?.any { it.samePendingIdentity(request) } == true) {
+                            node.submissions.submit(if (request.interaction != null) "/v1/interactions/respond" else "/v1/requests/respond", request.interaction?.identity?.responseBody(response) ?: JSONObject().put("key", request.key).put("response", response), "回应请求") { node.session.refresh() }
                         }
                     }, onRefresh = node.session::refresh, onLoadModels = { node.catalog.loadModels() }, onEarlier = node.session::loadEarlier,
                     predictMessage = { id, turn -> node.api.call("/v1/threads/${encoded(id)}/prediction", "POST", JSONObject().put("expectedTurnId", turn), background = true) },
@@ -593,7 +600,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     }, onQueue = { body, accepted ->
                         val id = threadId
                         val current = node.session.state.value
-                        if (id != null && current.id == id && !current.stale && current.canQueueOperation(body.string("operation")) && writable) node.submissions.submit("/v1/threads/${encoded(id)}/queue", body, "更新执行队列",
+                        if (canOperateRuntime("session.queue") && id != null && current.id == id && !current.stale && current.canQueueOperation(body.string("operation")) && writable) node.submissions.submit("/v1/threads/${encoded(id)}/queue", body, "更新执行队列",
                             prepared = { pending ->
                                 if (body.string("operation") == "steer") current.snapshot?.queue?.firstOrNull { it.id == body.string("itemId") }?.let { task ->
                                     task.raw.optJSONArray("input")?.let { input -> node.session.beginSubmission(id, pending.id, input, "guidance", task.id) }
@@ -603,10 +610,10 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             if (route == "chat" && threadId == id) node.session.refresh()
                         }
                     })
-                "todos" -> TodosScreen(todos, catalog.projects.filterNot { it.id == "__rivo_recent__" }, projectsWritable, node.catalog::threadsFor,
+                "todos" -> TodosScreen(todos, catalog.projects.filterNot { it.id == "__rivo_recent__" }, projectsWritable && node.capabilities.allows("todo.dispatch"), node.catalog::threadsFor,
                     node.todos::save, node.todos::toggle, node.todos::delete,
                     onDispatch = dispatch@{ todo, projectId, selectedThread, accepted ->
-                        if (!node.catalog.state.value.projectsFresh) return@dispatch
+                        if (!node.capabilities.allows("todo.dispatch") || !node.catalog.state.value.projectsFresh) return@dispatch
                         val body = JSONObject().put("projectId", projectId); selectedThread?.let { body.put("threadId", it) }
                         node.todos.prepareDispatch(todo.id) { fresh ->
                             node.submissions.submit("/v1/todos/${encoded(fresh.id)}/dispatch", body, "交付待办",
@@ -641,8 +648,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
         }
         if (showBottomNavigation) NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
             NavigationBarItem(selected = route == "projects", onClick = { route = "projects"; setError(null); node.catalog.refreshProjects() },
-                icon = { Text("⌘") }, label = { Text("Codex") }, modifier = Modifier.testTag("nav_codex"))
-            NavigationBarItem(selected = route == "sites", onClick = { route = "sites"; setError(null) },
+                icon = { Text("⌘") }, label = { Text("会话") }, modifier = Modifier.testTag("nav_codex"))
+            if (node.capabilities.allows("sites.read")) NavigationBarItem(selected = route == "sites", onClick = { route = "sites"; setError(null) },
                 icon = { dev.rivo.relay.ui.sites.ConnectorIcon("appgarden") }, label = { Text("Sites") }, modifier = Modifier.testTag("nav_sites"))
             NavigationBarItem(selected = route == "todos", onClick = { route = "todos"; setError(null); node.todos.refresh(); node.catalog.refreshProjects() },
                 icon = { Text("✓") }, label = { Text("待办") }, modifier = Modifier.testTag("nav_todos"))
@@ -693,7 +700,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
 
 }
 }
-    if (addProject) ProjectDirectoryDialog(
+    if (addProject && node.capabilities.allows("project.create") && node.capabilities.allows("project.browse")) ProjectDirectoryDialog(
         readDirectory = { path -> node.api.call("/v1/project-directories?path=" + encoded(path)) }, writable = projectsWritable,
         submissionError = error ?: submission.notice, nodeName = node.connection.name, busy = submission.busy,
         onDismiss = { addProject = false }, onAdd = { path, folderName ->

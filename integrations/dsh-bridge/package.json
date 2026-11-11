@@ -1,0 +1,9 @@
+{
+  "name": "rivo-dsh-bridge",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.mjs",
+  "scripts": {"test": "node --test bridge.test.mjs"},
+  "engines": {"node": ">=22"},
+  "license": "MIT"
+}

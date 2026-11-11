@@ -1,0 +1,14 @@
+{
+  "backend": "codex",
+  "scenario": "network",
+  "runId": "codex-network-c2ab608f",
+  "threadId": "01a1ca1f-1423-7182-89b0-7f3dd9e6748b",
+  "submissionId": "f2f0c8f9406f4aecab4ab766fdb76d7d",
+  "schemaVersion": 1,
+  "lastStatus": "idle",
+  "pendingCount": 0,
+  "proofMatches": true,
+  "assistantMarker": true,
+  "inputCount": 1,
+  "passed": true
+}

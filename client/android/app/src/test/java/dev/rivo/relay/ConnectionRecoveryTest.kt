@@ -65,6 +65,46 @@ class ConnectionRecoveryTest {
         assertEquals(RecoveryState.CONNECTED, recovery.state.value)
     }
 
+    @Test fun restoredOsNetworkStartsNewReadOnlyRoundAfterExhaustion() = runTest {
+        var offline = true
+        var probes = 0
+        var refreshed = 0
+        val recovery = ConnectionRecovery(this, { probes++; if (offline) throw IOException("offline") },
+            {}, { refreshed++ }, { throw it }, timeoutMillis = 100, backoffMillis = 10)
+        recovery.failed(IOException("lost route"))
+        advanceUntilIdle()
+        assertEquals(RecoveryState.DISCONNECTED, recovery.state.value)
+        val before = probes
+        offline = false
+        recovery.networkAvailable()
+        advanceUntilIdle()
+        assertTrue(probes > before)
+        assertEquals(RecoveryState.CONNECTED, recovery.state.value)
+        assertEquals(1, refreshed)
+    }
+
+    @Test fun returningNetworkDuringLastFailedProbeIsNotLost() = runTest {
+        var probes = 0
+        var refreshed = 0
+        val lastProbe = CompletableDeferred<Unit>()
+        val recovery = ConnectionRecovery(this, {
+            probes++
+            if (probes == 3) lastProbe.await()
+            if (probes <= 3) throw IOException("old route")
+        }, {}, { refreshed++ }, { throw it }, timeoutMillis = 1000, backoffMillis = 10)
+        recovery.failed(IOException("offline"))
+        runCurrent()
+        advanceTimeBy(10)
+        runCurrent()
+        assertEquals(3, probes)
+        recovery.networkAvailable()
+        lastProbe.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(RecoveryState.CONNECTED, recovery.state.value)
+        assertEquals(4, probes)
+        assertEquals(1, refreshed)
+    }
+
     @Test fun foregroundSynchronizesHealthyNodeWithoutResettingTransport() = runTest {
         var probes = 0
         var resets = 0

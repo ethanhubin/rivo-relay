@@ -6,7 +6,8 @@ from .common import ApiError, required, permission_options, native_input
 
 def route(handler, path, query, body, connection):
     method = handler.command
-    codex = handler.app.codex
+    codex = handler.app.codex  # Optional services retain their existing adapters.
+    sessions = handler.app.sessions
     connection_id = connection["connection_id"]
     if path == ["v1", "threads"]:
         if method == "GET":
@@ -20,9 +21,9 @@ def route(handler, path, query, body, connection):
             if view not in ('full', 'summary'):
                 raise ApiError(400, 'invalid_request', 'Unknown thread view')
             if view == 'summary':
-                return {"threads": codex.list_sessions(project, archived=archived == 'true', summary=True),
+                return {"threads": sessions.list(project, archived=archived == 'true', summary=True),
                         "catalogComplete": False}
-            return {"threads": codex.list_sessions(project, archived=True) if archived == 'true' else codex.list_sessions(project),
+            return {"threads": sessions.list(project, archived=True) if archived == 'true' else sessions.list(project),
                     "catalogComplete": True}
         if method == "POST":
             project, sid = required(body, "projectId"), required(body, "submissionId")
@@ -30,7 +31,7 @@ def route(handler, path, query, body, connection):
             if body.get('worktreeRef'):
                 options['worktree_ref'] = body['worktreeRef']
             return handler.app.submit(connection_id, sid, "thread.create", project, body,
-                lambda: codex.create_session(project, **options))
+                lambda: sessions.create(project, **options))
     if len(path) >= 3 and path[:2] == ["v1", "threads"]:
         if len(path) == 4 and path[3] == 'prediction' and method == 'POST':
             return codex.predict_message(path[2], required(body, 'expectedTurnId'))
@@ -52,14 +53,13 @@ def route(handler, path, query, body, connection):
             options = {'native_revision': query['nativeRevision'][0]} if query.get('nativeRevision') else {}
             limit = int(query.get("limit", ["8"])[0])
             cursor = query.get("cursor", [None])[0]
-            result = codex.get_session(thread_id, cursor=cursor, limit=limit, **options)
-            result["queue"] = handler.app.queue.list(thread_id)
+            result = sessions.read(thread_id, cursor=cursor, limit=limit, **options)
             compact_images = handler.observe_history_media(result.get('thread'))
             return client_session(result, known_head_revision=query.get("knownHeadRevision", [None])[0],
                                   limit=limit, cursor=cursor, compact_images=compact_images)
         if len(path) == 4 and path[3] == "history" and method == "GET":
             options = {'native_revision': query['nativeRevision'][0]} if query.get('nativeRevision') else {}
-            result = codex.history(thread_id, cursor=query.get("cursor", [None])[0],
+            result = sessions.history(thread_id, cursor=query.get("cursor", [None])[0],
                                    limit=int(query.get("limit", ["30"])[0]), **options)
             compact_images = handler.observe_history_media({'id': thread_id, **result})
             projected = client_history({'threadId': thread_id, **result}, compact_images=compact_images)
@@ -163,7 +163,7 @@ def route(handler, path, query, body, connection):
                     {'input': [{'type': 'text', 'text': '代码审查 · ' + target['type']}], 'review': target})
             elif action == "continue":
                 resume_turn_id = required(body, 'expectedTurnId')
-                fn = lambda: codex.send(thread_id, '', input_items=[], client_message_id=sid,
+                fn = lambda: sessions.send(thread_id, '', input_items=[], client_message_id=sid,
                     acquire_released=True, resume_turn_id=resume_turn_id)
             elif action == "turns":
                 items = native_input(body)
@@ -186,7 +186,7 @@ def route(handler, path, query, body, connection):
                     if type(body['requireGoalSupport']) is not bool:
                         raise ApiError(400, 'invalid_request', 'requireGoalSupport must be boolean')
                     kwargs['require_goal_support'] = body['requireGoalSupport']
-                fn = lambda: codex.send(thread_id, text, acquire_released=True, **kwargs)
+                fn = lambda: sessions.send(thread_id, text, acquire_released=True, **kwargs)
             elif action == 'answers':
                 turn_id = required(body, 'expectedTurnId')
                 fn = lambda: codex.answer_questions(thread_id, turn_id, body.get('answers'), sid)
@@ -211,7 +211,7 @@ def route(handler, path, query, body, connection):
                     return {"threadId": result["threadId"]}
             elif action == "interrupt":
                 turn_id = required(body, "turnId")
-                fn = lambda: codex.interrupt(thread_id, turn_id=turn_id)
+                fn = lambda: sessions.interrupt(thread_id, turn_id)
             else:
                 raise ApiError(404, "not_found", "Unknown operation")
             return handler.app.submit(connection_id, sid, f"thread.{action}", thread_id, body, fn)

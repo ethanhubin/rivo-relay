@@ -1,0 +1,83 @@
+{
+  "node": "127.0.0.1:18786",
+  "projectId": "01a1c9d9-c816-77b0-8fb0-2a08a205dfe8",
+  "startedAt": 1794388635.841272,
+  "checks": {
+    "readOnlyOnRequestConfirmed": true,
+    "neutralReceipt": true,
+    "approvalReadyForApp": true,
+    "finalIdle": true,
+    "finalNoPendingApproval": true,
+    "finalNoActiveTurn": true,
+    "finalReplyMarker": true,
+    "approvalProofContent": true,
+    "appApprovalSucceeded": true
+  },
+  "previousDefectReport": "codex-approval-validation.json",
+  "approvalThreadId": "01a1c9e5-b2a8-7ff2-8670-ec779f4f7b05",
+  "permissionSettings": {
+    "sandbox": {
+      "type": "readOnly",
+      "networkAccess": false
+    },
+    "approvalPolicy": "on-request"
+  },
+  "approvalSubmissionId": "017b8eb66a344bfaa38094c74ad5458a",
+  "receipt": {
+    "executionId": "01a1c9e5-b38a-7a92-b115-994908d511d6",
+    "kind": "execution-started",
+    "submissionId": "017b8eb66a344bfaa38094c74ad5458a",
+    "threadId": "01a1c9e5-b2a8-7ff2-8670-ec779f4f7b05",
+    "turnId": "01a1c9e5-b38a-7a92-b115-994908d511d6"
+  },
+  "sendStatus": "accepted",
+  "updatedAt": 1794388776.5392032,
+  "status": "waiting",
+  "nativeSync": {
+    "state": "converging",
+    "generation": 0,
+    "checked_at": 1794388658,
+    "journalCheck": "verified",
+    "historyReady": true
+  },
+  "pendingApprovalCount": 1,
+  "approvalCapability": {
+    "supported": true,
+    "available": true
+  },
+  "approvalCards": [
+    {
+      "method": "item/commandExecution/requestApproval",
+      "availableDecisions": [
+        "accept",
+        {
+          "acceptWithExecpolicyAmendment": {
+            "execpolicy_amendment": [
+              "/bin/zsh",
+              "-lc",
+              "printf 'RIVO_CODEX_APPROVED\\n' > /Users/ethan/Documents/Rivo-Relay/workspace/multi-runtime-validation/codex-approval-proof.txt"
+            ]
+          }
+        },
+        "cancel"
+      ]
+    }
+  ],
+  "approvalDecisionSubmittedByHttpTest": false,
+  "finalState": {
+    "status": "idle",
+    "pendingApprovalCount": 0,
+    "activeTurnId": null,
+    "nativeSync": {
+      "state": "ready",
+      "generation": 0,
+      "checked_at": 1794388776,
+      "journalCheck": "verified",
+      "historyReady": true
+    }
+  },
+  "appApprovalDurationSeconds": 19.401,
+  "appApprovalEvidence": "Parent agent reported nativeApproval APP instrumentation passed; HTTP read-back verified final state and reply marker, and local proof content was verified.",
+  "approvalDecisionActor": "APP nativeApproval instrumentation",
+  "passed": true
+}

@@ -115,7 +115,7 @@ class NativeConnection:
                 raise
             return local_native_host_info(self)
 
-    def request(self, method, params=None, *, timeout=None):
+    def request(self, method, params=None, *, timeout=None, expected_generation=None):
         interruptible = method in {'prediction', 'thread/sample', 'thread/read', 'thread/turns/list',
             'thread/list', 'thread/loaded/list', 'thread/goal/get', 'project/list',
             'project/read', 'model/list', 'account/read', 'account/rateLimits/read',
@@ -125,6 +125,8 @@ class NativeConnection:
             checkpoint()
         reply = queue.Queue(maxsize=1)
         with self._lock:
+            if expected_generation is not None and expected_generation != self.generation:
+                raise CodexError('原生交互连接已变化', code='interaction_expired', http_status=409)
             sock = self._socket
             if sock is None:
                 raise CodexError("Codex 运行时未连接")
@@ -184,11 +186,13 @@ class NativeConnection:
     def notify(self, method, params=None):
         self._send({"method": method, "params": params or {}})
 
-    def respond(self, request_id, result):
-        self._send({"id": request_id, "result": result})
+    def respond(self, request_id, result, *, expected_generation=None):
+        self._send({"id": request_id, "result": result}, expected_generation=expected_generation)
 
-    def _send(self, message):
+    def _send(self, message, *, expected_generation=None):
         with self._lock:
+            if expected_generation is not None and expected_generation != self.generation:
+                raise CodexError('原生交互连接已变化', code='interaction_expired', http_status=409)
             if self._socket is None:
                 raise CodexError("Codex 运行时未连接")
             try:

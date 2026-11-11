@@ -87,6 +87,47 @@ class ConversationStoreTest {
         assertNull(restarted.pendingAppliedGoal(id))
         assertTrue(restarted.listPending("project").isEmpty())
     }
+    @Test fun neutralInputReceiptRecoversFirstMessageAfterRestart() = runBlocking {
+        val store = ConversationStore(directory.root)
+        val id = store.createPending("project")
+        store.saveDraftOrdered("pending:$id", ConversationDraft("Task"))
+        store.checkpointPendingSubmission(id, "create", "create")
+        store.resolvePendingSubmission("create", JSONObject("""{"status":"accepted","receipt":{"threadId":"native"}}"""))
+        store.checkpointPendingSubmission(id, "send", "send")
+        ConversationStore(directory.root).resolvePendingSubmission("send", JSONObject("""{"status":"accepted","receipt":{"kind":"input-accepted","submissionId":"send","threadId":"native"}}"""))
+        assertTrue(ConversationStore(directory.root).pendingCompleted(id))
+        assertFalse(ConversationStore(directory.root).pendingSubmissionCheckpoints().containsKey("send"))
+    }
+
+    @Test fun firstDshInputAcceptanceCompletesDraftOnlyWithMatchingRequestAndThread() = runBlocking {
+        for ((index, mutation) in listOf<(JSONObject) -> Unit>(
+            {}, { it.put("runtime", "codex") }, { it.put("requestId", "other") },
+            { it.put("threadId", "other") }, { it.remove("acceptance") }).withIndex()) {
+            val root = directory.newFolder("dsh-$index")
+            val store = ConversationStore(root)
+            val id = store.createPending("project")
+            store.saveDraftOrdered("pending:$id", ConversationDraft("Task"))
+            store.checkpointPendingSubmission(id, "create", "create")
+            store.resolvePendingSubmission("create", JSONObject("""{"status":"accepted","receipt":{"threadId":"native"}}"""))
+            store.checkpointPendingSubmission(id, "send", "send")
+            val receipt = JSONObject("""{"runtime":"dsh","acceptance":"input","requestId":"send","threadId":"native"}""")
+            mutation(receipt)
+            val reopened = ConversationStore(root)
+            val response = JSONObject().put("status", "accepted").put("receipt", receipt)
+            if (index == 0) {
+                reopened.resolvePendingSubmission("send", response)
+                assertTrue(ConversationStore(root).pendingCompleted(id))
+                assertEquals("native", ConversationStore(root).completedPendingThreadId(id))
+                assertFalse(ConversationStore(root).pendingSubmissionCheckpoints().containsKey("send"))
+            } else {
+                assertThrows(IllegalArgumentException::class.java) { reopened.resolvePendingSubmission("send", response) }
+                assertFalse(ConversationStore(root).pendingCompleted(id))
+                assertTrue(ConversationStore(root).pendingSubmissionCheckpoints().containsKey("send"))
+                assertEquals("Task", ConversationStore(root).loadDraft("pending:$id").text)
+            }
+        }
+    }
+
     @Test fun firstTurnReceiptRecoversOnlyGoalAndFinishesAfterGoalAcceptance() = runBlocking {
         val store = ConversationStore(directory.root)
         val id = store.createPending("project")

@@ -25,25 +25,25 @@ import org.json.JSONObject
 
 @Composable
 fun NativeRequestPanel(request: NativeRequest, enabled: Boolean, onRespond: (JSONObject) -> Unit) {
-    if (request.method in setOf("item/commandExecution/requestApproval", "item/fileChange/requestApproval", "execCommandApproval", "applyPatchApproval")) {
+    if (request.interaction?.kind == "approval" || request.method in setOf("item/commandExecution/requestApproval", "item/fileChange/requestApproval", "execCommandApproval", "applyPatchApproval", "runtime/approval")) {
         ApprovalRequest(request, enabled, onRespond)
         return
     }
-    if (request.method.endsWith("requestUserInput")) {
+    if (request.interaction?.kind == "questions" || request.method.endsWith("requestUserInput")) {
         UserInputRequest(request, enabled, onRespond)
         return
     }
-    var expanded by remember(request.key) { mutableStateOf(true) }
+    var expanded by remember(request.rememberKey) { mutableStateOf(true) }
     Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = MaterialTheme.shapes.medium,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         modifier = Modifier.fillMaxWidth().testTag("native_request")) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("toggle_native_request")) { Text(if (expanded) "Codex 需要你的回应 ▴" else "Codex 需要你的回应 ▾") }
+            TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("toggle_native_request")) { Text(if (expanded) "需要你的回应 ▴" else "需要你的回应 ▾") }
             if (expanded) {
                 val params = request.params
                 when {
-                    request.method == "item/permissions/requestApproval" -> PermissionRequest(params, enabled, onRespond)
-                    request.method == "mcpServer/elicitation/request" -> McpRequest(params, enabled, onRespond)
+                    request.interaction?.kind == "permissions" || request.method == "item/permissions/requestApproval" -> PermissionRequest(params, enabled, onRespond)
+                    request.interaction?.kind == "elicitation" || request.method == "mcpServer/elicitation/request" -> McpRequest(params, enabled, onRespond)
                     else -> {
                         Text(request.method, style = MaterialTheme.typography.titleMedium)
                         Text("此原生请求暂不支持在手机处理，请回到 Desktop 完成。完成后会自动刷新。", style = MaterialTheme.typography.bodyMedium)
@@ -56,10 +56,10 @@ fun NativeRequestPanel(request: NativeRequest, enabled: Boolean, onRespond: (JSO
 
 @Composable
 private fun UserInputRequest(request: NativeRequest, enabled: Boolean, onRespond: (JSONObject) -> Unit) {
-    val answers = remember(request.key) { mutableStateMapOf<String, String>() }
-    var questionIndex by remember(request.key) { mutableIntStateOf(0) }
+    val answers = remember(request.rememberKey) { mutableStateMapOf<String, String>() }
+    var questionIndex by remember(request.rememberKey) { mutableIntStateOf(0) }
     val questions = request.params.objects("questions")
-    QuestionDialog("Codex 需要你的回应", "native_request", "toggle_native_request") {
+    QuestionDialog("需要你的回应", "native_request", "toggle_native_request") {
         NativeQuestionCard(questions, answers, questionIndex, enabled, { questionIndex = it }, { id, value -> answers[id] = value },
             modifier = Modifier.weight(1f, fill = false)) {
             val results = JSONObject()
@@ -76,18 +76,15 @@ private fun UserInputRequest(request: NativeRequest, enabled: Boolean, onRespond
 
 @Composable
 private fun ApprovalRequest(request: NativeRequest, enabled: Boolean, onRespond: (JSONObject) -> Unit) {
-    var open by remember(request.key) { mutableStateOf(true) }
-    var details by remember(request.key) { mutableStateOf(false) }
-    var selected by remember(request.key) { mutableIntStateOf(-1) }
+    var open by remember(request.rememberKey) { mutableStateOf(true) }
+    var details by remember(request.rememberKey) { mutableStateOf(false) }
+    var selected by remember(request.rememberKey) { mutableIntStateOf(-1) }
     val params = request.params
-    val declared = params.optJSONArray("availableDecisions")
-    val decisions: List<Any> = if (declared != null && declared.length() > 0)
-        (0 until declared.length()).map { declared.get(it) }
-    else if (request.method.contains('/')) listOf("decline", "accept") else listOf(legacyRejection(), "approved")
+    val decisions: List<Any> = request.interaction?.choices ?: approvalDecisions(request)
     val choices = decisions.filter { approvalLabel(it) != null }
-    val index = if (selected >= 0) selected else choices.indexOfFirst { it == "accept" || it == "approved" }
+    val index = if (selected >= 0) selected else choices.indexOfFirst { it == "accept" || it == "approved" || (it as? InteractionChoice)?.effect == "allow-once" }
     val choice = choices.getOrNull(index)
-    val title = if (request.method.contains("fileChange") || request.method == "applyPatchApproval") "允许修改文件？" else "允许运行命令？"
+    val title = request.interaction?.title?.ifBlank { "允许此操作？" } ?: approvalTitle(request)
     Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.medium,
         modifier = Modifier.fillMaxWidth().testTag("native_request")) {
         Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
@@ -102,8 +99,8 @@ private fun ApprovalRequest(request: NativeRequest, enabled: Boolean, onRespond:
             Column(Modifier.fillMaxWidth().heightIn(max = 600.dp).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(title, style = MaterialTheme.typography.titleLarge)
                 Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    params.string("reason").takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                    val detail = params.string("command").ifBlank { params.string("cwd") }.ifBlank { params.string("grantRoot") }
+                    (request.interaction?.description ?: params.string("reason")).takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                    val detail = request.interaction?.detail ?: params.string("detail").ifBlank { params.string("command") }.ifBlank { params.string("cwd") }.ifBlank { params.string("grantRoot") }
                     if (detail.isNotBlank()) {
                         TextButton(onClick = { details = !details }, contentPadding = PaddingValues(0.dp)) { Text(if (details) "收起详情 ▴" else "查看详情 ▾") }
                         if (details) Surface(color = MaterialTheme.colorScheme.surfaceContainerLowest, shape = MaterialTheme.shapes.small) {
@@ -129,7 +126,7 @@ private fun ApprovalRequest(request: NativeRequest, enabled: Boolean, onRespond:
                 HorizontalDivider()
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = { open = false }) { Text("稍后处理") }
-                    Button(onClick = { choice?.let { onRespond(JSONObject().put("decision", it)) } }, enabled = enabled && choice != null,
+                    Button(onClick = { choice?.let { onRespond(if (it is InteractionChoice) JSONObject().put("choiceId", it.id) else JSONObject().put("decision", it)) } }, enabled = enabled && choice != null,
                         modifier = Modifier.weight(1f).testTag("approve_request")) {
                         Text(when (choice) {
                             "accept", "approved" -> "允许本次"
@@ -146,7 +143,25 @@ private fun ApprovalRequest(request: NativeRequest, enabled: Boolean, onRespond:
 }
 }
 
+/** Runtime approvals use only explicitly declared one-shot choices. */
+internal fun approvalDecisions(request: NativeRequest): List<Any> {
+    val declared = request.params.optJSONArray("availableDecisions")
+    val decisions = declared?.let { values -> (0 until values.length()).map { values.get(it) } }
+    if (request.method == "runtime/approval") {
+        return decisions.orEmpty().filter { it in setOf("accept", "decline", "cancel") }.distinct()
+    }
+    return decisions?.takeIf { it.isNotEmpty() }
+        ?: if (request.method.contains('/')) listOf("decline", "accept") else listOf(legacyRejection(), "approved")
+}
+
+internal fun approvalTitle(request: NativeRequest): String = when {
+    request.method == "runtime/approval" -> request.params.string("title").ifBlank { "允许此操作？" }
+    request.method.contains("fileChange") || request.method == "applyPatchApproval" -> "允许修改文件？"
+    else -> "允许运行命令？"
+}
+
 internal fun approvalLabel(decision: Any): String? = when (decision) {
+    is InteractionChoice -> decision.label
     "accept", "approved" -> "允许本次"
     "acceptForSession", "approved_for_session" -> "在此会话中允许"
     "decline" -> "拒绝"
@@ -181,7 +196,7 @@ private fun permissionPath(path: JSONObject): String = when (path.string("type")
 private fun PermissionRequest(params: JSONObject, enabled: Boolean, onRespond: (JSONObject) -> Unit) {
     val permissions = params.optJSONObject("permissions") ?: JSONObject()
     var scope by remember { mutableStateOf("turn") }
-    Text("Codex 请求权限", style = MaterialTheme.typography.titleMedium)
+    Text("请求权限", style = MaterialTheme.typography.titleMedium)
     params.string("reason").takeIf { it.isNotBlank() }?.let { Text(it) }
     params.string("cwd").takeIf { it.isNotBlank() }?.let { Text("工作目录：$it", style = MaterialTheme.typography.bodySmall) }
     permissions.optJSONObject("network")?.let { if (it.optBoolean("enabled")) Text("• 网络访问") }

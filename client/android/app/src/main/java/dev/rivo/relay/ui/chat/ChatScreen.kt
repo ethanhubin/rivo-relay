@@ -136,6 +136,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         confirmButton = {},
         dismissButton = { TextButton(enabled = !busy, onClick = { forkTurn = null }) { Text("取消") } })
     val snapshot = state.snapshot
+    val capabilities = LocalRuntimeCapabilities.current.withOverrides(snapshot?.capabilities)
     androidx.compose.runtime.SideEffect { mediaClient?.updateRevision(state.mediaValidationEpoch) }
     var mediaAssets by remember(mediaClient) { mutableStateOf(emptyList<JSONObject>()) }
     val generated = remember(snapshot?.messages) { generatedMediaRequests(snapshot?.messages.orEmpty()) }
@@ -178,8 +179,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     var goalCapability by remember(state.id) { mutableStateOf<Boolean?>(null) }
     var goalCapabilityError by remember(state.id) { mutableStateOf<String?>(null) }
     var goalCapabilityRetry by remember(state.id) { mutableIntStateOf(0) }
-    LaunchedEffect(state.id, pendingTitle, goalCapabilityRetry) {
+    LaunchedEffect(state.id, pendingTitle, goalCapabilityRetry, capabilities.allows("session.goal")) {
         if (pendingTitle == null || readGoalCapability == null) return@LaunchedEffect
+        if (!capabilities.allows("session.goal")) { goalCapability = false; return@LaunchedEffect }
         goalCapability = null; goalCapabilityError = null
         try { goalCapability = readGoalCapability() }
         catch (e: kotlinx.coroutines.CancellationException) { throw e }
@@ -221,7 +223,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     LaunchedEffect(settingsUnavailable) {
         if (settingsUnavailable) settingsOpen = false
     }
-    fun openFile(path: String) { fileAction = null; filePath = path }
+    fun openFile(path: String) { if (capabilities.allows("files.read")) { fileAction = null; filePath = path } }
     var pendingImageUris by androidx.compose.runtime.saveable.rememberSaveable(state.id) { mutableStateOf(arrayListOf<String>()) }
     fun addImages(uris: List<android.net.Uri>) {
         val targetId = state.id
@@ -274,7 +276,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val predictionTurn = snapshot?.turnSettings?.lastOrNull()?.turnId
     var prediction by remember(state.id, predictionTurn) { mutableStateOf<String?>(null) }
     var predictionConsumed by remember(state.id, predictionTurn) { mutableStateOf(false) }
-    val predictionEligible = snapshot != null && !snapshot.isOngoing && !state.stale && !blocked && canOperate &&
+    val predictionEligible = capabilities.allows("session.prediction") && snapshot != null && !snapshot.isOngoing && !state.stale && !blocked && canOperate &&
         pendingTitle == null && selectedMode != "plan" && !goalModeSelected && snapshot.goal?.string("status") != "active" && images.isEmpty() && files.isEmpty()
     LaunchedEffect(state.id, predictionTurn, predictionEligible) {
         prediction = null
@@ -456,7 +458,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         draft = appendQuoteToDraft(draft, text); inputFocusRequest++
     }) else null
     val saveFile: (String) -> Unit = { fileAction = FileAction.SAVE; filePath = it }
-    fun openSettings() { if (inputLocked) return; settingsOpen = !settingsOpen; if (settingsOpen) { focus.clearFocus(); keyboard?.hide(); onLoadModels() } }
+    fun openSettings() { if (inputLocked || !capabilities.allows("session.settings")) return; settingsOpen = !settingsOpen; if (settingsOpen) { focus.clearFocus(); keyboard?.hide(); if (capabilities.allows("session.models")) onLoadModels() } }
 
     val mediaCache: NativeCachedDownload? = mediaClient?.let { client ->
         { path, progress ->
@@ -474,8 +476,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             Column(Modifier.clickable(onClick = ::openSettings).testTag("conversation_status")) { Text("新会话", style = MaterialTheme.typography.titleLarge); Text(pendingTitle, style = MaterialTheme.typography.bodySmall) }
         } else NativeChatHeader(state, usage, onBack, ::openSettings, onRefresh, { developerOpen = true }, { stopConfirm = true },
             !busy && !blocked && !state.stale && canOperate, pinned, canManage, onPin, onArchive,
-            onWriterAction, writerBusy || busy || blocked, takeoverBlockedReason, recoveryState, onDelete)
-        if (pendingTitle == null && state.displayControl().state == ControlState.EXTERNAL) NativeWriterStatus(state, nodeName, writerBusy || busy || blocked, onWriterAction, takeoverBlockedReason, onRefresh)
+            onWriterAction, writerBusy || busy || blocked, takeoverBlockedReason, recoveryState, onDelete, capabilities)
+        if (capabilities.allows("session.ownership") && pendingTitle == null && state.displayControl().state == ControlState.EXTERNAL) NativeWriterStatus(state, nodeName, writerBusy || busy || blocked, onWriterAction, takeoverBlockedReason, onRefresh)
         // Reserve the loading strip so revalidation never changes the viewport height.
         Box(Modifier.fillMaxWidth().height(4.dp)) {
             if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -621,7 +623,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                             ReviewDiagnostic(snapshot.reviewDiagnostics.lastOrNull { it.string("turnId") == message.turnId })
                         }
                         AssistantMessageFooter(message.text, "${message.turnId}:${message.id}", timing.outputAt,
-                            forkTurnId = message.turnId.takeIf { isLastReply && onFork != null &&
+                            forkTurnId = message.turnId.takeIf { isLastReply && onFork != null && capabilities.allows("session.fork") &&
                                 snapshot?.turnSettings?.any { it.turnId == message.turnId && it.status in setOf("completed", "interrupted", "failed") } == true },
                             forkEnabled = !busy && !blocked && !state.stale,
                             onFork = { forkTurn = message.turnId })
@@ -657,7 +659,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     is NativeTimelineRow.Notice -> next.turn.turnId
                 } }
                 val terminal = snapshot?.turnSettings?.any { it.turnId == rowTurn && it.status in setOf("completed", "interrupted", "failed") } == true
-                if (onFork != null && rowTurn.isNotBlank() && rowTurn != nextTurn && terminal && lastReplyIds[rowTurn] == null) {
+                if (onFork != null && capabilities.allows("session.fork") && rowTurn.isNotBlank() && rowTurn != nextTurn && terminal && lastReplyIds[rowTurn] == null) {
                     AssistantMessageFooter("", rowTurn,
                         snapshot?.turnSettings?.firstOrNull { it.turnId == rowTurn }?.completedAt,
                         forkTurnId = rowTurn, forkEnabled = !busy && !blocked && !state.stale,
@@ -685,13 +687,13 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         ) { Text("↓", style = MaterialTheme.typography.titleLarge) }
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
             .onSizeChanged { bottomOverlayHeight = it.height }) {
-        if (pendingTitle == null) pendingWorkspace?.invoke()
+        if (pendingTitle == null && (capabilities.allows("workspace.manage") && capabilities.allows("project.git"))) pendingWorkspace?.invoke()
         val asyncQuestions = remember(snapshot?.messages, snapshot?.activeTurnId, snapshot?.turnSettings, snapshot?.questionAnswerStates) {
             snapshot?.let(::pendingAsyncQuestions).orEmpty()
         }
         if (asyncQuestions.isNotEmpty() && snapshot != null) key(draftStore, state.id, snapshot.activeTurnId.ifBlank { snapshot.turnSettings.lastOrNull()?.turnId }) {
             AsyncQuestionPanel(asyncQuestions, !busy && !blocked && !writerBusy && !state.stale &&
-                snapshot.canAnswerQuestions && snapshot.requests.isEmpty(),
+                capabilities.allows("interaction.respond") && snapshot.runtimeSessionValid != false && snapshot.canAnswerQuestions && snapshot.requests.isEmpty(),
                 store = draftStore, draftKey = "question:${snapshot.id}:${snapshot.activeTurnId.ifBlank { snapshot.turnSettings.lastOrNull()?.turnId.orEmpty() }}",
                 unavailableReason = if (asyncQuestions.any { snapshot.questionAnswerStates.string(it.id) in setOf("pending", "unknown") })
                     "回答结果待核对，请刷新；不会自动重发。" else if (!snapshot.canAnswerQuestions)
@@ -703,12 +705,12 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
 
         if (snapshot?.requests?.isNotEmpty() == true) Column(Modifier.fillMaxWidth().heightIn(max = 320.dp)
             .verticalScroll(rememberScrollState()).padding(horizontal = 12.dp).testTag("native_requests_panel")) {
-            snapshot.requests.forEach { request -> key(request.key) {
-                NativeRequestPanel(request, !busy && !blocked && !state.stale && (canOperate || request.method.endsWith("requestUserInput"))) { onRespond(request, it) }
+            snapshot.requests.forEach { request -> key(request.rememberKey) {
+                NativeRequestPanel(request, capabilities.allows("interaction.respond") && !busy && !blocked && !state.stale && (canOperate || request.interaction?.kind == "questions" || request.method.endsWith("requestUserInput"))) { onRespond(request, it) }
             } }
         }
         var goalEditing by remember(state.id) { mutableStateOf(false) }
-        val goalAvailable = (pendingTitle != null && (goalCapability == true || pendingGoal != null)) || snapshot?.goalSupported == true
+        val goalAvailable = capabilities.allows("session.goal") && ((pendingTitle != null && (goalCapability == true || pendingGoal != null)) || snapshot?.goalSupported == true)
         val goalEnabled = !pendingReceiptUnresolved && !pendingFirstTurnSent && !busy && !blocked && !state.stale && draftLoaded && (pendingTitle != null || canOperate)
         val displayedGoal = if (pendingTitle != null) pendingGoal?.let { JSONObject(it).put("status", "pending") } else snapshot?.goal
         val goalMode = goalModeSelected || displayedGoal?.string("status") in setOf("active", "pending")
@@ -719,7 +721,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 else onGoal(action)
             }, goalEditing, pending = pendingTitle != null) { goalEditing = it }
         }
-        if (pendingTitle != null && !pendingFirstTurnSent && goalCapability != true) Column(Modifier.padding(horizontal = 16.dp)) {
+        if (capabilities.supports("session.goal") && pendingTitle != null && !pendingFirstTurnSent && goalCapability != true) Column(Modifier.padding(horizontal = 16.dp)) {
             Text(goalCapabilityError ?: if (goalCapability == false) "此节点不支持持续目标。" else "正在检查目标能力…",
                 style = MaterialTheme.typography.bodySmall)
             if (pendingGoal != null) Text("草稿中的目标已保留；确认能力或移除目标后才能发送。", style = MaterialTheme.typography.bodySmall)
@@ -739,23 +741,23 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             "目标设置已提交到会话；首条任务尚待发送。重试不会重复提交相同目标。",
             modifier = Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall)
         NativePlan(snapshot?.plan)
-        if (state.canResumeQueue() && onWriterAction != null) {
+        if (capabilities.allows("session.queue") && state.canResumeQueue() && onWriterAction != null) {
             TextButton(onClick = { onWriterAction("resume") },
                 enabled = !busy && !blocked && !writerBusy,
                 modifier = Modifier.testTag("resume_queue")) { Text("恢复队列") }
         }
         val waitingQueue = snapshot?.queue.orEmpty().filter { it.status !in setOf("running", "dispatching") && !it.recoveryRequired && it.id != snapshot?.recoveryTask?.id }
         val displayedQueue = waitingQueue + projectedPendingQueue(snapshot, state.pendingMessages)
-        if (snapshot != null && displayedQueue.isNotEmpty()) ExecutionQueuePanel(snapshot.id, displayedQueue, !busy && !blocked && !writerBusy && state.canManageQueue(),
-            canSteer = canOperate && snapshot.activeTurnId.isNotBlank() && snapshot.requests.isEmpty(),
+        if (capabilities.allows("session.queue") && snapshot != null && displayedQueue.isNotEmpty()) ExecutionQueuePanel(snapshot.id, displayedQueue, !busy && !blocked && !writerBusy && state.canManageQueue(),
+            canSteer = capabilities.allows("session.steer") && canOperate && snapshot.activeTurnId.isNotBlank() && snapshot.requests.isEmpty(),
             onEdit = ::editQueuedTask, onWithdraw = { removingQueue = it },
             onSteer = { task -> onQueue(JSONObject().put("operation", "steer").put("itemId", task.id).put("revision", task.revision).put("expectedTurnId", snapshot.activeTurnId), {}) },
             onReorder = { ids, expected -> onQueue(JSONObject().put("operation", "reorder").put("ids", JSONArray(ids)).put("expectedIds", JSONArray(expected)), {}) })
         if (pendingTitle != null) {
-            LaunchedEffect(state.id) { onLoadModels() }
+            LaunchedEffect(state.id, capabilities.allows("session.models")) { if (capabilities.allows("session.models")) onLoadModels() }
         }
         AnimatedVisibility(
-            visible = pendingTitle != null && !busy && !pendingFirstTurnSent && !pendingReceiptUnresolved,
+            visible = capabilities.allows("session.settings") && pendingTitle != null && !busy && !pendingFirstTurnSent && !pendingReceiptUnresolved,
             enter = expandVertically(animationSpec = tween(160), expandFrom = Alignment.Bottom),
             exit = shrinkVertically(animationSpec = tween(160), shrinkTowards = Alignment.Bottom),
         ) {
@@ -768,7 +770,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     selectedEffort = reasoningEffortForModel(capability, selectedEffort)
                 }, onEffort = { selectedEffort = it },
                 onSandbox = { selectedSandbox = it ?: "inherit" },
-                onApproval = { selectedApproval = it ?: "inherit" }, workspace = pendingWorkspace)
+                onApproval = { selectedApproval = it ?: "inherit" }, workspace = pendingWorkspace.takeIf { (capabilities.allows("workspace.manage") && capabilities.allows("project.git")) })
         }
         if (goalMode && goalAvailable) TextButton(onClick = { goalEditing = true }, enabled = goalEnabled,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("edit_goal")) {
@@ -785,9 +787,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             preparing = preparing, error = attachmentError, enabled = !busy && !inputLocked && draftLoaded,
             textEditable = textEditable,
             prediction = visiblePrediction,
-            canSend = !(goalMode && displayedGoal == null) && !pendingReceiptUnresolved && !pendingFirstTurnSent && (pendingGoal == null || goalCapability == true) && (sendText.isNotBlank() || images.isNotEmpty() || files.isNotEmpty() || pendingGoal != null) && !state.stale && (snapshot != null || pendingTitle != null && pendingReady),
-            canContinue = state.canContinueTask() && !blocked && !submissionInFlight, onContinue = onContinue,
-            isRunning = snapshot?.activeTurnId?.isNotBlank() == true, canStop = !busy && !blocked && !state.stale && canOperate, busy = busy,
+            canSend = capabilities.allows("session.send") && (snapshot?.shouldQueueInput != true || capabilities.allows("session.queue")) && (images.isEmpty() || capabilities.allows("attachments.images")) && (files.isEmpty() || capabilities.allows("files.upload")) && !(goalMode && displayedGoal == null) && !pendingReceiptUnresolved && !pendingFirstTurnSent && (pendingGoal == null || goalCapability == true) && (sendText.isNotBlank() || images.isNotEmpty() || files.isNotEmpty() || pendingGoal != null) && !state.stale && (snapshot != null || pendingTitle != null && pendingReady),
+            canContinue = capabilities.allows("session.continue") && state.canContinueTask() && !blocked && !submissionInFlight, onContinue = onContinue,
+            isRunning = snapshot?.activeTurnId?.isNotBlank() == true, canStop = capabilities.allows("session.interrupt") && !busy && !blocked && !state.stale && canOperate, busy = busy,
             onAddImage = { focus.clearFocus(); keyboard?.hide(); imagePickerTarget = state.id; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
             onAddFile = { focus.clearFocus(); keyboard?.hide(); filePickerTarget = state.id; filePicker.launch(arrayOf("*/*")) },
             onAddVideo = { focus.clearFocus(); keyboard?.hide(); filePickerTarget = state.id; filePicker.launch(arrayOf("video/*")) },
@@ -851,13 +853,14 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 else onSend(nativeInputs(sendText, images, files), selectedModel, selectedEffort, accepted)
             },
             onStop = { stopConfirm = true },
-            queueing = snapshot != null && canOperate && snapshot.shouldQueueInput,
+            queueing = capabilities.allows("session.queue") && snapshot != null && canOperate && snapshot.shouldQueueInput,
+            capabilities = capabilities,
         )
         }
         }
     }
-    if (developerOpen && state.id != null) DeveloperToolsDialog(state.id, readTool, submitTool, busy || blocked || !canOperate, onDismiss = { developerOpen = false },
-        canCleanup = snapshot?.activeTurnId?.isBlank() == true && snapshot.requests.isEmpty() && snapshot.queue.isEmpty() && canOperate)
+    if (developerOpen && capabilities.allows("session.review") && state.id != null) DeveloperToolsDialog(state.id, readTool, submitTool, busy || blocked || !canOperate, onDismiss = { developerOpen = false },
+        canCleanup = (capabilities.allows("workspace.manage") && capabilities.allows("project.git")) && snapshot?.activeTurnId?.isBlank() == true && snapshot.requests.isEmpty() && snapshot.queue.isEmpty() && canOperate)
     editingImage?.takeUnless { inputLocked }?.let { image ->
         key(image) {
             AttachmentImageEditor(image, onDismiss = { editingImage = null }, onComplete = { edited ->
@@ -872,13 +875,13 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text(if (task.recoveryRequired) "仅移除此队列记录，不会停止或重新发送原任务。请先核对会话历史。" else "该任务将从等待队列移除，不再执行。") } },
         confirmButton = { TextButton(onClick = { onQueue(JSONObject().put("operation", if (task.recoveryRequired) "dismiss" else "remove").put("itemId", task.id).put("revision", task.revision)) { removingQueue = null } }, enabled = !busy && !blocked && !writerBusy && state.canManageQueue(), modifier = Modifier.testTag("queue_remove")) { Text(if (task.recoveryRequired) "确认忽略" else "确认撤回") } },
         dismissButton = { TextButton(onClick = { removingQueue = null }) { Text("取消") } }) }
-    filePath?.let { FilePreviewDialog(it, readFile, downloadFile, initialAction = fileAction) { filePath = null; fileAction = null } }
-    if (workspaceFileDialog && !inputLocked) WorkspaceFilePicker(cwd, readDirectory,
+    filePath?.takeIf { capabilities.allows("files.read") }?.let { FilePreviewDialog(it, readFile, downloadFile, initialAction = fileAction) { filePath = null; fileAction = null } }
+    if (workspaceFileDialog && capabilities.allows("files.browse") && !inputLocked) WorkspaceFilePicker(cwd, readDirectory,
         onDismiss = { workspaceFileDialog = false }, onSelect = { file ->
             if (files.size < 16 && files.none { it.string("path") == file.string("path") }) files = files + file
             workspaceFileDialog = false
         })
-    if (stopConfirm) AlertDialog(onDismissRequest = { stopConfirm = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("停止当前轮次？") } },
+    if (stopConfirm && capabilities.allows("session.interrupt")) AlertDialog(onDismissRequest = { stopConfirm = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("停止当前轮次？") } },
         text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("将中断当前 Codex 轮次。已产生的内容和改动会保留；这不等同于暂停或清除持续目标，队列也会保留。") } },
         confirmButton = { Button(onClick = { stopConfirm = false; onStop() }, enabled = !busy && !blocked && canOperate) { Text("停止当前轮次") } },
         dismissButton = { TextButton(onClick = { stopConfirm = false }) { Text("取消") } })

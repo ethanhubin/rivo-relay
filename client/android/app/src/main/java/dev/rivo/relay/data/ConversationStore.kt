@@ -383,7 +383,9 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
                 if (status == "accepted" && kind in setOf("send", "sendWithGoal")) {
                     val receipt = response.optJSONObject("receipt")
                     val expectedThread = disk.optString("pending-thread:$pendingId").takeIf(String::isNotBlank)
-                    require(threadId != null && receipt?.string("turnId")?.isNotBlank() == true &&
+                    val inputReceipt = receipt?.let { decodeInputReceipt(it, submissionId, expectedThread) }
+                    val acceptedInput = kind == "send" && inputReceipt is InputReceipt.Accepted
+                    require(threadId != null && (inputReceipt is InputReceipt.Started || acceptedInput) &&
                         (expectedThread == null || expectedThread == threadId)) {
                         "首条消息成功回执缺少匹配的会话或任务身份，保留草稿和恢复记录"
                     }
@@ -513,6 +515,9 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
         if (thread.string("id") != threadId || snapshot.optJSONObject("nativeSync")?.string("state")?.let { it.isNotBlank() && it != "ready" } == true) return null
         val root = encodedFields(snapshot, setOf("thread", "requests", "queue", "recoveryTask", "recoveryRequired", "nextCursor", "nativeRevision"))
         root.putAll(mapOf("requests" to "[]", "queue" to "[]", "recoveryTask" to "null", "recoveryRequired" to "false", "nextCursor" to "null", "nativeRevision" to "null"))
+        snapshot.optJSONObject("sessionState")?.let { state ->
+            root["sessionState"] = JSONObject(state.toString()).put("interactions", org.json.JSONArray()).toString()
+        }
         val fields = encodedFields(thread, setOf("turns"))
         val turns = thread.objects("turns").takeLast(30).map { it.toString() }
         val sizes = turns.map { it.toByteArray().size }

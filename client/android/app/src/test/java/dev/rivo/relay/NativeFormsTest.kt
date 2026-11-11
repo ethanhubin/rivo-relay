@@ -52,6 +52,20 @@ class NativeFormsTest {
         assertEquals("用户拒绝此请求", legacyRejection().getJSONObject("denied").getString("rejection"))
         assertEquals("拒绝", approvalLabel(legacyRejection()))
     }
+    @Test fun runtimeApprovalsOnlyOfferDeclaredOneShotChoicesAndPreserveOperationTitle() {
+        val params = JSONObject("""{"runtime":"dsh","title":"允许访问网络？","availableDecisions":["accept","decline","cancel","acceptForSession","allowed-once","unknown"]}""")
+        val request = dev.rivo.relay.data.NativeRequest("generation:request", "runtime/approval", params)
+        assertEquals(listOf("accept", "decline", "cancel"), approvalDecisions(request))
+        assertEquals("允许访问网络？", approvalTitle(request))
+        assertEquals(listOf("允许本次", "拒绝", "取消当前请求"), approvalDecisions(request).map(::approvalLabel))
+        params.remove("availableDecisions")
+        assertTrue(approvalDecisions(request).isEmpty())
+        params.put("availableDecisions", org.json.JSONArray().put("accept")).put("runtime", "third-provider")
+        assertEquals(listOf("accept"), approvalDecisions(request))
+        params.remove("title")
+        assertEquals("允许此操作？", approvalTitle(request))
+    }
+
     @Test fun settingsSummaryNeverExposesInstructions() {
         val settings = JSONObject("""{"approvalPolicy":"never","sandbox":{"type":"workspaceWrite"},"developer_instructions":"hidden-instructions"}""")
         assertEquals("工作区读写\n原生审批：不要求", nativePermissionSummary(settings))

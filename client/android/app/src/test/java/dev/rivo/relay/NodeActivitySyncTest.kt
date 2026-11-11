@@ -26,7 +26,42 @@ class NodeActivitySyncTest {
         verifyEvent("""{"method":"relay/nativeDisconnected","params":{}}""", targetUnknown = true)
     }
 
-    private suspend fun verifyEvent(event: String, targetUnknown: Boolean) = coroutineScope {
+    @Test fun nativeDisconnectIsReconfirmedByFreshReadEvenWhenVersionDoesNotChange() = runBlocking {
+        verifyEvent("""{"method":"relay/nativeDisconnected","params":{}}""", targetUnknown = true, fixedVersion = true)
+    }
+
+    @Test fun transportResetDoesNotPermanentlyStopActivityReads() = runBlocking {
+        val server = MockWebServer()
+        val reading = CountDownLatch(1)
+        val reads = AtomicInteger()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.requestUrl?.encodedPath == "/v1/events") return MockResponse()
+                    .setHeader("Content-Type", "text/event-stream").setBody(":".repeat(65536))
+                    .throttleBody(1024, 1, TimeUnit.SECONDS)
+                if (reads.incrementAndGet() == 1) {
+                    reading.countDown()
+                    return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+                }
+                return MockResponse().setBody("""{"complete":true,"generation":"g","version":1,
+                    "tasks":[],"knownThreadIds":["t"],"unknownThreadIds":[]}""")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        try {
+            val api = RelayApi(server.url("/").newBuilder().host("127.0.0.1").build().toString())
+            val sync = NodeSessionSync(api, scope)
+            val collecting = scope.launch { sync.activity.collect {} }
+            withContext(Dispatchers.IO) { assertTrue(reading.await(5, TimeUnit.SECONDS)) }
+            api.resetTransport()
+            withTimeout(8000) { sync.activity.first { it.status("t") == "idle" } }
+            assertTrue(reads.get() >= 2)
+            collecting.cancelAndJoin()
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
+    private suspend fun verifyEvent(event: String, targetUnknown: Boolean, fixedVersion: Boolean = false) = coroutineScope {
         val server = MockWebServer()
         val refreshing = CountDownLatch(1)
         val release = CountDownLatch(1)
@@ -39,8 +74,9 @@ class NodeActivitySyncTest {
                         .setBody("event: native\ndata: $event\n\n" + ":".repeat(65536))
                         .throttleBody(1024, 1, TimeUnit.SECONDS)
                 }
-                val version = reads.incrementAndGet()
-                if (version > 1) { refreshing.countDown(); release.await(5, TimeUnit.SECONDS) }
+                val read = reads.incrementAndGet()
+                val version = if (fixedVersion) 1 else read
+                if (read > 1) { refreshing.countDown(); release.await(5, TimeUnit.SECONDS) }
                 return MockResponse().setBody("""{"complete":true,"generation":"g","version":$version,
                     "tasks":[{"threadId":"t","projectId":"p","status":"running","nativeExecution":"running"}],
                     "knownThreadIds":["t","other"],"unknownThreadIds":[]}""")
@@ -67,7 +103,7 @@ class NodeActivitySyncTest {
                     .withNodeActivity(state).threads.single().status)
             }
             release.countDown()
-            withTimeout(5000) { sync.activity.first { it.version >= 2 && it.status("t") == "running" } }
+            withTimeout(5000) { sync.activity.first { it.version >= (if (fixedVersion) 1 else 2) && it.status("t") == "running" } }
             collecting.cancelAndJoin()
             observing.cancelAndJoin()
         } finally { release.countDown(); scope.cancel(); server.shutdown() }

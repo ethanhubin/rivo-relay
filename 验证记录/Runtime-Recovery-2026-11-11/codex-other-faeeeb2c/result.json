@@ -1,0 +1,14 @@
+{
+  "backend": "codex",
+  "scenario": "other",
+  "runId": "codex-other-faeeeb2c",
+  "threadId": "01a1ca22-b600-7862-a239-d0e61f555ce9",
+  "submissionId": "027261079093468a99247c7d3452c561",
+  "schemaVersion": 1,
+  "lastStatus": "idle",
+  "pendingCount": 0,
+  "proofMatches": true,
+  "assistantMarker": true,
+  "inputCount": 1,
+  "passed": true
+}
