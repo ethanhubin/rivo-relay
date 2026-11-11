@@ -126,12 +126,13 @@ class RecoveryParityTests(unittest.TestCase):
 
 
 class NativeParityTests(unittest.TestCase):
-    def test_pending_project_upload_uses_native_root_without_creating_or_resuming_thread(self):
+    def test_pending_project_upload_uses_native_storage_without_creating_or_resuming_thread(self):
         native = FakeNative()
+        native.native_host_info = lambda: {'codexHome': '/remote/native/.codex'}
         service = CodexService(connection=native)
         result = service.upload_project_attachment_stream('selected-project', 'report.txt', io.BytesIO(b'report'), 6)
         self.assertEqual('mention', result['type'])
-        self.assertTrue(result['path'].startswith('/workspace/.rivo-attachments/'))
+        self.assertTrue(result['path'].startswith('/remote/native/.codex/rivo-relay-attachments/'))
         project_read = next(params for method, params in native.calls if method == 'project/read')
         self.assertEqual('selected-project', project_read['projectId'])
         write = next(params for method, params in native.calls if method == 'fs/writeFile')

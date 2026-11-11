@@ -41,10 +41,10 @@ class NativeTurnFooterTest {
         val syncing = cache.project(live, true, 110, 6000)!!
         assertEquals(first.turn, syncing.turn)
         assertTrue(syncing.synchronizing)
-        assertEquals(1000L, syncing.clientStartedAtMillis)
-        assertEquals(5L, clientTurnElapsedSeconds(syncing, 6000))
+        assertEquals(-4000L, syncing.clientStartedAtMillis)
+        assertEquals(10L, clientTurnElapsedSeconds(syncing, 6000))
         assertEquals(syncing, cache.project(null, true, 120, 16000))
-        assertEquals(15L, clientTurnElapsedSeconds(syncing, 16000))
+        assertEquals(20L, clientTurnElapsedSeconds(syncing, 16000))
         val restored = cache.project(live, false, 125)!!
         assertFalse(restored.synchronizing)
         assertEquals(25L, nativeTurnElapsedSeconds(restored.turn!!, restored.observedAt))
@@ -133,17 +133,32 @@ class NativeTurnFooterTest {
         assertTrue(history.single().label.endsWith("耗时 1m 51s"))
     }
 
-    @Test fun clientClockIgnoresServerTimeMissingFieldsAndWallClockChanges() {
+    @Test fun reopeningConversationRestoresCurrentTurnAge() {
+        val first = NativeTurnFooterCache().project(live, false, 160, 1000)!!
+        assertEquals(60L, clientTurnElapsedSeconds(first, 1000))
+        val reopened = NativeTurnFooterCache().project(live, false, 220, 61000)!!
+        assertEquals(120L, clientTurnElapsedSeconds(reopened, 61000))
+    }
+
+    @Test fun missingTimestampWaitsForNativeTimingThenIgnoresWallClockChanges() {
         val cache = NativeTurnFooterCache()
-        val initial = cache.project(live.copy(turnSettings = listOf(turn.copy(startedAt = null))), false, 500, 1000)!!
-        assertEquals(0L, clientTurnElapsedSeconds(initial, 1000))
-        assertEquals(60L, clientTurnElapsedSeconds(initial, 61000))
-        val refreshed = cache.project(live.copy(turnSettings = listOf(turn.copy(startedAt = 1))), false, 5, 61000)!!
-        assertEquals(60L, clientTurnElapsedSeconds(refreshed, 61000))
-        val offline = cache.project(null, true, 999999, 121000)!!
-        assertEquals(120L, clientTurnElapsedSeconds(offline, 121000))
-        val next = cache.project(live.copy(activeTurnId = "next", turnSettings = listOf(turn.copy(turnId = "next"))), false, 600, 125000)!!
-        assertEquals(0L, clientTurnElapsedSeconds(next, 125000))
+        val initial = cache.project(live.copy(turnSettings = listOf(turn.copy(startedAt = null))), false, 150, 1000)!!
+        assertNull(clientTurnElapsedSeconds(initial, 1000))
+        val refreshed = cache.project(live, false, 160, 11000)!!
+        assertEquals(60L, clientTurnElapsedSeconds(refreshed, 11000))
+        val clockChanged = cache.project(live, false, 999999, 21000)!!
+        assertEquals(70L, clientTurnElapsedSeconds(clockChanged, 21000))
+        val offline = cache.project(null, true, 999999, 31000)!!
+        assertEquals(80L, clientTurnElapsedSeconds(offline, 31000))
+        val next = cache.project(live.copy(activeTurnId = "next",
+            turnSettings = listOf(turn.copy(turnId = "next", startedAt = 600))), false, 605, 35000)!!
+        assertEquals(5L, clientTurnElapsedSeconds(next, 35000))
+    }
+
+    @Test fun futureStartTimeDoesNotProduceNegativeElapsedTime() {
+        val footer = NativeTurnFooterCache().project(live, false, 90, 1000)!!
+        assertEquals(0L, clientTurnElapsedSeconds(footer, 1000))
+        assertEquals(5L, clientTurnElapsedSeconds(footer, 6000))
     }
 
     @Test fun explicitEndStopsTheLocalTimerEvenWhileTransportIsSyncing() {

@@ -18,7 +18,7 @@ import dev.rivo.relay.data.*
 
 /** QiGuang CodexActivityGroup: one compact summary row; commands and context compaction stay summary-only. */
 @Composable
-internal fun NativeActivityGroup(row: NativeTimelineRow.Activities, isCurrent: Boolean = false, resourceItems: List<NativeResource>? = null, onFile: (String) -> Unit) {
+internal fun NativeActivityGroup(row: NativeTimelineRow.Activities, isCurrent: Boolean = false, resourceItems: List<NativeResource>? = null, agentDetails: Map<Pair<String, String>, NativeAgentActivity> = emptyMap(), onOpenAgent: ((String) -> Unit)? = null, onFile: (String) -> Unit) {
     var expanded by rememberSaveable(row.key) { mutableStateOf(false) }
     var visibleDetails by rememberSaveable(row.key) { mutableIntStateOf(NATIVE_ACTIVITY_BATCH_SIZE) }
     val clipboard = LocalClipboardManager.current
@@ -59,7 +59,9 @@ internal fun NativeActivityGroup(row: NativeTimelineRow.Activities, isCurrent: B
                 activity.filePaths.take(visibleFiles).forEach { path -> Text(path, modifier = Modifier.clickable(role = Role.Button) { onFile(path) },
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
                 if (visibleFiles < activity.filePaths.size) TextButton(onClick = { visibleFiles += NATIVE_ACTIVITY_BATCH_SIZE }) { Text("显示更多文件（共 ${activity.filePaths.size} 项）") }
-                if (activity.detail.isNotBlank() && activity.detail.trim() != activity.summary.trim()) Surface(
+                val agents = agentDetails[message.turnId to message.id] ?: remember(message.raw) { nativeAgentActivity(message.raw) }
+                if (agents != null) NativeAgentDetails(agents, onOpenAgent)
+                if (agents == null && activity.detail.isNotBlank() && activity.detail.trim() != activity.summary.trim()) Surface(
                     color = MaterialTheme.colorScheme.surfaceContainerHighest, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(10.dp)) {
                         val preview = remember(activity.detail, visibleOutput) { boundedMarkdownPreview(activity.detail, visibleOutput) }

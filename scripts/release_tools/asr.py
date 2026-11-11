@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .common import require, save
 from .asr_remote import FILES
+from rivo_relay.release_management.configuration import settings
 
 
 def deploy(release):
@@ -21,8 +22,11 @@ def deploy(release):
     worker = Path(__file__).with_name('asr_remote.py').read_text()
     script = worker + '\nmain(json.loads(' + repr(json.dumps(payload)) + '))\n'
     # No secrets are transmitted: the health token remains on E2.
-    result = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
-                             'e2-mac-mini', '/Users/e2/Services/rivo-asr/.venv/bin/python -'], input=script, text=True,
+    host = settings(release.root).get('asrHost', 'e2-mac-mini')
+    command = (['/Users/e2/Services/rivo-asr/.venv/bin/python', '-'] if host == 'local' else
+               ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host,
+                '/Users/e2/Services/rivo-asr/.venv/bin/python -'])
+    result = subprocess.run(command, input=script, text=True,
                             capture_output=True, timeout=180)
     (release.directory / 'asr-deployment.log').write_text(result.stdout + result.stderr)
     require(result.returncode == 0, 'E2 ASR 同步失败，停止发布；查看 asr-deployment.log，修复后 resume')

@@ -205,7 +205,7 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
             existing.regular = existing.regular || !pinnedOnly
             turnId?.let { existing.tracker.expectTurn(it); existing.busy = true }
             if (requestPermission) existing.busy = true
-            existing.signal.trySend(Unit)
+            if (!pinnedOnly || requestPermission || turnId != null) existing.signal.trySend(Unit)
             return
         }
         val tracker = TaskChangeTracker().also { turnId?.let(it::expectTurn) }
@@ -215,7 +215,7 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
                 while (isActive) {
                     delay(8_000)
                     val current = watches[id]
-                    if (current?.busy == true || current != null && System.nanoTime() - current.lastReadNanos >= 60_000_000_000L)
+                    if (current?.busy == true || current != null && System.nanoTime() - current.lastReadNanos >= 300_000_000_000L)
                         signals.trySend(Unit)
                 }
             }
@@ -231,7 +231,7 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
                 val requireFresh = terminalRead || historyCheck
                 if (historyCheck) { watch.needsHistoryCheck = false; watch.lastHistoryCheckNanos = readStarted }
                 try { observe(id, withTimeout(JSON_READ_TIMEOUT_MILLIS) {
-                    val limit = if (terminalRead && !historyCheck) 2 else 30
+                    val limit = if (historyCheck) 30 else 2
                     val head = sync?.read(id, freshAfterNanos = readStarted.takeIf { requireFresh }, limit = limit)
                         ?: api.call("/v1/threads/${encoded(id)}?limit=$limit")
                     if (historyCheck) fillObservedTurns(head, tracker.unresolvedTurns) { cursor, revision ->
@@ -271,16 +271,16 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
                 // Text/tool output deltas cannot complete a turn or create a user request.
                 if (event.type == "native" && method.startsWith("item/") && !event.payload.has("id")) return@collect
                 val params = event.payload.optJSONObject("params")
-                val id = params?.string("threadId").orEmpty().ifBlank { params?.string("conversationId").orEmpty() }
-                if (event.type in setOf("reset", "connected") || id.isBlank()) watches.values.forEach {
+                val targets = notificationRefreshTargets(event)
+                if (targets == null) watches.values.forEach {
                     if (event.type in setOf("reset", "connected") && it.tracker.hasUnresolvedTurns) it.needsHistoryCheck = true
                     it.signal.trySend(Unit)
                 }
-                else watches[id]?.let { watch ->
+                else targets.forEach { id -> watches[id]?.let { watch ->
                     val turn = params?.optJSONObject("turn")
                     if (turn != null && watch.tracker.observeTurnEvent(method, turn, System.nanoTime())) watch.busy = true
                     watch.signal.trySend(Unit)
-                }
+                } }
             }
         }
     }

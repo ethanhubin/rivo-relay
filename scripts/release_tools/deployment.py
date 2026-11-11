@@ -150,6 +150,13 @@ def verify_release_health(state):
 
 def deploy(release):
     root, directory, state = release.root, release.directory, release.state
+    if state.get('mode') == 'manager':
+        # Publishing is independent of the currently executing chat node. Its
+        # managed agent installs the verified VPS package once that node is idle.
+        state['steps']['deployment'] = {'mode': 'managed-node', 'serviceRestarted': False,
+                                        'note': '节点通过 VPS 更新代理自行升级；此记录不表示已完成节点升级'}
+        release.record('deployed')
+        return
     target = root / 'workspace/deployments' / state['commit']
     if not target.exists():
         # The archive is made from the exact built commit, not the working tree.

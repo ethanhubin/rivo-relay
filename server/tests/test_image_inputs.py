@@ -2,6 +2,7 @@ import base64
 import copy
 import json
 import unittest
+from contextlib import nullcontext
 from unittest.mock import patch
 
 from rivo_relay.codex.connection import CodexError
@@ -16,6 +17,16 @@ def image(raw=None, mime='image/png'):
 
 
 class ImageInputTests(unittest.TestCase):
+    def setUp(self):
+        def auxiliary(native):
+            helper = copy.copy(native)
+            helper.auxiliary_connection = None
+            helper.native_host_info = lambda: {'codexHome': '/remote/native/.codex'}
+            return nullcontext(helper)
+        lease = patch.object(FakeNative, 'auxiliary_connection', auxiliary, create=True)
+        lease.start()
+        self.addCleanup(lease.stop)
+
     def test_native_turn_and_steer_keep_client_identity_stage_on_actual_host(self):
         for operation in ('send', 'steer'):
             native = FakeNative()
@@ -29,7 +40,7 @@ class ImageInputTests(unittest.TestCase):
             self.assertEqual(original, inputs)
             self.assertEqual('canonical-client-id', params['clientUserMessageId'])
             self.assertEqual('localImage', params['input'][1]['type'])
-            self.assertTrue(params['input'][1]['path'].startswith('/remote/native/project/.rivo-attachments/'))
+            self.assertTrue(params['input'][1]['path'].startswith('/remote/native/.codex/rivo-relay-attachments/'))
             writes = [p for method, p in native.calls if method == 'fs/writeFile']
             self.assertEqual(png(), base64.b64decode(writes[0]['dataBase64']))
             self.assertFalse({'sandboxPolicy', 'approvalPolicy'} & params.keys())
@@ -76,10 +87,10 @@ class ImageInputTests(unittest.TestCase):
         def upload(connection, cwd, name, stream, size):
             calls.append(name)
             if len(calls) == 2: raise CodexError('synthetic upload failure')
-            return {'path': '/remote/project/.rivo-attachments/new-uuid/image.png'}
+            return {'path': '/remote/native/.codex/rivo-relay-attachments/project-scope/new-uuid/image.png'}
         with patch('rivo_relay.codex.image_inputs.upload_attachment_stream', side_effect=upload):
             with self.assertRaises(CodexError): prepare_image_inputs(native, '/remote/project', [image(), image()])
-        self.assertEqual([('fs/remove', {'path': '/remote/project/.rivo-attachments/new-uuid', 'recursive': True})], native.calls)
+        self.assertEqual([('fs/remove', {'path': '/remote/native/.codex/rivo-relay-attachments/project-scope/new-uuid', 'recursive': True})], native.calls)
 
 
 if __name__ == '__main__':

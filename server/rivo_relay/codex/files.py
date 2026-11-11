@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import mimetypes
 import ntpath
 import posixpath
@@ -130,14 +131,23 @@ def read_directory(connection, path):
 
 
 
-def upload_attachment_stream(connection, cwd, name, stream, size, *, directory_name='.rivo-attachments'):
+def upload_attachment_stream(connection, cwd, name, stream, size, *, directory_name='rivo-relay-attachments'):
+    """Store on the native host, using cwd only as a project namespace.
+
+    A None cwd selects shared storage (used by todo media). Never fall back to
+    the project or the Relay process's home if native host discovery fails.
+    """
     from contextlib import nullcontext
+    scope = hashlib.sha256(native_path(cwd).encode('utf-8')).hexdigest() if cwd is not None else None
     lease = getattr(connection, 'auxiliary_connection', None)
     with lease() if lease else nullcontext(connection) as helper:
-        return _upload_attachment_stream(helper, cwd, name, stream, size, directory_name=directory_name)
+        home = native_path(helper.native_host_info().get('codexHome'))
+        paths = ntpath if ntpath.splitdrive(home)[0] or home.startswith('\\\\') else posixpath
+        directory = paths.join(directory_name, scope) if scope else directory_name
+        return _upload_attachment_stream(helper, home, name, stream, size, directory_name=directory)
 
 
-def _upload_attachment_stream(connection, cwd, name, stream, size, *, directory_name='.rivo-attachments'):
+def _upload_attachment_stream(connection, cwd, name, stream, size, *, directory_name):
     import uuid
     cwd = native_path(cwd)
     if (not isinstance(name, str) or not name.strip() or len(name) > 200

@@ -18,6 +18,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'server'))
+from rivo_relay.release_management.configuration import gateway_connection
 from rivo_relay.gateway.config import decode_key
 from rivo_relay.gateway.update_store import sha256, validate
 
@@ -76,16 +77,26 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--workspace', type=Path, default=ROOT / 'workspace/local-node')
     parser.add_argument('--commit', required=True)
-    parser.add_argument('--host', default='root@134.175.156.219')
-    parser.add_argument('--identity', type=Path, default=Path('/Users/ethan/Documents/QiGuangBot.pem'))
+    default_host, default_identity = gateway_connection(ROOT)
+    parser.add_argument('--host', default=default_host)
+    parser.add_argument('--identity', type=Path, default=default_identity)
+    parser.add_argument('--gateway-url')
+    parser.add_argument('--gateway-pin')
     parser.add_argument('--remote-workspace', default='/var/lib/rivo-gateway')
     parser.add_argument('--remote-python', default='/opt/rivo-relay/.venv/bin/python')
     parser.add_argument('--remote-source', default='/opt/rivo-relay/current/server')
     args = parser.parse_args()
     manifest = json.loads((args.workspace / 'updates/latest.json').read_text())
     apk = args.workspace / 'updates/apks' / (manifest['sha256'] + '.apk')
-    key = decode_key(json.loads((args.workspace / 'gateway-client.json').read_text())['key'])
-    ssh = ['ssh', '-i', str(args.identity), '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes', args.host]
+    if args.gateway_url or args.gateway_pin:
+        if not args.gateway_url or not re.fullmatch('[a-f0-9]{64}', args.gateway_pin or ''):
+            parser.error('--gateway-url/--gateway-pin 必须同时提供；证书指纹必须是 SHA-256')
+        from rivo_relay.gateway.config import gateway_url
+        key = {'gateway': gateway_url(args.gateway_url), 'pin': args.gateway_pin}
+    else:
+        key = decode_key(json.loads((args.workspace / 'gateway-client.json').read_text())['key'])
+    identity = ['-i', str(args.identity), '-o', 'IdentitiesOnly=yes'] if args.identity else []
+    ssh = ['ssh', *identity, '-o', 'BatchMode=yes', args.host]
     remote = args.remote_workspace + '/incoming-' + uuid.uuid4().hex
     def command(parts, **kwargs):
         return subprocess.run(ssh + [shlex.join(parts)], check=True, **kwargs)
@@ -97,7 +108,7 @@ def main():
         check = 'import pathlib,shutil,sys,time,re; p=pathlib.Path(sys.argv[1]); [shutil.rmtree(d) for d in p.parent.glob("incoming-*") if re.fullmatch("incoming-[a-f0-9]{32}",d.name) and d.is_dir() and not d.is_symlink() and time.time()-d.stat().st_mtime>86400]; assert shutil.disk_usage(p.parent).free>=int(sys.argv[2]), "Insufficient VPS space"; p.mkdir(mode=0o700)'
         command([args.remote_python, '-c', check, remote, str(required)])
         try:
-            subprocess.run(['scp', '-i', str(args.identity), '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes',
+            subprocess.run(['scp', *identity, '-o', 'BatchMode=yes',
                             *[str(p) for p in directory.iterdir()], args.host + ':' + remote + '/'], check=True)
             # Match the existing gateway's owner; its protected systemd service can read all assets.
             command(['chown', '-R', 'rivo-gateway:rivo-gateway', remote])

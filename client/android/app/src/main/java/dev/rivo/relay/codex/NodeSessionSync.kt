@@ -11,6 +11,8 @@ class NodeSessionSync(private val api: RelayApi, private val scope: CoroutineSco
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
     internal val activitySnapshots = publishedActivity.asSharedFlow()
     val activity by lazy { nodeActivity(api, this, scope) }
+    @Volatile internal var streamInterrupted: Boolean = false
+        private set
     private data class Observation(val event: RelayEvent? = null, val error: Throwable? = null)
     private data class Read(val result: Deferred<JSONObject>, val startedNanos: Long, var users: Int = 0)
     private val lock = Any()
@@ -44,6 +46,7 @@ class NodeSessionSync(private val api: RelayApi, private val scope: CoroutineSco
         while (currentCoroutineContext().isActive) {
             try {
                 api.events("", cursor).collect { event ->
+                    if (event.type == "connected") streamInterrupted = false
                     event.cursor?.let { cursor = it.takeIf(String::isNotBlank) }
                     invalidate(event)
                     emit(Observation(event = event))
@@ -51,6 +54,7 @@ class NodeSessionSync(private val api: RelayApi, private val scope: CoroutineSco
                 throw java.io.IOException("实时连接已结束")
             } catch (error: Exception) {
                 currentCoroutineContext().ensureActive()
+                streamInterrupted = true
                 invalidate()
                 synchronized(lock) { activityEpoch++ }
                 emit(Observation(error = error))

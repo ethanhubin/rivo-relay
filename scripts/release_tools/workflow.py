@@ -7,6 +7,7 @@ import shutil
 import subprocess
 
 from .common import BASE, atomic, digest, get_json, git, load, locked, output, require, save, verify_http
+from rivo_relay.release_management import configuration
 
 
 BUILD_FILE = 'client/android/app/build.gradle.kts'
@@ -28,6 +29,10 @@ def build_version(root):
 def prepare(root, args):
     root = root.resolve()
     with locked(root / 'workspace/.release-cli.lock'):
+        mode = configuration.settings(root).get('mode', 'legacy')
+        if mode == 'manager':
+            from rivo_relay.release_management.central import baseline
+            baseline(root, configuration.settings(root), download=True)
         name, code = build_version(root)
         workspace = root / 'workspace/local-node'
         previous_path = workspace / 'updates/latest.json'
@@ -48,11 +53,16 @@ def prepare(root, args):
         notes = (root / args.notes).resolve() if args.notes else root / 'docs/releases' / (next_version + '.md')
         require(notes.is_relative_to(root) and notes.suffix == '.md', '发布说明必须是仓库内 Markdown 文件')
         require(not notes.is_relative_to(root / 'workspace'), '发布说明必须纳入 Git，不能放在 workspace')
-        plan = {'schema': 1, 'version': next_version, 'versionCode': next_code,
+        plan = {'schema': 1, 'mode': mode, 'version': next_version, 'versionCode': next_code,
                 'previous': previous, 'notes': str(notes.relative_to(root)),
                 'androidTests': args.android_test, 'serverTests': args.server_test,
                 'checksNote': args.checks_note or '', 'deviceScope': args.device_scope,
                 'phase': 'prepared', 'steps': {}}
+        if mode == 'manager':
+            source = load(root / 'workspace/release-source.json')
+            require(git(root, 'rev-parse', 'HEAD') == source['commit'], '发布源码不再是已选定的 origin/main 提交')
+            plan['baseCommit'] = source['commit']
+            plan['managerRoot'] = source['repository']
         # Save recovery intent before changing tracked version metadata.
         directory.mkdir(parents=True)
         save(directory / 'release-state.json', plan)
@@ -69,13 +79,7 @@ def prepare(root, args):
 
 
 def environment(root):
-    env = dict(os.environ)
-    env.setdefault('ANDROID_HOME', str(Path.home() / 'Library/Android/sdk'))
-    studio = Path('/Applications/Android Studio.app/Contents/jbr/Contents/Home')
-    if 'JAVA_HOME' not in env and studio.exists():
-        env['JAVA_HOME'] = str(studio)
-    env['PYTHONPATH'] = os.pathsep.join([str(root / 'server'), str(root / 'server/tests')])
-    return env
+    return configuration.environment(root)
 
 
 def sdk_tool(env, name):
@@ -125,7 +129,7 @@ def validation_key(root, plan, env):
             raw = re.sub(rb'versionCode\s*=\s*\d+', b'versionCode=CODE', raw)
         hasher.update(name.encode() + b'\0' + hashlib.sha256(raw).digest())
     toolchain = []
-    for path in (root / '.venv/bin/python', Path(env.get('JAVA_HOME', '/missing')) / 'bin/java',
+    for path in (Path(configuration.python(root)), Path(env.get('JAVA_HOME', '/missing')) / 'bin/java',
                  sdk_tool(env, 'aapt'), sdk_tool(env, 'apksigner')):
         resolved = path.resolve()
         toolchain.append((str(resolved), resolved.stat().st_size, resolved.stat().st_mtime_ns))
@@ -150,7 +154,7 @@ class Release:
         self.state = load(self.state_file)
         require(self.state['schema'] == 1 and self.state['version'] == release_version, '发布状态版本不匹配')
         self.env = environment(root)
-        self.python = root / '.venv/bin/python'
+        self.python = Path(configuration.python(root))
         self.apk = self.directory / ('rivo-relay-' + release_version + '-debug.apk')
         self.retry_deploy = False
 
@@ -175,9 +179,23 @@ class Release:
             require(git(self.root, 'rev-parse', 'HEAD') == self.state['commit'], 'HEAD 已变化，不能继续此发布')
 
     def preflight(self, commit):
+        require(self.state.get('mode', 'legacy') == configuration.settings(self.root).get('mode', 'legacy'),
+                '发布模式已变化，不能继续原发布计划')
         require(build_version(self.root) == (self.state['version'], self.state['versionCode']), '源码版本与发布计划不一致')
         notes = self.root / self.state['notes']
         require(notes.is_file() and notes.read_text().strip() and 'TODO' not in notes.read_text(), '请先填写发布说明，移除 TODO')
+        if self.state.get('mode') == 'manager':
+            base = self.state.get('baseCommit')
+            require(base, '发布计划缺少 origin/main 基准提交')
+            changed = set(git(self.root, 'diff', '--name-only', base, '--').splitlines())
+            require(changed <= {BUILD_FILE, self.state['notes']}, '发布源码偏离已锁定的 origin/main；只允许版本和发布说明变化')
+            original = subprocess.check_output(['git', '-C', str(self.root), 'show', base + ':' + BUILD_FILE], text=True)
+            expected = re.sub(r'(versionName\s*=\s*)"[^"]+"',
+                              rf'\g<1>"{self.state["version"]}"', original, count=1)
+            expected = re.sub(r'(versionCode\s*=\s*)\d+',
+                              rf'\g<1>{self.state["versionCode"]}', expected, count=1)
+            require((self.root / BUILD_FILE).read_text() == expected,
+                    '发布构建文件只允许版本号变化；其他构建改动应先合并到 main')
         if not self.state.get('sourceTree'):
             if commit:
                 # Only version metadata and release notes are automatically staged.
@@ -196,13 +214,20 @@ class Release:
                 for k in ('version', 'versionCode', 'sha256', 'size')), '更新源已有其他发布，停止此计划')
         if self.state.get('deploymentRequested') and not self.state['steps'].get('deployment'):
             return  # Reconcile the pending switch before requiring its HTTP server.
+        if self.state.get('mode') == 'manager':
+            from rivo_relay.release_management.central import baseline
+            remote = baseline(self.root, configuration.settings(self.root))
+            allowed = [self.state['previous']] + ([own] if own else [])
+            require(any(all(remote.get(k) == expected[k] for k in ('version', 'versionCode', 'sha256', 'size'))
+                        for expected in allowed), 'VPS 已有其他发布，停止此计划')
+            return
         remote = get_json(BASE + '/v1/app-updates/latest')
         require(all(remote.get(k) == current[k] for k in ('version', 'versionCode', 'sha256', 'size')),
                 '主节点 HTTP 清单与本地 workspace 不一致')
 
     def validate(self):
         key = validation_key(self.root, self.state, self.env)
-        cached = self.root / 'workspace/artifacts/release-checks' / (key + '.json')
+        cached = Path(self.state.get('managerRoot', self.root)) / 'workspace/artifacts/release-checks' / (key + '.json')
         if cached.exists():
             report = load(cached)
             if report.get('key') == key and all(Path(p).is_file() and digest(p) == checksum
@@ -267,19 +292,25 @@ class Release:
                       '--notes', self.root / self.state['notes']], 'publication.log')
         expected = {key: self.state['apk'][key] for key in ('version', 'versionCode', 'sha256', 'size')}
         expected['notes'] = (self.root / self.state['notes']).read_text()
-        self.record('verifying-http')
-        report = verify_http(expected)
-        save(self.directory / 'http-verification.json', report)
-        self.state['steps']['http'] = report
+        if self.state.get('mode') != 'manager':
+            self.record('verifying-http')
+            report = verify_http(expected)
+            save(self.directory / 'http-verification.json', report)
+            self.state['steps']['http'] = report
         self.record('publishing-gateway')
         self.command([self.python, self.root / 'scripts/publish-gateway-update.py',
-                      '--workspace', self.root / 'workspace/local-node', '--commit', self.state['commit']],
+                      '--workspace', self.root / 'workspace/local-node', '--commit', self.state['commit'],
+                      *configuration.gateway_args(self.root)],
                      'gateway-publication.log')
         self.state['steps']['gateway'] = {'verified': True}
+        if self.state.get('mode') == 'manager':
+            from .compatibility import mirror
+            mirror(self)
         self.record('complete', error=None, failedPhase=None)
 
     def run(self, commit=False):
-        with locked(self.root / 'workspace/.release-cli.lock') as lock:
+        lock_root = Path(self.state.get('managerRoot', self.root))
+        with locked(lock_root / 'workspace/.release-cli.lock') as lock:
             # Another worker may have finished since this object was created.
             self.state = load(self.state_file)
             lock.seek(0)

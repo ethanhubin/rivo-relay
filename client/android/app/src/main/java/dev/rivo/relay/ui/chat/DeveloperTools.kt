@@ -69,7 +69,7 @@ internal fun DeveloperToolsDialog(
                         FilterChip(tab == index, { tab = index }, label = { Text(name) }, modifier = Modifier.testTag("developer_tab_$index"))
                     }
                 }
-                if (!loaded) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (!loaded) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = dev.rivo.relay.ui.theme.RivoSpacing.Page))
                 error?.let { Text(it, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error) }
                 when (tab) {
                     0 -> if (loaded && error == null) {

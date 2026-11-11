@@ -69,7 +69,7 @@ fun SiteBrowser(initialUrl: String, title: String, api: RelayApi? = null, useRel
                     }
                 }
                 if (proxyError != null) Text(proxyError!!, modifier = Modifier.padding(16.dp))
-                if (loading && proxyError == null) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (loading && proxyError == null) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = dev.rivo.relay.ui.theme.RivoSpacing.Page))
                 if (error) Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
                     Text("网页加载失败", modifier = Modifier.weight(1f).padding(vertical = 12.dp))
                     TextButton(onClick = { error = false; webView?.reload() }) { Text("重试") }
