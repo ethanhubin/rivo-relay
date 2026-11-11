@@ -192,6 +192,21 @@ class ReadScopeTests(unittest.TestCase):
         service.history('thread')
         self.assertEqual(3, len([1 for method, _ in native.calls if method == 'thread/turns/list']))
 
+    def test_item_completion_changes_head_without_invalidating_convergence_or_cursor(self):
+        native, service = self.service()
+        first = service.history('thread', limit=2)
+        service._event({'method': 'item/completed', 'params': {
+            'threadId': 'thread', 'turnId': TURN, 'item': copy.deepcopy(native.turn['items'][0])}})
+        second = service.history('thread', limit=2)
+        self.assertEqual('ready', second['nativeSync']['state'])
+        self.assertTrue(second['turns'][0]['items'][0]['relayCompleted'])
+        self.assertNotIn('status', second['turns'][0]['items'][0])
+        self.assertEqual(first['nativeRevision'], second['nativeRevision'])
+        self.assertNotEqual(first['nativeHeadRevision'], second['nativeHeadRevision'])
+        self.assertNotIn('relayCompleted', native.turn['items'][0])
+        self.assertEqual('old', service.history('thread', cursor='older',
+            native_revision=first['nativeRevision'])['turns'][0]['id'])
+
     def test_stream_body_revision_changes_without_invalidating_older_page(self):
         native, service = self.service()
         first = service.history('thread')

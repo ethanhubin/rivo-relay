@@ -766,6 +766,8 @@ class CodexService(SessionHandoffMixin):
             else:
                 result['nativeSync'] = native_state.public()
             result['nativeSync']['historyReady'] = history_ready
+            # Presentation metadata must not make converged native history look stale.
+            self._mark_completed_items(thread_id, result['turns'])
             result['nativeHeadRevision'] = self._history_revision(thread_id,
                 result['turns'] if cursor is None else revision_turns, content=True)
             return result
@@ -1414,6 +1416,17 @@ class CodexService(SessionHandoffMixin):
         if ("id" in event or method.startswith(("thread/", "turn/", "item/", "serverRequest/", "relay/"))
                 or (method in {"error", "warning", "model/rerouted"} and thread_id)):
             self.on_event({k: v for k, v in event.items() if k != "connectionId"})
+
+    def _mark_completed_items(self, thread_id, turns):
+        """Annotate only the response copy, after checking native convergence."""
+        with self._lock:
+            completed = {turn_id: set(ids) for (tid, turn_id), ids in self._completed_items.items()
+                         if tid == thread_id}
+        for turn in turns:
+            for item in turn.get('items', []):
+                if (item.get('id') in completed.get(turn['id'], set())
+                        and item.get('type') in {'agentMessage', 'agent_message'}):
+                    item['relayCompleted'] = True
 
     def _merge_live(self, thread_id, turns):
         with self._lock:

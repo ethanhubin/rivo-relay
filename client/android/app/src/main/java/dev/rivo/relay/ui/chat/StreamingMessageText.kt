@@ -69,8 +69,9 @@ internal fun shouldBufferMessage(message: NativeMessage?, snapshot: SessionSnaps
         message.turnId == snapshot.activeTurnId &&
         message.type in setOf("agentMessage", "agent_message") &&
         message.raw.string("phase") != "commentary" &&
-        message.turnStatus !in setOf("completed", "interrupted", "failed") &&
-        message.raw.string("status") !in setOf("completed", "interrupted", "failed")
+        !message.raw.optBoolean("relayCompleted") &&
+        message.turnStatus !in setOf("completed", "interrupted", "failed", "canceled", "cancelled") &&
+        message.raw.string("status") !in setOf("completed", "interrupted", "failed", "canceled", "cancelled")
 
 /** One buffer above the lazy list, so text and its scroll request commit together. */
 @Composable

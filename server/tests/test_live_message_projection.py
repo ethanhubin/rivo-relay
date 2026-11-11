@@ -26,6 +26,34 @@ class LiveMessageProjectionTests(unittest.TestCase):
         self.assertEqual(['a', 'b'], [i['id'] for i in self.items()])
         self.assertEqual(final, self.items()[0])
 
+    def test_stateless_completion_reaches_client_without_changing_native_item(self):
+        from rivo_relay.client_projection import client_history
+        final = {'id': 'a', 'type': 'agentMessage', 'text': 'final'}
+        self.event('item/started', item={**final, 'text': ''})
+        before = self.service._merge_live('t', [])
+        self.assertNotIn('relayCompleted', before[0]['items'][0])
+        self.event('item/completed', item=final)
+        # Cover missing turn, missing item, and replacement of an existing item.
+        for persisted in ([], [{'id': 'r', 'status': 'inProgress', 'items': []}],
+                          [{'id': 'r', 'status': 'inProgress', 'items': [{**final, 'text': ''}]}]):
+            with self.subTest(persisted=persisted):
+                turns = self.service._merge_live('t', copy.deepcopy(persisted))
+                self.service._mark_completed_items('t', turns)
+                projected = client_history({'id': 't', 'turns': turns})
+                self.assertEqual('inProgress', projected['turns'][0]['status'])
+                self.assertEqual({**final, 'relayCompleted': True}, projected['turns'][0]['items'][0])
+        self.assertEqual(final, self.items()[0])
+        self.assertEqual(final, self.events[-1]['params']['item'])
+        self.assertNotIn('relayCompleted', before[0]['items'][0])
+        # Completion is scoped to both thread and turn, not a bare item ID.
+        foreign = [{'id': 'r', 'items': [dict(final)]}]
+        self.service._mark_completed_items('other-thread', foreign)
+        self.assertNotIn('relayCompleted', foreign[0]['items'][0])
+        self.event('item/started', turnId='other-turn', item={**final, 'text': ''})
+        other = next(t for t in self.service._merge_live('t', []) if t['id'] == 'other-turn')
+        self.service._mark_completed_items('t', [other])
+        self.assertNotIn('relayCompleted', other['items'][0])
+
     def test_reasoning_plan_and_file_output_project_without_dropping_parts(self):
         self.event('item/reasoning/summaryPartAdded', itemId='why', summaryIndex=0)
         self.event('item/reasoning/summaryTextDelta', itemId='why', summaryIndex=0, delta='one')

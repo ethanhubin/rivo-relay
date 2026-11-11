@@ -69,6 +69,28 @@ class StreamingTextBufferTest {
         assertEquals(target, buffer.text)
     }
 
+    @Test fun statelessItemCompletionFlushesWhileTheTurnRemainsActive() {
+        fun snapshot(completed: Boolean) = dev.rivo.relay.data.sessionSnapshot(JSONObject("""
+            {"status":"running","activeTurnId":"r","thread":{"id":"t","turns":[
+              {"id":"r","status":"inProgress","items":[
+                {"id":"a","type":"agentMessage","text":"final answer","relayCompleted":$completed}
+              ]}
+            ]}}
+        """))
+        val active = snapshot(false)
+        val buffer = StreamingTextBuffer("", true)
+        buffer.update(active.messages.single().text, shouldBufferMessage(active.messages.single(), active), 0)
+        buffer.advance(50)
+        assertTrue(buffer.pending)
+        val completed = snapshot(true)
+        assertTrue(completed.isOngoing)
+        assertFalse(completed.messages.single().raw.has("status"))
+        assertFalse(shouldBufferMessage(completed.messages.single(), completed))
+        buffer.update(completed.messages.single().text, shouldBufferMessage(completed.messages.single(), completed), 60)
+        assertEquals("final answer", buffer.text)
+        assertFalse(buffer.pending)
+    }
+
     @Test fun onlyCurrentUnfinishedAssistantOutputIsBuffered() {
         val message = NativeMessage("m", "turn", "agentMessage", "回答", JSONObject().put("phase", "final_answer"), turnStatus = "inProgress")
         val snapshot = SessionSnapshot("s", "", "running", "turn", listOf(message), emptyList(), JSONObject())
@@ -76,6 +98,10 @@ class StreamingTextBufferTest {
         assertFalse(shouldBufferMessage(message.copy(raw = JSONObject().put("phase", "commentary")), snapshot))
         assertFalse(shouldBufferMessage(message.copy(turnStatus = "completed"), snapshot))
         assertFalse(shouldBufferMessage(message.copy(turnStatus = "interrupted"), snapshot))
+        for (terminal in listOf("failed", "canceled", "cancelled")) {
+            assertFalse(shouldBufferMessage(message.copy(turnStatus = terminal), snapshot))
+            assertFalse(shouldBufferMessage(message.copy(raw = JSONObject().put("status", terminal)), snapshot))
+        }
         assertFalse(shouldBufferMessage(message.copy(raw = JSONObject().put("status", "completed")), snapshot))
         assertFalse(shouldBufferMessage(message.copy(turnId = "old"), snapshot))
         assertFalse(shouldBufferMessage(message, snapshot.copy(status = "idle", activeTurnId = "")))
