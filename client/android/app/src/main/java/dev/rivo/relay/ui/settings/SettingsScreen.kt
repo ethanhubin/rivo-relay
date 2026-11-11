@@ -17,6 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -39,6 +40,9 @@ fun SettingsScreen(
     checkUpdate: (suspend () -> AppRelease?)? = null,
     downloadAndInstall: (suspend (AppRelease) -> Unit)? = null,
     updates: UpdateViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
+    var speechEditorOpen by rememberSaveable { mutableStateOf(false) }
+    var notificationEditorOpen by rememberSaveable { mutableStateOf(false) }
+    val settingsScroll = rememberScrollState()
     var inspectedConnection by remember(connection?.base) { mutableStateOf(connection) }
     val inspectedApi = remember(inspectedConnection, api) {
         if (inspectedConnection?.base == connection?.base) api else inspectedConnection?.api()
@@ -53,7 +57,15 @@ fun SettingsScreen(
     val release = updates.release
     val error = updates.error
     var notesOpen by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp).testTag("settings_screen"),
+    if (notificationEditorOpen) {
+        NotificationSettingsEditor(onBack = { notificationEditorOpen = false })
+        return
+    }
+    if (speechEditorOpen) {
+        SpeechSettingsEditor(onBack = { speechEditorOpen = false })
+        return
+    }
+    Column(Modifier.fillMaxSize().verticalScroll(settingsScroll).padding(24.dp).testTag("settings_screen"),
         verticalArrangement = Arrangement.spacedBy(20.dp)) {
         Text("设置", style = MaterialTheme.typography.headlineMedium)
         Card(Modifier.fillMaxWidth(),
@@ -97,7 +109,10 @@ fun SettingsScreen(
                 }, onAddNode, canAddNode)
             }
         }
-        PinnedCompletionSettings()
+        SettingsEntry("通知", dev.rivo.relay.R.drawable.ic_notifications, "edit_notification_settings") {
+            notificationEditorOpen = true
+        }
+        SpeechSettings(onEdit = { speechEditorOpen = true })
 
         Card(Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
@@ -131,7 +146,6 @@ fun SettingsScreen(
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("update_error")) }
             }
         }
-        SpeechSettings()
     }
     if (notesOpen) release?.let { latest ->
         AlertDialog(onDismissRequest = { notesOpen = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("${latest.version} 更新说明") } },
