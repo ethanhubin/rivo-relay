@@ -63,11 +63,12 @@ data class SessionSynchronization private constructor(
         SessionSyncEvent.RouteUnavailable -> SessionSynchronization(SessionConnection.OFFLINE,
             SessionVerification.REQUIRED, SessionRead.IDLE, notice = "网络不可用，恢复连接并同步后才能操作")
         SessionSyncEvent.ReadStarted -> copy(read = if (read == SessionRead.OPENING) read else SessionRead.REFRESHING)
-        SessionSyncEvent.ReadSlow -> copy(verification = SessionVerification.REQUIRED, read = SessionRead.SLOW,
-            notice = "服务器响应较慢，暂时禁止操作，等待同步确认")
+        SessionSyncEvent.ReadSlow -> copy(read = SessionRead.SLOW,
+            notice = if (verification == SessionVerification.REQUIRED) "服务器响应较慢，等待同步确认" else notice)
         SessionSyncEvent.ReadSucceeded -> confirmed()
-        is SessionSyncEvent.ReadFailed -> copy(verification = SessionVerification.REQUIRED, read = SessionRead.FAILED,
-            error = event.message, notice = "当前会话同步失败，暂时禁止操作，请重试或切换会话")
+        is SessionSyncEvent.ReadFailed -> copy(read = SessionRead.FAILED,
+            error = event.message, notice = if (verification == SessionVerification.REQUIRED)
+                "当前会话同步失败，暂时禁止操作，请重试或切换会话" else notice)
         is SessionSyncEvent.Revalidate -> copy(verification = SessionVerification.REQUIRED, notice = event.notice)
         SessionSyncEvent.StreamInterrupted -> copy(connection = SessionConnection.RECONNECTING,
             verification = SessionVerification.REQUIRED, notice = "连接已中断，正在重新确认操作权限")
@@ -92,3 +93,13 @@ internal fun SessionState.withNodeActivity(activity: NodeActivity): SessionState
     copy(activityStatus = id?.let { activity.execution(it).status } ?: "unknown")
 
 val SessionState.executionActive: Boolean get() = activityStatus == "running"
+
+/** Event-driven idle is safe only after both native state and control have settled. */
+internal fun SessionState.needsReadFallback(): Boolean {
+    val snapshot = snapshot ?: return true
+    return stale || synchronization.read == SessionRead.FAILED || !snapshot.nativeReady ||
+        snapshot.isOngoing || snapshot.nativeExecution == "unknown" || snapshot.status == "unknown" ||
+        control().state in setOf(ControlState.UNKNOWN, ControlState.UNVERIFIED, ControlState.RELEASE_PENDING) ||
+        snapshot.deliveryState == "dispatching" || snapshot.queue.any { it.status == "dispatching" } ||
+        (!snapshot.recoveryRequired && (snapshot.queueDepth > 0 || snapshot.queue.any { it.status == "waiting" }))
+}
