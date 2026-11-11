@@ -10,7 +10,27 @@
 
 ## 统一 CLI
 
-常规发布使用 `python3 scripts/release.py`。底层仍调用 `publish-update.py` 和 `restart-service.py --submit`；不推送远端、不建 tag/GitHub Release，也不运行 lint。
+### 将普通节点设为管理节点
+
+管理节点就是具备完整发布能力的节点，不需要再指定一台固定的“主节点”。当前初始化支持 macOS，在已安装节点的 Python 环境执行：
+
+```sh
+python -m rivo_relay setup-manager --source-node macmini --workspace /原节点/workspace
+```
+
+`--source-node` 是首次导入签名和缺少的工具时使用的已授权 SSH 节点，后续发布不依赖它。命令自动准备独立 Python 依赖、所需 Android SDK/JDK、已有发布签名和发布源码；从节点原有配置读取 VPS 地址及证书指纹，不复制手机配对令牌、数据库或原生运行时。默认签名另存，其他项目的 `~/.android/debug.keystore` 不变。重复执行复用已安装工具。
+
+默认源码下载到 `~/.local/share/rivo-release-manager/repository`；已有仓库可加 `--repository /源码目录`。VPS SSH 可用 `--gateway-host <SSH别名>`，必要时加 `--gateway-identity /已有私钥`。管理权限来自已有管理员 SSH 凭据，普通节点接入凭证不提供发布权限。ASR 在本机时自动识别，否则使用 `e2-mac-mini`，可通过 `--asr-host` 指定。
+
+初始化成功后使用输出的 `rivo-release` 路径，子命令仍是下文的 `prepare/run/status/resume`。只有初始化时检查整套环境；日常发布保留原有相关测试、最终 APK 签名和下载完整性校验，不增加全量测试或 lint。需要排查时可主动运行 `rivo-release doctor --online`。
+
+管理节点的每次 `prepare` 都先获取最新 `origin/main`，创建独立 `codex/release-*` 工作区并锁定基准提交 SHA，然后在该工作区递增版本、生成发布说明。本地功能分支及未提交修改不参与构建。编辑 `prepare` 输出工作区内的发布说明后，用同一入口执行 `run <版本> --commit`；恢复只复用原工作区和提交，不重新获取 main。流程不自动推送发布提交或创建 tag/Release。
+
+管理节点直接向 VPS 发布。聊天节点通过已有更新代理在空闲时自行升级；发布完成不代表全部节点已安装新版，也不会重启聊天运行时。原 Tailscale 下载地址作为兼容镜像同步，离线时记录 `steps.compatibility.pending=true`，VPS 发布仍可完成；恢复连接后用原版本 `resume` 重试。没有安装更新代理的旧节点仍需按迁移说明处理。
+
+配置由初始化命令写入源码仓库的 `workspace/release-config.json`，工具、签名和安装验证在 `~/.local/share/rivo-release-manager/`。这些本机数据不提交 Git。Git 中只维护初始化/发布代码、说明和测试。初始化不发布新版、不修改节点服务。
+
+常规发布使用初始化输出的 `rivo-release`，也可使用 `python3 scripts/release.py`。底层继续复用原发布脚本；未初始化的旧发布节点仍按原流程调用 `restart-service.py --submit`。不推送远端、不建 tag/GitHub Release，也不运行 lint。下列命令使用旧入口示例，管理节点可直接替换为 `rivo-release`，源码改动应先合并到 `main`。
 
 ```sh
 # 默认递增 patch/versionCode；按实际改动指定相关测试，不自动跑全量。
@@ -38,7 +58,7 @@ python3 scripts/release.py resume 0.2.28
 
 恢复会重新确认源码、清单和产物，不能拿修改过的源码继续旧计划；需要新建版本计划。服务切换已完成时直接继续验收，不重复重启。若日志确认回滚完成，排查原因后可显式运行 `resume <版本> --retry-deploy`；若切换结果未知，CLI 继续等待并报出状态，不盲目卸载服务。`prepare` 只改版本/说明和计划，不会构建、提交或上线。
 
-当前 CLI 的本机部署步骤面向本机主节点 `workspace/local-node` 和 macOS LaunchAgent，需要已有上一版清单/APK、仓库 `.venv` 和 Android SDK/JDK；不负责首次部署或 GitHub 发布；已迁移的其他节点通过 VPS 更新代理获取本次统一发布。旧版本若由手工流程发布，没有 `release-state.json`，继续查看其原有发布验收文件，不使用 `resume` 接管。
+未初始化管理节点的原发布机器继续使用既有本机服务部署流程，行为不变。旧版本若由手工流程发布，没有 `release-state.json`，继续查看其原有发布验收文件，不使用 `resume` 接管。
 
 ## 发布
 

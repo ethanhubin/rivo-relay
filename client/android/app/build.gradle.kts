@@ -12,6 +12,11 @@ android {
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     buildFeatures { compose = true; buildConfig = true }
+    // A management node keeps Rivo's existing signing identity separate from
+    // other projects' default debug keystore. Legacy builds keep their default.
+    System.getenv("RIVO_RELEASE_KEYSTORE")?.let { signingPath ->
+        signingConfigs.getByName("debug") { storeFile = file(signingPath) }
+    }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
 }
 kotlin { jvmToolchain(17) }

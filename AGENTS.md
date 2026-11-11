@@ -6,10 +6,10 @@
 
 # 发布约定
 
-- 用户说“发布”“发布新版”时，默认通过主节点发布 CLI 发布到 VPS 统一更新中心 `https://134.175.156.219:80`，同时保留主节点 Tailscale HTTP 更新源 `http://100.124.150.1:18767` 兼容入口；不创建 GitHub Release、不推送远端或 Git tag。统一更新迁移及磁盘策略见 `docs/central-updates.md`。
+- 用户说“发布”“发布新版”时，通过已初始化的管理节点发布 CLI 发布到 VPS 统一更新中心 `https://134.175.156.219:80`；管理节点即具备完整发布能力的节点，不另设固定主节点。新发布从最新 `origin/main` 创建独立发布工作区并锁定 SHA，恢复时沿用原提交。原发布机器的既有流程继续兼容。不创建 GitHub Release、不推送远端或 Git tag。初始化、旧 Tailscale HTTP 更新源 `http://100.124.150.1:18767` 兼容同步及磁盘策略见 `docs/central-updates.md`。
 - 仅当用户明确要求“发布 Release / GitHub Release”时，才同步到 GitHub。用户单独明确要求提交或推送时，按其具体指令执行。
 - 默认使用 `scripts/release.py`，底层 `scripts/publish-update.py` 发布本地 APK，`scripts/publish-gateway-update.py` 将同一发布提交的节点包及 APK 上传 VPS；先发布以 SHA-256 命名的文件，再原子更新清单。不覆盖同 versionCode 的不同内容，不降级。VPS 保留最新 3 版及 24 小时下载缓冲，更新文件限额 512 MiB，预留至少 1 GiB。
-- 发布前递增 Android versionName / versionCode，按下方验证约定运行相关回归测试并构建发布 APK，确认签名与上一版一致。需要服务端改动时更新主节点并验证 HTTP 清单与 APK；不重启 Codex 原生运行时。
+- 发布前递增 Android versionName / versionCode，按下方验证约定运行相关回归测试并构建发布 APK，确认签名与上一版一致。管理节点发布后由各节点更新代理自行升级，不将发布成功表述为所有节点已升级；原发布流程仍按需更新本机服务并验证 HTTP 清单与 APK。不重启 Codex 原生运行时。
 - GitHub 发布只在显式授权时使用 `--github-release`。发布说明标明真机/模拟器验证范围。
 
 # 验证与效率约定
