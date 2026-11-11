@@ -25,7 +25,19 @@ class UpdateViewModel : ViewModel() {
     var error by mutableStateOf<String?>(null)
     var readyFile by mutableStateOf<File?>(null); private set
 
-    fun check(checkUpdate: suspend () -> AppRelease?) {
+    var promptVisible by mutableStateOf(false); private set
+    private var loginChecked = false
+
+    fun onLogin(loggedIn: Boolean, checkUpdate: suspend () -> AppRelease?) {
+        if (!loggedIn) { loginChecked = false; promptVisible = false; return }
+        if (loginChecked) return
+        loginChecked = true
+        check(checkUpdate, prompt = true)
+    }
+
+    fun dismissPrompt() { promptVisible = false }
+
+    fun check(checkUpdate: suspend () -> AppRelease?, prompt: Boolean = false) {
         if (checking || downloading) return
         checking = true; checked = false; error = null
         viewModelScope.launch {
@@ -33,6 +45,7 @@ class UpdateViewModel : ViewModel() {
                 val latest = checkUpdate()
                 if (latest != release) readyFile = null
                 release = latest; checked = true
+                if (prompt && loginChecked) promptVisible = latest != null
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { error = e.message ?: "检查更新失败，请重试" }
             finally { checking = false }

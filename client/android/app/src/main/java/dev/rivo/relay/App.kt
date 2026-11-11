@@ -47,6 +47,12 @@ internal val pendingProjectSaver = Saver<ProjectSummary?, ArrayList<String>>(
 @Composable
 fun RelayApp(vm: AppViewModel = viewModel()) {
     val app by vm.state.collectAsStateWithLifecycle()
+    val updates: dev.rivo.relay.ui.settings.UpdateViewModel = viewModel()
+    val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    LaunchedEffect(app.node != null) {
+        updates.onLogin(app.node != null) { NodeAppUpdates.configured(context).check(BuildConfig.VERSION_NAME) }
+    }
+    dev.rivo.relay.ui.settings.LoginUpdatePrompt(updates)
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))) {
             val node = app.node
