@@ -43,7 +43,7 @@ fun NativeTurnDuration(footer: NativeTurnFooter, elapsedRealtime: () -> Long = a
         }
     }
     val seconds = clientTurnElapsedSeconds(footer, now)
-    val text = footer.label ?: "已用时 ${formatNativeThinkingDuration(seconds ?: 0)}"
+    val text = footer.label ?: seconds?.let { "已用时 ${formatNativeThinkingDuration(it)}" } ?: "执行中"
     if (footer.label == null) {
         ChatTimelineSummaryRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ElapsedClockGlyph(seconds ?: 0)

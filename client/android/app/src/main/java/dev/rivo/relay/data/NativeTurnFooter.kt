@@ -54,12 +54,15 @@ class NativeTurnFooterCache {
             nativeTurnElapsedSeconds(turn)?.let { "耗时 ${formatNativeElapsedDuration(it)}" }
         ).joinToString(" ") else null
         val clientStart = previous?.takeIf { it.turn?.turnId == turn.turnId }?.clientStartedAtMillis
-            ?: nowElapsedMillis.takeIf { !terminal }
+            ?: turn.startedAt?.takeIf { !terminal }?.let { start ->
+                // Restore this turn's age once, then advance with the monotonic clock.
+                nowElapsedMillis - (nowSeconds - start).coerceAtLeast(0) * 1000
+            }
         return NativeTurnFooter(turn, label, uncertain, nowSeconds, clientStart).also { retained = it }
     }
 }
 
-/** Live elapsed time belongs to the client, not native timestamps or transport state. */
+/** Native turn age anchored to the monotonic clock survives refresh and wall-clock changes. */
 fun clientTurnElapsedSeconds(footer: NativeTurnFooter, nowElapsedMillis: Long): Long? =
     footer.clientStartedAtMillis?.let { ((nowElapsedMillis - it).coerceAtLeast(0)) / 1000 }
 
