@@ -74,6 +74,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     val context = androidx.compose.ui.platform.LocalContext.current
     var route by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastRoute")?.let { if (it == "new") "sessions" else it }?.takeIf { it in setOf("projects", "sessions", "chat", "sites", "todos", "settings") } ?: "projects") }
     var threadId by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastThreadId")) }
+    var agentParents by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var chatParent by rememberSaveable { mutableStateOf("sessions") }
     var addProject by remember { mutableStateOf(false) }
     var addNode by rememberSaveable { mutableStateOf(false) }
@@ -182,7 +183,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     LaunchedEffect(node, network) {
         if (network != null) node.reconcilePendingReceipts()
     }
-    fun openChat(id: String, parent: String) { node.conversations.putMetadata("lastThreadId", id); threadId = id; chatParent = parent; route = "chat"; setError(null) }
+    fun openChat(id: String, parent: String) { agentParents = emptyList(); node.conversations.putMetadata("lastThreadId", id); threadId = id; chatParent = parent; route = "chat"; setError(null) }
     fun forwardLink(projectId: String, targetThreadId: String?, source: String, name: String) {
         val project = node.catalog.state.value.projects.firstOrNull { it.id == projectId }
         if (project == null) { setError("项目已变化，请重新选择目标"); return }
@@ -207,6 +208,13 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     }
     fun back() {
         setError(null)
+        if (route == "chat" && agentParents.isNotEmpty()) {
+            val parent = agentParents.last()
+            agentParents = agentParents.dropLast(1)
+            node.conversations.putMetadata("lastThreadId", parent)
+            threadId = parent
+            return
+        }
         if (route == "new" && !submission.busy && submission.pending == null) pendingId?.let { id ->
             val captured = node.conversations.captureDraftAsync("pending:$id")
             handoffScope.launch {
@@ -455,6 +463,14 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         })
                 }
                 "chat" -> ChatScreen(session.takeIf { it.id == threadId }?.let { if (network == null) it.transition(SessionSyncEvent.RouteUnavailable) else it } ?: SessionState(id = threadId, synchronization = SessionSynchronization.opening()), submission.busy, submission.pending != null || handoffLoading || network == null, catalog.models, ::back,
+                    onOpenAgent = { child ->
+                        threadId?.takeIf { it != child }?.let { parent ->
+                            agentParents = agentParents + parent
+                            node.conversations.putMetadata("lastThreadId", child)
+                            threadId = child
+                            setError(null)
+                        }
+                    },
                     onFork = { turn, ref ->
                         val id = threadId
                         if (id != null && writable && !session.stale && !submission.busy && submission.pending == null) {

@@ -22,4 +22,6 @@ Android debug 主代码与测试编译通过，126 项受影响测试最终全�
 
 新增测试验证并发刷新只发一个请求、读取期间本地编辑及补同步、重复交付与远端已完成拦截、成员变化不取消在途读取、401/403 撤销确认、空闲目录/节点降低轮询、离开列表停止调度，以及相同内容跨存储实例不重复写盘。git diff --check 通过。
 
+合并前 main 并发合入 #99 与 #100；解决 App.kt 冲突时保留代理导航栈重置并继续移除全局刷新。重新编译并运行 NativeAgentsTest 8、NativeTurnFooterTest 14、RefreshPolicyTest 3、RefreshConcurrencyTest 8、IdleSessionSyncTest 10，共 43/43 通过；其他不受影响结果复用。
+
 未进行真机或模拟器验证；未运行 lint、构建发布 APK、部署节点或发布版本。
