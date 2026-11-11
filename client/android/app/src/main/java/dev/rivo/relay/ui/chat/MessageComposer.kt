@@ -97,6 +97,8 @@ fun MessageComposer(
     onSend: () -> Unit,
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
+    tokenUsage: JSONObject? = null,
+    contextThreadId: String? = null,
     queueing: Boolean = false,
     prediction: String? = null,
     canContinue: Boolean = false,
@@ -345,6 +347,7 @@ fun MessageComposer(
 }
 }
 
+                        ContextUsageIndicator(tokenUsage, contextThreadId)
                         if (!busy && isRunning && text.isBlank() && images.isEmpty() && files.isEmpty() && !voice.transcribing) OutlinedButton(
                             onClick = onStop, enabled = canStop,
                             modifier = Modifier.width(80.dp).height(44.dp).testTag("stop_turn"), shape = RoundedCornerShape(22.dp),
