@@ -334,7 +334,8 @@ class SessionControllerTest {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 if (request.path!!.startsWith("/v1/events")) return MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
                 reads.incrementAndGet()
-                return snapshot("t", "slow").setBodyDelay(800, TimeUnit.MILLISECONDS)
+                return MockResponse().setBody("""{"thread":{"id":"t","name":"slow","turns":[]},"status":"running","activeTurnId":"active"}""")
+                    .setBodyDelay(800, TimeUnit.MILLISECONDS)
             }
         }
         server.start()
@@ -576,7 +577,7 @@ class SessionControllerTest {
         }
     }
 
-    @Test fun slowReadLocksInputAndTimeoutOnlyRecoversFromFreshRead() = runBlocking {
+    @Test fun slowBackgroundReadAndTimeoutKeepInputAvailable() = runBlocking {
         val server = MockWebServer()
         val reads = AtomicInteger()
         server.dispatcher = object : Dispatcher() {
@@ -591,19 +592,21 @@ class SessionControllerTest {
         }
         server.start()
         val scope = CoroutineScope(coroutineContext + SupervisorJob())
-        val controller = SessionController(api(server), scope, slowReadMillis = 50, readTimeoutMillis = 250) { fail(it.message) }
+        val controller = SessionController(api(server), scope, slowReadMillis = 50, readTimeoutMillis = 250, pollIntervalMillis = 300) { fail(it.message) }
         try {
             controller.open("t")
             withTimeout(5000) { controller.state.first { it.snapshot?.name == "initial" && !it.stale } }
             controller.refresh()
-            val slow = withTimeout(5000) { controller.state.first { it.controlNotice?.contains("响应较慢") == true } }
-            assertFalse(slow.control().canOperate)
+            val slow = withTimeout(5000) { controller.state.first { it.synchronization.read == dev.rivo.relay.codex.SessionRead.SLOW } }
+            assertTrue(slow.control().canOperate)
             assertEquals("initial", slow.snapshot?.name)
             assertFalse(slow.offline)
-            assertEquals("同步中", slow.syncStatusLabel())
+            assertNull(slow.syncStatusLabel())
             assertEquals(ControlState.WRITABLE, slow.displayControl().state)
             assertFalse(slow.showTakeover())
-            controller.refresh()
+            val failed = withTimeout(5000) { controller.state.first { it.synchronization.read == dev.rivo.relay.codex.SessionRead.FAILED } }
+            assertTrue(failed.control().canOperate)
+            // A failed background read retries even though permissions remain confirmed.
             val fresh = withTimeout(5000) { controller.state.first { it.snapshot?.name == "fresh" && !it.stale } }
             assertTrue(fresh.control().canOperate)
             assertNull(fresh.controlNotice)
