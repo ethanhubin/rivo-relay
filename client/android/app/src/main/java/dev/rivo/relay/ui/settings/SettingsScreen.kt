@@ -131,6 +131,7 @@ fun SettingsScreen(
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("update_error")) }
             }
         }
+        SpeechSettings()
     }
     if (notesOpen) release?.let { latest ->
         AlertDialog(onDismissRequest = { notesOpen = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("${latest.version} 更新说明") } },

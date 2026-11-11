@@ -57,6 +57,7 @@ import androidx.compose.ui.window.Dialog
 import dev.rivo.relay.data.string
 import dev.rivo.relay.data.SpeechCapability
 import dev.rivo.relay.data.SpeechRepository
+import dev.rivo.relay.data.SpeechPreferences
 import dev.rivo.relay.ui.theme.RivoSize
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -137,6 +138,7 @@ fun MessageComposer(
     val latestCanSend by rememberUpdatedState(canSend)
     val latestText by rememberUpdatedState(text)
     val scope = rememberCoroutineScope()
+    val speechPreferences = remember(context) { SpeechPreferences(context) }
     val repository = remember(api) { api?.let { SpeechRepository(it) } }
     var capability by remember(api) { mutableStateOf(SpeechCapability(false, "正在检查语音服务")) }
     val recorder = remember { VoiceRecorder() }
@@ -147,7 +149,8 @@ fun MessageComposer(
     var permissionNotice by remember { mutableStateOf<String?>(null) }
     val controller = remember(api, target) {
         repository?.let { VoiceTranscriptionController(it, scope, { latestTarget }, { inputValue.text },
-            { value, cursor -> inputValue = TextFieldValue(value, TextRange(cursor)); latestOnTextChange(value) }) }
+            { value, cursor -> inputValue = TextFieldValue(value, TextRange(cursor)); latestOnTextChange(value) },
+            currentVocabulary = { speechPreferences.vocabulary }) }
     }
     val voice = controller?.state?.collectAsState()?.value ?: VoiceUiState()
     fun cancelVoice() {

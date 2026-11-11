@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import re
 import unicodedata
 import shutil
 import tempfile
@@ -19,8 +20,6 @@ from typing import Any, Callable
 LOG = logging.getLogger("qiguang-device.asr")
 MAX_CONTEXT_CHARS = 400
 SUPPORTED_SUFFIXES = {".m4a", ".mp3", ".wav", ".webm", ".ogg", ".flac"}
-# User-maintained recognition vocabulary; preserve canonical spelling and case.
-PROJECT_VOCABULARY_CONTEXT = "固定词表：Merge、MergeDemo、棋子、生成器、棋子链、物品链、活动、笑脸订单、订单、等级、GH、Gossip Harbor、Tasty Travels。"
 STREAM_SAMPLE_RATE = 16_000
 MAX_STREAMS = 4
 MAX_STREAM_SECONDS = 120
@@ -52,6 +51,7 @@ class _Stream:
     samples: int
     touched_at: float
     pcm16le: bytearray
+    context: str
 
 
 class SpeechTranscriptionService:
@@ -78,20 +78,20 @@ class SpeechTranscriptionService:
         self.worker.start()
 
     def transcribe(self, raw: bytes, filename: str, context: str = "") -> dict:
-        context = self._context_with_project_vocabulary(context)
+        context = self._validate_context(context)
         result = self._request("transcribe", raw, filename, context, timeout=120)
         text = getattr(result, "text", None)
         if not isinstance(text, str):
             raise AsrInvalidResponse("macmini Qwen3-ASR 返回无效结果")
         return {
             "ok": True,
-            "text": self._clean_transcript(text),
+            "text": self._clean_transcript(text, context),
             "language": getattr(result, "language", None),
             "backend": "macmini-mlx",
         }
 
     def start_stream(self, context: str = "") -> dict:
-        context = self._context_with_project_vocabulary(context)
+        context = self._validate_context(context)
         return self._request("start_stream", context, timeout=120)
 
     def feed_stream(self, stream_id: str, pcm16le: bytes) -> dict:
@@ -185,8 +185,8 @@ class SpeechTranscriptionService:
                         sample_rate=STREAM_SAMPLE_RATE,
                         finalization_mode="accuracy",
                     )
-                    streams[stream_id] = _Stream(state, 0, now, bytearray())
-                    request.result_queue.put(self._stream_payload(stream_id, state, False))
+                    streams[stream_id] = _Stream(state, 0, now, bytearray(), request.payload[0])
+                    request.result_queue.put(self._stream_payload(stream_id, state, False, streams[stream_id].context))
                 elif request.action == "feed_stream":
                     stream_id, raw = request.payload
                     stream = streams.get(stream_id)
@@ -202,9 +202,9 @@ class SpeechTranscriptionService:
                     state = session.feed_audio(pcm, stream.state)
                     stream.pcm16le.extend(raw)
                     streams[stream_id] = _Stream(
-                        state, stream.samples + samples, now, stream.pcm16le
+                        state, stream.samples + samples, now, stream.pcm16le, stream.context
                     )
-                    request.result_queue.put(self._stream_payload(stream_id, state, False))
+                    request.result_queue.put(self._stream_payload(stream_id, state, False, streams[stream_id].context))
                 elif request.action == "finish_stream":
                     stream_id = request.payload[0]
                     stream = streams.pop(stream_id, None)
@@ -218,15 +218,15 @@ class SpeechTranscriptionService:
                     )
                     final_result = session.transcribe(
                         full_pcm,
-                        context=getattr(stream.state, "context", ""),
+                        context=stream.context,
                         language=None,
                         max_new_tokens=None,
                     )
                     final_text = getattr(final_result, "text", None)
                     if not isinstance(final_text, str):
                         raise AsrInvalidResponse("macmini Qwen3-ASR 返回无效最终结果")
-                    payload = self._stream_payload(stream_id, stream.state, True)
-                    payload["text"] = self._clean_transcript(final_text)
+                    payload = self._stream_payload(stream_id, stream.state, True, stream.context)
+                    payload["text"] = self._clean_transcript(final_text, stream.context)
                     payload["stable_text"] = payload["text"]
                     request.result_queue.put(payload)
                 elif request.action == "cancel_stream":
@@ -254,7 +254,7 @@ class SpeechTranscriptionService:
             shutil.rmtree(request_dir, ignore_errors=True)
 
     @staticmethod
-    def _stream_payload(stream_id: str, state: Any, final: bool) -> dict:
+    def _stream_payload(stream_id: str, state: Any, final: bool, context: str = "") -> dict:
         text = getattr(state, "text", None)
         stable_text = getattr(state, "stable_text", None)
         if not isinstance(text, str) or not isinstance(stable_text, str):
@@ -262,25 +262,28 @@ class SpeechTranscriptionService:
         return {
             "ok": True,
             "stream_id": stream_id,
-            "text": SpeechTranscriptionService._clean_transcript(text),
-            "stable_text": SpeechTranscriptionService._clean_transcript(stable_text),
+            "text": SpeechTranscriptionService._clean_transcript(text, context),
+            "stable_text": SpeechTranscriptionService._clean_transcript(stable_text, context),
             "final": final,
             "backend": "macmini-mlx-streaming",
         }
 
     @staticmethod
-    def _clean_transcript(text: str) -> str:
+    def _clean_transcript(text: str, context: str = "") -> str:
         """Reject prompt echoes, without deleting vocabulary from real speech."""
         def normalized(value: str) -> str:
             return "".join(c for c in unicodedata.normalize("NFKC", value).casefold()
                            if c.isalnum())
         value = normalized(text)
-        vocabulary = normalized(PROJECT_VOCABULARY_CONTEXT.split("：", 1)[-1])
+        hint = context.partition("\n")[0]
+        words = hint[len("固定词表："):] if hint.startswith("固定词表：") else ""
+        vocabulary = normalized(words)
+        entries = {normalized(word) for word in re.split(r"[、,，;；]", words) if normalized(word)}
         # Only reject the known prompt, including its labeled streaming prefix.
         # Ordinary speech about a fixed vocabulary must remain intact.
         labeled_echo = (value.startswith("固定词表") and vocabulary
                         and vocabulary.startswith(value[len("固定词表"):]))
-        if labeled_echo or (vocabulary and value == vocabulary):
+        if labeled_echo or (len(entries) > 1 and vocabulary and value == vocabulary):
             return ""
         return text
 
@@ -295,22 +298,8 @@ class SpeechTranscriptionService:
         return Session(model=model)
 
     @staticmethod
-    def _context_with_project_vocabulary(request_context: str) -> str:
-        """Add product vocabulary while retaining any future caller-provided hint.
-
-        Qwen3-ASR consumes this string as a system-prompt context rather than a
-        hard decoder grammar.  The product vocabulary must remain available on
-        every request, while the optional request hint is safely bounded by the
-        existing API limit.
-        """
-        request_context = request_context.strip()
-        if len(request_context) > MAX_CONTEXT_CHARS:
-            raise AsrInvalidResponse("语音上下文不能超过 400 个字符")
-        if not PROJECT_VOCABULARY_CONTEXT:
-            return request_context
-        if not request_context:
-            return PROJECT_VOCABULARY_CONTEXT
-        remaining = MAX_CONTEXT_CHARS - len(PROJECT_VOCABULARY_CONTEXT) - 1
-        if remaining <= 0:
-            return PROJECT_VOCABULARY_CONTEXT[:MAX_CONTEXT_CHARS]
-        return f"{PROJECT_VOCABULARY_CONTEXT} {request_context[:remaining]}"
+    def _validate_context(request_context: str) -> str:
+        """All recognition hints belong to this request; never inject server terms."""
+        if not isinstance(request_context, str) or len(request_context) > MAX_CONTEXT_CHARS:
+            raise AsrInvalidResponse("语音上下文必须是字符串且不能超过 400 个字符")
+        return request_context.strip()

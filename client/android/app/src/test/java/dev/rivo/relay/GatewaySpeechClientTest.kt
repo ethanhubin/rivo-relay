@@ -39,11 +39,13 @@ class GatewaySpeechClientTest {
             var issues = 0
             val client = GatewaySpeechClient(routes, Dns.SYSTEM, { issues++; grant() })
             assertTrue(client.capability().getJSONObject("speech").getBoolean("streaming"))
-            client.start("上下文")
+            val context = speechContext("Merge、棋子", "编辑生成器")
+            client.start(context)
             val pcm = byteArrayOf(0x34, 0x12, -1, -1)
             assertEquals("语音", client.chunk("one", pcm).getString("text"))
             client.finish("one")
             val requests = (1..4).map { server.takeRequest(2, TimeUnit.SECONDS)!! }
+            assertEquals(context, JSONObject(requests[1].body.readUtf8()).getString("context"))
             assertEquals(1, issues)
             assertEquals(4, server.requestCount)
             assertTrue(requests.all { it.path!!.startsWith("/relay/" + "a".repeat(32) + "/v1/speech-direct/") })

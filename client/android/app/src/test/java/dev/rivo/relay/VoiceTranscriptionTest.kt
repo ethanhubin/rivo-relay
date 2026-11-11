@@ -12,16 +12,39 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class VoiceTranscriptionTest {
     private class Speech : SpeechTransport {
+        val contexts = mutableListOf<String?>()
         var partial = "一段"
         var final = "一段语音"
         var cancelCount = 0
         var startGate: CompletableDeferred<Unit>? = null
         var chunkGate: CompletableDeferred<Unit>? = null
         var finishGate: CompletableDeferred<Unit>? = null
-        override suspend fun start(context: String?): String { startGate?.await(); return "stream" }
+        override suspend fun start(context: String?): String { contexts += context; startGate?.await(); return "stream" }
         override suspend fun chunk(streamId: String, pcm: ByteArray): String { chunkGate?.await(); return partial }
         override suspend fun finish(streamId: String): String { finishGate?.await(); return final }
         override suspend fun cancel(streamId: String) { cancelCount++ }
+    }
+
+    @Test fun eachRecordingReadsCurrentVocabularyAndKeepsItsOwnContext() = runTest {
+        val transport = Speech()
+        var vocabulary = "ComfyUI、LoRA"
+        var draft = "正在编辑生成器"
+        val controller = VoiceTranscriptionController(transport, backgroundScope, { "thread" }, { draft },
+            { value, _ -> draft = value }, currentVocabulary = { vocabulary })
+        controller.start(0)
+        vocabulary = "Gossip Harbor、棋子"
+        runCurrent()
+        assertEquals("固定词表：ComfyUI、LoRA\n正在编辑生成器", transport.contexts.single())
+        controller.finish(); runCurrent()
+        draft = ""
+        controller.start(0); runCurrent()
+        assertEquals("固定词表：Gossip Harbor、棋子", transport.contexts.last())
+        controller.finish(); runCurrent()
+        vocabulary = ""
+        draft = "普通草稿"
+        controller.start(0); runCurrent()
+        assertEquals("普通草稿", transport.contexts.last())
+        controller.cancel(); runCurrent()
     }
 
     @Test fun partialAndFinalReplaceOnlyTheOriginalInsertionSpan() = runTest {
