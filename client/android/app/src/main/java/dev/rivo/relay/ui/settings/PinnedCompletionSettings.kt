@@ -3,6 +3,12 @@ package dev.rivo.relay.ui.settings
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
+import dev.rivo.relay.R
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -19,6 +25,23 @@ import dev.rivo.relay.codex.PINNED_COMPLETION
 import dev.rivo.relay.codex.PINNED_SOUND
 import dev.rivo.relay.codex.PINNED_VIBRATION
 import dev.rivo.relay.codex.notificationPreferences
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun NotificationSettingsEditor(onBack: () -> Unit) {
+    BackHandler(onBack = onBack)
+    Scaffold(modifier = Modifier.fillMaxSize().testTag("notification_settings_page"), topBar = {
+        CenterAlignedTopAppBar(title = { Text("通知") }, navigationIcon = {
+            IconButton(onClick = onBack, modifier = Modifier.testTag("close_notification_settings")) {
+                Icon(painterResource(R.drawable.ic_arrow_back), contentDescription = "返回设置")
+            }
+        })
+    }) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(24.dp)) {
+            PinnedCompletionSettings()
+        }
+    }
+}
 
 @Composable
 internal fun PinnedCompletionSettings() {
