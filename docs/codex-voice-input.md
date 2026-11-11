@@ -46,3 +46,31 @@ VPS-paired Android clients obtain a short-lived speech-only grant from the node
 and send audio directly to the pinned VPS speech endpoint. Only grant issuance
 uses the chat route; chunks, finish and cancel do not traverse the chat node.
 See [shared ASR](shared-asr.md) for the 180-second revocation window and upgrade requirements.
+
+
+## Configurable recognition vocabulary
+
+Settings → 语音输入 → 识别词表 stores a device-wide vocabulary in App preferences.
+The former server vocabulary is the editable App default. Save changes before
+starting the next recording; saving an empty value disables vocabulary hints.
+Commas, enumeration commas and line breaks can separate terms. The input is
+limited to 395 characters; oversized edits cannot be saved.
+
+At recording start the App snapshots the saved vocabulary and draft. The existing
+`context` request field contains `固定词表：<terms>` on its first line, followed by
+an optional newline and the tail of the draft. Multiline terms are joined with
+`、`; vocabulary has priority within the 400-character request limit. Empty
+vocabulary leaves only the bounded draft. Both direct VPS speech and legacy
+node-forwarded speech carry this field unchanged.
+
+The ASR worker validates the supplied context without injecting defaults. Each
+stream retains its own context for partial recognition, final recognition and
+prompt-echo filtering; one request cannot replace another stream's vocabulary.
+Echo filtering uses only the labeled first-line vocabulary and preserves a
+single configured word when it is spoken without the label.
+
+Deploy the updated ASR adapter (`scripts/asr/mac_asr.py`) together with the App to
+remove the old server defaults. Updating the App alone cannot disable a previous
+ASR worker's hardcoded vocabulary. Older Apps remain protocol-compatible but do
+not send vocabulary hints once the server default is removed. The recognition
+model and its dependencies do not change.

@@ -1,4 +1,5 @@
 import http.client
+import json
 import threading
 import unittest
 from unittest.mock import Mock
@@ -25,6 +26,13 @@ class AdapterTest(unittest.TestCase):
         server.service.reset_mock()
         self.assertEqual(self.request('/v1/speech/streams',auth=False)[0],401)
         server.service.start_stream.assert_not_called()
+    def test_start_forwards_each_client_context_including_empty(self):
+        server.service.start_stream.return_value = {'stream_id': 'test'}
+        for context in ['固定词表：ComfyUI、LoRA\n编辑图片', '固定词表：Merge、棋子', '']:
+            body = json.dumps({'context': context}).encode()
+            self.assertEqual(self.request('/v1/speech/streams', body)[0], 200)
+            server.service.start_stream.assert_called_with(context)
+
     def test_pcm_forwarded_without_conversion(self):
         pcm=b'\x01\x00\xff\x7f'
         server.service.feed_stream.return_value={'text':'测试','stable_text':''}

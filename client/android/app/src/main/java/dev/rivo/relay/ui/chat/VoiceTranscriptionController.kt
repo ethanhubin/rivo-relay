@@ -1,6 +1,7 @@
 package dev.rivo.relay.ui.chat
 
 import dev.rivo.relay.data.SpeechTransport
+import dev.rivo.relay.data.speechContext
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
@@ -23,6 +24,7 @@ internal class VoiceTranscriptionController(
     private val currentDraft: () -> String,
     private val onDraftUpdated: (String, Int) -> Unit,
     private val requestTimeout: Long = 15_000,
+    private val currentVocabulary: () -> String = { "" },
 ) {
     private val mutableState = MutableStateFlow(VoiceUiState())
     val state = mutableState.asStateFlow()
@@ -35,6 +37,7 @@ internal class VoiceTranscriptionController(
         val epoch = generation.incrementAndGet()
         val target = currentTarget()
         val initial = currentDraft()
+        val context = speechContext(currentVocabulary(), initial)
         val offset = insertionOffset.coerceIn(0, initial.length)
         val prefix = initial.substring(0, offset) + if (offset == initial.length && initial.isNotBlank()) "\n" else ""
         val suffix = initial.substring(offset)
@@ -55,7 +58,7 @@ internal class VoiceTranscriptionController(
             var streamId: String? = null
             var finished = false
             try {
-                streamId = withTimeout(requestTimeout) { transport.start(initial.takeLast(400)) }
+                streamId = withTimeout(requestTimeout) { transport.start(context) }
                 for (chunk in channel) {
                     if (!owns()) throw CancellationException("Conversation changed")
                     apply(withTimeout(requestTimeout) { transport.chunk(streamId, chunk) })
