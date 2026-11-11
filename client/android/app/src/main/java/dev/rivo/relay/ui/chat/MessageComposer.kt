@@ -315,7 +315,7 @@ fun MessageComposer(
                                 capability.reason, amplitude, toggleVoice)
                         }
                     }
-                    if (preparing) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp))
+                    if (preparing) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 8.dp).height(2.dp))
                     Row(
                         Modifier.fillMaxWidth().padding(start = 8.dp, top = 2.dp, end = 8.dp, bottom = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
