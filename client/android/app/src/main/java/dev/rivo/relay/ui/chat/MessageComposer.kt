@@ -322,7 +322,7 @@ fun MessageComposer(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         Box {
-                            ComposerToolButton({ attachmentsOpen = true }, enabled && !preparing,
+                            ComposerToolButton({ attachmentsOpen = !attachmentsOpen }, enabled && !preparing,
                                 "添加附件", "add_attachment") { ComposerAddIcon() }
                             AttachmentSourceMenu(attachmentsOpen, 10 - images.size, 16 - files.size,
                                 onDismiss = { attachmentsOpen = false },

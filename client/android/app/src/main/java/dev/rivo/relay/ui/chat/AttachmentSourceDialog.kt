@@ -36,7 +36,7 @@ internal fun AttachmentSourceMenu(expanded: Boolean, imageSlots: Int, fileSlots:
     onWorkspace: () -> Unit, workspaceEnabled: Boolean = true) {
     androidx.activity.compose.BackHandler(expanded) { onDismiss() }
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss,
-        properties = PopupProperties(focusable = false),
+        properties = PopupProperties(focusable = true),
         modifier = Modifier.width(240.dp).testTag("attachment_dialog"),
         shape = RoundedCornerShape(24.dp), containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
         data class Option(val label: String, val icon: String, val tag: String, val enabled: Boolean, val action: () -> Unit)
