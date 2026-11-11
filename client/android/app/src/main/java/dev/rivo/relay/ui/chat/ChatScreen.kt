@@ -87,6 +87,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     recoveryState: RecoveryState? = null, takeoverBlockedReason: String? = null, nodeName: String = "当前节点", writerBusy: Boolean = false, onWriterAction: ((String) -> Unit)? = null,
     defaultSettings: JSONObject? = null, onSaveDefaults: ((JSONObject) -> Unit)? = null, modelCatalogNotice: String? = null,
     onForwardLink: ((String, String?, String, String) -> Unit)? = null, draftReloadKey: Long = 0, pendingCwd: String = "",
+    onOpenAgent: ((String) -> Unit)? = null,
     mediaApi: dev.rivo.relay.data.RelayApi? = null,
     cachedFile: (suspend (String, (Long, Long) -> Unit) -> java.io.File)? = null) {
     val mediaContext = androidx.compose.ui.platform.LocalContext.current
@@ -378,6 +379,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val timeline = remember(state.id, snapshot?.messages, snapshot?.turnSettings, state.pendingMessages, snapshot?.activeTurnId, pendingTitle) {
         timelineCache.project(projectedSessionMessages(snapshot, if (pendingTitle == null) state.pendingMessages else emptyList()), snapshot?.activeTurnId, snapshot?.turnSettings.orEmpty())
     }
+    val agentDetails = remember(snapshot?.messages) { nativeAgentDetailsByMessage(snapshot?.messages.orEmpty()) }
     val resourceRows = remember(timeline) { nativeResourceRows(timeline) }
     // Preserve lastOrNull semantics, including review replies and empty turn IDs.
     val lastReplyIds = remember(snapshot?.messages) {
@@ -539,7 +541,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 modelChange?.let { label -> Text(label,
                     Modifier.fillMaxWidth().padding(bottom = chatActivitySpacing).testTag("model_change_notice"),
                     style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                if (row is NativeTimelineRow.Activities) NativeActivityGroup(row, isCurrent = row.key == currentActivity?.key && !state.stale, resourceItems = resourceRows[row.key].orEmpty()) { path -> nativeFilePath(path, cwd)?.let(::openFile) }
+                if (row is NativeTimelineRow.Activities) NativeActivityGroup(row, isCurrent = row.key == currentActivity?.key && !state.stale, resourceItems = resourceRows[row.key].orEmpty(), agentDetails = agentDetails, onOpenAgent = onOpenAgent) { path -> nativeFilePath(path, cwd)?.let(::openFile) }
                 else if (row is NativeTimelineRow.Notice) NativeTurnNotice(row.turn)
                 else if (row is NativeTimelineRow.Message) {
                 val message = row.message

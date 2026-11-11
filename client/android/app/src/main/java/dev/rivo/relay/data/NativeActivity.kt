@@ -17,6 +17,7 @@ fun nativeActivity(item: JSONObject): NativeActivity? {
         "collabagenttoolcall", "collabtoolcall", "subagentactivity" -> "collaboration"
         "websearch" -> "web"; "plan" -> "plan"; "enteredreviewmode" -> "review"; "contextcompaction" -> "context"; else -> "unknown"
     }
+    val agentActivity = nativeAgentActivity(item)
     val title = when (type) {
         "imageview" -> "查看图片"; "agentmessage" -> "过程消息"; "reasoning" -> "分析摘要"; "commandexecution" -> "命令执行"
         "filechange" -> "文件变更"; "mcptoolcall" -> "MCP 工具调用"; "dynamictoolcall" -> "工具调用"
@@ -32,7 +33,7 @@ fun nativeActivity(item: JSONObject): NativeActivity? {
         "file" -> paths.joinToString(" · ") { it.substringAfterLast('/').substringAfterLast('\\') }
         "commentary" -> item.string("text")
         "web" -> item.string("query").ifBlank { nativeText(item.opt("action")) }
-        "collaboration" -> item.string("prompt").ifBlank { item.string("task") }.ifBlank { item.string("agentPath") }.ifBlank { item.string("agentThreadId") }.ifBlank { item.string("tool") }.ifBlank { "协作代理记录" }
+        "collaboration" -> agentActivity!!.summary
         "plan" -> item.string("text").ifBlank { item.objects("plan").joinToString("\n") { it.string("step") } }
         "review" -> item.string("review")
         "context" -> "原生上下文压缩记录"
@@ -65,6 +66,7 @@ fun nativeActivity(item: JSONObject): NativeActivity? {
     val status = when {
         kind == "unknown" -> "unknown"
         explicitFailure -> "failed"
+        type == "subagentactivity" && rawStatus == "interrupted" -> "interrupted"
         rawStatus in setOf("inprogress", "running", "started", "pending", "pendinginit") -> "running"
         rawStatus in setOf("failed", "error", "errored", "declined", "interrupted", "canceled", "cancelled", "notfound") -> "failed"
         rawStatus in setOf("completed", "succeeded", "success") -> "completed"
@@ -89,7 +91,8 @@ internal fun nativeReasoningText(item: JSONObject): String {
 /** A terminal turn stops stale tool spinners without asserting that the tool succeeded. */
 internal fun nativeActivityForTurn(item: JSONObject, turnStatus: String): NativeActivity? = nativeActivity(item)?.let { activity ->
     if (activity.status == "running" && turnStatus in setOf("completed", "failed", "interrupted", "canceled", "cancelled"))
-        activity.copy(status = if (turnStatus == "completed") "unknown" else "failed") else activity
+        activity.copy(status = if (turnStatus == "completed") "unknown" else "failed",
+            summary = if (activity.kind == "collaboration") activity.summary.removePrefix("正在") + "（状态待核验）" else activity.summary) else activity
 }
 
 private fun nativeFields(item: JSONObject, keys: List<String>): String = keys.mapNotNull { key ->
@@ -150,7 +153,10 @@ fun nativeTimelineRows(messages: List<NativeMessage>, activeTurnId: String? = nu
     messages.forEach { message ->
         // Hidden records never enter groups or their failure counts, and do not split adjacent tools.
         if (message.activity?.kind == "reasoning" || message.type in setOf("reasoning", "sleep") ||
-            isInternalArtifactCall(message.raw)) return@forEach
+            isInternalArtifactCall(message.raw) || (message.activity?.kind == "collaboration" && message.raw.string("tool") == "wait")) return@forEach
+        if (message.activity?.kind == "collaboration") {
+            flush(); rows += NativeTimelineRow.Activities(listOf(message)); return@forEach
+        }
         if (message.activity != null && message.activity.kind != "commentary") {
             if (pending.lastOrNull()?.turnId?.let { it != message.turnId } == true) flush()
             pending += message
@@ -235,13 +241,15 @@ fun nativeActivityGroupLabel(messages: List<NativeMessage>): String {
     val otherLabels = activities.filter { it.kind != "command" }.joinToString(" · ") { activity ->
         val text = compactActivity(activity.summary)
         val running = activity.status == "running"
+        if (activity.kind == "collaboration") return@joinToString text
         if (activity.status == "unknown") return@joinToString "$text（状态未知）"
         if (activity.status == "failed") return@joinToString "$text（${if (activity.kind == "tool") "调用失败" else "执行失败"}）"
         when (activity.kind) {
             "command" -> if (running) "正在运行命令" else "运行了 1 条命令"
             "file" -> if (running) "正在编辑 $text" else "编辑了 $text"
             "web" -> if (running) "正在检索 $text" else "检索了 $text"
-            "tool", "collaboration" -> if (running) "正在使用 $text" else "使用了 $text"
+            "collaboration" -> text
+            "tool" -> if (running) "正在使用 $text" else "使用了 $text"
             "image" -> if (running) "正在查看图片 $text" else "查看了图片 $text"
             "reasoning" -> "分析摘要"
             else -> text
