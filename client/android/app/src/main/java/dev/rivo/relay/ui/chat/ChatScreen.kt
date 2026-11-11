@@ -391,6 +391,13 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     val historicalTiming = remember(timeline, snapshot?.turnSettings, turnFooter?.turn?.turnId) {
         nativeHistoricalTimingRows(timeline, snapshot?.turnSettings.orEmpty(), turnFooter?.turn?.turnId)
     }
+    val inlineHistoricalTiming = remember(historicalTiming, lastReplyIds) {
+        historicalTiming.values.flatten().filter { it.turnId in lastReplyIds }.associateBy { it.turnId }
+    }
+    val standaloneHistoricalTiming = remember(historicalTiming, inlineHistoricalTiming) {
+        historicalTiming.mapValues { (_, timings) -> timings.filter { it.turnId !in inlineHistoricalTiming } }
+            .filterValues { it.isNotEmpty() }
+    }
     var historyAnchor by remember(state.id) { mutableStateOf<HistoryScrollAnchor?>(null) }
     // The paging button can be the first visible item. Anchor a timeline row
     // instead, retaining its viewport position when older rows are inserted.
@@ -489,7 +496,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         }
         val showPendingIntro = pendingTitle != null && timeline.isEmpty()
         val showEmptyIntro = !state.loading && snapshot != null && timeline.isEmpty()
-        val showTimingTail = historicalTiming[timeline.size] != null
+        val showTimingTail = standaloneHistoricalTiming[timeline.size] != null
         val showTurnFooter = turnFooter != null && turnFooterBoundary == timeline.size
         val showExecutionStage = executionActive && currentActivity == null && turnFooter == null
         // All ordinary rows plus the keyed trailing anchor. Compute the new count before layout,
@@ -515,7 +522,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             itemsIndexed(timeline, key = { _, row -> row.key }, contentType = { _, row ->
                 when (row) { is NativeTimelineRow.Message -> row.message.type; is NativeTimelineRow.Activities -> "activity_group"; is NativeTimelineRow.Notice -> "turn_notice" }
             }) { index, row ->
-                HistoricalTurnTiming(historicalTiming[index].orEmpty())
+                HistoricalTurnTiming(standaloneHistoricalTiming[index].orEmpty())
                 if (turnFooterBoundary == index && turnFooter != null) NativeTurnDuration(turnFooter)
                 val modelChange = modelChangeRows[row.key]
                 val consecutiveActivities = row is NativeTimelineRow.Activities &&
@@ -624,7 +631,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                             forkTurnId = message.turnId.takeIf { isLastReply && onFork != null &&
                                 snapshot?.turnSettings?.any { it.turnId == message.turnId && it.status in setOf("completed", "interrupted", "failed") } == true },
                             forkEnabled = !busy && !blocked && !state.stale,
-                            onFork = { forkTurn = message.turnId })
+                            onFork = { forkTurn = message.turnId },
+                            historicalTiming = inlineHistoricalTiming[message.turnId].takeIf { isLastReply })
                     }
                     else if (message.type == "imageGeneration" && (message.raw.string("savedPath").isNotBlank() || message.raw.string("result").isNotBlank())) {
                         val source = generatedImageSource(message, mediaIndex)
@@ -664,7 +672,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                         onFork = { forkTurn = rowTurn })
                 }
             }
-            historicalTiming[timeline.size]?.let { timings ->
+            standaloneHistoricalTiming[timeline.size]?.let { timings ->
                 item(key = "historical_turn_timing_tail") { HistoricalTurnTiming(timings) }
             }
             trailingDiagnostics.forEach { diagnostic -> item(key = "review-diagnostic:${diagnostic.string("turnId")}") { ReviewDiagnostic(diagnostic) } }
