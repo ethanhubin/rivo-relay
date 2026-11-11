@@ -177,6 +177,16 @@ class ManagerPipelineTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'偏离已锁定'):
                 release.preflight(True)
 
+    def test_manager_rejects_non_version_build_changes(self):
+        release = self.fixture.ready()
+        release.state.update(mode='manager',baseCommit=workflow.git(release.root,'rev-parse','HEAD'))
+        build = release.root/workflow.BUILD_FILE
+        build.write_text(build.read_text() + '\ndependencies { implementation("unreleased:library:1.0") }\n')
+        with patch.object(config,'settings',return_value={'mode':'manager'}), \
+                patch('rivo_relay.release_management.central.baseline',return_value=release.state['previous']):
+            with self.assertRaisesRegex(RuntimeError,'构建文件只允许版本号变化'):
+                release.preflight(True)
+
     def test_legacy_mirror_is_atomic_and_outage_only_marks_pending(self):
         release = self.fixture.ready()
         previous = self.fixture.previous

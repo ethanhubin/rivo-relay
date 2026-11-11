@@ -189,6 +189,13 @@ class Release:
             require(base, '发布计划缺少 origin/main 基准提交')
             changed = set(git(self.root, 'diff', '--name-only', base, '--').splitlines())
             require(changed <= {BUILD_FILE, self.state['notes']}, '发布源码偏离已锁定的 origin/main；只允许版本和发布说明变化')
+            original = subprocess.check_output(['git', '-C', str(self.root), 'show', base + ':' + BUILD_FILE], text=True)
+            expected = re.sub(r'(versionName\s*=\s*)"[^"]+"',
+                              rf'\g<1>"{self.state["version"]}"', original, count=1)
+            expected = re.sub(r'(versionCode\s*=\s*)\d+',
+                              rf'\g<1>{self.state["versionCode"]}', expected, count=1)
+            require((self.root / BUILD_FILE).read_text() == expected,
+                    '发布构建文件只允许版本号变化；其他构建改动应先合并到 main')
         if not self.state.get('sourceTree'):
             if commit:
                 # Only version metadata and release notes are automatically staged.
