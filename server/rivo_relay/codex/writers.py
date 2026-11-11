@@ -254,6 +254,10 @@ class WriterProcesses:
         if holder is None:
             return None
         args = shlex.split(holder['command'])
+        # ps preserves argv[0], which may be a bare command resolved by the
+        # launcher's PATH. Use the OS-verified executable, not Relay's cwd/PATH.
+        if args and args[0] == Path(holder['executable']).name:
+            args[0] = holder['executable']
         if not args or Path(args[0]).resolve() != Path(holder['executable']).resolve() or 'app-server' not in args or '--listen' not in args:
             raise conflict('无法重建当前原生运行时，未结束进程')
         listen = args[args.index('--listen') + 1]

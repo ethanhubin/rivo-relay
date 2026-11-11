@@ -521,6 +521,16 @@ class PreviewTests(unittest.TestCase):
         snapshot['holders'][0]['command'] += ' --listen unix:///wrong.sock'
         with self.assertRaises(CodexError): manager.restart_command(snapshot, 123, '/fixture/native.sock')
 
+    def test_restart_resolves_bare_argv_from_verified_executable(self):
+        manager, snapshot = self.manager()
+        snapshot['holders'][0]['command'] = 'codex -c features.code_mode_host=true app-server --listen unix://'
+        args = manager.restart_command(snapshot, 123, '/fixture/app-server-control/app-server-control.sock')
+        self.assertEqual(['/bin/codex', '-c', 'features.code_mode_host=true', 'app-server', '--listen', 'unix://'], args)
+        for command in ('other app-server --listen unix://', './codex app-server --listen unix://'):
+            snapshot['holders'][0]['command'] = command
+            with self.assertRaises(CodexError):
+                manager.restart_command(snapshot, 123, '/fixture/app-server-control/app-server-control.sock')
+
     def test_reused_pid_never_escalated_to_sigkill(self):
         manager, snapshot = self.manager()
         manager.identity = Mock(return_value=None)
