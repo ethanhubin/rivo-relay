@@ -89,3 +89,13 @@ internal fun nativeDefaultsUnavailableReason(settings: JSONObject?, newSession: 
 
 internal fun newSessionSetting(draft: String?, defaults: JSONObject?, key: String): String =
     draft ?: defaults?.string(key)?.takeIf(String::isNotBlank) ?: "inherit"
+
+internal data class NewSessionModelSettings(val model: String?, val effort: String?)
+
+/** The catalog fallback shown in a new chat must also be submitted and persisted. */
+internal fun newSessionModelSettings(models: List<JSONObject>, model: String?, effort: String?): NewSessionModelSettings {
+    val selected = model?.takeIf(String::isNotBlank)
+        ?: models.firstOrNull { it.optBoolean("isDefault") }?.let { it.string("model").ifBlank { it.string("id") } }?.takeIf(String::isNotBlank)
+    val capability = models.firstOrNull { it.string("model").ifBlank { it.string("id") } == selected }
+    return NewSessionModelSettings(selected, effort?.takeIf(String::isNotBlank) ?: reasoningEffortForModel(capability, null))
+}
