@@ -41,6 +41,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.R
 import dev.rivo.relay.codex.threadIsExecuting
+import dev.rivo.relay.codex.canDeleteThread
 import dev.rivo.relay.codex.threadIsActive
 import dev.rivo.relay.codex.stableThreadOrder
 import org.json.JSONObject
@@ -60,6 +61,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
     onPin: (ThreadSummary, Boolean) -> Unit = { _, _ -> },
     archived: Boolean = false, onArchivedChanged: ((Boolean) -> Unit)? = null,
     onArchive: ((List<ThreadSummary>, Boolean) -> Unit)? = null,
+    onDelete: ((List<ThreadSummary>) -> Unit)? = null,
     unreadThreadIds: Set<String> = emptySet(), usage: CodexUsage? = null,
     usageLoading: Boolean = false, usageError: String? = null, onRefreshUsage: (() -> Unit)? = null,
     projectKey: String = projectName,
@@ -67,6 +69,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
     onResumePending: (String) -> Unit = {}, onDiscardPending: (String) -> Unit = {},
     canManageThreads: Boolean = canCreate, showCreate: Boolean = true, catalogComplete: Boolean = true,
     loadDraftText: suspend (String) -> String = { "" }) {
+    var deleteIds by remember(projectKey, archived) { mutableStateOf<Set<String>?>(null) }
     val context = LocalContext.current
     var selectedIds by remember(projectKey, archived) { mutableStateOf(emptySet<String>()) }
     var search by rememberSaveable(projectKey) { mutableStateOf("") }
@@ -95,6 +98,16 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
     val visibleIds = remember(shown) { shown.map { it.id }.toSet() }
     LaunchedEffect(visibleIds) { selectedIds = selectedIds.intersect(visibleIds) }
     val selected = remember(shown, selectedIds) { shown.filter { it.id in selectedIds } }
+    deleteIds?.let { ids ->
+        val targets = threads.filter { it.id in ids }
+        val allowed = canManageThreads && targets.size == ids.size && targets.all(::canDeleteThread)
+        AlertDialog(onDismissRequest = { deleteIds = null }, title = { Text("永久删除会话？") },
+            text = { Text("将永久删除所选 ${ids.size} 个会话及其派生子会话，无法恢复。") },
+            confirmButton = { TextButton(enabled = allowed, onClick = {
+                onDelete?.invoke(targets); deleteIds = null; selectedIds = emptySet()
+            }, modifier = Modifier.testTag("confirm_delete_sessions")) { Text("永久删除", color = MaterialTheme.colorScheme.error) } },
+            dismissButton = { TextButton(onClick = { deleteIds = null }) { Text("取消") } })
+    }
     BackHandler(selectedIds.isNotEmpty()) { selectedIds = emptySet() }
     fun toggle(id: String) { selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id }
     Box(Modifier.fillMaxSize().testTag("sessions_page")) {
@@ -139,6 +152,9 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                         if (onArchive != null) TextButton(onClick = { onArchive(selected, !archived); selectedIds = emptySet() },
                             enabled = canManageThreads && selected.isNotEmpty(), modifier = Modifier.testTag("archive_sessions"),
                             contentPadding = PaddingValues(horizontal = 6.dp)) { Text(if (archived) "恢复" else "归档") }
+                        if (onDelete != null) TextButton(onClick = { deleteIds = selectedIds.toSet() },
+                            enabled = canManageThreads && selected.isNotEmpty() && selected.all(::canDeleteThread),
+                            modifier = Modifier.testTag("delete_sessions"), contentPadding = PaddingValues(horizontal = 6.dp)) { Text("删除", color = MaterialTheme.colorScheme.error) }
                         TextButton(onClick = { selectedIds = emptySet() }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("取消") }
                     }
                 }

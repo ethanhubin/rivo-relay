@@ -461,6 +461,19 @@ class CodexService(SessionHandoffMixin):
         self.projects.invalidate()
         return {"threadId": thread_id}
 
+    def delete_session(self, thread_id):
+        self.start()
+        with self.operation_gate(thread_id):
+            if hasattr(self, 'execution_queue') and self.execution_queue.list(thread_id):
+                raise CodexError('请先处理此会话的执行队列', code='thread_busy', http_status=409)
+            if self.interactions.list(thread_id):
+                raise CodexError('请先处理此会话的待回答请求', code='thread_busy', http_status=409)
+            self.connection.request('thread/delete', {'threadId': thread_id})
+            self.projects.invalidate()
+            with self._lock:
+                self._joined.discard(thread_id)
+            return {'threadId': thread_id}
+
     def archive_session(self, thread_id, archived):
         self.start()
         with self.operation_gate(thread_id):

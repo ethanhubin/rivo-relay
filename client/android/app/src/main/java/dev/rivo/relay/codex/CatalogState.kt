@@ -517,3 +517,9 @@ internal fun catalogMembershipEvent(event: RelayEvent): Boolean {
     val method = event.payload.string("method")
     return method.startsWith("project/") || method in setOf("thread/started", "thread/deleted", "thread/archived", "thread/unarchived")
 }
+
+/** Destructive actions require a known idle thread with no pending work. */
+fun canDeleteThread(thread: ThreadSummary): Boolean =
+    thread.status in setOf("idle", "completed", "failed", "interrupted") &&
+        thread.nativeExecution in setOf("", "idle") && !threadIsExecuting(thread) &&
+        thread.queueDepth == 0 && !thread.hasOutstandingWork && !thread.recoveryRequired

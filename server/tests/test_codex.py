@@ -7,7 +7,7 @@ import json
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from pathlib import Path
 
 from rivo_relay.codex.connection import CodexError, NativeConnection
@@ -187,6 +187,39 @@ class NativeSemanticsTests(unittest.TestCase):
             with self.assertRaises(CodexError) as caught:
                 service.pin_session('thread', False)
         self.assertIs(error, caught.exception)
+
+    def test_delete_delegates_and_invalidates_only_after_success(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        service.start()
+        service._joined.add('thread')
+        with patch.object(service.projects, 'invalidate') as invalidate:
+            self.assertEqual({'threadId': 'thread'}, service.delete_session('thread'))
+            invalidate.assert_called_once()
+        self.assertIn(('thread/delete', {'threadId': 'thread'}), native.calls)
+        self.assertNotIn('thread', service._joined)
+
+    def test_delete_native_rejection_preserves_local_state(self):
+        service = CodexService(connection=FakeNative())
+        service.start()
+        service._joined.add('thread')
+        with patch.object(service.connection, 'request', side_effect=CodexError('Unknown method', native_code=-32601)), \
+             patch.object(service.projects, 'invalidate') as invalidate:
+            with self.assertRaises(CodexError):
+                service.delete_session('thread')
+            invalidate.assert_not_called()
+        self.assertIn('thread', service._joined)
+
+    def test_delete_rejects_pending_queue_and_interactions(self):
+        for queued in (True, False):
+            service = CodexService(connection=FakeNative())
+            service.execution_queue = Mock()
+            service.execution_queue.list.return_value = [{'id': 'q'}] if queued else []
+            with patch.object(service.interactions, 'list', return_value=[] if queued else [{'id': 'request'}]):
+                with self.assertRaises(CodexError) as caught:
+                    service.delete_session('thread')
+            self.assertEqual('thread_busy', caught.exception.code)
+            self.assertFalse(any(m == 'thread/delete' for m, _ in service.connection.calls))
 
     def test_archive_delegates_without_execution_or_goal_checks(self):
         native = FakeNative()
