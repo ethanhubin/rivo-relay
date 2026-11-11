@@ -5,8 +5,6 @@ stored separately; explicit handoff terminates only previewed native lock holder
 """
 from __future__ import annotations
 
-from contextlib import nullcontext
-
 import copy
 import hashlib
 import json
@@ -1202,13 +1200,8 @@ class CodexService(SessionHandoffMixin):
 
     def upload_todo_attachment_stream(self, name, stream, size):
         self.start()
-        # This directory belongs to Relay on the native host, including when
-        # the app-server socket points at a different machine.
-        lease = getattr(self.connection, 'auxiliary_connection', None)
-        with lease() if lease else nullcontext(self.connection) as connection:
-            home = connection.native_host_info()['codexHome']
-            return upload_attachment_stream(connection, home, name, stream, size,
-                                            directory_name='rivo-relay-todo-media')
+        return upload_attachment_stream(self.connection, None, name, stream, size,
+                                        directory_name='rivo-relay-todo-media')
 
     def _project_attachment_cwd(self, project_id):
         self.start()
