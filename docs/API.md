@@ -40,6 +40,7 @@
 
 | 方法与路径 | 请求 | HTTP 200 响应 |
 | --- | --- | --- |
+| `POST /v1/threads/{id}/delete` | `{submissionId}` | 提交记录；接受时 `{threadId}` |
 | `POST /v1/threads` | `{submissionId,projectId,worktreeRef?}` | 提交记录；接受时 `{threadId}` |
 | `POST /v1/threads/{id}/fork` | `{submissionId,lastTurnId,worktreeRef?}` | 分叉到指定已结束轮次（包含），返回提交记录及 `{threadId}`；不指定工作树时沿用来源 cwd |
 | `GET /v1/threads/{id}/fork-context` | — | 来源 `projectId`、`cwd` 和 Git 来源选项 |
@@ -89,6 +90,8 @@
 问答恢复：快照的 `questionAnswerStates` 按原生 questionItemId 提供 pending/unknown/accepted。服务端在发送前持久化问题级提交记录；即使换 submissionId、重启节点或原生历史暂未更新，也不重复发送。明确未发送的失败允许重试；结果不确定时保持待核对，禁止自动重放。APP 按节点/会话/来源回合保存独立回答草稿，离线可编辑、不可提交，恢复新快照后重新校验。
 
 归档前检查运行中的 turn、待回答请求和执行队列；存在未处理工作时拒绝，最终操作仍由原生节点校验。批量归档、恢复由客户端逐项提交独立 submissionId，没有全有或全无的批量事务。未读标记是 Android 按节点和 thread 的已读 updatedAt 本地记录，没有服务端未读字段。没有已读记录的历史会话首次出现在列表（包括本地缓存）时，以当前 updatedAt 持久保存已读基线；后续更晚的已完成更新才显示未读，已有已读记录继续保留。
+
+永久删除通过原生 `thread/delete` 删除持久化的普通或已归档会话及其派生子会话，无法恢复。Relay 在同会话操作锁内拒绝仍有执行队列或待回答请求的删除；其余原生限制与错误原样传回，不退回手动删除文件。App 提供列表多选及聊天菜单入口，确认后按独立 submissionId 逐项提交，结果未知时只核对、不重放。删除成功后刷新目录；项目文件和托管工作树不由此接口清理。旧原生版本不支持时返回失败。
 
 历史按原生 thread/turn/item ID 合并，不按文字去重。新建空会话可能还没有持久 rollout，首轮前返回创建元数据和空 turns；完成历史以原生分页为准。`nextCursor` 为空表示没有下一页，cursor 不应跨 runtime/重置继续使用。
 

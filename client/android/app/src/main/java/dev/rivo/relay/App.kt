@@ -307,6 +307,10 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     }, archived = catalog.archived, onArchivedChanged = node.catalog::setArchived,
                     onArchive = { threads, archived ->
                         if (node.catalog.state.value.threadsFresh) node.submissions.submitBatch(threads.map { BatchSubmission("/v1/threads/${encoded(it.id)}/archive", JSONObject().put("archived", archived), if (archived) "归档会话" else "恢复会话") })
+                    }, onDelete = { threads ->
+                        if (threadsWritable && node.catalog.state.value.threadsFresh) node.submissions.submitBatch(threads.map {
+                            BatchSubmission("/v1/threads/${encoded(it.id)}/delete", JSONObject(), "永久删除会话")
+                        })
                     }, unreadThreadIds = catalog.unreadThreadIds, usage = catalog.usage, usageLoading = catalog.usageLoading,
                     usageError = catalog.usageError, onRefreshUsage = { node.catalog.refreshUsage(true) }, projectKey = catalog.selectedProject?.id.orEmpty(),
                     pendingConversations = visiblePending, canDiscardPending = writable,
@@ -561,6 +565,15 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         val snapshot = current.snapshot
                         if (id != null && !current.stale && current.id == id && snapshot?.id == id && writable && current.control().canOperate && snapshot.activeTurnId.isBlank() && snapshot.queue.isEmpty() && snapshot.requests.isEmpty())
                             node.submissions.submit("/v1/threads/${encoded(id)}/archive", JSONObject().put("archived", true), "归档会话") {
+                                node.catalog.refreshThreads(force = true)
+                                if (route == "chat" && threadId == id) back()
+                            }
+                    }, onDelete = {
+                        val current = node.session.state.value
+                        val id = threadId
+                        val snapshot = current.snapshot
+                        if (id != null && !current.stale && current.id == id && snapshot?.id == id && writable && current.control().canOperate && snapshot.activeTurnId.isBlank() && snapshot.queue.isEmpty() && snapshot.requests.isEmpty())
+                            node.submissions.submit("/v1/threads/${encoded(id)}/delete", JSONObject(), "永久删除会话") {
                                 node.catalog.refreshThreads(force = true)
                                 if (route == "chat" && threadId == id) back()
                             }

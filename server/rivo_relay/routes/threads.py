@@ -148,6 +148,8 @@ def route(handler, path, query, body, connection):
                     raise ApiError(400, 'invalid_request', 'Invalid serviceTier')
                 options = permission_options(body)
                 fn = lambda: codex.update_settings(thread_id, model=body.get('model'), effort=body.get('effort'), service_tier=body.get('serviceTier'), **options)
+            elif action == 'delete':
+                fn = lambda: codex.delete_session(thread_id)
             elif action == 'archive':
                 if not isinstance(body.get('archived'), bool):
                     raise ApiError(400, 'invalid_request', 'archived must be boolean')

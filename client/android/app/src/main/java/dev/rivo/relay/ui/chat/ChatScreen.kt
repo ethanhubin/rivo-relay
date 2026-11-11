@@ -77,7 +77,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     readTool: suspend (String) -> JSONObject = { error("节点工具不可用") },
     submitTool: (String, JSONObject, () -> Unit) -> Unit = { _, _, _ -> },
     usage: CodexUsage? = null, onFillHistory: () -> Unit = {}, pinned: Boolean = false, canManage: Boolean = false,
-    onPin: ((Boolean) -> Unit)? = null, onArchive: (() -> Unit)? = null,
+    onPin: ((Boolean) -> Unit)? = null, onArchive: (() -> Unit)? = null, onDelete: (() -> Unit)? = null,
     pendingTitle: String? = null, pendingReady: Boolean = true, pendingGoalApplied: Boolean = false, pendingFirstTurnSent: Boolean = false,
     pendingReceiptUnresolved: Boolean = false, onReconcilePending: (() -> Unit)? = null,
     readGoalCapability: (suspend () -> Boolean)? = null, onOpenPendingThread: (() -> Unit)? = null, pendingPermissionsEditable: Boolean = true,
@@ -480,7 +480,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             Column(Modifier.clickable(onClick = ::openSettings).testTag("conversation_status")) { Text("新会话", style = MaterialTheme.typography.titleLarge); Text(pendingTitle, style = MaterialTheme.typography.bodySmall) }
         } else NativeChatHeader(state, usage, onBack, ::openSettings, onRefresh, { developerOpen = true }, { stopConfirm = true },
             !busy && !blocked && !state.stale && canOperate, pinned, canManage, onPin, onArchive,
-            onWriterAction, writerBusy || busy || blocked, takeoverBlockedReason, recoveryState)
+            onWriterAction, writerBusy || busy || blocked, takeoverBlockedReason, recoveryState, onDelete)
         if (pendingTitle == null && state.displayControl().state == ControlState.EXTERNAL) NativeWriterStatus(state, nodeName, writerBusy || busy || blocked, onWriterAction, takeoverBlockedReason, onRefresh)
         // Reserve the loading strip so revalidation never changes the viewport height.
         Box(Modifier.fillMaxWidth().height(4.dp)) {
