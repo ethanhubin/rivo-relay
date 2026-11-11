@@ -288,7 +288,10 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     }
     val visiblePrediction = prediction.takeIf { predictionEligible && !predictionConsumed && draft.isEmpty() && !busy }
     val sendText = if (draft.isEmpty()) visiblePrediction ?: draft else draft
-    val currentDraft = ConversationDraft(draft, images.map { StoredDraftImage(it.id, it.bytes) }, files, selectedModel, selectedEffort, selectedMode, selectedServiceTier, selectedSandbox, selectedApproval, pendingGoal)
+    val newSessionModels = if (pendingTitle != null) newSessionModelSettings(models, selectedModel, selectedEffort) else null
+    val effectiveModel = if (pendingTitle != null) newSessionModels?.model else selectedModel
+    val effectiveEffort = if (pendingTitle != null) newSessionModels?.effort else selectedEffort
+    val currentDraft = ConversationDraft(draft, images.map { StoredDraftImage(it.id, it.bytes) }, files, effectiveModel, effectiveEffort, selectedMode, selectedServiceTier, selectedSandbox, selectedApproval, pendingGoal)
     var submittedDraft by remember(state.id) { mutableStateOf<ConversationDraft?>(null) }
     val unchangedSubmission = submittedDraft != null && submittedDraft == currentDraft
     val composerInput = remember(draft, images, files, pendingGoal, unchangedSubmission, state.pendingMessages.isEmpty()) {
@@ -333,7 +336,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             }
         }
     }
-    LaunchedEffect(state.id, draftLoaded, draft, images, files, selectedModel, selectedEffort, selectedMode, selectedServiceTier) {
+    LaunchedEffect(state.id, draftLoaded, draft, images, files, effectiveModel, effectiveEffort, selectedMode, selectedServiceTier) {
         if (draftLoaded) state.id?.let { onPersistDraft(it, currentDraft) }
     }
     DisposableEffect(state.id, draftStore) {
@@ -603,15 +606,15 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                                             showDeliveryInfo = false
                                             val retried = { onDismissFailedMessage(message.raw.string("clientId")) }
                                             val input = if (content.isEmpty()) JSONArray().put(JSONObject().put("type", "text").put("text", message.text)) else JSONArray(content)
-                                            if (onConfiguredSend != null) onConfiguredSend(input, selectedModel, selectedEffort, selectedMode, selectedServiceTier, JSONObject().apply {
+                                            if (onConfiguredSend != null) onConfiguredSend(input, effectiveModel, effectiveEffort, selectedMode, selectedServiceTier, JSONObject().apply {
                                                 if (pendingTitle != null) {
                                                     pendingGoal?.let { put("goal", JSONObject(it)) }
                                                     selectedSandbox?.takeUnless { it == "inherit" }?.let { put("sandbox", it) }
                                                     selectedApproval?.takeUnless { it == "inherit" }?.let { put("approvalPolicy", it) }
                                                 }
                                             }, retried)
-                                            else if (onSendWithMode != null) onSendWithMode(input, selectedModel, selectedEffort, selectedMode, retried)
-                                            else onSend(input, selectedModel, selectedEffort, retried)
+                                            else if (onSendWithMode != null) onSendWithMode(input, effectiveModel, effectiveEffort, selectedMode, retried)
+                                            else onSend(input, effectiveModel, effectiveEffort, retried)
                                         },
                                     ) { Text("重试") }
                                         TextButton(onClick = { showDeliveryInfo = false }) { Text("关闭") }
@@ -770,7 +773,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             enter = expandVertically(animationSpec = tween(160), expandFrom = Alignment.Bottom),
             exit = shrinkVertically(animationSpec = tween(160), shrinkTowards = Alignment.Bottom),
         ) {
-            NewSessionSettings(models, selectedModel, selectedEffort, selectedSandbox, selectedApproval,
+            NewSessionSettings(models, effectiveModel, effectiveEffort, selectedSandbox, selectedApproval,
                 enabled = !pendingReceiptUnresolved && !pendingFirstTurnSent && !busy && !blocked && !state.stale && pendingReady && draftLoaded,
                 permissionsEditable = pendingPermissionsEditable,
                 onModel = { modelId ->
@@ -779,7 +782,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     selectedEffort = reasoningEffortForModel(capability, selectedEffort)
                 }, onEffort = { selectedEffort = it },
                 onSandbox = { selectedSandbox = it ?: "inherit" },
-                onApproval = { selectedApproval = it ?: "inherit" }, workspace = pendingWorkspace)
+                onApproval = { selectedApproval = it ?: "inherit" }, workspace = pendingWorkspace,
+                serviceTier = selectedServiceTier, defaultSettings = defaultSettings, onSaveDefaults = onSaveDefaults)
         }
         if (goalMode && goalAvailable) TextButton(onClick = { goalEditing = true }, enabled = goalEnabled,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("edit_goal")) {
@@ -819,7 +823,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 pendingImageUris = ArrayList((pendingImageUris + uris.map { it.toString() }).take(10))
             },
             settingsExpanded = settingsOpen, onDismissSettings = { settingsOpen = false }, settingsContent = {
-                NativeComposerSettings(snapshot?.settings, models, selectedModel, selectedEffort, selectedMode, !pendingReceiptUnresolved && !pendingFirstTurnSent && !busy && !blocked && !state.stale && (state.canCompose() || pendingTitle != null && pendingReady) && draftLoaded,
+                NativeComposerSettings(snapshot?.settings, models, effectiveModel, effectiveEffort, selectedMode, !pendingReceiptUnresolved && !pendingFirstTurnSent && !busy && !blocked && !state.stale && (state.canCompose() || pendingTitle != null && pendingReady) && draftLoaded,
                     onModel = { modelId ->
                         selectedModel = modelId
                         val capability = models.firstOrNull { it.string("model").ifBlank { it.string("id") } == modelId }
@@ -851,15 +855,15 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     targetId?.let { onPersistDraft(it, ConversationDraft(model = sentDraft.model, effort = sentDraft.effort, mode = sentDraft.mode, serviceTier = sentDraft.serviceTier, sandbox = sentDraft.sandbox, approvalPolicy = sentDraft.approvalPolicy)) }
                 }
                     Unit }
-                if (onConfiguredSend != null) onConfiguredSend(nativeInputs(sendText.ifBlank { pendingGoal?.let { JSONObject(it).string("objective") }.orEmpty() }, images, files), selectedModel, selectedEffort, selectedMode, selectedServiceTier, JSONObject().apply {
+                if (onConfiguredSend != null) onConfiguredSend(nativeInputs(sendText.ifBlank { pendingGoal?.let { JSONObject(it).string("objective") }.orEmpty() }, images, files), effectiveModel, effectiveEffort, selectedMode, selectedServiceTier, JSONObject().apply {
                     if (pendingTitle != null) {
                         pendingGoal?.let { put("goal", JSONObject(it)) }
                         selectedSandbox?.takeUnless { it == "inherit" }?.let { put("sandbox", it) }
                         selectedApproval?.takeUnless { it == "inherit" }?.let { put("approvalPolicy", it) }
                     }
                 }, accepted)
-                else if (onSendWithMode != null) onSendWithMode(nativeInputs(sendText, images, files), selectedModel, selectedEffort, selectedMode, accepted)
-                else onSend(nativeInputs(sendText, images, files), selectedModel, selectedEffort, accepted)
+                else if (onSendWithMode != null) onSendWithMode(nativeInputs(sendText, images, files), effectiveModel, effectiveEffort, selectedMode, accepted)
+                else onSend(nativeInputs(sendText, images, files), effectiveModel, effectiveEffort, accepted)
             },
             onStop = { stopConfirm = true },
             queueing = snapshot != null && canOperate && snapshot.shouldQueueInput,
