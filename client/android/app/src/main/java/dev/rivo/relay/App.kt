@@ -53,7 +53,6 @@ fun RelayApp(vm: AppViewModel = viewModel()) {
         updates.onLogin(app.node != null, assess = { UpdateCompatibilityChecker.check(context, it) }) { NodeAppUpdates.configured(context).check(BuildConfig.VERSION_NAME) }
     }
     dev.rivo.relay.ui.settings.LoginUpdatePrompt(updates)
-    dev.rivo.relay.ui.settings.UpdateCompatibilityPrompt(updates)
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))) {
             val node = app.node
