@@ -103,6 +103,7 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
     }
     private fun failureMessage(response: JSONObject, label: String): String = when (response.string("errorCode")) {
         "submission_not_received" -> "节点未收到该操作，已解除等待；草稿已保留，请重新发送。"
+        "usage_reset_recovery_only" -> "已尝试核对原额度重置，请查看刷新后的额度再确认；本次未创建新的兑换"
         "usage_reset_unsupported" -> "此节点不支持额度重置，请更新节点"
         "usage_reset_account_unverified" -> "无法确认当前 ChatGPT 账户，未重置额度"
         "usage_reset_account_changed" -> "登录账户已变化，请核对原重置操作"

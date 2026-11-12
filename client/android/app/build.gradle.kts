@@ -1,8 +1,14 @@
+import groovy.json.JsonSlurper
+
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.plugin.compose") }
 android {
     namespace = "dev.rivo.relay"
     compileSdk = 37
     defaultConfig {
+        val compatibility = JsonSlurper().parse(file("src/main/assets/api-compatibility.json")) as Map<*, *>
+        val versions = compatibility["apiVersions"] as List<*>
+        require(versions.isNotEmpty() && versions.all { it is Int && it > 0 } && versions.distinct().size == versions.size)
+        buildConfigField("String", "API_VERSIONS", "\"${versions.joinToString(",")}\"")
         applicationId = "dev.rivo.relay"
         minSdk = 26
         targetSdk = 36
@@ -12,6 +18,11 @@ android {
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     buildFeatures { compose = true; buildConfig = true }
+    // A management node keeps Rivo's existing signing identity separate from
+    // other projects' default debug keystore. Legacy builds keep their default.
+    System.getenv("RIVO_RELEASE_KEYSTORE")?.let { signingPath ->
+        signingConfigs.getByName("debug") { storeFile = file(signingPath) }
+    }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
 }
 kotlin { jvmToolchain(17) }

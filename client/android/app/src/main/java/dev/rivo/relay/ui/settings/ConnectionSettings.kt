@@ -27,14 +27,17 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
     savedNodes: List<SavedNode> = emptyList(), onSelectNode: (String) -> Unit = {},
     onAddNode: () -> Unit = {}, canAddNode: Boolean = true) {
     var version by remember(connection, api) { mutableStateOf("正在获取…") }
+    var compatibility by remember(connection, api) { mutableStateOf("兼容性未知") }
     var versionRefresh by remember(connection, api) { mutableIntStateOf(0) }
     LaunchedEffect(connection, api, versionRefresh) {
         version = try {
             val code = api?.call("/v1/node")?.optInt("releaseCode", 0) ?: 0
+            compatibility = api?.compatibilityMessage ?: "兼容性未知"
             if (code > 0) code.toString() else "未提供"
         } catch (error: CancellationException) {
             throw error
         } catch (_: Exception) {
+            compatibility = "兼容性未知，请重新连接后检查"
             "暂不可用"
         }
     }
@@ -46,21 +49,17 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
     val reconnecting = recovery == RecoveryState.CONNECTING
     val status = api?.connectionStatus?.collectAsState()?.value ?: ConnectionStatus()
     var networkLatencyMs by remember(api, status.endpoint) { mutableStateOf<Long?>(null) }
-    var latencyFailed by remember(api, status.endpoint) { mutableStateOf(false) }
     LaunchedEffect(api, status.endpoint, status.failed, recovery, versionRefresh) {
         networkLatencyMs = null
-        latencyFailed = false
         if (api != null && status.endpoint.isNotBlank() && !status.failed &&
             recovery != RecoveryState.DISCONNECTED && recovery != RecoveryState.CONNECTING) {
             while (isActive) {
                 try {
                     networkLatencyMs = api.networkLatency(status.endpoint)
-                    latencyFailed = false
                 } catch (error: CancellationException) {
                     throw error
                 } catch (_: Exception) {
                     networkLatencyMs = null
-                    latencyFailed = true
                 }
                 delay(15_000)
             }
@@ -120,7 +119,7 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
                 status.checkedAt == 0L -> "尚未检测"
                 status.failed -> "连接失败，当前路径未确认"
                 status.httpCode == 401 -> "授权已失效，请重新配对"
-                status.httpCode in 200..299 -> "连接正常"
+                status.httpCode in 200..299 -> null
                 else -> "请求返回 HTTP ${status.httpCode}"
             }
             val routeLabel = if (status.endpoint.isBlank()) null
@@ -134,20 +133,21 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
                     RecoveryState.DISCONNECTED -> false
                 }, Modifier.testTag("settings_connection_status"))
                 Text(
-                    listOfNotNull("$statusLabel - 节点版本：$version", routeLabel).joinToString(" · "),
+                    listOfNotNull(
+                        statusLabel,
+                        "节点版本：$version\n$compatibility",
+                        routeLabel,
+                        networkLatencyMs?.takeIf {
+                            !status.failed && status.endpoint.isNotBlank() &&
+                                recovery != RecoveryState.DISCONNECTED && !reconnecting
+                        }?.let { "$it ms" },
+                    ).joinToString(" · "),
                     modifier = Modifier.weight(1f).testTag("settings_node_version"),
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            val latencyTarget = if (routes != null && status.endpoint == routes.relay) "手机 → VPS" else "手机 → 节点"
-            Text("TCP Ping（$latencyTarget）：" + when {
-                status.failed || status.endpoint.isBlank() || recovery == RecoveryState.DISCONNECTED || reconnecting -> "—"
-                networkLatencyMs != null -> "$networkLatencyMs ms"
-                latencyFailed -> "探测失败"
-                else -> "测量中…"
-            }, Modifier.testTag("settings_network_latency"), style = MaterialTheme.typography.bodySmall)
             OutlinedButton(enabled = api != null && !checking && !reconnecting, modifier = Modifier.testTag("settings_refresh"), onClick = {
                 scope.launch {
                     checking = true

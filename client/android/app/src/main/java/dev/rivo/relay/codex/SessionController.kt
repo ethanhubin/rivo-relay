@@ -58,7 +58,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
     }
     private fun isCurrent(id: String, targetGeneration: Long) = mutable.value.id == id && generation == targetGeneration
     private fun message(error: Exception): String? = if (error is CancellationException) null else if (error is ApiException) error.message else api.describeFailure(error)
-    private fun invalidateHistory() { historyEpoch++; historyJob?.cancel(); historyJob = null; historyDepthTarget = null; requestedHistoryCursors.clear() }
+    private fun invalidateHistory() { historyEpoch++; activeRead?.cancel(); historyJob?.cancel(); historyJob = null; historyDepthTarget = null; requestedHistoryCursors.clear() }
     fun dismissReadError() { mutable.update { it.transition(SessionSyncEvent.DismissError).copy(historyError = null) } }
     fun open(id: String, online: Boolean = true) {
         pause()
@@ -132,14 +132,23 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                     }
                 }).collect { event ->
                     if (isCurrent(id, targetGeneration)) {
+                        if (event.type == "revoked") {
+                            invalidateControl("节点访问权限已撤销")
+                            failure(ApiException(401, "revoked", "节点访问权限已撤销"))
+                            return@collect
+                        }
                         val params = event.payload.optJSONObject("params")
                         val method = event.payload.string("method")
-                        val eventThread = params?.string("threadId")?.ifBlank { params.string("conversationId") }.orEmpty()
+                        val eventThread = params?.string("threadId")?.ifBlank { params.string("conversationId") }
+                            ?.ifBlank { params.optJSONObject("thread")?.string("id").orEmpty() }.orEmpty()
                         val eventThreads = params?.optJSONArray("threadIds")
                         // Empty threadIds means a metadata-only disconnect. It must not
                         // disable an unrelated live writer or trigger its history reads.
                         if (eventThread.isNotEmpty() && eventThread != id) return@collect
                         if (eventThreads != null && (0 until eventThreads.length()).none { eventThreads.optString(it) == id }) return@collect
+                        // Ignore only known unrelated metadata. An unscoped ownership,
+                        // history or request notification may affect this chat too.
+                        if (event.type == "native" && (method == "relay/todos" || method.startsWith("project/"))) return@collect
                         val writerDisconnected = event.type == "native" && method in setOf("relay/writerDisconnected", "relay/nativeDisconnected")
                         if (writerDisconnected) {
                             pendingDeltas.clear()
@@ -153,7 +162,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                             if (pendingDeltas.size >= 128) flushDeltas()
                             return@collect
                         }
-                        if (event.type == "native" && event.payload.string("method") == "relay/ownershipChanged")
+                        if (event.type == "native" && method in setOf("relay/ownershipChanged", "thread/deleted"))
                             invalidateControl("会话权限已变化，正在重新确认")
                         val historyInvalidated = writerDisconnected || event.type == "reset" || (event.type == "native" &&
                             event.payload.string("method") == "relay/historyInvalidated")
@@ -175,9 +184,11 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
             }
             signals.trySend(Unit)
             while (isActive) {
-                // Start the fallback interval after the previous read finishes.
-                // A slow transfer must not queue its own immediate full reread.
-                val signal = withTimeoutOrNull(pollIntervalMillis) { signals.receiveCatching() }
+                // Idle, confirmed sessions wait for events or an explicit refresh. Only
+                // outstanding work and recovery need a fallback; start it after each read.
+                val needsFallback = eventSource.streamInterrupted || mutable.value.needsReadFallback()
+                val signal = if (needsFallback) withTimeoutOrNull(pollIntervalMillis) { signals.receiveCatching() }
+                    else signals.receiveCatching()
                 if (signal?.isClosed == true) break
                 if (cachedHistoryEpoch != historyEpoch) { headCache.clear(); cachedHistoryEpoch = historyEpoch }
                 val knownHeadRevision = headCache.revision
@@ -258,17 +269,19 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                     }
                 } catch (e: Exception) {
                     headCache.clear()
-                    if (e is TimeoutCancellationException) api.recovery?.failed(java.net.SocketTimeoutException("Session read timed out"))
                     // Transport reset cancels a Call, not this session. Only a
                     // canceled session job must terminate the refresh loop.
                     if (e is CancellationException) currentCoroutineContext().ensureActive()
                     // A mutation deliberately cancels the obsolete read. Its
                     // failure cannot describe the new permission epoch either.
-                    if (requestControlEpoch != controlEpoch) { signals.trySend(Unit); continue }
+                    if (!isCurrent(id, targetGeneration)) continue
+                    if (requestControlEpoch != controlEpoch || requestHistoryEpoch != historyEpoch) { signals.trySend(Unit); continue }
+                    if (e is TimeoutCancellationException) api.recovery?.failed(java.net.SocketTimeoutException("Session read timed out"))
                     if (isCurrent(id, targetGeneration)) {
-                        if (e is ApiException && e.status == 401) {
-                            mutable.update { it.transition(SessionSyncEvent.ReadFailed(null)) }
-                            failure(e)
+                        if (e is ApiException && e.status in setOf(401, 403, 404, 410)) {
+                            mutable.update { it.transition(SessionSyncEvent.Revalidate("会话访问权限需要重新确认"))
+                                .transition(SessionSyncEvent.ReadFailed(if (e.status == 401) null else message(e))) }
+                            if (e.status == 401) failure(e)
                         } else if (requestHistoryEpoch == historyEpoch) mutable.update { it.transition(SessionSyncEvent.ReadFailed(message(e))) }
                     }
                 }
@@ -315,6 +328,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         resolveSubmission(submissionId, response, persist = false)
     }
     fun resolveSubmission(submissionId: String, response: org.json.JSONObject, persist: Boolean = true) {
+        val affectsVisibleThread = pendingByThread[mutable.value.id].orEmpty().any { it.submissionId == submissionId }
         if (!pendingLoaded) resolvedPending[submissionId] = copyJsonObject(response)
         if (persist) store?.enqueueResolvePendingMessage(submissionId, response)
         pendingByThread.keys.toList().forEach { id ->
@@ -324,6 +338,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
             }
             publishPending(id)
         }
+        if (affectsVisibleThread && response.string("status") == "accepted") refresh()
     }
     private fun reconcilePending(id: String, snapshot: SessionSnapshot, authoritativeQueue: Boolean = false) {
         api.sentImages.reconcile(snapshot, pendingByThread[id].orEmpty())
@@ -369,7 +384,20 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         mutable.update { it.transition(SessionSyncEvent.Revalidate(notice)) }
         refresh()
     }
+    fun invalidateControlFor(threadIds: Set<String>) {
+        if (mutable.value.id in threadIds && activeJob?.isActive == true) invalidateControl()
+    }
     fun refresh() { updates?.trySend(Unit) }
+    private fun handlePageAccessFailure(error: Exception, requestControlEpoch: Long): Boolean {
+        if (error !is ApiException || error.status !in setOf(401, 403, 404, 410)) return false
+        // An old page must not revoke permissions verified after a mutation.
+        if (requestControlEpoch == controlEpoch) {
+            invalidateControl("会话访问权限需要重新确认")
+            if (error.status == 401) failure(error)
+        }
+        return true
+    }
+
     /** UI calls this only when the laid-out timeline still does not fill its viewport. */
     fun ensureVisibleHistory() {
         val current = mutable.value
@@ -382,6 +410,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
         val cursor = current.historyCursor ?: return
         val requestGeneration = generation
         val requestHistoryEpoch = historyEpoch
+        val requestControlEpoch = controlEpoch
         if (current.loadingEarlier || current.stale || current.snapshot?.historyReady != true || !requestedHistoryCursors.add(cursor)) return
         mutable.update { it.copy(loadingEarlier = true, historyError = null) }
         historyJob = scope.launch {
@@ -406,8 +435,11 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                 if (e is CancellationException) currentCoroutineContext().ensureActive()
                 if (isCurrent(id, requestGeneration) && historyEpoch == requestHistoryEpoch) {
                     mutable.update { it.copy(loadingEarlier = false) }
-                    if (e is ApiException && e.status == 401) failure(e)
-                    else if (e is ApiException && e.status == 409) {
+                    if (handlePageAccessFailure(e, requestControlEpoch)) {
+                        requestedHistoryCursors.remove(cursor)
+                        return@launch
+                    }
+                    if (e is ApiException && e.status == 409) {
                         historyEpoch++
                         requestedHistoryCursors.clear()
                         mutable.update { it.copy(earlierLoaded = false, historyCursor = null, historyError = null) }
@@ -452,6 +484,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
     /** Restore old visible depth independently; merge only history, never stale control. */
     private fun restoreHistoryDepth(id: String, targetGeneration: Long, head: SessionSnapshot, previous: SessionSnapshot) {
         val targetEpoch = historyEpoch
+        val requestControlEpoch = controlEpoch
         historyDepthTarget = previous
         mutable.update { it.copy(loadingEarlier = true, historyError = null) }
         historyJob = scope.launch {
@@ -495,8 +528,8 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                 if (isCurrent(id, targetGeneration) && historyEpoch == targetEpoch) {
                     historyDepthTarget = null
                     mutable.update { it.copy(loadingEarlier = false) }
-                    if (e is ApiException && e.status == 401) failure(e)
-                    else if (e is ApiException && e.status == 409) {
+                    if (handlePageAccessFailure(e, requestControlEpoch)) return@launch
+                    if (e is ApiException && e.status == 409) {
                         invalidateHistory()
                         mutable.update { it.copy(earlierLoaded = false, historyCursor = null, historyError = null) }
                         refresh()

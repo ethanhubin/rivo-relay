@@ -2,6 +2,8 @@
 
 更新：2026-10-29；对应 0.2.0 的 `server/rivo_relay/api.py`。运行、配对 CLI 与构建方式见[README](../README.md)，功能和边界见[功能补齐记录](feature-parity.md)。这是一层通向选定原生 Codex 节点的 API，不建立独立执行权限体系。
 
+兼容性演进规则见 [App 与节点兼容协议](api-compatibility.md)（基础契约、可选能力与 App 更新判断）。
+
 ## 通用约定
 
 - 正式连接使用 HTTPS。`GET /health`、`POST /v1/pair` 与持有临时文件票据的 `GET /v1/download-links/{ticket}` 无需 Bearer；其余接口必须携带一个 `Authorization: Bearer <token>`。
@@ -16,7 +18,7 @@
 | --- | --- | --- |
 | `GET /health` | 无 | 返回 `status: "ok"`、稳定节点 ID `nodeId`、运行版本码 `releaseCode`（未设置时为 `0`）和原生连接状态 `nativeConnected`；`status` 仅说明 HTTP 活着，不代表原生已连通 |
 | `POST /v1/pair` | `{code, deviceName}` | `{token, deviceId, node:{id,name}}` |
-| `GET /v1/node` | Bearer | `{id,name,connected,capabilities,runtime}` |
+| `GET /v1/node` | Bearer | `{id,name,connected,capabilities,runtime,compatibility}` |
 | `GET /v1/projects` | Bearer | `{projects:[{id,name,path,roots}]}`；包含无会话项目 |
 | `POST /v1/projects` | `{submissionId,path,folderName?}`，path 是节点绝对路径 | 提交记录；接受时 receipt 含 `projectId` |
 | `GET /v1/project-directories?path=…` | path 可省略，起点为原生节点当前目录 | `{path,parentPath,entries}`；条目结构同 `/v1/directories` |
@@ -40,7 +42,7 @@
 
 重置调用原生 `account/rateLimitResetCredit/consume`，由原生选择可用机会。提交记录先于原生请求持久化；同 ID 的普通 POST 和 GET 只返回已知状态，不再次兑换。成功回执为 `{requestId:submissionId,resetOutcome}`，结果仅接受 `reset`、`alreadyRedeemed`、`nothingToReset`、`noCredit`。前两者表示兑换完成，后两者说明没有符合条件的窗口或没有可用次数；四者均为已确认的终态，`accepted` 不等同于一定恢复额度。
 
-此操作使用原生明确支持的幂等协议：Android 遇到 unknown 时通过专用 POST 核对，节点只使用原 `submissionId` 作为 `idempotencyKey`，不生成新的兑换键。节点重启后同样复用持久记录；同账户存在未知记录时拒绝其他 ID 的新重置。首次提交与恢复均核对原生 ChatGPT 账户身份字段指纹（只保存哈希，不向手机返回账户身份）；账户信息不完整或变化时不执行兑换，原请求未知状态继续保留；核对响应的 `recoveryErrorCode` 提供恢复原账户、重新登录或升级节点的提示，不把核对失败冒充原操作失败。重置后的真实额度和次数必须重新读取；刷新失败保留旧数据并标明失败，不伪造 100%，不自动继续任务。本流程不购买额度或发送邀请。原生协议见 [App Server](https://learn.chatgpt.com/docs/app-server#8-earned-rate-limit-resets-chatgpt)。
+此操作使用原生明确支持的幂等协议：Android 遇到 unknown 时通过专用 POST 核对，节点只使用原 `submissionId` 作为 `idempotencyKey`，不生成新的兑换键。节点重启后同样复用持久记录；同账户存在未知记录时不创建新的兑换。若新 ID 来自另一配对连接，节点先将其持久标记为 `failed/usage_reset_recovery_only`，再用旧记录的原生幂等键核对；旧回执仍归原连接所有，不向新连接暴露。手机收到该结果后刷新额度，用户需重新确认才能发起新的兑换；核对失败时旧记录继续保留，重复提交本次 ID 不会再次核对。这也允许旧配对撤销后由新配对恢复账户状态。首次提交与恢复均核对原生 ChatGPT 账户身份字段指纹（只保存哈希，不向手机返回账户身份）；账户信息不完整或变化时不执行兑换，原请求未知状态继续保留；核对响应的 `recoveryErrorCode` 提供恢复原账户、重新登录或升级节点的提示，不把核对失败冒充原操作失败。重置后的真实额度和次数必须重新读取；刷新失败保留旧数据并标明失败，不伪造 100%，不自动继续任务。本流程不购买额度或发送邀请。原生协议见 [App Server](https://learn.chatgpt.com/docs/app-server#8-earned-rate-limit-resets-chatgpt)。
 
 `requireGoalSupport=true` 用于带持续目标的新建流程：服务端在首轮发送前检查原生目标接口，不支持则拒绝发送。客户端在首轮 accepted 后单独提交目标设置；失败只恢复目标设置，不重复首轮。
 
@@ -196,9 +198,9 @@ branch / sha 最长 500 字符，自定义说明最长 20,000 字符；服务端
 
 两个下载端点返回强 `ETag` 和 `Accept-Ranges: bytes`，支持单个 `bytes=start-end`、`start-` 或 `-suffix` 范围（206 与 `Content-Range`）。无效、多段或不可满足范围返回 416，并带 `Content-Range: bytes */size` 与 ETag。`If-Range` 与当前强 ETag 不同则返回完整 200，客户端必须重新写入；每个原生块核对文件版本，中途变化会中止连接。Android 的部分缓存按节点地址和凭据隔离，只有同一强 ETag 可以追加，完成缓存也先验证；公开 URL 使用独立客户端，不携带节点令牌。已发布缓存使用不可变路径，避免播放或系统分享期间重试下载使路径失效。
 
-文件上传写入会话 cwd 下新建的 `.rivo-attachments/<随机目录>/`，返回节点文件引用；不会直接发送给模型，调用方在后续 turns/queue 中加入该 mention。上传不使用 submissionId；丢失响应后重传会产生另一份文件。上传和下载共享有界传输槽，繁忙返回 429。
+文件上传及聊天图片暂存统一写入原生节点的 `<codexHome>/rivo-relay-attachments/<项目路径 SHA-256>/<随机目录>/`，会话 cwd 仅用于计算隔离目录，不在项目或工作树内创建文件。存储根通过原生节点身份获取，不能获取时上传失败，不回退到项目目录或 Relay 所在机器。上传返回节点文件引用；不会直接发送给模型，调用方在后续 turns/queue 中加入该 mention。上传不使用 submissionId；丢失响应后重传会产生另一份文件。上传和下载共享有界传输槽，繁忙返回 429。
 
-项目级附件使用已认证节点的 `project/read` 获取准确项目根，再复用同一原生 FS 上传与分块清理流程。待发送工作树尚未创建时，附件先保存在来源项目的随机附件目录，最终以绝对节点路径 mention 引用；不会复制到不存在的工作树或提前创建空会话。
+项目级附件使用已认证节点的 `project/read` 获取准确项目根作为隔离标识，再复用同一原生 FS 上传与分块清理流程。待发送工作树尚未创建时，附件先保存在专用存储的来源项目命名空间，最终以绝对节点路径 mention 引用；不会复制到不存在的工作树或提前创建空会话。既有 `.rivo-attachments` 文件及历史绝对路径引用继续可用，不自动移动或删除旧附件。
 
 实际发送/引导时，mention 的可见引用保持原样；文本附件由同一原生节点读取，并通过 `additionalContext` 的 `untrusted` 项提供内容（单个 UTF-8 文本 4 MiB，总上下文 8 MiB）。视频提供文件路径与明确的检查/抽帧处理说明；其他二进制附件提供路径供原生工具读取。编码错误、二进制伪装文本和超限在发送原生 turn 前明确失败。
 

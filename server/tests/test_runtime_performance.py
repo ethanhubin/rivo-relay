@@ -94,6 +94,7 @@ class RuntimePerformanceTests(unittest.TestCase):
         metadata = Backend(); created = []
         def factory(descriptor, on_event):
             helper = Backend(); helper.on_event = on_event
+            helper.native_host_info = lambda: descriptor
             helper.request = lambda method, params=None, **kw: {'exitCode': 0} if method == 'command/exec' else {}
             created.append(helper); return helper
         pool = SessionWriters(metadata, factory=factory); self.addCleanup(pool.close)

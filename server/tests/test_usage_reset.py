@@ -7,6 +7,7 @@ from relay_test_support.http import RelayHTTPFixture
 from relay_test_support.native import FakeNative
 from rivo_relay.codex.connection import CodexError
 from rivo_relay.codex.sessions import CodexService
+from rivo_relay.submissions import SubmissionNotFound
 
 
 class UsageResetHTTPTests(RelayHTTPFixture, unittest.TestCase):
@@ -61,6 +62,76 @@ class UsageResetHTTPTests(RelayHTTPFixture, unittest.TestCase):
         self.assertEqual('unknown', result['status'])
         self.assertEqual('usage_reset_account_changed', result['recoveryErrorCode'])
         self.assertEqual(409, self.reset('different')[0])
+
+    def replacement_connection(self):
+        owner = self.app.submissions.get('reset-1')['connection_id']
+        token = self._pair()['token']
+        self.app.pairing.revoke(owner)
+        return token
+
+    def test_replacement_pairing_recovers_original_key_without_new_redemption(self):
+        self.native.reset_usage.side_effect = CodexError('timeout', request_sent=True)
+        self.assertEqual('unknown', self.reset()[1]['status'])
+        token = self.replacement_connection()
+        self._stop(); self._start()
+        self.native.usage_reset_scope = Mock(return_value='account-fingerprint')
+        self.native.reset_usage = Mock(return_value={'requestId': 'reset-1', 'resetOutcome': 'alreadyRedeemed'})
+        result = self.request('POST', '/v1/usage/reset', {'submissionId': 'replacement'}, token=token)[1]
+        self.assertEqual('failed', result['status'])
+        self.assertEqual('usage_reset_recovery_only', result['errorCode'])
+        self.assertIsNone(result['receipt'])
+        self.assertEqual('accepted', self.app.submissions.get('reset-1')['status'])
+        self.native.reset_usage.assert_called_once_with('reset-1', 'account-fingerprint')
+        self.assertEqual(result, self.request('POST', '/v1/usage/reset', {'submissionId': 'replacement'}, token=token)[1])
+        self.assertEqual(404, self.request('GET', '/v1/submissions/reset-1', token=token)[0])
+        self.assertEqual(404, self.request('POST', '/v1/usage/reset/reconcile', {'submissionId': 'reset-1'}, token=token)[0])
+        self.assertEqual(401, self.reset(suffix='/reconcile')[0])
+        self.assertEqual(1, self.native.reset_usage.call_count)
+        self.native.reset_usage.return_value = {'requestId': 'confirmed-again', 'resetOutcome': 'nothingToReset'}
+        self.assertEqual('accepted', self.request('POST', '/v1/usage/reset', {'submissionId': 'confirmed-again'}, token=token)[1]['status'])
+
+    def test_replacement_pairing_recovery_failure_preserves_old_uncertainty(self):
+        self.native.reset_usage.side_effect = CodexError('timeout', request_sent=True)
+        self.reset()
+        token = self.replacement_connection()
+        self.native.reset_usage.side_effect = CodexError('changed account', code='usage_reset_account_changed')
+        result = self.request('POST', '/v1/usage/reset', {'submissionId': 'replacement'}, token=token)[1]
+        self.assertEqual('usage_reset_recovery_only', result['errorCode'])
+        self.assertEqual('unknown', self.app.submissions.get('reset-1')['status'])
+        self.assertEqual(2, self.native.reset_usage.call_count)
+        self.assertTrue(all(call.args == ('reset-1', 'account-fingerprint') for call in self.native.reset_usage.call_args_list))
+        self.assertEqual(result, self.request('POST', '/v1/usage/reset', {'submissionId': 'replacement'}, token=token)[1])
+        self.assertEqual(2, self.native.reset_usage.call_count)
+
+    def test_replacement_id_is_fenced_even_if_recovery_is_interrupted(self):
+        self.native.reset_usage.side_effect = CodexError('timeout', request_sent=True)
+        self.reset()
+        token = self.replacement_connection()
+        owner = self.app.pairing.authenticate(token)['connection_id']
+        recover = self.app._recover_usage_reset
+        self.app._recover_usage_reset = Mock(side_effect=RuntimeError('interrupted'))
+        with self.assertRaises(RuntimeError):
+            self.app.reset_usage(owner, 'replacement')
+        self.app._recover_usage_reset = recover
+        self._stop(); self._start()
+        self.native.reset_usage = Mock()
+        result = self.request('POST', '/v1/usage/reset/reconcile', {'submissionId': 'replacement'}, token=token)[1]
+        self.assertEqual('usage_reset_recovery_only', result['errorCode'])
+        self.native.reset_usage.assert_not_called()
+        self.assertEqual('unknown', self.app.submissions.get('reset-1')['status'])
+
+    def test_replacement_fence_failure_rolls_back_claim_without_native_dispatch(self):
+        self.native.reset_usage.side_effect = CodexError('timeout', request_sent=True)
+        self.reset()
+        token = self.replacement_connection()
+        owner = self.app.pairing.authenticate(token)['connection_id']
+        self.app.submissions.mark_failed = Mock(side_effect=RuntimeError('storage failure'))
+        with self.assertRaises(RuntimeError):
+            self.app.reset_usage(owner, 'replacement')
+        with self.assertRaises(SubmissionNotFound):
+            self.app.submissions.get('replacement')
+        self.assertEqual(1, self.native.reset_usage.call_count)
+        self.assertEqual('unknown', self.app.submissions.get('reset-1')['status'])
 
     def test_missing_recovery_fences_late_request(self):
         result = self.reset(suffix='/reconcile')[1]

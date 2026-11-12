@@ -106,6 +106,27 @@ class Connector:
             # Never log request paths, headers, keys, pairing data, or message bodies.
             event('gateway_transfer_failed', error=type(error).__name__, stage=stage, request_id=trace)
 
+    async def report_monitor(self, ws):
+        # Separate pool: monitoring cannot starve business data connections.
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as client:
+            while True:
+                try:
+                    async with client.get(self.local + '/internal/monitor', allow_redirects=False) as response:
+                        if response.status == 200:
+                            from .monitor import clean_report
+                            raw = bytearray()
+                            async for chunk in response.content.iter_chunked(4097):
+                                raw.extend(chunk)
+                                if len(raw) > 4096:
+                                    break
+                            if len(raw) <= 4096:
+                                report = clean_report(json.loads(raw))
+                                if report is not None:
+                                    await ws.send_json(report)
+                except (OSError, ValueError, aiohttp.ClientError, asyncio.TimeoutError):
+                    pass
+                await asyncio.sleep(15)
+
     async def run(self):
         delay = 1
         async with aiohttp.ClientSession(auto_decompress=False, skip_auto_headers={'Accept-Encoding'},
@@ -128,13 +149,18 @@ class Connector:
                         self.set_ready(True)
                         delay = 1
                         event('gateway_connected')
-                        async for message in ws:
-                            if message.type == WSMsgType.TEXT:
-                                ticket = json.loads(message.data).get('ticket')
-                                if isinstance(ticket, str) and len(ticket) <= 128 and len(self.tasks) < 48:
-                                    task = asyncio.create_task(self.transfer(session, ticket, local_session))
-                                    self.tasks.add(task)
-                                    task.add_done_callback(self.tasks.discard)
+                        monitor = asyncio.create_task(self.report_monitor(ws))
+                        try:
+                            async for message in ws:
+                                if message.type == WSMsgType.TEXT:
+                                    ticket = json.loads(message.data).get('ticket')
+                                    if isinstance(ticket, str) and len(ticket) <= 128 and len(self.tasks) < 48:
+                                        task = asyncio.create_task(self.transfer(session, ticket, local_session))
+                                        self.tasks.add(task)
+                                        task.add_done_callback(self.tasks.discard)
+                        finally:
+                            monitor.cancel()
+                            await asyncio.gather(monitor, return_exceptions=True)
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:

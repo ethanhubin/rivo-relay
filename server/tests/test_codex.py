@@ -7,6 +7,7 @@ import json
 import tempfile
 import threading
 import unittest
+from contextlib import nullcontext
 from unittest.mock import Mock, patch
 from pathlib import Path
 
@@ -384,6 +385,9 @@ class NativeSemanticsTests(unittest.TestCase):
         fixture = json.loads((Path(__file__).parent / "fixtures/native-structured-input-0.159.0.json").read_text())
         native = FakeNative()
         native.thread['cwd'] = '/remote/native/project'
+        helper = copy.copy(native)
+        helper.native_host_info = lambda: {'codexHome': '/remote/native/.codex'}
+        native.auxiliary_connection = lambda: nullcontext(helper)
         service = CodexService(connection=native)
         original_input = copy.deepcopy(fixture['input'])
         service.send("thread", "", input_items=fixture["input"], client_message_id="image-submission")
@@ -392,7 +396,7 @@ class NativeSemanticsTests(unittest.TestCase):
         for original, staged in zip(original_input, params['input']):
             if original.get('type') == 'image' and original.get('url', '').startswith('data:'):
                 self.assertEqual('localImage', staged['type'])
-                self.assertTrue(staged['path'].startswith('/remote/native/project/.rivo-attachments/'))
+                self.assertTrue(staged['path'].startswith('/remote/native/.codex/rivo-relay-attachments/'))
                 write = next(value for method, value in native.calls if method == 'fs/writeFile' and value['path'] == staged['path'])
                 self.assertEqual(original['url'].split(',', 1)[1], write['dataBase64'])
             else:
@@ -612,17 +616,62 @@ class NativeTransportTests(unittest.TestCase):
 
 
 class NativeFileTests(unittest.TestCase):
-    def test_phone_attachment_writes_native_workspace_and_keeps_bytes(self):
+    def setUp(self):
+        host = patch.object(FakeNative, 'native_host_info',
+                            return_value={'codexHome': '/remote/native/.codex'}, create=True)
+        self.host_info = host.start()
+        self.addCleanup(host.stop)
+
+    def test_phone_attachment_uses_native_storage_and_keeps_bytes(self):
         native = FakeNative()
         payload = base64.b64encode(b"%PDF-1.7\x00binary").decode()
         first = upload_attachment_stream(native, "/remote/worktree", "报告.pdf", io.BytesIO(base64.b64decode(payload)), len(base64.b64decode(payload)))
         second = upload_attachment_stream(native, "/remote/worktree", "报告.pdf", io.BytesIO(base64.b64decode(payload)), len(base64.b64decode(payload)))
         self.assertEqual("mention", first["type"])
-        self.assertTrue(first["path"].startswith("/remote/worktree/.rivo-attachments/"))
+        self.assertTrue(first["path"].startswith("/remote/native/.codex/rivo-relay-attachments/"))
         self.assertNotEqual(first["path"], second["path"])
         self.assertEqual(("fs/writeFile", {"path": first["path"], "dataBase64": payload}), native.calls[1])
+        other = upload_attachment_stream(native, "/remote/other-project", "报告.pdf", io.BytesIO(b"x"), 1)
+        self.assertEqual(Path(first['path']).parents[1], Path(second['path']).parents[1])
+        self.assertNotEqual(Path(first['path']).parents[1], Path(other['path']).parents[1])
+        self.assertTrue(all(params['path'].startswith('/remote/native/.codex/rivo-relay-attachments/')
+                            for method, params in native.calls if method.startswith('fs/')))
+        self.host_info.return_value = {'codexHome': r'C:\Users\native\.codex'}
         windows = upload_attachment_stream(native, "C:\\work", "a.txt", io.BytesIO(base64.b64decode(payload)), len(base64.b64decode(payload)))
-        self.assertTrue(windows["path"].startswith("C:\\work\\.rivo-attachments\\"))
+        self.assertTrue(windows["path"].startswith("C:\\Users\\native\\.codex\\rivo-relay-attachments\\"))
+
+    def test_session_upload_keeps_all_writes_outside_project(self):
+        native = FakeNative()
+        native.thread['cwd'] = '/remote/worktree'
+        service = CodexService(connection=native)
+        result = service.upload_attachment_stream('thread', 'report.txt', io.BytesIO(b'report'), 6)
+        self.assertTrue(result['path'].startswith('/remote/native/.codex/rivo-relay-attachments/'))
+        self.assertTrue(all(params['path'].startswith('/remote/native/.codex/rivo-relay-attachments/')
+                            for method, params in native.calls if method.startswith('fs/')))
+        self.assertFalse(any(method in ('thread/start', 'thread/resume', 'turn/start') for method, _ in native.calls))
+
+    def test_upload_uses_same_helper_for_host_discovery_and_writes(self):
+        native, helper = FakeNative(), FakeNative()
+        native.native_host_info = Mock(side_effect=AssertionError('metadata host must not be used'))
+        helper.native_host_info = Mock(return_value={'codexHome': '/actual-host/.codex'})
+        native.auxiliary_connection = lambda: nullcontext(helper)
+        result = upload_attachment_stream(native, '/project', 'a.txt', io.BytesIO(b'a'), 1)
+        self.assertTrue(result['path'].startswith('/actual-host/.codex/rivo-relay-attachments/'))
+        self.assertEqual([], native.calls)
+        self.assertEqual(['fs/createDirectory', 'fs/writeFile'], [method for method, _ in helper.calls])
+
+    def test_unverified_or_invalid_native_home_never_writes_to_project(self):
+        native = FakeNative()
+        for home in (None, '', 'relative/home'):
+            with self.subTest(home=home):
+                self.host_info.return_value = {'codexHome': home}
+                with self.assertRaises(CodexError):
+                    upload_attachment_stream(native, '/project', 'a.txt', io.BytesIO(b'a'), 1)
+        self.host_info.side_effect = CodexError('unverified', code='native_host_unverified')
+        with self.assertRaises(CodexError) as failure:
+            upload_attachment_stream(native, '/project', 'a.txt', io.BytesIO(b'a'), 1)
+        self.assertEqual('native_host_unverified', failure.exception.code)
+        self.assertEqual([], native.calls)
 
     def test_transfer_above_preview_limit_preserves_binary(self):
         native = FakeNative()
@@ -655,6 +704,9 @@ class NativeFileTests(unittest.TestCase):
         command = next(p for m, p in calls if m == "command/exec")
         self.assertNotIn("sandboxPolicy", command)
         self.assertNotIn("permissionProfile", command)
+        self.assertEqual('/remote/native/.codex', command['cwd'])
+        self.assertTrue(all(p['path'].startswith('/remote/native/.codex/rivo-relay-attachments/')
+                            for m, p in calls if m.startswith('fs/')))
         self.assertEqual(result["path"], command["command"][4])
         self.assertNotIn("injected", command["command"][2])
         self.assertEqual("fs/remove", calls[-1][0])

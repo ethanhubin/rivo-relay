@@ -4,6 +4,8 @@ import json
 import re
 from pathlib import Path
 
+from ..compatibility import validate_app
+
 MAX_PACKAGE = 256 * 1024 * 1024
 
 
@@ -13,6 +15,8 @@ def validate(item):
             or type(item.get('versionCode')) is not int or item['versionCode'] <= 0
             or not re.fullmatch(r'\d+\.\d+\.\d+', str(item.get('version', '')))):
         raise ValueError('Invalid release manifest')
+    if 'compatibility' in item:
+        validate_app(item['compatibility'])
     for kind, suffix in [('app', 'apk'), ('node', 'zip')]:
         asset = item[kind]
         if (not isinstance(asset, dict) or not re.fullmatch('[a-f0-9]{64}', str(asset.get('sha256', '')))
@@ -56,6 +60,7 @@ async def serve(request):
         if request.path.endswith('/app-updates/latest'):
             app = item['app']
             item = {k: item[k] for k in ('version', 'versionCode', 'notes')} | {
+                **({'compatibility': item['compatibility']} if 'compatibility' in item else {}),
                 'sha256': app['sha256'], 'size': app['size'],
                 'apkPath': '/v1/app-updates/apks/' + app['sha256'] + '.apk'}
         return web.json_response(item, headers={'Cache-Control': 'no-store'})

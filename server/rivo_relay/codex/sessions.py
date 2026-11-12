@@ -5,8 +5,6 @@ stored separately; explicit handoff terminates only previewed native lock holder
 """
 from __future__ import annotations
 
-from contextlib import nullcontext
-
 import copy
 import hashlib
 import json
@@ -1227,13 +1225,8 @@ class CodexService(SessionHandoffMixin):
 
     def upload_todo_attachment_stream(self, name, stream, size):
         self.start()
-        # This directory belongs to Relay on the native host, including when
-        # the app-server socket points at a different machine.
-        lease = getattr(self.connection, 'auxiliary_connection', None)
-        with lease() if lease else nullcontext(self.connection) as connection:
-            home = connection.native_host_info()['codexHome']
-            return upload_attachment_stream(connection, home, name, stream, size,
-                                            directory_name='rivo-relay-todo-media')
+        return upload_attachment_stream(self.connection, None, name, stream, size,
+                                        directory_name='rivo-relay-todo-media')
 
     def _project_attachment_cwd(self, project_id):
         self.start()
@@ -1467,12 +1460,17 @@ class CodexService(SessionHandoffMixin):
                     item['relayCompleted'] = True
 
     def _merge_live(self, thread_id, turns):
+        settled_turn = self.native_journal.settled_interruption(thread_id)
         with self._lock:
             live = [copy.deepcopy(t) for (tid, _), t in self._live.items() if tid == thread_id]
             pending_terminal = set(self._pending_terminal)
             completed_items = {key: set(value) for key, value in self._completed_items.items()}
         by_id = {t["id"]: t for t in turns}
         for current in live:
+            if current['id'] == settled_turn and current.get('status') == 'inProgress':
+                # An old writer's deltas cannot revive an interruption confirmed
+                # by the current owner. New turns and terminal events still win.
+                continue
             if current["id"] not in by_id:
                 # A just-completed observed turn can still be ahead of persisted
                 # history. Keep its temporary projection until native catches up;

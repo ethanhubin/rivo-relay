@@ -83,9 +83,10 @@ class NodeSessionSyncTest {
             val sync = NodeSessionSync(api(server), scope)
             var interruptions = 0
             val event = withTimeout(6000) {
-                sync.events(onInterrupted = { interruptions++ }).first { it.cursor == "after-reconnect" }
+                sync.events(onInterrupted = { interruptions++; assertTrue(sync.streamInterrupted) }).first { it.cursor == "after-reconnect" }
             }
             assertEquals("after-reconnect", event.cursor)
+            assertFalse(sync.streamInterrupted)
             assertEquals(1, interruptions)
             assertEquals(2, requests.size)
             assertEquals("before-disconnect", requests[1].getHeader("Last-Event-ID"))

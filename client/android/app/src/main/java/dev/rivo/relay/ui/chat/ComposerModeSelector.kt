@@ -49,7 +49,7 @@ internal fun ComposerModeSelector(mode: String, enabled: Boolean, goalEnabled: B
             Text(labels.first { it.first == mode }.second, style = MaterialTheme.typography.labelMedium)
         }
         if (expanded) Popup(popupPositionProvider = remember(gap) { ModeMenuPosition(gap) },
-            onDismissRequest = { expanded = false }, properties = PopupProperties(focusable = false)) {
+            onDismissRequest = { expanded = false }, properties = PopupProperties(focusable = true)) {
             Surface(Modifier.width(258.dp).testTag("composer_mode_menu"), shape = RoundedCornerShape(18.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerLow, shadowElevation = 8.dp) {
                 Column(Modifier.padding(6.dp)) {

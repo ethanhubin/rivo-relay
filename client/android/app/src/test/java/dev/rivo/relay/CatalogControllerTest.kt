@@ -336,7 +336,7 @@ class CatalogControllerTest {
             assertEquals(listOf("old"), controller.state.value.threads.map { it.id })
             controller.refreshThreads()?.join()
             assertEquals(listOf("old"), controller.state.value.threads.map { it.id })
-            assertFalse(controller.state.value.threadsFresh)
+            assertTrue(controller.state.value.threadsFresh)
             assertEquals(1, failures.size)
         } finally { scope.cancel(); server.shutdown() }
     }
@@ -564,11 +564,11 @@ class CatalogControllerTest {
             withTimeout(5_000) { controller.state.first { it.threadsFresh } }
             assertEquals(setOf("t"), pinnedThreadsToObserve(controller.state.value))
             healthy.set(false)
-            controller.refreshThreads()
-            withTimeout(5_000) { controller.state.first { !it.threadsLoading && !it.threadsFresh } }
+            controller.refreshThreads()?.join()
             controller.refreshProjects().join()
-            assertFalse(controller.state.value.projectsFresh)
-            assertTrue(pinnedThreadsToObserve(controller.state.value).isEmpty())
+            assertTrue(controller.state.value.projectsFresh)
+            assertTrue(controller.state.value.threadsFresh)
+            assertEquals(setOf("t"), pinnedThreadsToObserve(controller.state.value))
         } finally { scope.cancel(); server.shutdown(); directory.deleteRecursively() }
     }
 

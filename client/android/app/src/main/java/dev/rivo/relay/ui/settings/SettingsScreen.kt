@@ -124,7 +124,8 @@ fun SettingsScreen(
                 Text("应用更新", style = MaterialTheme.typography.titleMedium)
                 Text("Rivo Relay ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyLarge)
                 Button(onClick = {
-                    updates.check(checkUpdate ?: { NodeAppUpdates.configured(context).check(BuildConfig.VERSION_NAME) })
+                    updates.check(checkUpdate ?: { NodeAppUpdates.configured(context).check(BuildConfig.VERSION_NAME) },
+                        assess = { dev.rivo.relay.data.UpdateCompatibilityChecker.check(context, it) })
                 }, enabled = !checking && !downloading, modifier = Modifier.testTag("check_updates")) {
                     if (checking) {
                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -145,6 +146,7 @@ fun SettingsScreen(
                             else "${(fraction * 100).toInt()}% · ${Formatter.formatFileSize(context, downloadedBytes)} / ${Formatter.formatFileSize(context, latest.size.coerceAtLeast(0))} · ${Formatter.formatFileSize(context, bytesPerSecond)}/s",
                             style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("update_download_status"))
                     }
+                    updates.compatibility?.let { Text(it.summary) }
                     TextButton(onClick = { notesOpen = true }) { Text("查看更新说明") }
                 }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("update_error")) }

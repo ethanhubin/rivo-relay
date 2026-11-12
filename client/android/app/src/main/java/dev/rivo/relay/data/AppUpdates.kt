@@ -1,6 +1,6 @@
 package dev.rivo.relay.data
 
-data class AppRelease(val version: String, val notes: String, val apkUrl: String, val pageUrl: String, val preview: Boolean, val sha256: String = "", val size: Long = 0)
+data class AppRelease(val version: String, val notes: String, val apkUrl: String, val pageUrl: String, val preview: Boolean, val sha256: String = "", val size: Long = 0, val apiVersions: Set<Int>? = null)
 
 /** Compare release version numbers numerically, never lexicographically. */
 internal fun versionParts(value: String): List<Int>? {

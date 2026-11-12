@@ -226,6 +226,160 @@ class JournalHostTests(unittest.TestCase):
 
 
 class JournalAdapterTests(unittest.TestCase):
+    def interruption_fixture(self, *, runtime='relay-session-writer', status='idle', busy=True):
+        native = FakeNative()
+        state = {'runtime': runtime, 'status': status, 'connected': True,
+                 'busy': busy, 'projection': 'interrupted', 'turn': TURN, 'thread': 'thread'}
+        native.native_host_info = lambda: {}
+        native.status = lambda: {'runtime': state['runtime'], 'connected': state['connected']}
+        original = native.request
+        def request(method, params, **kwargs):
+            if method == 'thread/turns/list':
+                return {'data': [{'id': state['turn'], 'status': state['projection'], 'items': [
+                    {'id': 'question', 'type': 'agentMessage', 'text': 'Question',
+                     'questions': [{'title': 'Old question?'}]}]}], 'nextCursor': None}
+            if method in ('thread/read', 'thread/resume'):
+                return {'thread': {'id': state['thread'], 'status': {'type': state['status']}}}
+            return original(method, params, **kwargs)
+        native.request = request
+        service = CodexService(connection=native)
+        journal = service.native_journal
+        def call(tid, operation, **kwargs):
+            inspection = {'available': True, 'writerBusy': state['busy'],
+                          'journal': {'turnId': TURN, 'status': 'inProgress'}}
+            if operation == 'activity':
+                return {'states': {'thread': 'running'} if state['busy'] else {},
+                        'inspections': {'thread': inspection}}
+            if operation == 'repair':
+                raise AssertionError('A verified interruption must not need schema-dependent repair')
+            return inspection
+        journal._call = Mock(side_effect=call)
+        return service, native, state
+
+    def test_takeover_idle_owner_does_not_revive_interrupted_turn_or_questions(self):
+        for runtime, status, busy, expected in (
+                ('relay-session-writer', 'idle', True, 'interrupted'),
+                ('relay-session-writer', 'active', True, 'inProgress'),
+                ('existing-codex-daemon', 'idle', True, 'inProgress'),
+                ('existing-codex-daemon', 'notLoaded', False, 'interrupted')):
+            with self.subTest(runtime=runtime, status=status, busy=busy):
+                service, native, state = self.interruption_fixture(runtime=runtime, status=status, busy=busy)
+                snapshot = service.get_session('thread')
+                self.assertEqual(expected, snapshot['thread']['turns'][-1]['status'])
+                if expected == 'interrupted':
+                    self.assertIsNone(snapshot['activeTurnId'])
+                    self.assertFalse(snapshot['canAnswerQuestions'])
+                    self.assertTrue(snapshot['nativeSync']['historyReady'])
+                else:
+                    self.assertEqual('running', snapshot['status'])
+
+    def test_activity_uses_same_interruption_authority_as_detail(self):
+        for runtime, status, busy, expected in (
+                ('relay-session-writer', 'idle', True, 'idle'),
+                ('relay-session-writer', 'active', True, 'running'),
+                ('existing-codex-daemon', 'idle', True, 'running'),
+                ('existing-codex-daemon', 'notLoaded', False, 'idle')):
+            with self.subTest(runtime=runtime, status=status, busy=busy):
+                service, _, _ = self.interruption_fixture(runtime=runtime, status=status, busy=busy)
+                self.assertEqual({'thread': expected}, service.native_journal.execution_states(['thread']))
+
+    def test_idle_owner_cannot_reuse_settlement_for_next_read_or_turn(self):
+        service, native, state = self.interruption_fixture()
+        self.assertEqual('idle', service.get_session('thread')['status'])
+        self.assertIsNone(service.native_journal.settled_interruption('thread'))
+        state['status'] = 'active'
+        self.assertEqual('running', service.get_session('thread')['status'])
+        state.update(status='idle', turn='new-turn')
+        self.assertEqual('converging', service.native_journal.ensure('thread').state)
+
+    def test_interruption_requires_exact_thread_connected_owner_and_expected_turn(self):
+        for change, expected_turn in (({'thread': 'other'}, None), ({'connected': False}, None),
+                                      ({'status': 'notLoaded'}, None), ({}, 'missing-turn')):
+            with self.subTest(change=change, expected_turn=expected_turn):
+                service, native, state = self.interruption_fixture()
+                state.update(change)
+                self.assertEqual('converging', service.native_journal.ensure(
+                    'thread', expected_turn_id=expected_turn).state)
+
+    def test_generation_change_during_owner_confirmation_is_not_idle(self):
+        service, native, state = self.interruption_fixture()
+        request = native.request
+        def changing(method, params, **kwargs):
+            result = request(method, params, **kwargs)
+            if method == 'thread/read': native.generation = 'replacement'
+            return result
+        native.request = changing
+        self.assertEqual('unavailable', service.native_journal.ensure('thread').state)
+        native.generation = 'initial-again'
+        self.assertEqual({}, service.native_journal.execution_states(['thread']))
+
+    def test_activity_invalid_history_does_not_claim_idle_or_crash_catalog(self):
+        service, native, _ = self.interruption_fixture()
+        native.request = Mock(return_value={'data': [{'id': TURN, 'status': 'invalid', 'items': []}]})
+        self.assertEqual({}, service.native_journal.execution_states(['thread']))
+
+    def test_lock_reacquired_during_unowned_interruption_check_stays_converging(self):
+        service, native, state = self.interruption_fixture(runtime='existing-codex-daemon', busy=False)
+        call = service.native_journal._call.side_effect
+        def reacquire(tid, operation, **kwargs):
+            result = call(tid, operation, **kwargs)
+            state['busy'] = True
+            return result
+        service.native_journal._call.side_effect = reacquire
+        self.assertEqual('converging', service.native_journal.ensure('thread').state)
+
+    def test_settlement_does_not_hide_missing_history_or_other_terminal_conflicts(self):
+        for change in ({'turn': 'different-turn'}, {'projection': 'completed'}, {'projection': 'failed'}):
+            with self.subTest(change=change):
+                service, _, state = self.interruption_fixture()
+                state.update(change)
+                self.assertEqual('converging', service.native_journal.ensure('thread').state)
+
+    def test_unowned_journal_change_cannot_settle_an_old_projection(self):
+        service, _, _ = self.interruption_fixture(busy=False)
+        original = service.native_journal._call.side_effect
+        reads = 0
+        def changed(tid, operation, **kwargs):
+            nonlocal reads
+            result = original(tid, operation, **kwargs)
+            reads += 1
+            result['fingerprint'] = [reads]
+            return result
+        service.native_journal._call.side_effect = changed
+        self.assertFalse(service.native_journal.ensure('thread').ready)
+
+    def test_old_live_deltas_cannot_revive_settled_interruption(self):
+        service, native, state = self.interruption_fixture()
+        service.start()
+        service._live[('thread', TURN)] = {'id': TURN, 'status': 'inProgress', 'items': []}
+        service._active['thread'] = TURN
+        snapshot = service.get_session('thread')
+        self.assertEqual('idle', snapshot['status'])
+        self.assertFalse(snapshot['canAnswerQuestions'])
+        self.assertIsNone(snapshot['activeTurnId'])
+        self.assertEqual('interrupted', snapshot['thread']['turns'][-1]['status'])
+
+    def test_waiting_queue_dispatches_once_after_owner_settles_old_turn(self):
+        from rivo_relay.database import Database
+        from rivo_relay.events import EventBus
+        from rivo_relay.queue import ExecutionQueue
+        service, native, state = self.interruption_fixture()
+        db = Database(':memory:')
+        self.addCleanup(db.close)
+        with db.transaction() as c:
+            c.execute("INSERT INTO connections VALUES ('phone','digest','Phone',1,NULL)")
+        queue = ExecutionQueue(db, service, EventBus())
+        self.addCleanup(queue.close)
+        queue.enqueue('thread', 'queued', 'phone', {'input': [{'type': 'text', 'text': 'Next instruction'}]})
+        queue.tick()
+        self.assertEqual('running', queue.list('thread')[0]['status'])
+        self.assertEqual('turn', queue.list('thread')[0]['turnId'])
+        queue.tick()
+        calls = [params for method, params in native.calls if method == 'turn/start']
+        self.assertEqual(1, len(calls))
+        self.assertEqual('queued', calls[0]['clientUserMessageId'])
+        self.assertNotIn('turnTrigger', calls[0])
+
     def test_running_evidence_requires_same_read_stable_journal_and_writer(self):
         journal = NativeJournal(FakeNative(), NativeHistoryAdapter())
         journal._local.inspection_key = (str(journal.connection.generation), THREAD)

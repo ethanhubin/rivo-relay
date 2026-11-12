@@ -52,13 +52,21 @@ class NodeActivitySyncTest {
             val api = RelayApi(server.url("/").newBuilder().host("127.0.0.1").build().toString())
             val sync = NodeSessionSync(api, scope)
             val connected = CompletableDeferred<Unit>()
+            val delivered = CompletableDeferred<Unit>()
             val observing = scope.launch(start = CoroutineStart.UNDISPATCHED) {
-                sync.events().collect { if (it.type == "connected") connected.complete(Unit) }
+                sync.events().collect {
+                    if (it.type == "connected") connected.complete(Unit)
+                    if (it.type == "native") delivered.complete(Unit)
+                }
             }
             withTimeout(5000) { connected.await() }
             val collecting = scope.launch { sync.activity.collect {} }
             withTimeout(5000) { sync.activity.first { it.status("t") == "running" } }
-            withContext(Dispatchers.IO) { assertTrue(refreshing.await(5, TimeUnit.SECONDS)) }
+            val ignored = event.contains("project/updated") || event.contains("\"threadIds\":[]")
+            if (ignored) {
+                withTimeout(5000) { delivered.await() }; delay(100)
+                assertEquals(1, reads.get())
+            } else withContext(Dispatchers.IO) { assertTrue(refreshing.await(5, TimeUnit.SECONDS)) }
             val state = sync.activity.value
             assertEquals(event, if (targetUnknown) "unknown" else "running", state.execution("t").status)
             if (!targetUnknown) {
@@ -67,7 +75,7 @@ class NodeActivitySyncTest {
                     .withNodeActivity(state).threads.single().status)
             }
             release.countDown()
-            withTimeout(5000) { sync.activity.first { it.version >= 2 && it.status("t") == "running" } }
+            if (!ignored) withTimeout(5000) { sync.activity.first { it.version >= 2 && it.status("t") == "running" } }
             collecting.cancelAndJoin()
             observing.cancelAndJoin()
         } finally { release.countDown(); scope.cancel(); server.shutdown() }

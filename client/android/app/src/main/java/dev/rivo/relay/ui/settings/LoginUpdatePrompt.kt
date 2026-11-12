@@ -7,6 +7,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 
@@ -15,17 +16,22 @@ fun LoginUpdatePrompt(updates: UpdateViewModel) {
     val latest = updates.release ?: return
     if (!updates.promptVisible) return
     val context = LocalContext.current.applicationContext
+    val contentHeight = (LocalConfiguration.current.screenHeightDp * 0.5f).dp.coerceAtMost(360.dp)
     AlertDialog(
         onDismissRequest = updates::dismissPrompt,
         title = { Text("发现新版本 ${latest.version}") },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(latest.notes.ifBlank { "新版本已就绪，点击立即更新即可下载并安装。" })
+            Column(Modifier.fillMaxWidth().height(contentHeight), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    updatePromptNotes(latest.notes).ifBlank { "新版本已就绪，点击立即更新即可下载并安装。" },
+                    Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
+                )
                 if (updates.downloading) {
                     val fraction = (updates.downloadedBytes.toFloat() / latest.size.coerceAtLeast(1)).coerceIn(0f, 1f)
                     LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
                     Text(if (updates.downloadedBytes >= latest.size) "正在校验安装包…" else "正在下载 ${(fraction * 100).toInt()}%")
                 }
+                updates.compatibility?.let { Text(it.summary, Modifier.heightIn(max = 100.dp).verticalScroll(rememberScrollState())) }
                 updates.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         },
@@ -37,4 +43,21 @@ fun LoginUpdatePrompt(updates: UpdateViewModel) {
         },
         dismissButton = { TextButton(onClick = updates::dismissPrompt) { Text(if (updates.downloading) "后台下载" else "稍后再说") } },
     )
+}
+
+internal fun updatePromptNotes(notes: String): String = notes.lineSequence()
+    .takeWhile { line ->
+        !Regex("^(?:#{1,6}\\s*)?(?:\\*\\*)?验证(?:\\*\\*)?(?:[：:].*|\\s*)$").matches(line.trim())
+    }
+    .joinToString("\n")
+    .trim()
+
+@Composable
+fun UpdateCompatibilityPrompt(updates: UpdateViewModel) {
+    val result = updates.confirmation ?: return
+    AlertDialog(onDismissRequest = updates::dismissConfirmation,
+        title = { Text("部分节点可能无法使用") },
+        text = { Text(result.summary + "\n继续安装后，上述不兼容或未知节点可能无法访问。", Modifier.verticalScroll(rememberScrollState())) },
+        confirmButton = { TextButton(onClick = updates::confirmInstall) { Text("确认并重新检查") } },
+        dismissButton = { TextButton(onClick = updates::dismissConfirmation) { Text("暂不安装") } })
 }

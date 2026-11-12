@@ -17,7 +17,9 @@ class UpdatePublishTests(unittest.TestCase):
             apk = root / 'app.apk'
             with zipfile.ZipFile(apk, 'w') as archive:
                 archive.writestr('AndroidManifest.xml', 'fixture')
+                archive.writestr('assets/api-compatibility.json', '{"apiVersions":[1]}')
             first = module.publish(apk, root, '0.2.13', 25, 'notes')
+            self.assertEqual({'apiVersions': [1]}, first['compatibility'])
             self.assertEqual(first, json.loads((root / 'updates/latest.json').read_text()))
             self.assertEqual(apk.read_bytes(), (root / 'updates/apks' / (first['sha256'] + '.apk')).read_bytes())
             with self.assertRaises(ValueError): module.publish(apk, root, '0.2.12', 24, '')

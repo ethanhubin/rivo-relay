@@ -1,5 +1,6 @@
 package dev.rivo.relay.ui.sessions
 
+import dev.rivo.relay.ui.common.listBounce
 import dev.rivo.relay.ui.theme.listItemBackground
 
 import android.widget.Toast
@@ -161,7 +162,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                 if (loading && shown.isEmpty() && shownPending.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(28.dp)) }
                 else if (shown.isEmpty() && shownPending.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                     if (catalogComplete) Text(when { search.isNotBlank() -> "没有匹配的会话"; archived -> "没有已归档会话"; !showCreate -> "暂无会话"; else -> "还没有 Codex 会话，点击右下角新建" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                } else LazyColumn(Modifier.fillMaxWidth().weight(1f), state = listState, contentPadding = PaddingValues(bottom = 100.dp), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Xs)) {
+                } else LazyColumn(Modifier.fillMaxWidth().weight(1f).listBounce(), state = listState, overscrollEffect = null, contentPadding = PaddingValues(bottom = 100.dp), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Xs)) {
                     items(shownPending, key = { "pending:${it.id}" }, contentType = { "pending" }) { pending ->
                         Surface(onClick = { onResumePending(pending.id) }, shape = MaterialTheme.shapes.large,
                             color = MaterialTheme.colorScheme.listItemBackground,

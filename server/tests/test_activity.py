@@ -20,6 +20,27 @@ class ActivityTests(unittest.TestCase):
     def registry(self, loader=lambda _token: snapshot()):
         return ActivityRegistry(loader, lambda: 'g')
 
+    def test_global_snapshot_does_not_repeat_recovery_attachment(self):
+        import json
+        from rivo_relay.codex.projection import execution_projection
+        registry = self.registry()
+        queued = {'id': 'q', 'revision': 3, 'status': 'failed', 'recoveryRequired': True,
+                  'input': [{'type': 'image', 'url': 'data:image/png;base64,' + 'a' * 1_900_000}]}
+        registry.observe_execution('t', 'idle', token=registry.read_token(), project_id='p', queue=[queued])
+        public = registry.snapshot()
+        self.assertLess(len(json.dumps(public)), 2000)
+        task = public['tasks'][0]
+        self.assertTrue(task['recoveryRequired'])
+        self.assertEqual(task['deliveryState'], 'recovery')
+        self.assertEqual(task['blockReason'], 'recovery_required')
+        self.assertEqual(task['threadId'], 't')
+        self.assertNotIn('recoveryTask', task)
+        # The owning conversation still has the original recoverable input.
+        self.assertEqual(execution_projection('idle', [queued])['recoveryTask'], queued)
+        self.assertEqual(registry.tasks['t']['recoveryTask'], queued)
+        task['status'] = 'changed'
+        self.assertEqual(registry.snapshot()['tasks'][0]['status'], 'idle')
+
     def test_read_never_invokes_loader(self):
         def load(_token):
             self.fail('read must not load')

@@ -81,7 +81,7 @@ class NodeAppUpdates(
         val path = "/v1/app-updates/apks/$digest.apk"
         if (manifest.getString("apkPath") != path) throw IOException("节点更新地址无效")
         return AppRelease(version, manifest.optString("notes").take(16000), "${base.trimEnd('/')}$path",
-            base, true, digest, size).takeIf { compareVersions(version, currentVersion) > 0 }
+            base, true, digest, size, ApiCompatibility.versions(manifest.optJSONObject("compatibility"))).takeIf { compareVersions(version, currentVersion) > 0 }
     }
 
     suspend fun download(release: AppRelease, directory: File, progress: (Long, Long) -> Unit = { _, _ -> }): File {

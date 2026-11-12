@@ -157,8 +157,6 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
                     Text(listOfNotNull(configuration, status).joinToString(" · "), Modifier.weight(1f, fill = false).testTag("conversation_configuration"),
                         style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    contextPercent(snapshot?.tokenUsage)?.let { Text("· 上下文 $it%", Modifier.testTag("context_usage"),
-                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1) }
                 }
             }
             Box {
@@ -250,9 +248,7 @@ internal fun NativeComposerSettings(settings: JSONObject?, models: List<JSONObje
             val tier = serviceTier?.takeIf(String::isNotBlank)
             val defaults = JSONObject().put("model", effectiveModel?.takeIf(String::isNotBlank)).put("effort", effectiveEffort?.takeIf(String::isNotBlank)).put("serviceTier", tier)
                 .put("sandbox", effectiveSandbox).put("approvalPolicy", effectiveApproval)
-            val isDefault = listOf("model", "effort", "serviceTier", "sandbox", "approvalPolicy").all { defaultSettings?.string(it).orEmpty() == defaults.string(it) }
-            TextButton(onClick = { onSaveDefaults(defaults) },
-                enabled = enabled && unavailable == null && !isDefault, modifier = Modifier.testTag("codex_set_default")) { Text(if (isDefault && unavailable == null) "已是默认" else "设为新会话默认") }
+            SaveConversationDefaultsButton(defaults, defaultSettings, enabled, onSaveDefaults, unavailable)
             unavailable?.let { Text(it, style = MaterialTheme.typography.labelSmall, modifier = Modifier.testTag("codex_default_unavailable")) }
         }
         if (selectedMode != null) TextButton(onClick = onInheritMode, enabled = enabled, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("inherit_task_mode")) { Text("恢复继承会话模式") }
@@ -261,19 +257,39 @@ internal fun NativeComposerSettings(settings: JSONObject?, models: List<JSONObje
 }
 
 @Composable
+private fun SaveConversationDefaultsButton(defaults: JSONObject, defaultSettings: JSONObject?, enabled: Boolean,
+    onSaveDefaults: (JSONObject) -> Unit, unavailable: String? = null, tag: String = "codex_set_default") {
+    val isDefault = listOf("model", "effort", "serviceTier", "sandbox", "approvalPolicy").all {
+        defaultSettings?.string(it).orEmpty() == defaults.string(it)
+    }
+    TextButton(onClick = { onSaveDefaults(defaults) }, enabled = enabled && unavailable == null && !isDefault,
+        modifier = Modifier.testTag(tag)) { Text(if (isDefault && unavailable == null) "已是默认" else "设为新会话默认") }
+}
+
+@Composable
 internal fun NewSessionSettings(models: List<JSONObject>, model: String?, effort: String?,
     sandbox: String?, approval: String?, enabled: Boolean, permissionsEditable: Boolean,
     onModel: (String?) -> Unit, onEffort: (String?) -> Unit,
-    onSandbox: (String?) -> Unit, onApproval: (String?) -> Unit, workspace: (@Composable () -> Unit)? = null) {
+    onSandbox: (String?) -> Unit, onApproval: (String?) -> Unit, workspace: (@Composable () -> Unit)? = null,
+    serviceTier: String? = null, defaultSettings: JSONObject? = null, onSaveDefaults: ((JSONObject) -> Unit)? = null) {
     val capability = models.firstOrNull { it.string("model").ifBlank { it.string("id") } == model }
-        ?: if (model == null) models.firstOrNull { it.optBoolean("isDefault") } else null
     val efforts = capability?.objects("supportedReasoningEfforts").orEmpty()
         .map { it.string("reasoningEffort") }.filter(String::isNotBlank)
     Column(Modifier.fillMaxWidth().heightIn(max = 340.dp)
         .verticalScroll(rememberScrollState()).testTag("new_session_settings"),
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("会话设置", style = MaterialTheme.typography.titleSmall)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("会话设置", style = MaterialTheme.typography.titleSmall)
+                if (onSaveDefaults != null) {
+                    val defaults = JSONObject().put("model", model).put("effort", effort).put("serviceTier", serviceTier)
+                        .put("sandbox", sandbox?.takeUnless { it == "inherit" })
+                        .put("approvalPolicy", approval?.takeUnless { it == "inherit" })
+                    SaveConversationDefaultsButton(defaults, defaultSettings, enabled, onSaveDefaults,
+                        tag = "new_session_set_default")
+                }
+            }
             Surface(shape = RoundedCornerShape(24.dp), color = if (MaterialTheme.colorScheme.background == NightBackground)
                 MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.surfaceContainerLow) {
                 Column {
@@ -281,13 +297,13 @@ internal fun NewSessionSettings(models: List<JSONObject>, model: String?, effort
                         it()
                         HorizontalDivider(Modifier.padding(horizontal = 16.dp))
                     }
-                    SettingsPanelRow("模型", model ?: capability?.string("displayName")?.takeIf(String::isNotBlank)
-                        ?: capability?.string("model")?.takeIf(String::isNotBlank) ?: "正在读取默认模型",
+                    SettingsPanelRow("模型", capability?.string("displayName")?.takeIf(String::isNotBlank)
+                        ?: model ?: "沿用节点默认",
                         models.map {
                             it.string("model").ifBlank { it.string("id") } to it.string("displayName").ifBlank { it.string("model").ifBlank { it.string("id") } }
                         }, enabled, "new_session_model", onModel)
                     HorizontalDivider(Modifier.padding(horizontal = 16.dp))
-                    SettingsPanelRow("思考强度", effort ?: reasoningEffortForModel(capability, null) ?: "正在读取默认强度",
+                    SettingsPanelRow("思考强度", effort ?: "沿用节点默认",
                         efforts.map { it to it }, enabled, "new_session_effort", onEffort)
                     HorizontalDivider(Modifier.padding(horizontal = 16.dp))
                     SettingsPanelRow("权限模式", approvalSettingLabel(null, true, approval),

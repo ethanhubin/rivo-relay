@@ -81,6 +81,29 @@ class UsageResetTest {
         }
     }
 
+    @Test fun replacementRecoveryClearsItsIdAndRefreshesQuota() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val vault = Vault()
+        try {
+            val catalog = CatalogController(api(server), scope, {})
+            server.enqueue(MockResponse().setBody("""{"status":"failed","errorCode":"usage_reset_recovery_only"}"""))
+            server.enqueue(MockResponse().setBody("""{"usage":{"resetSupported":true,"rateLimitResetCredits":{"availableCount":1}}}"""))
+            var message: String? = null
+            val c = SubmissionCoordinator(api(server), scope, vault, "node", recoveryDelayMillis = 60_000,
+                onResolved = { _, response -> catalog.usageResetResolved(response) }, failure = { message = it.message })
+            c.submit(USAGE_RESET_PATH, JSONObject(), "重置额度", submissionId = "replacement")
+            idle(c)
+            assertNull(vault.value)
+            assertNull(c.state.value.pending)
+            assertTrue(message.orEmpty().contains("本次未创建新的兑换"))
+            assertEquals(1, catalog.state.value.usage!!.resetCredits!!.availableCount)
+            assertEquals(USAGE_RESET_PATH, server.takeRequest().path)
+            assertEquals("/v1/usage", server.takeRequest().path)
+            assertEquals(2, server.requestCount)
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
     @Test fun refreshedQuotaIsAuthoritativeAndRefreshFailureDoesNotUndoSuccess() = runBlocking {
         val server = MockWebServer(); server.start()
         val scope = CoroutineScope(coroutineContext + SupervisorJob())
