@@ -559,6 +559,9 @@ class CodexService(SessionHandoffMixin):
         # Reconcile the idle persisted history before resume takes a writer lock.
         # A live Desktop/CLI writer remains authoritative and is never released.
         history = self.history(thread_id, cursor=cursor, limit=limit, native_revision=native_revision)
+        # History can take longer than a background activity scan. Fresh native
+        # execution evidence below must not inherit the history read's old fence.
+        execution_token = self.activity.read_token()
         # Join once per connection, then read metadata without new notifications.
         # No cwd/model/permission values are supplied.
         read_only = False
@@ -615,6 +618,23 @@ class CodexService(SessionHandoffMixin):
         changes = [{'turnId': turn_id, **value} for (kind, turn_id), value in observations.items() if kind == 'changes']
         turn_settings = [{'turnId': turn_id, **value} for (kind, turn_id), value in observations.items() if kind == 'turnSettings']
         queue = self.execution_queue.list(thread_id) if hasattr(self, 'execution_queue') else []
+        history_ready = history['nativeSync'].get('historyReady') or history['nativeSync'].get('state') == 'ready'
+        # Current metadata/journal/goal evidence is independent of historical
+        # projection convergence. History-only evidence retains its original fence
+        # so an old completed/in-progress turn cannot overwrite a newer event.
+        fresh_running = thread_status(thread) == 'running' or external.get(thread_id) == 'running' or goal_active
+        if cursor is None:
+            published = history_ready and self.activity.observe_execution(thread_id, status, token=activity_token,
+                project_id=thread.get('projectId'), turn_id=active,
+                settled_turn_id=latest_turn.get('id') if latest_turn.get('status') in
+                    ('completed', 'failed', 'interrupted', 'canceled') else None,
+                goal_active=goal_active, queue=queue)
+            if not published and fresh_running and execution_token.epoch == activity_token.epoch:
+                # The fresh proof establishes execution, not the identity of a
+                # turn from older/unready history. Do not resurrect that turn or
+                # retire one using history that predates this checkpoint.
+                self.activity.observe_execution(thread_id, status, token=execution_token,
+                    project_id=thread.get('projectId'), goal_active=goal_active, queue=queue)
         review_diagnostics = self.review_guard.diagnostics(thread_id, thread['turns'])
         rebind = None
         if workspace_unavailable:
@@ -663,12 +683,6 @@ class CodexService(SessionHandoffMixin):
                 question_reply_available = getattr(self.connection, 'can_answer_questions', lambda _: False)(thread_id)
             except CodexError:
                 pass
-        if cursor is None and (history['nativeSync'].get('historyReady') or history['nativeSync'].get('state') == 'ready'):
-            self.activity.observe_execution(thread_id, status, token=activity_token,
-                project_id=thread.get('projectId'), turn_id=active,
-                settled_turn_id=latest_turn.get('id') if latest_turn.get('status') in
-                    ('completed', 'failed', 'interrupted', 'canceled') else None,
-                goal_active=goal_active, queue=queue)
         return {"activity": self.activity.snapshot(), "thread": thread, "requests": requests, "settings": settings, 'control': control, 'plan': plan,
                 'canAnswerQuestions': question_reply_available, 'questionAnswerStates': answer_states,
                 **goal_state,

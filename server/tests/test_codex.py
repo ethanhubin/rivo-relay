@@ -142,6 +142,123 @@ class NativeSemanticsTests(unittest.TestCase):
         self.assertIn('thread', result['activity']['knownThreadIds'])
         self.assertNotIn('thread', service.activity.snapshot()['unknownThreadIds'])
 
+    def test_fresh_running_metadata_updates_activity_after_slow_history(self):
+        native = FakeNative()
+        native.thread.update(projectId='project', status={'type': 'active'})
+        service = CodexService(connection=native)
+        original = service.history
+
+        def history(*args, **kwargs):
+            result = original(*args, **kwargs)
+            # A background scan finishes while the expensive history read runs.
+            service.activity.load = lambda _token: {
+                'tasks': [], 'knownThreadIds': ['thread'], 'unknownThreadIds': []}
+            service.activity.reconcile()
+            return result
+
+        with patch.object(service, 'history', side_effect=history):
+            result = service.get_session('thread')
+        self.assertEqual('running', result['status'])
+        self.assertEqual('running', result['activity']['tasks'][0]['status'])
+        self.assertEqual('project', result['activity']['tasks'][0]['projectId'])
+        with patch.object(service.projects, 'get', return_value={'id': 'project', 'roots': []}), \
+             patch('rivo_relay.codex.sessions.thread_pages', return_value=[native.thread]):
+            self.assertEqual('running', service.list_sessions('project')[0]['status'])
+
+    def test_fresh_running_metadata_updates_activity_while_history_converges(self):
+        for status in ({'type': 'active'}, {'type': 'active', 'activeFlags': ['waitingOnUserInput']}):
+            with self.subTest(status=status):
+                native = FakeNative()
+                native.thread['status'] = status
+                service = CodexService(connection=native)
+                original = service.history
+
+                def history(*args, **kwargs):
+                    result = original(*args, **kwargs)
+                    result['nativeSync'] = {'state': 'syncing', 'historyReady': False}
+                    return result
+
+                with patch.object(service, 'history', side_effect=history):
+                    result = service.get_session('thread')
+                self.assertEqual(result['status'], result['activity']['tasks'][0]['status'])
+
+    def test_goal_detail_updates_activity_while_history_converges(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        original = service.history
+
+        def history(*args, **kwargs):
+            result = original(*args, **kwargs)
+            result['nativeSync'] = {'state': 'syncing', 'historyReady': False}
+            return result
+
+        with patch.object(service, 'history', side_effect=history), \
+             patch.object(service, 'read_goal', return_value={'goal': {'status': 'active'}}):
+            result = service.get_session('thread')
+        self.assertIsNone(result['activeTurnId'])
+        self.assertTrue(result['activity']['tasks'][0]['goalActive'])
+        self.assertEqual('running', result['activity']['tasks'][0]['status'])
+
+    def test_detail_does_not_publish_idle_from_unready_history(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        service.activity.receive({'method': 'turn/started', 'params': {
+            'threadId': 'thread', 'turn': {'id': 'new'}}})
+        original = service.history
+
+        def history(*args, **kwargs):
+            result = original(*args, **kwargs)
+            result['nativeSync'] = {'state': 'syncing', 'historyReady': False}
+            return result
+
+        with patch.object(service, 'history', side_effect=history):
+            result = service.get_session('thread')
+        self.assertEqual('idle', result['status'])
+        self.assertEqual('new', result['activity']['tasks'][0]['turnId'])
+
+    def test_fresh_detail_still_respects_terminal_event_during_metadata_read(self):
+        native = FakeNative()
+        native.thread['status'] = {'type': 'active'}
+        service = CodexService(connection=native)
+        service.activity.receive({'method': 'turn/started', 'params': {
+            'threadId': 'thread', 'turn': {'id': 'turn'}}})
+        original = native.request
+
+        def request(method, params, **kwargs):
+            result = original(method, params, **kwargs)
+            if method in ('thread/read', 'thread/resume'):
+                service.activity.receive({'method': 'turn/completed', 'params': {
+                    'threadId': 'thread', 'turn': {'id': 'turn'}}})
+            return result
+
+        native.request = request
+        result = service.get_session('thread')
+        self.assertEqual('running', result['status'])
+        self.assertEqual([], result['activity']['tasks'])
+
+    def test_fresh_execution_does_not_restore_turn_identity_from_old_history(self):
+        native = FakeNative()
+        native.thread['status'] = {'type': 'active'}
+        service = CodexService(connection=native)
+        original = service.history
+
+        def history(*args, **kwargs):
+            result = original(*args, **kwargs)
+            result['turns'] = [{'id': 'old', 'status': 'inProgress', 'items': []}]
+            service.activity.receive({'method': 'turn/started', 'params': {
+                'threadId': 'thread', 'turn': {'id': 'new'}}})
+            return result
+
+        with patch.object(service, 'history', side_effect=history):
+            result = service.get_session('thread')
+        row = result['activity']['tasks'][0]
+        self.assertEqual('running', row['status'])
+        self.assertIsNone(row['turnId'])
+        service.activity.receive({'method': 'turn/completed', 'params': {
+            'threadId': 'thread', 'turn': {'id': 'old'}}})
+        # A late old terminal must reconcile identity, never finish newer work.
+        self.assertEqual('running', service.activity.snapshot()['tasks'][0]['status'])
+
     def test_external_execution_overrides_unloaded_metadata_in_list_and_detail(self):
         native = FakeNative()
         native.thread['status'] = {'type': 'notLoaded'}
