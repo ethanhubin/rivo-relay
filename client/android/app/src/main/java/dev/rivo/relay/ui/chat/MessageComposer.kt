@@ -6,6 +6,8 @@ import android.os.Handler
 import android.os.Looper
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
@@ -315,6 +317,24 @@ fun MessageComposer(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                     inner()
+                                    // Only intercept the empty prediction placeholder; normal
+                                    // cursor placement and selection remain owned by the field.
+                                    if (textEditable && text.isEmpty() && !prediction.isNullOrBlank()) {
+                                        Box(Modifier.matchParentSize().pointerInput(prediction, target) {
+                                            detectTapGestures(
+                                                onTap = { focusRequester.requestFocus(); keyboard?.show() },
+                                                onDoubleTap = {
+                                                    if (inputValue.text.isEmpty()) {
+                                                        cancelVoice()
+                                                        inputValue = TextFieldValue(prediction, TextRange(prediction.length))
+                                                        latestOnTextChange(prediction)
+                                                        focusRequester.requestFocus()
+                                                        keyboard?.show()
+                                                    }
+                                                },
+                                            )
+                                        })
+                                    }
                                 }
                             },
                         )
