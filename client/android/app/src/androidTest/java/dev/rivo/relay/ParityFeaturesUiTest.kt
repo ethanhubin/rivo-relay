@@ -166,7 +166,6 @@ class ParityFeaturesUiTest {
                 }
                 androidx.compose.material3.NavigationBar {
                     NavigationBarItem(false, {}, icon = { Text("⌘") }, label = { Text("Codex") })
-                    NavigationBarItem(false, {}, icon = { dev.rivo.relay.ui.sites.ConnectorIcon("appgarden") }, label = { Text("Sites") })
                     NavigationBarItem(false, {}, icon = { Text("✓") }, label = { Text("待办") })
                     NavigationBarItem(true, {}, icon = { Text("⚙") }, label = { Text("设置") })
                 }

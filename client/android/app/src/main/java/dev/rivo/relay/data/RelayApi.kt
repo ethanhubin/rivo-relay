@@ -95,11 +95,6 @@ class RelayApi(private val base: String, private val token: String = "", private
         if (compatibility?.supports(feature) == false)
             throw ApiException(409, "feature_unsupported", "此节点不支持该功能，请升级节点")
     }
-    fun sitesWebProxy(): dev.rivo.relay.ui.sites.SitesWebProxy {
-        val config = routes?.takeIf { it.relay.isNotBlank() }
-            ?: throw IOException("此节点尚未配置 VPS 中转，请重新扫码配对")
-        return dev.rivo.relay.ui.sites.SitesWebProxy(config, token)
-    }
     private val gatewaySpeech by lazy {
         routes?.takeIf { it.relay.isNotBlank() }?.let {
             GatewaySpeechClient(it, dns, issueAccess = { call("/v1/speech/access", "POST") })
@@ -210,12 +205,12 @@ class RelayApi(private val base: String, private val token: String = "", private
         if (method != "GET") builder.method(method, (body ?: JSONObject()).toString().toRequestBody("application/json".toMediaType()))
         return builder.build()
     }
-    suspend fun call(path: String, method: String = "GET", body: JSONObject? = null, background: Boolean = false, reconnectProbe: Boolean = false, diagnosticRequestId: String? = null): JSONObject = withContext(Dispatchers.Default) {
+    suspend fun call(path: String, method: String = "GET", body: JSONObject? = null, background: Boolean = false, reconnectProbe: Boolean = false): JSONObject = withContext(Dispatchers.Default) {
         if (path.substringBefore('?') !in setOf("/v1/node", "/v1/pair", "/health")) guard(path, body)
         suspendCancellableCoroutine { continuation ->
         val optionalPrediction = path.endsWith("/prediction")
         val call = synchronized(transportLock) {
-            (if (optionalPrediction) predictionClient else if (reconnectProbe) probes else if (method != "GET") client else if (background) backgroundReader else if (path.substringBefore('?') in setOf("/v1/projects", "/v1/threads")) catalogReader else reader).newCall(request(path, method, body).newBuilder().apply { if (reconnectProbe) tag(ReconnectProbe::class.java, ReconnectProbe()); diagnosticRequestId?.takeIf { it.matches(Regex("[0-9a-f]{32}")) }?.let { header("X-Rivo-Request-Id", it) } }.build()).also { if (method == "GET" || optionalPrediction) reads.add(it) }
+            (if (optionalPrediction) predictionClient else if (reconnectProbe) probes else if (method != "GET") client else if (background) backgroundReader else if (path.substringBefore('?') in setOf("/v1/projects", "/v1/threads")) catalogReader else reader).newCall(request(path, method, body).newBuilder().apply { if (reconnectProbe) tag(ReconnectProbe::class.java, ReconnectProbe()) }.build()).also { if (method == "GET" || optionalPrediction) reads.add(it) }
         }
         continuation.invokeOnCancellation { call.cancel(); forgetRead(call) }
         call.enqueue(object : Callback {

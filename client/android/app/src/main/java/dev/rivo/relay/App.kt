@@ -74,7 +74,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     val context = androidx.compose.ui.platform.LocalContext.current
     val compatibility by node.api.compatibilityState.collectAsStateWithLifecycle()
     val attachmentsSupported = compatibility?.supports("attachments") != false
-    var route by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastRoute")?.let { if (it == "new") "sessions" else it }?.takeIf { it in setOf("projects", "sessions", "chat", "sites", "todos", "settings") } ?: "projects") }
+    var route by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastRoute")?.let { if (it == "new") "sessions" else it }?.takeIf { it in setOf("projects", "sessions", "chat", "todos", "settings") } ?: "projects") }
     var threadId by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastThreadId")) }
     var agentParents by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var chatParent by rememberSaveable { mutableStateOf("sessions") }
@@ -287,15 +287,13 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
         resetNotice = if (submission.pending?.path == USAGE_RESET_PATH) submission.notice else catalog.usageResetNotice,
         onReset = { creditId -> if (writable) { node.catalog.clearUsageResetNotice(); node.submissions.submit(USAGE_RESET_PATH, JSONObject().put("creditId", creditId), "重置额度") } },
         onReconcile = { node.submissions.reconcile() })
-    val showBottomNavigation = route in setOf("projects", "sites", "todos", "settings")
+    val showBottomNavigation = route in setOf("projects", "todos", "settings")
     // NavigationBar draws behind the system gesture area and applies its own insets.
     Column(Modifier.fillMaxSize()
         .then(if (showBottomNavigation) Modifier else Modifier.navigationBarsPadding())
         .imePadding()) {
-        CompositionLocalProvider(dev.rivo.relay.ui.sites.LocalSitesApi provides node.api) {
         Box(Modifier.weight(1f)) {
             when (route) {
-                "sites" -> dev.rivo.relay.ui.sites.SitesScreen(node.api, node.connection.name)
                 "settings" -> SettingsScreen(connection = node.connection, api = node.api,
                     resolveConnection = settingsConnection, setNodeConnectionMode = setNodeConnectionMode,
                     savedNodes = savedNodes,
@@ -658,12 +656,9 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             }
         }
 
-        }
         if (showBottomNavigation) NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
             NavigationBarItem(selected = route == "projects", onClick = { route = "projects"; setError(null); node.catalog.refreshProjects() },
                 icon = { Text("⌘") }, label = { Text("Codex") }, modifier = Modifier.testTag("nav_codex"))
-            NavigationBarItem(selected = route == "sites", onClick = { route = "sites"; setError(null) },
-                icon = { dev.rivo.relay.ui.sites.ConnectorIcon("appgarden") }, label = { Text("Sites") }, modifier = Modifier.testTag("nav_sites"))
             NavigationBarItem(selected = route == "todos", onClick = { route = "todos"; setError(null); node.todos.refresh(); node.catalog.refreshProjects() },
                 icon = { Text("✓") }, label = { Text("待办") }, modifier = Modifier.testTag("nav_todos"))
             NavigationBarItem(selected = route == "settings", onClick = { route = "settings"; setError(null) },

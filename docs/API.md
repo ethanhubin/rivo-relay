@@ -401,15 +401,6 @@ Android 输入框设置面板提供权限选择和“设为新会话默认”，
 
 `GET /v1/threads?projectId=…&view=summary` 返回状态库中的轻量会话元数据，顶层 `catalogComplete:false`。它是可展示的暂时结果，不包含完整 rollout/工作区归属与运行状态校准；不能据此断言不存在其他会话。客户端随后请求默认完整列表（`catalogComplete:true`）替换，且应在补全期间保留此前发现的会话。`archived` 过滤对两种视图均生效。摘要结果不用于执行准入或确认批量操作对象。
 
-### Sites（只读）
-
-Sites 网页另使用 VPS 专属 `GET /relay/{slot}/v1/sites/tunnel?host=…` WebSocket 字节隧道，需节点设备 Bearer，每条连接重新鉴权，仅允许公网 IPv4 的 HTTPS 443。未配置代理返回 503、无效设备令牌返回 401；不会将节点凭据转发给网站。详见 [VPS 中转](vps-gateway.md#sites-网页中转2026-11-10)。
-
-`GET /v1/sites?cursor=…` 需要节点鉴权，返回 `{items:[{id,title,url,accessMode}],cursor}`。
-`url` 仅来自 `current_live_url`，未发布时为 null；分页 cursor 原样传递，客户端不解析。
-通过当前节点的辅助连接和临时会话调用固定的 `sites.list_sites`，结束时解除临时订阅并释放连接。
-不返回源码凭据、账号名单、截图签名 URL 或完整工具响应，不提供通用 MCP 分发、创建或发布接口。
-
 ### 全局执行状态
 
 `GET /v1/activity` 返回节点统一任务表，包含 `generation`、单调递增的 `version`、`tasks`、`knownThreadIds` 和 `unknownThreadIds`。`complete` 表示快照结构完整，不代表所有会话均已核验；待核验会话不得作为运行证据。原生事件、后台扫描和已核验的会话首页读取都更新这张表，按会话记录更新版本：晚于读取开始的事件、详情或元数据只阻止同一会话的旧结果，其他会话的扫描结果仍可合并。同一次扫描可继续完善自己提前发布的元数据；扫描失败只使未被更新的会话待核验，不影响新的运行证据，项目归属变化本身不算运行证据。分页读取不回写执行状态。
