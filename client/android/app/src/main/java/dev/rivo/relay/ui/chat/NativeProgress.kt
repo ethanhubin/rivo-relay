@@ -23,13 +23,6 @@ import androidx.compose.ui.unit.dp
 import dev.rivo.relay.data.*
 import org.json.JSONObject
 
-internal fun contextPercent(usage: JSONObject?): Int? {
-    val window = usage?.optLong("modelContextWindow", 0) ?: 0
-    val last = usage?.optJSONObject("last") ?: return null
-    val used = last.optLong("totalTokens", -1)
-    return if (window > 0 && used >= 0) (used.toDouble() * 100 / window).toInt().coerceIn(0, 100) else null
-}
-
 @Composable
 internal fun NativePlan(plan: JSONObject?) {
     if (plan == null || plan.string("status") == "completed") return

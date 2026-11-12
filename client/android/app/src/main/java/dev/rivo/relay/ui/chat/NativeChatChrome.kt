@@ -157,8 +157,6 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
                     Text(listOfNotNull(configuration, status).joinToString(" · "), Modifier.weight(1f, fill = false).testTag("conversation_configuration"),
                         style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    contextPercent(snapshot?.tokenUsage)?.let { Text("· 上下文 $it%", Modifier.testTag("context_usage"),
-                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1) }
                 }
             }
             Box {

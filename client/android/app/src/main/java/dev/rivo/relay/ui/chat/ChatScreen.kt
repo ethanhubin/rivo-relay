@@ -773,6 +773,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             LaunchedEffect(state.id, capabilities.allows("session.models")) { if (capabilities.allows("session.models")) onLoadModels() }
         }
         AnimatedVisibility(
+            // Measure the composer first; settings scroll within the remaining height.
+            // fill=false keeps the overlay compact when the keyboard is hidden.
+            modifier = Modifier.weight(1f, fill = false),
             visible = capabilities.allows("session.settings") && pendingTitle != null && !busy && !pendingFirstTurnSent && !pendingReceiptUnresolved,
             enter = expandVertically(animationSpec = tween(160), expandFrom = Alignment.Bottom),
             exit = shrinkVertically(animationSpec = tween(160), shrinkTowards = Alignment.Bottom),
@@ -796,6 +799,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             Text(if (displayedGoal == null) "设置持续目标" else "编辑持续目标")
         }
         MessageComposer(
+            tokenUsage = snapshot?.tokenUsage, contextThreadId = state.id,
             text = if (hideSubmitted) "" else draft, onTextChange = { if (textEditable) draft = it }, images = if (hideSubmitted) emptyList() else images,
             onEditImage = { focus.clearFocus(); keyboard?.hide(); editingImage = it },
             onRemoveImage = { image -> images = images.filterNot { it.id == image.id } },
