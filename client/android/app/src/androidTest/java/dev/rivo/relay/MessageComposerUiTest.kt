@@ -51,7 +51,7 @@ class MessageComposerUiTest {
         compose.runOnIdle { assertEquals(1, opens); assertEquals(1, removes) }
     }
 
-    @Test fun emptyComposerIsCompactAndInputGrowsToThreeLines() {
+    @Test fun emptyComposerIsCompactAndCollapsedInputGrowsToTwoLines() {
         var density = 1f
         lateinit var focusManager: FocusManager
         compose.setContent {
@@ -72,25 +72,28 @@ class MessageComposerUiTest {
         compose.onNodeWithTag("add_image").assertDoesNotExist()
         compose.onNodeWithTag("add_workspace_file").assertDoesNotExist()
         compose.onNodeWithTag("message_input").performClick()
+        compose.runOnIdle { focusManager.clearFocus(force = true) }
         val focusedHeight = compose.onNodeWithTag("composer_surface").fetchSemanticsNode().boundsInRoot.height / density
-        assertEquals("Focus should not reserve an unused text line", emptyHeight, focusedHeight, 1f)
-        compose.onNodeWithTag("message_input").performTextInput("第一行\n第二行\n第三行")
-        val threeLineHeight = compose.onNodeWithTag("composer_surface").fetchSemanticsNode().boundsInRoot.height / density
-        assertTrue("Multiline input must grow from the single-line height", threeLineHeight > focusedHeight)
+        assertEquals("Empty input should return to compact height after blur", emptyHeight, focusedHeight, 1f)
+        compose.onNodeWithTag("message_input").performTextInput("第一行\n第二行")
+        compose.runOnIdle { focusManager.clearFocus(force = true) }
+        val twoLineHeight = compose.onNodeWithTag("composer_surface").fetchSemanticsNode().boundsInRoot.height / density
+        assertTrue("Two lines must not shrink the composer below its controls", twoLineHeight >= focusedHeight)
         val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
         compose.onNodeWithTag("message_input").performSemanticsAction(
             androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
-        assertEquals(3, layouts.single().lineCount)
+        assertEquals(2, layouts.single().lineCount)
         val inputHeight = compose.onNodeWithTag("message_input").fetchSemanticsNode().boundsInRoot.height
-        captureComposer("three-lines-focused")
-        assertTrue("Three complete text lines must fit inside the input: bottom=${layouts.single().getLineBottom(2)}, height=$inputHeight", layouts.single().getLineBottom(2) <= inputHeight + 1f)
+        captureComposer("two-lines-collapsed")
+        assertTrue("Two complete text lines must fit inside the input: bottom=${layouts.single().getLineBottom(1)}, height=$inputHeight", layouts.single().getLineBottom(1) <= inputHeight + 1f)
         compose.onNodeWithTag("message_input").performTextReplacement("第一行\n第二行\n第三行\n第四行\n第五行")
+        compose.runOnIdle { focusManager.clearFocus(force = true) }
         val fiveLineHeight = compose.onNodeWithTag("composer_surface").fetchSemanticsNode().boundsInRoot.height / density
-        assertEquals("Long drafts should scroll within three visible lines", threeLineHeight, fiveLineHeight, 1f)
+        assertEquals("Long drafts should scroll within two visible lines", twoLineHeight, fiveLineHeight, 1f)
         compose.onNodeWithTag("send_message").assertIsEnabled()
         compose.runOnIdle { focusManager.clearFocus(force = true) }
         val blurredHeight = compose.onNodeWithTag("composer_surface").fetchSemanticsNode().boundsInRoot.height / density
-        assertEquals("Blur must preserve three visible lines for a long draft", threeLineHeight, blurredHeight, 1f)
+        assertEquals("Blur must preserve two visible lines for a long draft", twoLineHeight, blurredHeight, 1f)
         compose.onNodeWithTag("message_input").assertTextEquals("第一行\n第二行\n第三行\n第四行\n第五行")
         captureComposer("long-draft-blurred")
         compose.onNodeWithTag("message_input").performClick().performTextClearance()

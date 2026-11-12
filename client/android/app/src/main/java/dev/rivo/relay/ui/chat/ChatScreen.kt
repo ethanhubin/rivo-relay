@@ -771,6 +771,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             LaunchedEffect(state.id) { onLoadModels() }
         }
         AnimatedVisibility(
+            // Measure the composer first; settings scroll within the remaining height.
+            // fill=false keeps the overlay compact when the keyboard is hidden.
+            modifier = Modifier.weight(1f, fill = false),
             visible = pendingTitle != null && !busy && !pendingFirstTurnSent && !pendingReceiptUnresolved,
             enter = expandVertically(animationSpec = tween(160), expandFrom = Alignment.Bottom),
             exit = shrinkVertically(animationSpec = tween(160), shrinkTowards = Alignment.Bottom),
