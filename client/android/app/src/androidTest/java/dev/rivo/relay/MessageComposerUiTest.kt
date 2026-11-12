@@ -27,6 +27,35 @@ import org.junit.runner.RunWith
 class MessageComposerUiTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test fun doubleTapPredictionFillsEditableDraftWithoutSending() {
+        var draft by mutableStateOf("")
+        var sends = 0
+        var editable by mutableStateOf(true)
+        val prediction = "继续补充回归测试"
+        compose.setContent { RivoTheme {
+            MessageComposer(draft, { draft = it }, emptyList(), {}, emptyList(), {},
+                preparing = false, error = null, enabled = true, canSend = true,
+                isRunning = false, canStop = false, busy = false,
+                onAddImage = {}, onAddWorkspaceFile = {}, onSettings = {},
+                onSend = { sends++ }, onStop = {}, prediction = prediction, textEditable = editable)
+        } }
+        val input = compose.onNodeWithTag("message_input")
+        input.performTouchInput { click() }
+        compose.waitForIdle()
+        compose.runOnIdle { assertEquals("", draft); assertEquals(0, sends) }
+        input.performTouchInput { doubleClick() }
+        input.assertTextEquals(prediction).assertIsFocused()
+        input.performTextInput("，包括异常情况")
+        compose.runOnIdle { assertEquals(prediction + "，包括异常情况", draft); assertEquals(0, sends) }
+        input.performTouchInput { doubleClick() }
+        compose.runOnIdle { assertEquals(prediction + "，包括异常情况", draft); assertEquals(0, sends) }
+        input.performTextClearance()
+        input.assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.EditableText, androidx.compose.ui.text.AnnotatedString("")))
+        compose.runOnIdle { editable = false }
+        input.performTouchInput { doubleClick() }
+        compose.runOnIdle { assertEquals("", draft); assertEquals(0, sends) }
+    }
+
     private fun captureComposer(name: String) {
         val context = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext
         val folder = java.io.File(context.getExternalFilesDir(null), "composer-evidence").apply { mkdirs() }
