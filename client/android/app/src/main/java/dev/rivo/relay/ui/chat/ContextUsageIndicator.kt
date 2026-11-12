@@ -29,18 +29,19 @@ internal fun contextUsage(usage: JSONObject?): ContextUsage = ContextUsage(
 @Composable
 internal fun ContextUsageIndicator(usage: JSONObject?, threadId: String?) {
     val context = contextUsage(usage)
+    val percent = context.percent ?: return
+    val fraction = context.fraction ?: return
     var expanded by remember(threadId) { mutableStateOf(false) }
     androidx.activity.compose.BackHandler(expanded) { expanded = false }
     val gap = with(LocalDensity.current) { 8.dp.roundToPx() }
-    val percent = context.percent
     val format = NumberFormat.getIntegerInstance()
     fun count(value: Long?) = value?.let(format::format) ?: "暂不可用"
     Box {
         IconButton(onClick = { expanded = !expanded }, modifier = Modifier.size(44.dp)
             .testTag("context_usage").semantics {
-                contentDescription = percent?.let { "上下文已使用 $it%，点击查看详情" } ?: "上下文用量暂不可用，点击查看详情"
+                contentDescription = "上下文已使用 $percent%，点击查看详情"
             }) {
-            CircularProgressIndicator(progress = { context.fraction ?: 0f },
+            CircularProgressIndicator(progress = { fraction },
                 modifier = Modifier.size(24.dp), strokeWidth = 2.dp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 trackColor = MaterialTheme.colorScheme.outlineVariant)
@@ -55,10 +56,9 @@ internal fun ContextUsageIndicator(usage: JSONObject?, threadId: String?) {
                 color = MaterialTheme.colorScheme.surfaceContainerHigh, shadowElevation = 8.dp) {
                 Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("上下文用量", style = MaterialTheme.typography.titleSmall)
-                    Text(percent?.let { "已使用 $it% · 剩余 ${100 - it}%" } ?: "尚无完整的上下文统计",
-                        style = MaterialTheme.typography.bodySmall)
+                    Text("已使用：$percent%", style = MaterialTheme.typography.bodySmall)
                     Text("已使用：${count(context.used)} tokens", style = MaterialTheme.typography.bodySmall)
-                    Text("窗口容量：${count(context.window)} tokens", style = MaterialTheme.typography.bodySmall)
+                    Text("总容量：${count(context.window)} tokens", style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
