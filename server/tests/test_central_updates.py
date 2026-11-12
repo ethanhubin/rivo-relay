@@ -21,7 +21,7 @@ from rivo_relay.update_gate import UpdateGate
 
 def release(directory, code):
     directory.mkdir(parents=True, exist_ok=True)
-    item = {'schema': 1, 'version': f'1.0.{code}', 'versionCode': code, 'notes': 'test'}
+    item = {'schema': 1, 'version': f'1.0.{code}', 'versionCode': code, 'notes': 'test', 'compatibility': {'apiVersions': [1, 3]}}
     for kind, suffix in [('app', 'apk'), ('node', 'zip')]:
         raw = f'{kind}-{code}'.encode()
         digest = hashlib.sha256(raw).hexdigest()
@@ -106,6 +106,7 @@ class GatewayStoreTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(response.headers['Cache-Control'], 'no-store')
                     async with client.get(base + '/v1/app-updates/latest') as response:
                         app = await response.json()
+                        self.assertEqual(item['compatibility'], app['compatibility'])
                     async with client.get(base + app['apkPath'], headers={'Range': 'bytes=0-2'}) as response:
                         self.assertEqual(response.status, 206)
                         self.assertEqual(await response.read(), b'app')

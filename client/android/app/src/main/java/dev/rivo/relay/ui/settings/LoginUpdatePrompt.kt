@@ -31,6 +31,7 @@ fun LoginUpdatePrompt(updates: UpdateViewModel) {
                     LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
                     Text(if (updates.downloadedBytes >= latest.size) "正在校验安装包…" else "正在下载 ${(fraction * 100).toInt()}%")
                 }
+                updates.compatibility?.let { Text(it.summary, Modifier.heightIn(max = 100.dp).verticalScroll(rememberScrollState())) }
                 updates.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         },
@@ -50,3 +51,13 @@ internal fun updatePromptNotes(notes: String): String = notes.lineSequence()
     }
     .joinToString("\n")
     .trim()
+
+@Composable
+fun UpdateCompatibilityPrompt(updates: UpdateViewModel) {
+    val result = updates.confirmation ?: return
+    AlertDialog(onDismissRequest = updates::dismissConfirmation,
+        title = { Text("部分节点可能无法使用") },
+        text = { Text(result.summary + "\n继续安装后，上述不兼容或未知节点可能无法访问。", Modifier.verticalScroll(rememberScrollState())) },
+        confirmButton = { TextButton(onClick = updates::confirmInstall) { Text("确认并重新检查") } },
+        dismissButton = { TextButton(onClick = updates::dismissConfirmation) { Text("暂不安装") } })
+}

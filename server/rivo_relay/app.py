@@ -80,10 +80,11 @@ class RelayApp:
         self.submissions.recover_pending()
 
     def node(self) -> dict:
+        from .compatibility import declaration
         native = self.codex.status()
         return {"id": self.config.node_id, "name": self.node_name.get(),
                 "releaseCode": int(os.environ.get("RIVO_RELEASE_CODE", "0")),
-                "connected": bool(native.get("connected")),
+                "connected": bool(native.get("connected")), "compatibility": declaration(),
                 "capabilities": {**native.get("capabilities", {}), **self.media_capabilities(),
                              "todoAttachmentUpload": True}, "runtime": native}
 

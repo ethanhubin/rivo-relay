@@ -2,6 +2,8 @@
 
 更新：2026-10-29；对应 0.2.0 的 `server/rivo_relay/api.py`。运行、配对 CLI 与构建方式见[README](../README.md)，功能和边界见[功能补齐记录](feature-parity.md)。这是一层通向选定原生 Codex 节点的 API，不建立独立执行权限体系。
 
+兼容性演进规则见 [App 与节点兼容协议](api-compatibility.md)（基础契约、可选能力与 App 更新判断）。
+
 ## 通用约定
 
 - 正式连接使用 HTTPS。`GET /health`、`POST /v1/pair` 与持有临时文件票据的 `GET /v1/download-links/{ticket}` 无需 Bearer；其余接口必须携带一个 `Authorization: Bearer <token>`。
@@ -16,7 +18,7 @@
 | --- | --- | --- |
 | `GET /health` | 无 | 返回 `status: "ok"`、稳定节点 ID `nodeId`、运行版本码 `releaseCode`（未设置时为 `0`）和原生连接状态 `nativeConnected`；`status` 仅说明 HTTP 活着，不代表原生已连通 |
 | `POST /v1/pair` | `{code, deviceName}` | `{token, deviceId, node:{id,name}}` |
-| `GET /v1/node` | Bearer | `{id,name,connected,capabilities,runtime}` |
+| `GET /v1/node` | Bearer | `{id,name,connected,capabilities,runtime,compatibility}` |
 | `GET /v1/projects` | Bearer | `{projects:[{id,name,path,roots}]}`；包含无会话项目 |
 | `POST /v1/projects` | `{submissionId,path,folderName?}`，path 是节点绝对路径 | 提交记录；接受时 receipt 含 `projectId` |
 | `GET /v1/project-directories?path=…` | path 可省略，起点为原生节点当前目录 | `{path,parentPath,entries}`；条目结构同 `/v1/directories` |

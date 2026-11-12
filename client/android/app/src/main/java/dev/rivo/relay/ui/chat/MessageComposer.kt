@@ -121,10 +121,11 @@ fun MessageComposer(
     settingsContent: (@Composable () -> Unit)? = null,
     goalMode: Boolean = false,
     goalModeEnabled: Boolean = false,
+    attachmentsEnabled: Boolean = true,
     onSelectMode: ((String) -> Unit)? = null,
 ) {
     var attachmentsOpen by remember { mutableStateOf(false) }
-    LaunchedEffect(enabled) { if (!enabled) attachmentsOpen = false }
+    LaunchedEffect(enabled, attachmentsEnabled) { if (!enabled || !attachmentsEnabled) attachmentsOpen = false }
     val context = LocalContext.current
     val launchCamera = rememberAttachmentCamera({ onPasteImages(listOf(it)) }) { message ->
         android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
@@ -178,7 +179,13 @@ fun MessageComposer(
         // The permission dialog ends the original tap. Never start capture from its callback.
         permissionNotice = if (granted) "麦克风权限已开启，请再次点击开始录音" else "需要麦克风权限才能语音输入"
     }
-    LaunchedEffect(repository) {
+    val capabilityEpoch = api?.capabilityEpoch?.collectAsState()?.value
+    val connectionRecovery = api?.recovery?.state?.collectAsState()?.value
+    LaunchedEffect(repository, capabilityEpoch, connectionRecovery) {
+        if (connectionRecovery != null && connectionRecovery != dev.rivo.relay.data.RecoveryState.CONNECTED) {
+            capability = SpeechCapability(false, "节点未连接")
+            return@LaunchedEffect
+        }
         if (repository != null) try { capability = repository.capability() }
         catch (error: Exception) {
             if (error is CancellationException) throw error
@@ -351,7 +358,7 @@ fun MessageComposer(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         Box {
-                            ComposerToolButton({ attachmentsOpen = !attachmentsOpen }, enabled && !preparing,
+                            ComposerToolButton({ attachmentsOpen = !attachmentsOpen }, enabled && attachmentsEnabled && !preparing,
                                 "添加附件", "add_attachment") { ComposerAddIcon() }
                             AttachmentSourceMenu(attachmentsOpen, 10 - images.size, 16 - files.size,
                                 onDismiss = { attachmentsOpen = false },

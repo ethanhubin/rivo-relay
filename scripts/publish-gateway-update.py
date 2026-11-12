@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'server'))
 from rivo_relay.release_management.configuration import gateway_connection
 from rivo_relay.gateway.config import decode_key
+from rivo_relay.compatibility import apk_compatibility
 from rivo_relay.gateway.update_store import sha256, validate
 
 
@@ -41,7 +42,10 @@ def bundle(root, commit, apk, manifest, destination):
                 output.writestr(info, source.read(name))
         info = zipfile.ZipInfo('release.json', (2020, 1, 1, 0, 0, 0))
         output.writestr(info, json.dumps({k: manifest[k] for k in ('version', 'versionCode')}, sort_keys=True))
-    item = {k: manifest[k] for k in ('version', 'versionCode', 'notes')} | {'schema': 1}
+    compatibility = apk_compatibility(apk)
+    if compatibility != manifest.get('compatibility'):
+        raise ValueError('APK compatibility differs from publication')
+    item = {k: manifest[k] for k in ('version', 'versionCode', 'notes')} | {'schema': 1, 'compatibility': compatibility}
     for kind, path, suffix in [('app', apk, 'apk'), ('node', package, 'zip')]:
         digest = sha256(path)
         name = digest + '.' + suffix
