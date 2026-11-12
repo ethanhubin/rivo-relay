@@ -132,6 +132,7 @@ class SessionHandoffMixin:
             self.interactions.discard_thread(thread_id)
             with self._lock:
                 self._joined.discard(thread_id)
+                self._unmaterialized.discard(thread_id)
                 self._created.pop(thread_id, None)
                 self._materializing.pop(thread_id, None)
                 self._settings.pop(thread_id, None)
@@ -152,11 +153,16 @@ class SessionHandoffMixin:
             if error.definite:
                 self._forget_observation(thread_id, 'ownership')
             raise
+        self.interactions.discard_thread(thread_id)
         with self._lock:
             self._joined.discard(thread_id)
+            self._unmaterialized.discard(thread_id)
+            self._active.pop(thread_id, None)
             self._created.pop(thread_id, None)
             self._materializing.pop(thread_id, None)
             self._settings.pop(thread_id, None)
+            self._live = OrderedDict((key, value) for key, value in self._live.items() if key[0] != thread_id)
+            self._pending_terminal = {key for key in self._pending_terminal if key[0] != thread_id}
         self.on_event({'method': 'relay/ownershipChanged', 'params': {'threadId': thread_id}})
         return {'threadId': thread_id, 'released': True, 'releaseScope': 'relay-subscription'}
 
@@ -225,6 +231,7 @@ class SessionHandoffMixin:
             for target in affected:
                 with self._lock:
                     self._joined.discard(target)
+                    self._unmaterialized.discard(target)
                     self._active.pop(target, None)
                     self._created.pop(target, None)
                     self._materializing.pop(target, None)
