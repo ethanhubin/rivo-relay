@@ -82,6 +82,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     pendingReceiptUnresolved: Boolean = false, onReconcilePending: (() -> Unit)? = null,
     readGoalCapability: (suspend () -> Boolean)? = null, onOpenPendingThread: (() -> Unit)? = null, pendingPermissionsEditable: Boolean = true,
     pendingWorkspace: (@Composable () -> Unit)? = null,
+    attachmentsEnabled: Boolean = true,
     onConfiguredSend: ((JSONArray, String?, String?, String?, String?, JSONObject, () -> Unit) -> Unit)? = null,
     onSettingsChange: ((JSONObject) -> Unit)? = null,
     recoveryState: RecoveryState? = null, takeoverBlockedReason: String? = null, nodeName: String = "当前节点", writerBusy: Boolean = false, onWriterAction: ((String) -> Unit)? = null,
@@ -804,9 +805,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             files = if (hideSubmitted) emptyList() else files, onRemoveFile = { reference -> files = files.filterNot { it === reference } },
             onOpenFile = { reference -> nativeFilePath(reference.string("path"), cwd)?.let(::openFile) },
             preparing = preparing, error = attachmentError, enabled = !busy && !inputLocked && draftLoaded,
-            textEditable = textEditable,
+            textEditable = textEditable, attachmentsEnabled = attachmentsEnabled,
             prediction = visiblePrediction,
-            canSend = !(goalMode && displayedGoal == null) && !pendingReceiptUnresolved && !pendingFirstTurnSent && (pendingGoal == null || goalCapability == true) && (sendText.isNotBlank() || images.isNotEmpty() || files.isNotEmpty() || pendingGoal != null) && !state.stale && (snapshot != null || pendingTitle != null && pendingReady),
+            canSend = (attachmentsEnabled || images.isEmpty() && files.isEmpty()) && !(goalMode && displayedGoal == null) && !pendingReceiptUnresolved && !pendingFirstTurnSent && (pendingGoal == null || goalCapability == true) && (sendText.isNotBlank() || images.isNotEmpty() || files.isNotEmpty() || pendingGoal != null) && !state.stale && (snapshot != null || pendingTitle != null && pendingReady),
             canContinue = state.canContinueTask() && !blocked && !submissionInFlight, onContinue = onContinue,
             isRunning = snapshot?.activeTurnId?.isNotBlank() == true, canStop = !busy && !blocked && !state.stale && canOperate, busy = busy,
             onAddImage = { focus.clearFocus(); keyboard?.hide(); imagePickerTarget = state.id; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
@@ -826,7 +827,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 }
             },
             focusRequest = inputFocusRequest, onPasteImages = { uris ->
-                pendingImageUris = ArrayList((pendingImageUris + uris.map { it.toString() }).take(10))
+                if (attachmentsEnabled) pendingImageUris = ArrayList((pendingImageUris + uris.map { it.toString() }).take(10))
             },
             settingsExpanded = settingsOpen, onDismissSettings = { settingsOpen = false }, settingsContent = {
                 NativeComposerSettings(snapshot?.settings, models, effectiveModel, effectiveEffort, selectedMode, !pendingReceiptUnresolved && !pendingFirstTurnSent && !busy && !blocked && !state.stale && (state.canCompose() || pendingTitle != null && pendingReady) && draftLoaded,

@@ -11,6 +11,9 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
+from rivo_relay.compatibility import apk_compatibility
 
 
 def publish(apk, workspace, version, code, notes):
@@ -37,7 +40,7 @@ def publish_locked(apk, workspace, version, code, notes):
             hasher.update(block)
     digest = hasher.hexdigest()
     manifest = {'version': version, 'versionCode': code, 'sha256': digest,
-                'size': apk.stat().st_size, 'notes': notes}
+                'size': apk.stat().st_size, 'notes': notes, 'compatibility': apk_compatibility(apk)}
     previous = root / 'latest.json'
     if previous.exists():
         old = json.loads(previous.read_text())

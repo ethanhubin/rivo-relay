@@ -27,14 +27,17 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
     savedNodes: List<SavedNode> = emptyList(), onSelectNode: (String) -> Unit = {},
     onAddNode: () -> Unit = {}, canAddNode: Boolean = true) {
     var version by remember(connection, api) { mutableStateOf("正在获取…") }
+    var compatibility by remember(connection, api) { mutableStateOf("兼容性未知") }
     var versionRefresh by remember(connection, api) { mutableIntStateOf(0) }
     LaunchedEffect(connection, api, versionRefresh) {
         version = try {
             val code = api?.call("/v1/node")?.optInt("releaseCode", 0) ?: 0
+            compatibility = api?.compatibilityMessage ?: "兼容性未知"
             if (code > 0) code.toString() else "未提供"
         } catch (error: CancellationException) {
             throw error
         } catch (_: Exception) {
+            compatibility = "兼容性未知，请重新连接后检查"
             "暂不可用"
         }
     }
@@ -132,7 +135,7 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
                 Text(
                     listOfNotNull(
                         statusLabel,
-                        "节点版本：$version",
+                        "节点版本：$version\n$compatibility",
                         routeLabel,
                         networkLatencyMs?.takeIf {
                             !status.failed && status.endpoint.isNotBlank() &&
