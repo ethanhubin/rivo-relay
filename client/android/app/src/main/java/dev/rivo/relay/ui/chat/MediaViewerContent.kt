@@ -1051,9 +1051,10 @@ private fun FullScreenGalleryPage(
         imageLoader = mediaClient?.imageLoader ?: context.imageLoader,
         model = mediaClient?.imageRequest(context, item.preview, true)?.build() ?: item.preview,
         contentDescription = if (originalLoaded) null else contentDescription,
-        onSuccess = { if (!originalLoaded) reportImageSize(it) },
         modifier = Modifier.fillMaxSize().testTag("fullscreen_thumbnail"),
-        contentScale = contentScale,
+        // Preview pixels describe the downsampled bitmap, not the original.
+        // Fit it immediately so loading the full image does not expand a tiny preview.
+        contentScale = ContentScale.Fit,
       )
     }
     if (!validationBlocked && !versionRefreshPending && loadOriginal && (item.original != item.preview || mediaClient != null)) {

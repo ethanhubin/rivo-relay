@@ -22,6 +22,9 @@ import org.junit.Test
 class ImageViewerSizingUiTest {
   @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
+  @Test fun smallPreviewFillsViewportWhileOriginalIsUnavailable() =
+    verifyImageSize(120, 80, true, fit = true, previewOnly = true)
+
   @Test fun smallOriginalKeepsPixelSize() = verifyImageSize(120, 80, false, fit = false)
   @Test fun largeOriginalShrinksToFit() = verifyImageSize(2400, 3600, true, fit = true)
 
@@ -40,7 +43,7 @@ class ImageViewerSizingUiTest {
     verifyImageSize(bounds.width() / 4, bounds.height() / 2 + 1, true, fit = true)
   }
 
-  private fun verifyImageSize(width: Int, height: Int, separatePreview: Boolean, fit: Boolean) {
+  private fun verifyImageSize(width: Int, height: Int, separatePreview: Boolean, fit: Boolean, previewOnly: Boolean = false) {
     val file = File(compose.activity.cacheDir, "viewer-sizing-$width.png")
     Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply {
       eraseColor(Color.RED)
@@ -52,7 +55,10 @@ class ImageViewerSizingUiTest {
       RivoTheme {
         FullScreenImage(
           image = ImageViewerSource(
-            listOf(ImageViewerItem(if (separatePreview) "file:///missing-preview.png" else source, source)),
+            listOf(ImageViewerItem(
+              if (previewOnly || !separatePreview) source else "file:///missing-preview.png",
+              if (previewOnly) "file:///missing-original.png" else source,
+            )),
             0, Rect.Zero,
           ),
           onDismiss = {}, onSave = null,
