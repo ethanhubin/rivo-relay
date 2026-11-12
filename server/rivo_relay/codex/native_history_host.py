@@ -18,7 +18,13 @@ import sys
 
 from . import native_history_support as locks
 from .native_reprojection import (NativeHistoryReprojector, NativeHistoryReprojectionError,
-                                  MAX_ROLLOUT_BYTES, MAX_RECORD_BYTES, MAX_RECORDS, THREAD_ID)
+                                  MAX_RECORD_BYTES, MAX_RECORDS, THREAD_ID)
+
+
+# Inspection streams one bounded record at a time; unlike reprojection it does
+# not copy/materialize the entire journal. Long tool-heavy sessions can exceed
+# the 256 MiB repair budget while their official projection is already current.
+MAX_INSPECTION_BYTES = 1024 * 1024 * 1024
 
 
 def _inside(path, root):
@@ -176,7 +182,7 @@ def inspect_journal(home, thread_id, known=None):
         return {'available': False, 'journal': None, 'writerBusy': writer_busy(home, thread_id)}
     path, history_mode, cwd = storage
     before = _path_stat(path)
-    if before.st_size > MAX_ROLLOUT_BYTES:
+    if before.st_size > MAX_INSPECTION_BYTES:
         raise NativeHistoryReprojectionError('Codex 历史超过本次安全检查大小限制')
     fingerprint = _fingerprint(before)
     known = known if isinstance(known, dict) and not known.get('changing') else {}
@@ -219,7 +225,7 @@ def inspect_journal(home, thread_id, known=None):
                 break
             total += len(line); record_count += 1
             digest.update(line)
-            if len(line) > MAX_RECORD_BYTES or total > MAX_ROLLOUT_BYTES or record_count > MAX_RECORDS:
+            if len(line) > MAX_RECORD_BYTES or total > MAX_INSPECTION_BYTES or record_count > MAX_RECORDS:
                 raise NativeHistoryReprojectionError('Codex 历史记录超过安全检查大小限制')
             if not line.endswith(b'\n'):
                 partial = True
