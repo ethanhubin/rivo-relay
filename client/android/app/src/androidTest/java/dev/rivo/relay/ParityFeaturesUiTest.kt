@@ -155,13 +155,14 @@ class ParityFeaturesUiTest {
 
     @Test fun quotaResetRequiresExplicitConfirmationAndKnownAvailableCount() {
         var resets = 0
+        var selectedCredit: String? = null
         var details by mutableStateOf(false)
         val now = System.currentTimeMillis() / 1000
-        val usage = dev.rivo.relay.data.catalogUsage(JSONObject("""{"usage":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":${now + 5400}},"secondary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":${now + 172800}}},"resetSupported":true,"rateLimitResetCredits":{"availableCount":2,"credits":[{"id":"fixture-credit","status":"available","expiresAt":${now + 864000}}]}}}"""))
+        val usage = dev.rivo.relay.data.catalogUsage(JSONObject("""{"usage":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":${now + 5400}},"secondary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":${now + 172800}}},"resetSupported":true,"resetCreditSelectionSupported":true,"rateLimitResetCredits":{"availableCount":2,"credits":[{"id":"second-credit","title":"第二次机会","status":"available"},{"id":"fixture-credit","status":"available","expiresAt":${now + 864000}}]}}}"""))
         compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize()) {
             Column {
                 Box(Modifier.weight(1f)) {
-                    dev.rivo.relay.ui.settings.SettingsScreen(onOpenUsage = { details = true })
+                    dev.rivo.relay.ui.settings.SettingsScreen(onOpenUsage = { details = true }, usage = usage)
                 }
                 androidx.compose.material3.NavigationBar {
                     NavigationBarItem(false, {}, icon = { Text("⌘") }, label = { Text("Codex") })
@@ -171,7 +172,7 @@ class ParityFeaturesUiTest {
                 }
             }
             if (details) dev.rivo.relay.ui.common.UsageDetailsDialog(usage, false, null, {}, { details = false }, nodeName = "演示节点",
-                canReset = true, onReset = { resets++ })
+                canReset = true, onReset = { selectedCredit = it; resets++ })
         } } }
         compose.onNodeWithTag("open_usage_details").performScrollTo().assertIsDisplayed()
         android.os.SystemClock.sleep(700)
@@ -180,7 +181,9 @@ class ParityFeaturesUiTest {
         compose.onNodeWithTag("usage_reset_count").assertTextEquals("可用重置次数：2")
         android.os.SystemClock.sleep(700)
         evidence("quota-reset-details")
-        compose.onNodeWithTag("reset_usage").performClick()
+        compose.onNodeWithTag("reset_usage").assertIsNotEnabled()
+        compose.onNodeWithTag("usage_reset_credit_fixture-credit").performScrollTo().performClick()
+        compose.onNodeWithTag("reset_usage").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(0, resets) }
         android.os.SystemClock.sleep(700)
         evidence("quota-reset-confirm")
@@ -188,7 +191,24 @@ class ParityFeaturesUiTest {
         compose.runOnIdle { assertEquals(0, resets) }
         compose.onNodeWithTag("reset_usage").performClick()
         compose.onNodeWithTag("confirm_usage_reset").performClick()
-        compose.runOnIdle { assertEquals(1, resets) }
+        compose.runOnIdle { assertEquals(1, resets); assertEquals("fixture-credit", selectedCredit) }
+    }
+
+    @Test fun quotaResetBlocksCountOnlyDetailsAndInvalidatesSelectionAfterRefresh() {
+        val credit = CodexResetCredit("chosen", "available", null)
+        var usage by mutableStateOf(CodexUsage(emptyList(), CodexResetCredits(2, null), true, true))
+        var resets = 0
+        compose.setContent { RivoTheme {
+            dev.rivo.relay.ui.common.UsageDetailsDialog(usage, false, null,
+                onRefresh = { usage = usage.copy(resetCredits = CodexResetCredits(1, emptyList())) },
+                onDismiss = {}, canReset = true, onReset = { resets++ })
+        } }
+        compose.onNodeWithTag("reset_usage").assertIsNotEnabled()
+        compose.runOnIdle { usage = usage.copy(resetCredits = CodexResetCredits(2, listOf(credit))) }
+        compose.onNodeWithTag("usage_reset_credit_chosen").performClick()
+        compose.onNodeWithTag("reset_usage").performClick()
+        compose.onNodeWithTag("confirm_usage_reset").assertIsNotEnabled()
+        compose.runOnIdle { assertEquals(0, resets) }
     }
 
     @Test fun quotaContextAndPlanDetailsShowTheirAuthoritativeValues() {

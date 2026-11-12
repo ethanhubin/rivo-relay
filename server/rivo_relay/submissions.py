@@ -170,6 +170,15 @@ class SubmissionStore:
                 (operation, target_json),
             )]
 
+    def find_usage_resets(self, account_scope: str) -> list[dict]:
+        """Coordinate selected-credit and legacy claims within the same account."""
+        with self.db.read() as connection:
+            return [_public(row) for row in connection.execute(
+                "SELECT * FROM submissions WHERE operation='usage.reset' AND "
+                "(target_json=? OR json_extract(target_json, '$.accountScope')=?) "
+                "ORDER BY created_at DESC, id", (_json(account_scope), account_scope),
+            )]
+
     def checkpoint(self, submission_id: str, receipt: dict) -> dict:
         """Durably retain a created thread before linking or dispatching a turn.
 

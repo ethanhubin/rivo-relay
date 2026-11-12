@@ -3,6 +3,7 @@ package dev.rivo.relay.ui.settings
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -20,10 +21,15 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import dev.rivo.relay.BuildConfig
 import dev.rivo.relay.data.AppRelease
 import dev.rivo.relay.data.NodeAppUpdates
+import dev.rivo.relay.data.CodexUsage
+import dev.rivo.relay.ui.common.CodexQuotaProgressBar
+import java.text.DateFormat
+import java.util.Date
 import androidx.compose.ui.platform.LocalContext
 import android.text.format.Formatter
 
@@ -38,6 +44,10 @@ fun SettingsScreen(
     onAddNode: () -> Unit = {},
     canAddNode: Boolean = true,
     onOpenUsage: (() -> Unit)? = null,
+    usage: CodexUsage? = null,
+    usageLoading: Boolean = false,
+    usageError: String? = null,
+    onRefreshUsage: (() -> Unit)? = null,
     checkUpdate: (suspend () -> AppRelease?)? = null,
     downloadAndInstall: (suspend (AppRelease) -> Unit)? = null,
     updates: UpdateViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
@@ -110,8 +120,49 @@ fun SettingsScreen(
                 }, onAddNode, canAddNode)
             }
         }
-        onOpenUsage?.let { open ->
-            SettingsEntry("额度重置", dev.rivo.relay.R.drawable.ic_openai, "open_usage_details", actionLabel = "查看", onEdit = open)
+        Card(Modifier.fillMaxWidth().testTag("settings_weekly_usage"),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text("周额度", style = MaterialTheme.typography.titleMedium)
+                    onRefreshUsage?.let { refresh ->
+                        TextButton(onClick = refresh, enabled = !usageLoading) { Text("刷新") }
+                    }
+                }
+                connection?.name?.let { Text(it, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                val weekly = usage?.weeklyWindow?.takeIf { it.windowMinutes == 7L * 24 * 60 }
+                if (weekly != null) {
+                    Text("周额度剩余 ${weekly.remainingPercent}%", style = MaterialTheme.typography.bodyLarge)
+                    CodexQuotaProgressBar(weekly, Modifier.fillMaxWidth().height(4.dp))
+                    weekly.resetsAt?.let { reset ->
+                        val format = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+                        Text("${format.format(Date(reset * 1000))} 重置", style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                } else Text(if (usageLoading) "正在读取额度…" else "周额度暂不可用",
+                    style = MaterialTheme.typography.bodyMedium)
+                if (usageLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                usageError?.let { Text(it, color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall) }
+                onOpenUsage?.let { open ->
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = open)
+                        .testTag("open_usage_details").padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Icon(painterResource(dev.rivo.relay.R.drawable.ic_openai), contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary)
+                        Text("额度重置", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                        Text(usage?.resetCredits?.availableCount?.let { "$it 次" }
+                            ?: if (usageLoading) "读取中…" else "次数未知",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("›", style = MaterialTheme.typography.headlineSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
         }
         SettingsEntry("通知", dev.rivo.relay.R.drawable.ic_notifications, "edit_notification_settings") {
             notificationEditorOpen = true

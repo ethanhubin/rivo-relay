@@ -1132,7 +1132,8 @@ class CodexService(SessionHandoffMixin):
         self.start()
         result = self.connection.request('account/rateLimits/read', {})
         return {**{key: result[key] for key in ('rateLimits', 'rateLimitsByLimitId', 'ordinaryUsageAllowed', 'rateLimitResetCredits') if key in result},
-                'resetSupported': isinstance(result.get('rateLimitResetCredits'), dict)}
+                'resetSupported': isinstance(result.get('rateLimitResetCredits'), dict),
+                'resetCreditSelectionSupported': True}
 
     def usage_reset_scope(self):
         """Bind recovery to the native account without exposing its identity to phones."""
@@ -1144,11 +1145,14 @@ class CodexService(SessionHandoffMixin):
         identity = {key: account[key] for key in ('email', 'id', 'accountId', 'organizationId', 'workspaceId') if key in account}
         return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
-    def reset_usage(self, submission_id, account_scope):
+    def reset_usage(self, submission_id, account_scope, credit_id=None):
         if self.usage_reset_scope() != account_scope:
             raise CodexError('登录账户已变化，请核对原操作', code='usage_reset_account_changed', http_status=409)
         try:
-            result = self.connection.request('account/rateLimitResetCredit/consume', {'idempotencyKey': submission_id})
+            params = {'idempotencyKey': submission_id}
+            if credit_id is not None:
+                params['creditId'] = credit_id
+            result = self.connection.request('account/rateLimitResetCredit/consume', params)
         except CodexError as error:
             if error.code == 'native_method_unsupported' or error.native_code == -32601:
                 raise CodexError('此节点不支持额度重置，请更新节点', code='usage_reset_unsupported', http_status=409) from error
