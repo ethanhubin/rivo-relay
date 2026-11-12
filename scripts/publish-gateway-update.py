@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT / 'server'))
 from rivo_relay.release_management.configuration import gateway_connection
 from rivo_relay.gateway.config import decode_key
 from rivo_relay.compatibility import apk_compatibility
-from rivo_relay.gateway.update_store import sha256, validate
+from rivo_relay.gateway.update_store import sha256, validate, require_app_endpoint, PUBLICATION_CAPABILITIES
 
 
 def bundle(root, commit, apk, manifest, destination, node_version=None, node_code=None, node_notes=None):
@@ -74,6 +74,10 @@ async def verify(item, key):
         async with client.get(key['gateway'] + '/v1/releases/latest', allow_redirects=False) as response:
             if response.status != 200 or await response.json() != item:
                 raise ValueError('VPS release manifest mismatch')
+        async with client.get(key['gateway'] + '/v1/app-updates/latest', allow_redirects=False) as response:
+            if response.status != 200:
+                raise ValueError('VPS App update endpoint unavailable')
+            require_app_endpoint(item, await response.json())
         for kind in ('app', 'node'):
             asset = item[kind]
             digest, size = hashlib.sha256(), 0
@@ -84,6 +88,24 @@ async def verify(item, key):
                     if size > asset['size']: raise ValueError('VPS download exceeds size')
             if size != asset['size'] or digest.hexdigest() != asset['sha256']:
                 raise ValueError('VPS download integrity mismatch')
+
+
+async def preflight_gateway(key, node_only):
+    import aiohttp
+    connector = aiohttp.TCPConnector(ssl=aiohttp.Fingerprint(bytes.fromhex(key['pin'])))
+    async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=20)) as client:
+        async with client.get(key['gateway'] + '/v1/releases/latest', allow_redirects=False) as response:
+            if response.status != 200:
+                raise ValueError('VPS release manifest unavailable before publication')
+            item = await response.json()
+        async with client.get(key['gateway'] + '/v1/app-updates/latest', allow_redirects=False) as response:
+            if response.status != 200:
+                raise ValueError('VPS App update endpoint unavailable before publication')
+            require_app_endpoint(item, await response.json())
+        if node_only:
+            async with client.get(key['gateway'] + '/v1/releases/capabilities', allow_redirects=False) as response:
+                if response.status != 200 or await response.json() != PUBLICATION_CAPABILITIES:
+                    raise ValueError('Running gateway does not support independent app versions')
 
 
 def main():
@@ -114,6 +136,7 @@ def main():
         key = {'gateway': gateway_url(args.gateway_url), 'pin': args.gateway_pin}
     else:
         key = decode_key(json.loads((args.workspace / 'gateway-client.json').read_text())['key'])
+    asyncio.run(preflight_gateway(key, args.node_version is not None))
     identity = ['-i', str(args.identity), '-o', 'IdentitiesOnly=yes'] if args.identity else []
     ssh = ['ssh', *identity, '-o', 'BatchMode=yes', args.host]
     remote = args.remote_workspace + '/incoming-' + uuid.uuid4().hex

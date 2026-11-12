@@ -5,9 +5,9 @@ import json
 from pathlib import Path
 
 
-async def _fetch(root, cfg, download):
+async def _fetch(root, cfg, download, node_only=False):
     import aiohttp
-    from rivo_relay.gateway.update_store import validate
+    from rivo_relay.gateway.update_store import validate, require_app_endpoint, PUBLICATION_CAPABILITIES
     connector = aiohttp.TCPConnector(ssl=aiohttp.Fingerprint(bytes.fromhex(cfg['gatewayPin'])))
     async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=300)) as client:
         async with client.get(cfg['gatewayUrl'] + '/v1/releases/latest', allow_redirects=False) as response:
@@ -15,6 +15,15 @@ async def _fetch(root, cfg, download):
                 raise RuntimeError('VPS 更新清单不可用')
             item = await response.json()
         validate(item)
+        async with client.get(cfg['gatewayUrl'] + '/v1/app-updates/latest', allow_redirects=False) as response:
+            if response.status != 200:
+                raise RuntimeError('客户端更新接口不可用；先修复网关再发布')
+            app_response = await response.json()
+        require_app_endpoint(item, app_response)
+        if node_only:
+            async with client.get(cfg['gatewayUrl'] + '/v1/releases/capabilities', allow_redirects=False) as response:
+                if response.status != 200 or await response.json() != PUBLICATION_CAPABILITIES:
+                    raise RuntimeError('运行中的网关尚不支持独立客户端版本；先部署新版网关再发布节点')
         app = item['app']
         baseline = {k: item['app'].get(k, item[k]) for k in ('version', 'versionCode', 'notes')}
         baseline.update(nodeVersion=item['version'], nodeVersionCode=item['versionCode'])
@@ -43,5 +52,5 @@ async def _fetch(root, cfg, download):
         return baseline
 
 
-def baseline(root, cfg, download=False):
-    return asyncio.run(_fetch(root, cfg, download))
+def baseline(root, cfg, download=False, node_only=False):
+    return asyncio.run(_fetch(root, cfg, download, node_only))

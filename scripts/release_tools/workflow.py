@@ -32,7 +32,7 @@ def prepare(root, args):
         mode = configuration.settings(root).get('mode', 'legacy')
         if mode == 'manager':
             from rivo_relay.release_management.central import baseline
-            baseline(root, configuration.settings(root), download=True)
+            baseline(root, configuration.settings(root), download=True, node_only=getattr(args, 'node_only', False))
         name, code = build_version(root)
         workspace = root / 'workspace/local-node'
         previous_path = workspace / 'updates/latest.json'
@@ -234,7 +234,7 @@ class Release:
             return  # Reconcile the pending switch before requiring its HTTP server.
         if self.state.get('mode') == 'manager':
             from rivo_relay.release_management.central import baseline
-            remote = baseline(self.root, configuration.settings(self.root))
+            remote = baseline(self.root, configuration.settings(self.root), node_only=self.state.get('nodeOnly', False))
             allowed = [self.state['previous']] + ([own] if own else [])
             require(any(all(remote.get(k) == expected[k] for k in ('version', 'versionCode', 'sha256', 'size'))
                         for expected in allowed), 'VPS 已有其他发布，停止此计划')
