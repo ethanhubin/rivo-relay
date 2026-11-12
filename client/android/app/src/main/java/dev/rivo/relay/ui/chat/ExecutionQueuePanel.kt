@@ -1,10 +1,10 @@
 package dev.rivo.relay.ui.chat
 
 import androidx.compose.animation.animateContentSize
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -35,15 +35,16 @@ fun ExecutionQueuePanel(threadId: String, tasks: List<QueueTask>, enabled: Boole
     var offset by remember(threadId) { mutableFloatStateOf(0f) }
     val threshold = with(LocalDensity.current) { 28.dp.toPx() }
     LaunchedEffect(tasks) { dragging = null; offset = 0f; if (tasks.size <= 3) expanded = false }
-    Surface(Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("execution_queue"),
-        shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.surfaceContainerLow,
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 44.dp) {
+    Surface(Modifier.fillMaxWidth()
+        // Cross the composer's 8dp top gap, then overlap by 2dp.
+        .offset(y = 8.dp + 2.dp)
+        // Composer inset (12dp) + top corner radius (28dp).
+        .padding(horizontal = 40.dp).testTag("execution_queue"),
+        shape = MaterialTheme.shapes.small.copy(bottomStart = CornerSize(0.dp), bottomEnd = CornerSize(0.dp)),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
         shadowElevation = 2.dp) {
-        Column(Modifier.animateContentSize()) {
-            Row(Modifier.fillMaxWidth().clickable(enabled = tasks.size > 3) { expanded = !expanded }.padding(horizontal = 16.dp, vertical = 10.dp).testTag("queue_expand"),
-                verticalAlignment = Alignment.CenterVertically) {
-                Text("执行队列", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
-                Text("${tasks.count { it.status == "waiting" }} 项等待", style = MaterialTheme.typography.labelMedium)
-            }
+        Column(Modifier.animateContentSize().padding(bottom = 2.dp)) {
             Column(Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
                 val visibleTasks = if (expanded) order else order.take(3)
                 visibleTasks.forEachIndexed { itemIndex, task ->
@@ -69,7 +70,7 @@ fun ExecutionQueuePanel(threadId: String, tasks: List<QueueTask>, enabled: Boole
                                             order = order.toMutableList().apply { add(target, removeAt(index)) }; offset = 0f
                                         }
                                     })
-                            }.padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically,
+                            }.heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text(if (task.status == "running") "●" else "○", modifier = Modifier.width(18.dp), color = MaterialTheme.colorScheme.primary)
                             Column(Modifier.weight(1f)) {
@@ -98,5 +99,6 @@ fun ExecutionQueuePanel(threadId: String, tasks: List<QueueTask>, enabled: Boole
                 }
             }
         }
+    }
     }
 }
