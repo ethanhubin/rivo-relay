@@ -23,6 +23,13 @@ def validate(item):
                 or type(asset.get('size')) is not int or not 0 < asset['size'] <= MAX_PACKAGE
                 or asset.get('path') != f"/v1/releases/files/{asset['sha256']}.{suffix}"):
             raise ValueError('Invalid release asset')
+    app_fields = {'version', 'versionCode', 'notes'} & item['app'].keys()
+    if app_fields and app_fields != {'version', 'versionCode', 'notes'}:
+        raise ValueError('Incomplete app version')
+    if app_fields and (not re.fullmatch(r'\d+\.\d+\.\d+', str(item['app']['version']))
+            or type(item['app']['versionCode']) is not int or not 0 < item['app']['versionCode'] <= item['versionCode']
+            or not isinstance(item['app']['notes'], str) or len(item['app']['notes']) > 16000):
+        raise ValueError('Invalid app version')
     if item['node'].get('agentProtocol') != 1:
         raise ValueError('Unsupported update agent protocol')
     return item
@@ -59,7 +66,7 @@ async def serve(request):
         item = manifest(workspace)
         if request.path.endswith('/app-updates/latest'):
             app = item['app']
-            item = {k: item[k] for k in ('version', 'versionCode', 'notes')} | {
+            item = {k: app.get(k, item[k]) for k in ('version', 'versionCode', 'notes')} | {
                 **({'compatibility': item['compatibility']} if 'compatibility' in item else {}),
                 'sha256': app['sha256'], 'size': app['size'],
                 'apkPath': '/v1/app-updates/apks/' + app['sha256'] + '.apk'}

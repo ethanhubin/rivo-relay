@@ -16,7 +16,9 @@ async def _fetch(root, cfg, download):
             item = await response.json()
         validate(item)
         app = item['app']
-        baseline = {k: item[k] for k in ('version', 'versionCode', 'notes')}
+        baseline = {k: item['app'].get(k, item[k]) for k in ('version', 'versionCode', 'notes')}
+        baseline.update(nodeVersion=item['version'], nodeVersionCode=item['versionCode'])
+        baseline['compatibility'] = item.get('compatibility')
         baseline.update({k: app[k] for k in ('sha256', 'size')})
         if not download:
             return baseline

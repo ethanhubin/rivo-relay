@@ -1,5 +1,6 @@
 """Release CLI tests use temporary Git repos/HTTP fixtures, never real services."""
 import argparse
+import importlib.util
 from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -11,11 +12,17 @@ import sys
 import tempfile
 import threading
 import unittest
+import zipfile
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
 from release_tools import common as c, deployment as d, workflow as w, asr
 import release as cli
+
+publisher_spec = importlib.util.spec_from_file_location(
+    'publish_gateway_update', Path(__file__).resolve().parents[2] / 'scripts/publish-gateway-update.py')
+publisher = importlib.util.module_from_spec(publisher_spec)
+publisher_spec.loader.exec_module(publisher)
 
 
 class ReleaseCliTest(unittest.TestCase):
@@ -157,6 +164,46 @@ class ReleaseCliTest(unittest.TestCase):
         self.assertEqual(self.previous, c.load(self.root / 'workspace/local-node/updates/latest.json'))
         self.assertIn('TODO', (self.root / state['notes']).read_text())
         self.assertIn(self.args.device_scope, (self.root / state['notes']).read_text())
+
+    def test_node_only_prepare_keeps_android_version_and_reuses_apk(self):
+        self.args.node_only = True
+        previous = dict(self.previous, nodeVersion='0.2.31', nodeVersionCode=43)
+        c.save(self.root / 'workspace/local-node/updates/latest.json', previous)
+        c.save(self.root / 'workspace/release-source.json', {
+            'commit': c.git(self.root, 'rev-parse', 'HEAD'), 'repository': str(self.root)})
+        with patch.object(w.configuration, 'settings', return_value={'mode': 'manager'}), \
+                patch('rivo_relay.release_management.central.baseline', return_value=previous):
+            state = w.prepare(self.root, self.args)
+        self.assertEqual(('0.2.27', 39), w.build_version(self.root))
+        self.assertEqual(('0.2.32', 44), (state['version'], state['versionCode']))
+        self.assertEqual(('0.2.27', 39), (state['appVersion'], state['appVersionCode']))
+        self.assertTrue(state['nodeOnly'])
+        release = w.Release(self.root, state['version'])
+        self.assertEqual(self.root / 'workspace/local-node/updates/apks' / (self.previous['sha256'] + '.apk'), release.apk)
+        with patch.object(release, 'command') as command, patch.object(w, 'verify_apk', return_value={
+                **self.previous, 'signerSha256': ['a'], 'matchesPreviousSigner': True}):
+            release.build()
+        command.assert_not_called()
+
+    def test_node_only_bundle_keeps_app_version_and_records_new_node_version(self):
+        apk = self.root / 'test.apk'
+        with zipfile.ZipFile(apk, 'w') as archive:
+            archive.writestr('AndroidManifest.xml', 'fixture')
+            archive.writestr('assets/api-compatibility.json', '{"apiVersions":[1]}')
+        manifest = dict(self.previous, sha256=c.digest(apk), size=apk.stat().st_size,
+                        compatibility={'apiVersions': [1]})
+        with tempfile.TemporaryDirectory() as temp:
+            item = publisher.bundle(self.root, c.git(self.root, 'rev-parse', 'HEAD'), apk, manifest,
+                                    Path(temp), '0.2.32', 44, 'node fix')
+            self.assertEqual(('0.2.32', 44, 'node fix'),
+                             (item['version'], item['versionCode'], item['notes']))
+            self.assertEqual(('0.2.27', 39, 'old'),
+                             tuple(item['app'][key] for key in ('version', 'versionCode', 'notes')))
+            self.assertFalse((Path(temp) / item['app']['path'].rsplit('/', 1)[-1]).exists())
+            node_file = Path(temp) / item['node']['path'].rsplit('/', 1)[-1]
+            with zipfile.ZipFile(node_file) as archive:
+                self.assertEqual({'version': '0.2.32', 'versionCode': 44},
+                                 json.loads(archive.read('release.json')))
 
     def test_prepare_requires_checks_and_rejects_downgrades_without_mutation(self):
         self.args.server_test = []

@@ -38,10 +38,14 @@ def prepare(root, args):
         previous_path = workspace / 'updates/latest.json'
         require(previous_path.is_file(), '找不到上版清单，无法验证升级与签名连续性')
         previous = load(previous_path)
-        latest = max(version(name), version(previous['version']))
+        node_only = getattr(args, 'node_only', False)
+        require(not node_only or mode == 'manager', '仅节点发布需要管理节点模式')
+        node_previous = (previous.get('nodeVersion', previous['version']),
+                         previous.get('nodeVersionCode', previous['versionCode']))
+        latest = max(version(name), version(node_previous[0]))
         next_version = args.version or '.'.join(map(str, (*latest[:2], latest[2] + 1)))
         require(version(next_version) > latest, '新版本必须高于源码版本和已发布版本')
-        next_code = max(code, previous['versionCode']) + 1
+        next_code = max(code, node_previous[1]) + 1
         directory = root / 'workspace/artifacts' / ('release-' + next_version)
         require(not directory.exists(), '发布目录已存在；请使用 status/resume，不能覆盖已有版本')
         require(args.android_test or args.server_test or args.checks_note,
@@ -54,6 +58,9 @@ def prepare(root, args):
         require(notes.is_relative_to(root) and notes.suffix == '.md', '发布说明必须是仓库内 Markdown 文件')
         require(not notes.is_relative_to(root / 'workspace'), '发布说明必须纳入 Git，不能放在 workspace')
         plan = {'schema': 1, 'mode': mode, 'version': next_version, 'versionCode': next_code,
+                'nodeOnly': node_only, 'appVersion': previous['version'] if node_only else next_version,
+                'appVersionCode': previous['versionCode'] if node_only else next_code,
+                'previousNodeVersion': node_previous[0], 'previousNodeCode': node_previous[1],
                 'previous': previous, 'notes': str(notes.relative_to(root)),
                 'androidTests': args.android_test, 'serverTests': args.server_test,
                 'checksNote': args.checks_note or '', 'deviceScope': args.device_scope,
@@ -71,10 +78,11 @@ def prepare(root, args):
                            f'真机/模拟器验证范围：{args.device_scope}\n').encode())
         elif f'真机/模拟器验证范围：{args.device_scope}' not in notes.read_text():
             atomic(notes, (notes.read_text().rstrip() + f'\n\n真机/模拟器验证范围：{args.device_scope}\n').encode())
-        text = (root / BUILD_FILE).read_text()
-        text = re.sub(r'(versionName\s*=\s*)"[^"]+"', rf'\g<1>"{next_version}"', text, count=1)
-        text = re.sub(r'(versionCode\s*=\s*)\d+', rf'\g<1>{next_code}', text, count=1)
-        atomic(root / BUILD_FILE, text.encode())
+        if not node_only:
+            text = (root / BUILD_FILE).read_text()
+            text = re.sub(r'(versionName\s*=\s*)"[^"]+"', rf'\g<1>"{next_version}"', text, count=1)
+            text = re.sub(r'(versionCode\s*=\s*)\d+', rf'\g<1>{next_code}', text, count=1)
+            atomic(root / BUILD_FILE, text.encode())
         return plan
 
 
@@ -104,14 +112,16 @@ def apk_signers(apk, env):
 
 
 def verify_apk(apk, previous_apk, plan, env):
-    require(apk_identity(apk, env) == ('dev.rivo.relay', str(plan['versionCode']), plan['version']),
+    require(apk_identity(apk, env) == ('dev.rivo.relay', str(plan.get('appVersionCode', plan['versionCode'])),
+                                       plan.get('appVersion', plan['version'])),
             'APK 包名或版本不一致')
     previous = plan['previous']
     require(previous_apk.stat().st_size == previous['size'] and digest(previous_apk) == previous['sha256'],
             '上一版 APK 与清单不一致，不能作为签名基准')
     signers = apk_signers(apk, env)
     require(signers == apk_signers(previous_apk, env), '签名与上一版不一致')
-    return {'version': plan['version'], 'versionCode': plan['versionCode'], 'size': apk.stat().st_size,
+    return {'version': plan.get('appVersion', plan['version']),
+            'versionCode': plan.get('appVersionCode', plan['versionCode']), 'size': apk.stat().st_size,
             'sha256': digest(apk), 'signerSha256': signers, 'matchesPreviousSigner': True}
 
 
@@ -155,7 +165,8 @@ class Release:
         require(self.state['schema'] == 1 and self.state['version'] == release_version, '发布状态版本不匹配')
         self.env = environment(root)
         self.python = Path(configuration.python(root))
-        self.apk = self.directory / ('rivo-relay-' + release_version + '-debug.apk')
+        self.apk = (root / 'workspace/local-node/updates/apks' / (self.state['previous']['sha256'] + '.apk')
+                    if self.state.get('nodeOnly') else self.directory / ('rivo-relay-' + release_version + '-debug.apk'))
         self.retry_deploy = False
 
     def record(self, phase, **fields):
@@ -181,26 +192,33 @@ class Release:
     def preflight(self, commit):
         require(self.state.get('mode', 'legacy') == configuration.settings(self.root).get('mode', 'legacy'),
                 '发布模式已变化，不能继续原发布计划')
-        require(build_version(self.root) == (self.state['version'], self.state['versionCode']), '源码版本与发布计划不一致')
+        expected_app = (self.state.get('appVersion', self.state['version']),
+                        self.state.get('appVersionCode', self.state['versionCode']))
+        if not self.state.get('nodeOnly'):
+            require(build_version(self.root) == expected_app, '源码版本与发布计划不一致')
         notes = self.root / self.state['notes']
         require(notes.is_file() and notes.read_text().strip() and 'TODO' not in notes.read_text(), '请先填写发布说明，移除 TODO')
         if self.state.get('mode') == 'manager':
             base = self.state.get('baseCommit')
             require(base, '发布计划缺少 origin/main 基准提交')
             changed = set(git(self.root, 'diff', '--name-only', base, '--').splitlines())
-            require(changed <= {BUILD_FILE, self.state['notes']}, '发布源码偏离已锁定的 origin/main；只允许版本和发布说明变化')
+            allowed = {self.state['notes']} if self.state.get('nodeOnly') else {BUILD_FILE, self.state['notes']}
+            require(changed <= allowed, '发布源码偏离已锁定的 origin/main；只允许版本和发布说明变化')
             original = subprocess.check_output(['git', '-C', str(self.root), 'show', base + ':' + BUILD_FILE], text=True)
-            expected = re.sub(r'(versionName\s*=\s*)"[^"]+"',
-                              rf'\g<1>"{self.state["version"]}"', original, count=1)
-            expected = re.sub(r'(versionCode\s*=\s*)\d+',
-                              rf'\g<1>{self.state["versionCode"]}', expected, count=1)
+            expected = original
+            if not self.state.get('nodeOnly'):
+                expected = re.sub(r'(versionName\s*=\s*)"[^"]+"',
+                                  rf'\g<1>"{self.state["version"]}"', expected, count=1)
+                expected = re.sub(r'(versionCode\s*=\s*)\d+',
+                                  rf'\g<1>{self.state["versionCode"]}', expected, count=1)
             require((self.root / BUILD_FILE).read_text() == expected,
                     '发布构建文件只允许版本号变化；其他构建改动应先合并到 main')
         if not self.state.get('sourceTree'):
             if commit:
                 # Only version metadata and release notes are automatically staged.
                 # Other changes must already be deliberately staged by the operator.
-                git(self.root, 'add', '--', BUILD_FILE, self.state['notes'])
+                files = [self.state['notes']] if self.state.get('nodeOnly') else [BUILD_FILE, self.state['notes']]
+                git(self.root, 'add', '--', *files)
             else:
                 require(not git(self.root, 'status', '--porcelain'), '源码未提交；先提交，或暂存改动后使用 run --commit')
             self.state['sourceTree'] = git(self.root, 'write-tree')
@@ -220,6 +238,9 @@ class Release:
             allowed = [self.state['previous']] + ([own] if own else [])
             require(any(all(remote.get(k) == expected[k] for k in ('version', 'versionCode', 'sha256', 'size'))
                         for expected in allowed), 'VPS 已有其他发布，停止此计划')
+            if self.state.get('nodeOnly'):
+                require(remote['nodeVersionCode'] in (self.state['previousNodeCode'], self.state['versionCode']),
+                        'VPS 节点版本已被其他发布取代')
             return
         remote = get_json(BASE + '/v1/app-updates/latest')
         require(all(remote.get(k) == current[k] for k in ('version', 'versionCode', 'sha256', 'size')),
@@ -259,7 +280,7 @@ class Release:
 
     def build(self):
         previous = self.root / 'workspace/local-node/updates/apks' / (self.state['previous']['sha256'] + '.apk')
-        if not self.state.get('apk'):
+        if not self.state.get('apk') and not self.state.get('nodeOnly'):
             no_other_build()
             self.record('building')
             self.command([self.root / 'client/android/gradlew', ':app:assembleDebug', '--console=plain'],
@@ -267,6 +288,9 @@ class Release:
             self.source_unchanged()
             shutil.copyfile(self.root / 'client/android/app/build/outputs/apk/debug/app-debug.apk', self.apk)
         report = verify_apk(self.apk, previous, self.state, self.env)
+        if self.state.get('nodeOnly'):
+            require(all(report[key] == self.state['previous'][key] for key in ('version', 'versionCode', 'sha256', 'size')),
+                    '仅节点发布必须复用上一版 APK')
         if self.state.get('apk'):
             require(report == self.state['apk'], '保存的 APK 已改变，不能重建或覆盖同版本发布')
         save(self.directory / 'apk-verification.json', report)
@@ -286,12 +310,14 @@ class Release:
         from .asr import deploy as deploy_asr
         deploy_asr(self)
         self.record('publishing')
-        self.command([self.python, self.root / 'scripts/publish-update.py',
-                      '--workspace', self.root / 'workspace/local-node', '--apk', self.apk,
-                      '--version', self.state['version'], '--version-code', self.state['versionCode'],
-                      '--notes', self.root / self.state['notes']], 'publication.log')
+        if not self.state.get('nodeOnly'):
+            self.command([self.python, self.root / 'scripts/publish-update.py',
+                          '--workspace', self.root / 'workspace/local-node', '--apk', self.apk,
+                          '--version', self.state['version'], '--version-code', self.state['versionCode'],
+                          '--notes', self.root / self.state['notes']], 'publication.log')
         expected = {key: self.state['apk'][key] for key in ('version', 'versionCode', 'sha256', 'size')}
-        expected['notes'] = (self.root / self.state['notes']).read_text()
+        expected['notes'] = (self.state['previous']['notes'] if self.state.get('nodeOnly') else
+                             (self.root / self.state['notes']).read_text())
         if self.state.get('mode') != 'manager':
             self.record('verifying-http')
             report = verify_http(expected)
@@ -300,6 +326,8 @@ class Release:
         self.record('publishing-gateway')
         self.command([self.python, self.root / 'scripts/publish-gateway-update.py',
                       '--workspace', self.root / 'workspace/local-node', '--commit', self.state['commit'],
+                      *(['--node-version', self.state['version'], '--node-code', self.state['versionCode'],
+                         '--node-notes', self.root / self.state['notes']] if self.state.get('nodeOnly') else []),
                       *configuration.gateway_args(self.root)],
                      'gateway-publication.log')
         self.state['steps']['gateway'] = {'verified': True}
