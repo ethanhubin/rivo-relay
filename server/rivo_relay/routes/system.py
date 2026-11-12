@@ -17,9 +17,13 @@ def route(handler, path, query, body, connection):
     if path == ['v1', 'usage'] and method == 'GET':
         return {'usage': codex.usage()}
     if path in (['v1', 'usage', 'reset'], ['v1', 'usage', 'reset', 'reconcile']) and method == 'POST':
-        if set(body) != {'submissionId'}:
-            raise ApiError(400, 'invalid_request', 'Only submissionId is accepted')
-        return handler.app.reset_usage(connection_id, required(body, 'submissionId'), reconcile=path[-1] == 'reconcile')
+        reconcile = path[-1] == 'reconcile'
+        allowed = {'submissionId'} if reconcile else {'submissionId', 'creditId'}
+        if 'submissionId' not in body or set(body) - allowed:
+            raise ApiError(400, 'invalid_request', 'Expected submissionId and optional creditId')
+        credit_id = required(body, 'creditId', 2048) if 'creditId' in body else None
+        return handler.app.reset_usage(connection_id, required(body, 'submissionId'),
+                                       credit_id=credit_id, reconcile=reconcile)
     if path == ["v1", "activity"] and method == "GET":
         return codex.active_tasks()
     if path == ["v1", "requests", "respond"] and method == "POST":

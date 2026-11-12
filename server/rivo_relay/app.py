@@ -132,7 +132,7 @@ class RelayApp:
         self.events.publish({"method": "relay/submission", "params": public_submission(record)})
         return public_submission(record)
 
-    def reset_usage(self, connection_id, submission_id, *, reconcile=False):
+    def reset_usage(self, connection_id, submission_id, *, credit_id=None, reconcile=False):
         # This POST is the sole exception to never replaying native mutations:
         # consume has a documented native idempotency key, reused after restart.
         with self._usage_reset_lock:
@@ -142,7 +142,8 @@ class RelayApp:
                 if reconcile:
                     return public_submission(self.submissions.reconcile(submission_id, connection_id))
                 scope = self.codex.usage_reset_scope()
-                previous = self.submissions.find_for_target('usage.reset', scope)
+                target = {'accountScope': scope, 'creditId': credit_id} if credit_id is not None else scope
+                previous = self.submissions.find_usage_resets(scope)
                 unresolved = next((item for item in previous if item['status'] in {'pending', 'unknown'}), None)
                 if unresolved is not None:
                     if unresolved['status'] == 'pending' or unresolved['connection_id'] == connection_id:
@@ -151,14 +152,14 @@ class RelayApp:
                     # Fence its new ID before recovering the account's old key:
                     # a crash/retry must never redeem using this new ID.
                     with self.db.transaction():
-                        claim = self.submissions.claim(submission_id, connection_id, 'usage.reset', scope, {})
+                        claim = self.submissions.claim(submission_id, connection_id, 'usage.reset', target, {})
                         if not claim['should_dispatch']:
                             return public_submission(claim['submission'])
                         record = self.submissions.mark_failed(submission_id, 'usage_reset_recovery_only')
                     self._recover_usage_reset(unresolved)
                     return public_submission(record)
-                return self.submit(connection_id, submission_id, 'usage.reset', scope, {},
-                                   lambda: self.codex.reset_usage(submission_id, scope))
+                return self.submit(connection_id, submission_id, 'usage.reset', target, {},
+                                   lambda: self._consume_usage_reset(submission_id, target))
             if record['operation'] != 'usage.reset':
                 if record['operation'] == 'submission.reconcile':
                     return public_submission(record)
@@ -167,11 +168,16 @@ class RelayApp:
                 return public_submission(record)
             return self._recover_usage_reset(record)
 
+    def _consume_usage_reset(self, submission_id, target):
+        if isinstance(target, dict):
+            return self.codex.reset_usage(submission_id, target['accountScope'], credit_id=target['creditId'])
+        return self.codex.reset_usage(submission_id, target)
+
     def _recover_usage_reset(self, record):
         """Called under _usage_reset_lock, with the original account and native key."""
         submission_id = record['id']
         try:
-            receipt = self.codex.reset_usage(submission_id, record['target'])
+            receipt = self._consume_usage_reset(submission_id, record['target'])
             record = self.submissions.mark_accepted(submission_id, receipt)
             self.events.publish({"method": "relay/submission", "params": public_submission(record)})
         except Exception as error:

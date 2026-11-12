@@ -6,10 +6,10 @@ data class CodexUsageWindow(val usedPercent: Int, val windowMinutes: Long?, val 
     val remainingPercent: Int get() = 100 - usedPercent
 }
 data class CodexUsageLimit(val id: String, val name: String, val primary: CodexUsageWindow?, val secondary: CodexUsageWindow?)
-data class CodexResetCredit(val id: String, val status: String, val expiresAt: Long?)
+data class CodexResetCredit(val id: String, val status: String, val expiresAt: Long?, val title: String? = null, val description: String? = null, val grantedAt: Long? = null)
 data class CodexResetCredits(val availableCount: Int?, val credits: List<CodexResetCredit>?)
 data class CodexUsage(val limits: List<CodexUsageLimit>, val resetCredits: CodexResetCredits? = null,
-    val resetSupported: Boolean = false) {
+    val resetSupported: Boolean = false, val resetCreditSelectionSupported: Boolean = false) {
     val weeklyWindow: CodexUsageWindow? get() =
         (limits.firstOrNull { it.id == "codex" } ?: limits.firstOrNull())?.let { limit ->
             listOfNotNull(limit.primary, limit.secondary).firstOrNull { it.windowMinutes == 7L * 24 * 60 }
@@ -29,7 +29,9 @@ fun catalogUsage(response: JSONObject): CodexUsage {
         val details = value.optJSONArray("credits")?.let { rows -> (0 until rows.length()).mapNotNull { index ->
             rows.optJSONObject(index)?.let { row ->
                 row.string("id").takeIf { it.isNotBlank() }?.let { id ->
-                    CodexResetCredit(id, row.string("status"), row.optLong("expiresAt").takeIf { it > 0 })
+                    CodexResetCredit(id, row.string("status"), row.optLong("expiresAt").takeIf { it > 0 },
+                        row.string("title").takeIf { it.isNotBlank() }, row.string("description").takeIf { it.isNotBlank() },
+                        row.optLong("grantedAt").takeIf { it > 0 })
                 }
             }
         } }
@@ -38,7 +40,7 @@ fun catalogUsage(response: JSONObject): CodexUsage {
     return CodexUsage(snapshots.map { (key, snapshot) ->
         CodexUsageLimit(snapshot.string("limitId").ifBlank { key }, snapshot.string("limitName").ifBlank { "Codex" },
             usageWindow(snapshot.optJSONObject("primary")), usageWindow(snapshot.optJSONObject("secondary")))
-    }.filter { it.primary != null || it.secondary != null }, resets, usage.optBoolean("resetSupported", false))
+    }.filter { it.primary != null || it.secondary != null }, resets, usage.optBoolean("resetSupported", false), usage.optBoolean("resetCreditSelectionSupported", false))
 }
 
 private fun usageWindow(json: JSONObject?): CodexUsageWindow? {
@@ -87,3 +89,9 @@ fun usageResetMessage(outcome: String): String = when (outcome) {
     "noCredit" -> "没有可用的重置次数"
     else -> "额度重置结果待核对"
 }
+
+/** Only returned, available and unexpired credits can be selected; counts do not identify credits. */
+fun selectableResetCredits(usage: CodexUsage?, nowSeconds: Long): List<CodexResetCredit> =
+    usage?.resetCredits?.credits.orEmpty().filter {
+        it.status == "available" && (it.expiresAt == null || it.expiresAt > nowSeconds)
+    }.distinctBy { it.id }

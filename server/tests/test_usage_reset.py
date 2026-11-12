@@ -21,7 +21,7 @@ class UsageResetHTTPTests(RelayHTTPFixture, unittest.TestCase):
 
     def test_auth_validation_duplicate_and_receipt_owner(self):
         self.assertEqual(401, self.request('POST', '/v1/usage/reset', {'submissionId': 'x'})[0])
-        for body in ({}, {'submissionId': ''}, {'submissionId': 'x', 'creditId': 'other'}):
+        for body in ({}, {'submissionId': ''}, {'submissionId': 'x', 'creditId': ''}, {'submissionId': 'x', 'creditId': 3}, {'submissionId': 'x', 'unexpected': True}):
             self.assertEqual(400, self.request('POST', '/v1/usage/reset', body, token=self.token)[0])
         first = self.reset()
         self.assertEqual('reset', first[1]['receipt']['resetOutcome'])
@@ -53,6 +53,31 @@ class UsageResetHTTPTests(RelayHTTPFixture, unittest.TestCase):
         self.native.reset_usage.assert_called_once_with('reset-1', 'account-fingerprint')
         self.assertEqual(result, self.reset(suffix='/reconcile')[1])
         self.assertEqual(1, self.native.reset_usage.call_count)
+
+    def test_selected_credit_survives_restart_and_never_switches_on_retry(self):
+        self.native.reset_usage.side_effect = CodexError('timeout', request_sent=True)
+        body = {'submissionId': 'reset-1', 'creditId': 'selected-credit'}
+        self.assertEqual('unknown', self.request('POST', '/v1/usage/reset', body, token=self.token)[1]['status'])
+        self.native.reset_usage.assert_called_once_with('reset-1', 'account-fingerprint', credit_id='selected-credit')
+        body['creditId'] = 'different-credit'
+        self.assertEqual('unknown', self.request('POST', '/v1/usage/reset', body, token=self.token)[1]['status'])
+        self.assertEqual(409, self.reset('another')[0])
+        self.assertEqual(1, self.native.reset_usage.call_count)
+        self._stop(); self._start()
+        self.native.reset_usage = Mock(return_value={'requestId': 'reset-1', 'resetOutcome': 'alreadyRedeemed'})
+        self.assertEqual('accepted', self.reset(suffix='/reconcile')[1]['status'])
+        self.native.reset_usage.assert_called_once_with('reset-1', 'account-fingerprint', credit_id='selected-credit')
+
+    def test_replacement_pairing_recovers_selected_credit(self):
+        self.native.reset_usage.side_effect = CodexError('timeout', request_sent=True)
+        self.request('POST', '/v1/usage/reset', {'submissionId': 'reset-1', 'creditId': 'original-credit'}, token=self.token)
+        token = self.replacement_connection()
+        self.native.reset_usage.reset_mock()
+        self.native.reset_usage.side_effect = None
+        self.native.reset_usage.return_value = {'requestId': 'reset-1', 'resetOutcome': 'alreadyRedeemed'}
+        result = self.request('POST', '/v1/usage/reset', {'submissionId': 'replacement', 'creditId': 'new-credit'}, token=token)[1]
+        self.assertEqual('usage_reset_recovery_only', result['errorCode'])
+        self.native.reset_usage.assert_called_once_with('reset-1', 'account-fingerprint', credit_id='original-credit')
 
     def test_failed_recovery_cannot_erase_original_uncertainty(self):
         self.native.reset_usage.side_effect = CodexError('timeout', request_sent=True)
@@ -187,6 +212,11 @@ class UsageResetNativeTests(unittest.TestCase):
         self.outcome = 'future-value'
         with self.assertRaises(CodexError) as error: self.service.reset_usage('original-key', scope)
         self.assertTrue(error.exception.request_sent)
+
+    def test_selected_credit_is_forwarded_verbatim(self):
+        scope = self.service.usage_reset_scope()
+        self.service.reset_usage('key', scope, credit_id='opaque-selected-credit')
+        self.assertEqual([{'idempotencyKey': 'key', 'creditId': 'opaque-selected-credit'}], self.consume)
 
     def test_changed_or_unverified_account_never_consumes(self):
         scope = self.service.usage_reset_scope()

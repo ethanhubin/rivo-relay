@@ -34,6 +34,22 @@ class UsageResetTest {
         assertEquals(123L, parse("""{"availableCount":1,"credits":[{"id":"opaque","status":"available","expiresAt":123}]}""").resetCredits!!.credits!!.single().expiresAt)
     }
 
+    @Test fun selectionPreservesMetadataAndExcludesUnavailableOrExpiredCredits() {
+        val usage = catalogUsage(JSONObject("""{"usage":{"resetCreditSelectionSupported":true,"rateLimitResetCredits":{"availableCount":5,"credits":[
+            {"id":"selected","status":"available","expiresAt":200,"grantedAt":10,"title":"邀请奖励","description":"恢复额度"},
+            {"id":"expired","status":"available","expiresAt":100},
+            {"id":"spent","status":"redeemed"},
+            {"id":"no-expiry","status":"available"}
+        ]}}}"""))
+        assertTrue(usage.resetCreditSelectionSupported)
+        val credits = selectableResetCredits(usage, 100)
+        assertEquals(listOf("selected", "no-expiry"), credits.map { it.id })
+        assertEquals("邀请奖励", credits.first().title)
+        assertEquals("恢复额度", credits.first().description)
+        assertEquals(10L, credits.first().grantedAt)
+        assertTrue(selectableResetCredits(CodexUsage(emptyList(), CodexResetCredits(5, null)), 100).isEmpty())
+    }
+
     @Test fun duplicateClickAndProcessRecoveryKeepTheOriginalRedemptionId() = runBlocking {
         val server = MockWebServer(); server.start()
         var scope = CoroutineScope(coroutineContext + SupervisorJob())
@@ -41,11 +57,13 @@ class UsageResetTest {
         try {
             server.enqueue(MockResponse().setBody("""{"status":"unknown"}"""))
             val first = SubmissionCoordinator(api(server), scope, vault, "node", recoveryDelayMillis = 60_000, failure = { throw it })
-            first.submit(USAGE_RESET_PATH, JSONObject(), "重置额度", submissionId = "original")
+            first.submit(USAGE_RESET_PATH, JSONObject().put("creditId", "selected-credit"), "重置额度", submissionId = "original")
             first.submit(USAGE_RESET_PATH, JSONObject(), "重置额度", submissionId = "double-click")
             idle(first)
             assertEquals(1, server.requestCount)
-            assertEquals("original", JSONObject(server.takeRequest().body.readUtf8()).getString("submissionId"))
+            val sent = JSONObject(server.takeRequest().body.readUtf8())
+            assertEquals("original", sent.getString("submissionId"))
+            assertEquals("selected-credit", sent.getString("creditId"))
             assertNotNull(vault.value)
             scope.cancel()
             scope = CoroutineScope(coroutineContext + SupervisorJob())
