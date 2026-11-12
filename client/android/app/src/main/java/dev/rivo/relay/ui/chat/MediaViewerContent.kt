@@ -72,7 +72,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.input.pointer.util.addPointerInputChange
-import androidx.compose.ui.layout.ScaleFactor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -432,7 +431,7 @@ internal fun FullScreenImage(
       val panBoundsForScale: (Float) -> Offset = { zoom ->
         val viewport = ComposeSize(currentWidth, currentHeight)
         val source = intrinsicImageSize ?: viewport
-        val fit = ViewerContentScale(screenWidthPx, screenHeightPx).computeScaleFactor(source, viewport)
+        val fit = ContentScale.Fit.computeScaleFactor(source, viewport)
         Offset(
           ((source.width * fit.scaleX * zoom - currentWidth) / 2f).coerceAtLeast(0f),
           ((source.height * fit.scaleY * zoom - currentHeight) / 2f).coerceAtLeast(0f),
@@ -957,26 +956,6 @@ private fun generationInfoRows(info: MediaGenerationInfo): List<Pair<String, Str
   return rows.distinct()
 }
 
-// Compare physical image pixels with the final viewport, so the entrance animation
-// does not change which sizing mode is selected.
-private class ViewerContentScale(
-  private val screenWidthPx: Float,
-  private val screenHeightPx: Float,
-) : ContentScale {
-  override fun computeScaleFactor(
-    srcSize: androidx.compose.ui.geometry.Size,
-    dstSize: androidx.compose.ui.geometry.Size,
-  ): ScaleFactor {
-    val mode =
-      if (srcSize.width > screenWidthPx / 2f || srcSize.height > screenHeightPx / 2f) {
-        ContentScale.Fit
-      } else {
-        ContentScale.Inside
-      }
-    return mode.computeScaleFactor(srcSize, dstSize)
-  }
-}
-
 @Composable
 private fun FullScreenGalleryPage(
   item: ImageViewerItem,
@@ -989,9 +968,8 @@ private fun FullScreenGalleryPage(
 ) {
   val context = LocalContext.current
   val mediaClient = LocalCodexMediaClient.current
-  val contentScale = remember(screenWidthPx, screenHeightPx) {
-    ViewerContentScale(screenWidthPx, screenHeightPx)
-  }
+  // Use the same fitted bounds for previews, originals and zoom/pan calculations.
+  val contentScale = ContentScale.Fit
   val originalImageRequest =
     run {
       (mediaClient?.imageRequest(context, item.original, false) ?: ImageRequest.Builder(context).data(item.original))
