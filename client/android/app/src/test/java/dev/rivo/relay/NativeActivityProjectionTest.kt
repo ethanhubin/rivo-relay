@@ -90,7 +90,7 @@ class NativeActivityProjectionTest {
             command("bad", "bad").put("exitCode", 2),
             command("cancelled", "cancelled").put("status", "interrupted"),
             command("live", "live").put("status", "inProgress")))
-        assertEquals("运行了 4 条命令 · 成功 1 · 失败 2 · 进行中 1", nativeActivityGroupLabel(state.messages))
+        assertEquals("运行了 4 条命令 · 失败 2 · 进行中 1", nativeActivityGroupLabel(state.messages))
     }
 
     @Test fun adjacentToolsCollapseByNativeTurnWithoutLosingIdsOrOutputs() {
@@ -99,9 +99,9 @@ class NativeActivityProjectionTest {
         assertEquals(2, rows.size)
         val first = rows.first() as NativeTimelineRow.Activities
         assertEquals(listOf("a", "b", "c"), first.messages.map { it.id })
-        assertEquals("运行了 3 条命令 · 成功 3 · 失败 0", nativeActivityGroupLabel(first.messages))
+        assertEquals("运行了 3 条命令", nativeActivityGroupLabel(first.messages))
         assertEquals("result", first.messages.first().activity?.detail)
-        assertEquals("运行了 1 条命令 · 成功 1 · 失败 0", nativeActivityGroupLabel((rows.last() as NativeTimelineRow.Activities).messages))
+        assertEquals("运行了 1 条命令", nativeActivityGroupLabel((rows.last() as NativeTimelineRow.Activities).messages))
     }
 
     @Test fun processMessagesAndFinalResponsesKeepTheirNativePositionsBetweenGroups() {
@@ -193,7 +193,7 @@ class NativeActivityProjectionTest {
     @Test fun commandLabelHidesCommandButPreservesRawHistory() {
         val original = "rg '\\s+' \n\tfile.txt"
         val message = snapshot(turn("one", command("regex", original))).messages.single()
-        assertEquals("运行了 1 条命令 · 成功 1 · 失败 0", nativeActivityGroupLabel(listOf(message)))
+        assertEquals("运行了 1 条命令", nativeActivityGroupLabel(listOf(message)))
         assertEquals(original, message.activity?.summary)
         assertEquals(original, message.raw.string("command"))
     }

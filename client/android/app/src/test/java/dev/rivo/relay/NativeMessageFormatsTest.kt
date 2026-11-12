@@ -48,7 +48,7 @@ class NativeMessageFormatsTest {
         assertEquals("unknown", missing.activity!!.status)
         assertEquals("unknown", future.activity!!.status)
         assertTrue(future.activity!!.detail.contains("keep"))
-        assertEquals("运行了 1 条命令 · 成功 0 · 失败 0 · 状态未知 1", nativeActivityGroupLabel(listOf(missing)))
+        assertEquals("运行了 1 条命令 · 状态未知 1", nativeActivityGroupLabel(listOf(missing)))
     }
 
     @Test fun terminalTurnProjectionSurvivesLateOutputDeltasWithoutMutatingRawStatus() {
