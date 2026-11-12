@@ -50,6 +50,21 @@ class StoreTests(unittest.TestCase):
             with self.assertRaises(ValueError): install(self.root / 'in', self.workspace)
         self.assertEqual(manifest(self.workspace), item)
 
+    def test_node_only_release_preserves_app_and_rejects_same_code_replacement(self):
+        old = release(self.root / 'in', 2)
+        install(self.root / 'in', self.workspace)
+        current = release(self.root / 'in', 3)
+        current['app'] = dict(old['app'], version=old['version'], versionCode=old['versionCode'], notes=old['notes'])
+        (self.root / 'in/latest.json').write_text(json.dumps(current))
+        (self.root / 'in' / old['app']['path'].rsplit('/', 1)[-1]).unlink()
+        install(self.root / 'in', self.workspace)
+        self.assertEqual(old['app']['sha256'], manifest(self.workspace)['app']['sha256'])
+        changed = release(self.root / 'in', 4)
+        changed['app'].update(version=old['version'], versionCode=old['versionCode'], notes=old['notes'])
+        (self.root / 'in/latest.json').write_text(json.dumps(changed))
+        with self.assertRaisesRegex(ValueError, 'app downgrade or replacement'):
+            install(self.root / 'in', self.workspace)
+
     def test_corrupt_or_low_space_never_changes_manifest(self):
         item = release(self.root / 'in', 1); install(self.root / 'in', self.workspace)
         next_item = release(self.root / 'in', 2)
@@ -94,7 +109,10 @@ class GatewayStoreTests(unittest.IsolatedAsyncioTestCase):
     async def test_updates_available_with_all_nodes_offline_and_range(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            item = release(root / 'in', 1); install(root / 'in', root)
+            item = release(root / 'in', 1)
+            item['app'].update(version='0.9.9', versionCode=1, notes='app notes')
+            (root / 'in/latest.json').write_text(json.dumps(item))
+            install(root / 'in', root)
             (root / 'keys.json').write_text('{}')
             runner = web.AppRunner(Gateway(root / 'keys.json').application()); await runner.setup()
             site = web.TCPSite(runner, '127.0.0.1', 0); await site.start()
@@ -107,6 +125,9 @@ class GatewayStoreTests(unittest.IsolatedAsyncioTestCase):
                     async with client.get(base + '/v1/app-updates/latest') as response:
                         app = await response.json()
                         self.assertEqual(item['compatibility'], app['compatibility'])
+                        self.assertEqual('0.9.9', app['version'])
+                        self.assertEqual(1, app['versionCode'])
+                        self.assertEqual('app notes', app['notes'])
                     async with client.get(base + app['apkPath'], headers={'Range': 'bytes=0-2'}) as response:
                         self.assertEqual(response.status, 206)
                         self.assertEqual(await response.read(), b'app')
