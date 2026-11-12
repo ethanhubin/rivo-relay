@@ -44,7 +44,7 @@ class ActivityFailureUiTest {
         assertEquals(neutral, color("activity_group_summary"))
         compose.onNodeWithText("No such file or directory").assertDoesNotExist()
         compose.onNodeWithTag("native_activity_toggle").assertDoesNotExist()
-        compose.onNodeWithText("运行了 2 条命令 · 成功 1 · 失败 1").assertIsDisplayed()
+        compose.onNodeWithText("运行了 2 条命令 · 失败 1").assertIsDisplayed()
         compose.onNodeWithText("cat missing.txt").assertDoesNotExist()
         compose.onNodeWithText("cat existing.txt").assertDoesNotExist()
         compose.onNodeWithText("file content").assertDoesNotExist()

@@ -74,7 +74,7 @@ class ChatRenderingUiTest {
         compose.onAllNodesWithText("sample-0/result.kt", substring = true).assertCountEquals(0)
         evidence("chat-rendering-0.1.1")
         compose.onNodeWithTag("native_activity_toggle").assertDoesNotExist()
-        compose.onNodeWithText("运行了 8 条命令 · 成功 8 · 失败 0").assertIsDisplayed()
+        compose.onNodeWithText("运行了 8 条命令").assertIsDisplayed()
         compose.onAllNodesWithText("rg --files", substring = true).assertCountEquals(0)
         compose.onNodeWithTag("message_input").performClick().performTextInput("继续验证")
         compose.waitUntil(10_000) {
