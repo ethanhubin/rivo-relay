@@ -791,12 +791,6 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 onApproval = { selectedApproval = it ?: "inherit" }, workspace = pendingWorkspace,
                 serviceTier = selectedServiceTier, defaultSettings = defaultSettings, onSaveDefaults = onSaveDefaults)
         }
-        if (goalMode && goalAvailable) TextButton(onClick = { goalEditing = true }, enabled = goalEnabled,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("edit_goal")) {
-            TaskModeIcon("goal")
-            Spacer(Modifier.width(8.dp))
-            Text(if (displayedGoal == null) "设置持续目标" else "编辑持续目标")
-        }
         MessageComposer(
             tokenUsage = snapshot?.tokenUsage, contextThreadId = state.id,
             text = if (hideSubmitted) "" else draft, onTextChange = { if (textEditable) draft = it }, images = if (hideSubmitted) emptyList() else images,
@@ -818,7 +812,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             goalMode = goalMode, goalModeEnabled = goalAvailable && goalEnabled,
             onSelectMode = { mode ->
                 if (mode == "goal") {
-                    selectedMode = "default"; goalModeSelected = true
+                    selectedMode = "default"; goalModeSelected = true; goalEditing = true
                 } else {
                     goalModeSelected = false
                     selectedMode = mode

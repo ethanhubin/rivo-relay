@@ -16,6 +16,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import dev.rivo.relay.data.QueueTask
@@ -34,16 +35,16 @@ fun ExecutionQueuePanel(threadId: String, tasks: List<QueueTask>, enabled: Boole
     var offset by remember(threadId) { mutableFloatStateOf(0f) }
     val threshold = with(LocalDensity.current) { 28.dp.toPx() }
     LaunchedEffect(tasks) { dragging = null; offset = 0f; if (tasks.size <= 3) expanded = false }
-    Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp).testTag("execution_queue"),
+    Surface(Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("execution_queue"),
         shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.surfaceContainerLow,
         shadowElevation = 2.dp) {
         Column(Modifier.animateContentSize()) {
-            Row(Modifier.fillMaxWidth().clickable(enabled = tasks.size > 3) { expanded = !expanded }.padding(10.dp).testTag("queue_expand"),
+            Row(Modifier.fillMaxWidth().clickable(enabled = tasks.size > 3) { expanded = !expanded }.padding(horizontal = 16.dp, vertical = 10.dp).testTag("queue_expand"),
                 verticalAlignment = Alignment.CenterVertically) {
                 Text("执行队列", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
                 Text("${tasks.count { it.status == "waiting" }} 项等待", style = MaterialTheme.typography.labelMedium)
             }
-            Column(Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()).padding(horizontal = 10.dp)) {
+            Column(Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
                 val visibleTasks = if (expanded) order else order.take(3)
                 visibleTasks.forEachIndexed { itemIndex, task ->
                     key(task.id) {
@@ -70,7 +71,7 @@ fun ExecutionQueuePanel(threadId: String, tasks: List<QueueTask>, enabled: Boole
                                     })
                             }.padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(if (task.status == "running") "●" else "○", color = MaterialTheme.colorScheme.primary)
+                            Text(if (task.status == "running") "●" else "○", modifier = Modifier.width(18.dp), color = MaterialTheme.colorScheme.primary)
                             Column(Modifier.weight(1f)) {
                                 val sending = task.status in setOf("submitting", "pending_accepted", "dispatching")
                                 Text(task.text.ifBlank { "附件任务" }, modifier = Modifier.pendingMessageShimmer(sending),
@@ -81,10 +82,11 @@ fun ExecutionQueuePanel(threadId: String, tasks: List<QueueTask>, enabled: Boole
                             }
                             if (task.status == "waiting" && canSteer) TextButton(onClick = { onSteer(task) },
                                 enabled = enabled && dragging == null && task.raw.string("mode") != "plan" && task.raw.optJSONObject("review") == null,
-                                contentPadding = PaddingValues(4.dp), modifier = Modifier.testTag("queue_steer_${task.id}")) { Text("引导") }
+                                contentPadding = PaddingValues(vertical = 8.dp), modifier = Modifier.width(48.dp).testTag("queue_steer_${task.id}")) { Text("引导", Modifier.fillMaxWidth(), textAlign = TextAlign.End) }
                             if (task.status in setOf("waiting", "failed")) TextButton(onClick = { onEdit(task) }, enabled = enabled && dragging == null,
-                                contentPadding = PaddingValues(4.dp), modifier = Modifier.testTag("queue_edit_${task.id}")) { Text(if (canSteer) "编辑" else "撤回") }
-                            else if (task.status == "unknown") TextButton(onClick = { onWithdraw(task) }, enabled = enabled && dragging == null) { Text("移除") }
+                                contentPadding = PaddingValues(vertical = 8.dp), modifier = Modifier.width(48.dp).testTag("queue_edit_${task.id}")) { Text(if (canSteer) "编辑" else "撤回", Modifier.fillMaxWidth(), textAlign = TextAlign.End) }
+                            else if (task.status == "unknown") TextButton(onClick = { onWithdraw(task) }, enabled = enabled && dragging == null,
+                                contentPadding = PaddingValues(vertical = 8.dp), modifier = Modifier.width(48.dp)) { Text("移除", Modifier.fillMaxWidth(), textAlign = TextAlign.End) }
                         }
                         if (itemIndex < visibleTasks.lastIndex) HorizontalDivider(Modifier.padding(start = 24.dp), color = MaterialTheme.colorScheme.outlineVariant)
                     }

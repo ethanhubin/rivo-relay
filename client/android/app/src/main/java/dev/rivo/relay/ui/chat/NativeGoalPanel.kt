@@ -1,5 +1,7 @@
 package dev.rivo.relay.ui.chat
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -36,12 +38,15 @@ fun NativeGoalPanel(goal: JSONObject?, enabled: Boolean, onAction: (JSONObject) 
     var budget by rememberSaveable(savedObjective, savedBudget) { mutableStateOf(savedBudget) }
     fun cancelEditing() { objective = savedObjective; budget = savedBudget; onEditingChange(false) }
     if (goal != null) {
-        Surface(color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth().testTag("native_goal")) {
-            Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+        Surface(color = MaterialTheme.colorScheme.surfaceContainerLow,
+            shape = RoundedCornerShape(8.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).testTag("native_goal")) {
+            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 6.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    TextButton(onClick = { expanded = !expanded }) { Text(if (pending) "目标草稿" else "目标 · ${goalStatusLabel(status)}") }
-                    if (status == "active") TextButton(onClick = { onAction(JSONObject().put("operation", "pause")) }, enabled = enabled) { Text("暂停目标") }
-                    else if (status in setOf("paused", "blocked", "usageLimited", "budgetLimited")) TextButton(onClick = { onAction(JSONObject().put("operation", "resume")) }, enabled = enabled) { Text("尝试继续") }
+                    TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(vertical = 8.dp)) { Text(if (pending) "目标草稿" else "目标 · ${goalStatusLabel(status)}") }
+                    if (status == "active") TextButton(onClick = { onAction(JSONObject().put("operation", "pause")) }, enabled = enabled, contentPadding = PaddingValues(vertical = 8.dp)) { Text("暂停目标") }
+                    else if (status in setOf("paused", "blocked", "usageLimited", "budgetLimited")) TextButton(onClick = { onAction(JSONObject().put("operation", "resume")) }, enabled = enabled, contentPadding = PaddingValues(vertical = 8.dp)) { Text("尝试继续") }
                 }
                 Text(goal.string("objective"), maxLines = if (expanded) 5 else 1, overflow = TextOverflow.Ellipsis)
                 if (expanded) {
@@ -54,8 +59,7 @@ fun NativeGoalPanel(goal: JSONObject?, enabled: Boolean, onAction: (JSONObject) 
                         if (status == "budgetLimited") "预算已用尽，可编辑预算后尝试启用。" else "请先恢复可用额度，再尝试继续。",
                         style = MaterialTheme.typography.bodySmall)
                     Row {
-                        TextButton(onClick = { onEditingChange(true) }, enabled = enabled) { Text("编辑目标") }
-                        TextButton(onClick = { clearing = true }, enabled = enabled) { Text("清除目标") }
+                        TextButton(onClick = { clearing = true }, enabled = enabled, contentPadding = PaddingValues(vertical = 8.dp)) { Text("清除目标") }
                     }
                 }
             }
