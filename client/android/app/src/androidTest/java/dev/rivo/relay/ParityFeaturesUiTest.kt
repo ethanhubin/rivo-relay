@@ -2,6 +2,8 @@ package dev.rivo.relay
 
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Button
 import androidx.compose.material3.Surface
@@ -161,8 +163,11 @@ class ParityFeaturesUiTest {
         val usage = dev.rivo.relay.data.catalogUsage(JSONObject("""{"usage":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":${now + 5400}},"secondary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":${now + 172800}}},"resetSupported":true,"resetCreditSelectionSupported":true,"rateLimitResetCredits":{"availableCount":2,"credits":[{"id":"second-credit","title":"第二次机会","status":"available"},{"id":"fixture-credit","status":"available","expiresAt":${now + 864000}}]}}}"""))
         compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize()) {
             Column {
-                Box(Modifier.weight(1f)) {
-                    dev.rivo.relay.ui.settings.SettingsScreen(onOpenUsage = { details = true }, usage = usage)
+                Box(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+                    dev.rivo.relay.ui.settings.ConnectionSettings(
+                        dev.rivo.relay.connection.NodeConnection("http://localhost", "演示节点", "fixture", "fixture", ""), null, {}) {
+                        dev.rivo.relay.ui.settings.SettingsWeeklyUsage(usage, false, null) { details = true }
+                    }
                 }
                 androidx.compose.material3.NavigationBar {
                     NavigationBarItem(false, {}, icon = { Text("⌘") }, label = { Text("Codex") })

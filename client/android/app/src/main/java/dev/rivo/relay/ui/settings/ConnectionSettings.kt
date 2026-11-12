@@ -25,19 +25,17 @@ import kotlinx.coroutines.isActive
 @Composable
 fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (ConnectionMode) -> Unit,
     savedNodes: List<SavedNode> = emptyList(), onSelectNode: (String) -> Unit = {},
-    onAddNode: () -> Unit = {}, canAddNode: Boolean = true) {
+    onAddNode: () -> Unit = {}, canAddNode: Boolean = true,
+    onRefresh: () -> Unit = {}, content: @Composable ColumnScope.() -> Unit = {}) {
     var version by remember(connection, api) { mutableStateOf("正在获取…") }
-    var compatibility by remember(connection, api) { mutableStateOf("兼容性未知") }
     var versionRefresh by remember(connection, api) { mutableIntStateOf(0) }
     LaunchedEffect(connection, api, versionRefresh) {
         version = try {
             val code = api?.call("/v1/node")?.optInt("releaseCode", 0) ?: 0
-            compatibility = api?.compatibilityMessage ?: "兼容性未知"
             if (code > 0) code.toString() else "未提供"
         } catch (error: CancellationException) {
             throw error
         } catch (_: Exception) {
-            compatibility = "兼容性未知，请重新连接后检查"
             "暂不可用"
         }
     }
@@ -124,7 +122,8 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
             }
             val routeLabel = if (status.endpoint.isBlank()) null
                 else if (routes != null && status.endpoint == routes.relay) "VPS 中转" else "Tailscale 直连"
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 val indicator = if (api == null) RecoveryState.DISCONNECTED else if (checking) RecoveryState.CONNECTING
                     else status.indicatorState(recovery)
                 ConnectionStatusDot(when (indicator) {
@@ -135,31 +134,36 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
                 Text(
                     listOfNotNull(
                         statusLabel,
-                        "节点版本：$version\n$compatibility",
+                        "节点版本：$version",
                         routeLabel,
-                        networkLatencyMs?.takeIf {
-                            !status.failed && status.endpoint.isNotBlank() &&
-                                recovery != RecoveryState.DISCONNECTED && !reconnecting
-                        }?.let { "$it ms" },
                     ).joinToString(" · "),
                     modifier = Modifier.weight(1f).testTag("settings_node_version"),
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-            }
-            OutlinedButton(enabled = api != null && !checking && !reconnecting, modifier = Modifier.testTag("settings_refresh"), onClick = {
-                scope.launch {
-                    checking = true
-                    try {
-                        val controller = api?.recovery
-                        if (controller != null) controller.refresh() else api?.call("/v1/node")
-                    }
-                    catch (error: CancellationException) { throw error }
-                    catch (_: Exception) { /* Transport status is reported by the observer. */ }
-                    finally { checking = false; versionRefresh++ }
+                networkLatencyMs?.takeIf {
+                    !status.failed && status.endpoint.isNotBlank() &&
+                        recovery != RecoveryState.DISCONNECTED && !reconnecting
+                }?.let { latency ->
+                    Text("$latency ms", Modifier.testTag("settings_network_latency"),
+                        style = MaterialTheme.typography.bodySmall, maxLines = 1)
                 }
-            }) { Text(if (checking || reconnecting) "正在刷新…" else "刷新") }
+                OutlinedButton(enabled = api != null && !checking && !reconnecting, modifier = Modifier.defaultMinSize(minWidth = 56.dp).testTag("settings_refresh"),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp), onClick = {
+                    scope.launch {
+                        checking = true
+                        try {
+                            val controller = api?.recovery
+                            if (controller != null) controller.refresh() else api?.call("/v1/node")
+                        }
+                        catch (error: CancellationException) { throw error }
+                        catch (_: Exception) { /* Transport status is reported by the observer. */ }
+                        finally { checking = false; versionRefresh++; onRefresh() }
+                    }
+                }) { Text(if (checking || reconnecting) "刷新中" else "刷新", maxLines = 1) }
+            }
+            content()
         }
     }
 }
