@@ -992,6 +992,16 @@ class ApiTests(RelayHTTPFixture, unittest.TestCase):
         bus.resume.set()
         self.assertEqual(self.event(stream)["event"], "revoked")
 
+    def test_sse_delivers_github_alert_signal_only_to_its_paired_connection(self):
+        other = self._pair()
+        stream = self.open_stream()
+        self.assertEqual("reset", self.event(stream)["event"])
+        self.app.events.publish({"method": "relay/githubAlert", "params": {"connectionId": other["deviceId"]}})
+        self.app.events.publish({"method": "relay/githubAlert", "params": {"connectionId": self.paired["deviceId"]}})
+        received = self.event(stream)
+        self.assertEqual("native", received["event"])
+        self.assertEqual(self.paired["deviceId"], json.loads(received["data"])["params"]["connectionId"])
+
     def test_idle_sse_disconnect_releases_slot_before_next_heartbeat(self):
         first = self.open_stream()
         self.assertEqual(self.event(first)["event"], "reset")

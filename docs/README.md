@@ -17,6 +17,7 @@
 - [Codex voice input](codex-voice-input.md)
 - [稳定性日志](stability-logging.md)
 - [GitHub PR 提交规范](github-pr-workflow.md)
+- [GitHub PR 监听与离线提醒](github-pr-watch.md)
 - [给另一台节点 Codex 的迁移提示词](agent-migration-prompt.md)
 
 ## 部署与更新

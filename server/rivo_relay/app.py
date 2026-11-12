@@ -18,6 +18,7 @@ from .todos import TodoStore
 from .media import MediaService
 from .speech import SpeechService
 from .node_name import NodeName
+from .github_watch import GithubWatches
 
 
 def public_submission(record: dict) -> dict:
@@ -48,6 +49,8 @@ class RelayApp:
         self.pairing = PairingStore(self.db)
         self.submissions = SubmissionStore(self.db)
         self.todos = TodoStore(self.db)
+        self.github_watches = GithubWatches(config.workspace / 'data' / 'github-watch.sqlite3',
+            on_alert=lambda owner: self.events.publish({"method": "relay/githubAlert", "params": {"connectionId": owner}}))
         self.todo_completion = TodoCompletion(self.db, self.todos, self.events)
         self.queue = ExecutionQueue(self.db, self.codex, self.events)
         self.download_links = {}
@@ -251,6 +254,7 @@ class RelayApp:
                            submitted_payload, dispatch)
 
     def close(self):
+        self.github_watches.close()
         self.queue.close()
         self.media.close()
         self.events.close()

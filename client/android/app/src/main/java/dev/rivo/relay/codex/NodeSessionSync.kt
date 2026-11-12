@@ -27,6 +27,7 @@ class NodeSessionSync(private val api: RelayApi, private val scope: CoroutineSco
         }
     }
     private fun invalidate(event: RelayEvent) {
+        if (event.payload.string("method") == "relay/githubAlert") return
         val affected = activityInvalidatedThreads(event)
         if (affected == null || affected.isNotEmpty()) synchronized(lock) { activityEpoch++ }
         val params = event.payload.optJSONObject("params")

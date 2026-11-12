@@ -101,6 +101,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     var todoAttachment by remember { mutableStateOf<String?>(null) }
     var handoffPrompt by remember { mutableStateOf<Triple<String, String, JSONObject>?>(null) }
     var handoffLoading by remember { mutableStateOf(false) }
+    var reviewPrUrl by remember { mutableStateOf<String?>(null) }
     fun executeHandoff(id: String, operation: String, preview: JSONObject, confirmed: Boolean) {
         if (route != "chat" || threadId != id || (operation != "takeover" && node.session.state.value.stale) || node.network.value == null || node.session.state.value.id != id || node.submissions.state.value.pending != null || node.submissions.state.value.busy) return
         node.submissions.submit("/v1/threads/${encoded(id)}/ownership",
@@ -127,7 +128,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             } finally { handoffLoading = false }
         }
     }
-    fun openPending(project: ProjectSummary, resumeId: String? = null) {
+    fun openPending(project: ProjectSummary, resumeId: String? = null, initialText: String = "") {
         val generation = ++pendingGeneration
         val expectedRoute = route
         val expectedProject = node.catalog.state.value.selectedProject?.id
@@ -137,7 +138,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; setError(e.message ?: "无法保存待发送会话"); return@launch }
             if (pendingGeneration != generation || route != expectedRoute || threadId != expectedThread ||
                 node.catalog.state.value.selectedProject?.id != expectedProject) return@launch
-            pendingDraft = ConversationDraft()
+            pendingDraft = ConversationDraft(text = initialText)
+            if (initialText.isNotBlank()) node.persistDraft("pending:$id", pendingDraft)
             pendingProject = project
             pendingId = id
             pendingRef = node.conversations.pendingWorktreeRef(id)
@@ -287,6 +289,21 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
         resetNotice = if (submission.pending?.path == USAGE_RESET_PATH) submission.notice else catalog.usageResetNotice,
         onReset = { creditId -> if (writable) { node.catalog.clearUsageResetNotice(); node.submissions.submit(USAGE_RESET_PATH, JSONObject().put("creditId", creditId), "重置额度") } },
         onReconcile = { node.submissions.reconcile() })
+    reviewPrUrl?.let { url ->
+        AlertDialog(onDismissRequest = { reviewPrUrl = null }, title = { Text("选择审核项目") },
+            text = {
+                Column(Modifier.heightIn(max = 360.dp).verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                    Text("选择与该 PR 对应的本地项目，Codex 将在新会话中读取并审核。")
+                    catalog.projects.filter { it.id != "__rivo_recent__" }.forEach { project ->
+                        TextButton(onClick = {
+                            reviewPrUrl = null
+                            node.catalog.project(project)
+                            openPending(project, initialText = "请审核 GitHub PR：$url。读取完整变更与相关代码，给出可执行的审查问题和验证结论。只在本会话反馈；不要在 GitHub 提交 Review、批准或合并。")
+                        }) { Text(project.name) }
+                    }
+                }
+            }, confirmButton = { TextButton(onClick = { reviewPrUrl = null }) { Text("取消") } })
+    }
     val showBottomNavigation = route in setOf("projects", "sites", "todos", "settings")
     // NavigationBar draws behind the system gesture area and applies its own insets.
     Column(Modifier.fillMaxSize()
@@ -297,11 +314,13 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             when (route) {
                 "sites" -> dev.rivo.relay.ui.sites.SitesScreen(node.api, node.connection.name)
                 "settings" -> SettingsScreen(connection = node.connection, api = node.api,
+                    githubEvents = node.githubEvents,
                     resolveConnection = settingsConnection, setNodeConnectionMode = setNodeConnectionMode,
                     savedNodes = savedNodes,
                     onOpenUsage = { usageOpen = true; node.catalog.refreshUsage(true) },
                     usage = catalog.usage, usageLoading = catalog.usageLoading, usageError = catalog.usageError,
                     onRefreshUsage = { node.catalog.refreshUsage(true) },
+                    onReviewPr = { reviewPrUrl = it },
                     onAddNode = { setError(null); addNode = true }, canAddNode = !submission.busy && !handoffLoading)
                 "projects" -> ProjectsScreen(catalog.projects, node.connection.name, catalog.loading, { project -> node.catalog.project(project); route = "sessions"; setError(null) },
                     { route = "settings"; setError(null) }, { node.catalog.refreshProjects() }, { if (node.catalog.state.value.projectsFresh) addProject = true },

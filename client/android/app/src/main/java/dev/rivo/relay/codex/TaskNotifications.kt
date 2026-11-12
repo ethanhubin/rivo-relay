@@ -268,6 +268,7 @@ class TaskNotifications(private val context: Context, private val api: RelayApi,
                     return@collect
                 }
                 val method = event.payload.string("method")
+                if (method == "relay/githubAlert") return@collect
                 // Text/tool output deltas cannot complete a turn or create a user request.
                 if (event.type == "native" && method.startsWith("item/") && !event.payload.has("id")) return@collect
                 val params = event.payload.optJSONObject("params")

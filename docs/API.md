@@ -4,6 +4,8 @@
 
 兼容性演进规则见 [App 与节点兼容协议](api-compatibility.md)（基础契约、可选能力与 App 更新判断）。
 
+GitHub PR 监听、设备授权与提醒增量接口见 [GitHub PR 监听](github-pr-watch.md)。
+
 ## 通用约定
 
 - 正式连接使用 HTTPS。`GET /health`、`POST /v1/pair` 与持有临时文件票据的 `GET /v1/download-links/{ticket}` 无需 Bearer；其余接口必须携带一个 `Authorization: Bearer <token>`。

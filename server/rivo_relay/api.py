@@ -20,6 +20,7 @@ from .codex.files import MAX_TRANSFER_BYTES
 from .codex.native_download import byte_range
 from .speech import MAX_SPEECH_BYTES, MAX_CHUNK_BYTES
 from .media import MediaError
+from .github_watch import GithubWatchError
 from .updates import latest_update, update_apk
 from .routes import dispatch
 from .routes.common import ApiError, required
@@ -498,7 +499,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, self.receive_file(path[2], query, project=path[1] == 'projects'))
                 return
             if self.command == "GET" and path == ["v1", "events"]:
-                self.stream_events(token)
+                self.stream_events(token, connection["connection_id"])
                 return
             body = self.read_body() if self.command in {"POST", "PATCH"} else {}
             with read_budget(self.connection) if self.command == "GET" or url.path.endswith("/prediction") else nullcontext():
@@ -518,7 +519,7 @@ class Handler(BaseHTTPRequestHandler):
             code = str(getattr(error, "code", "invalid_request" if status == 400 else "native_unavailable"))
             # RPC messages may contain private paths/content. Only expose our
             # own validation messages; native diagnostics stay out of responses.
-            message = str(error) if isinstance(error, (ApiError, MediaError)) else {
+            message = str(error) if isinstance(error, (ApiError, MediaError, GithubWatchError)) else {
                 400: "请求内容无效", 401: "配对码无效或已过期", 404: "记录不存在",
                 409: "操作状态已变化，请刷新", 429: "尝试过于频繁，请稍后再试",
                 501: "当前节点版本暂不支持此功能",
@@ -545,9 +546,10 @@ class Handler(BaseHTTPRequestHandler):
     def route(self, path, query, body, connection):
         return dispatch(self, path, query, body, connection)
 
-    def stream_events(self, token: str):
+    def stream_events(self, token: str, connection_id: str):
         if not self.server.stream_slots.acquire(blocking=False):
             raise ApiError(429, "stream_limit", "连接过多，请稍后重连")
+        registered = False
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -555,6 +557,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("X-Accel-Buffering", "no")
             self.send_header("Connection", "close")
             self.end_headers()
+            self.app.github_watches.stream_connected(connection_id)
+            registered = True
             cursor = self.headers.get("Last-Event-ID")
             heartbeat = time.monotonic()
             while not self.app.events.closed:
@@ -570,16 +574,19 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.flush()
                     break
                 cursor, events, reset = self.app.events.read(cursor, timeout=1)
-                if self.app.pairing.authenticate(token) is None:
+                owner = self.app.pairing.authenticate(token)
+                if owner is None:
                     self.wfile.write(b'event: revoked\ndata: {}\n\n')
                     self.wfile.flush()
                     break
                 if reset:
                     self.wfile.write(f"id: {cursor}\nevent: reset\ndata: {{}}\n\n".encode())
-                for index, event in enumerate(events):
+                visible = [event for event in events if event.get('method') != 'relay/githubAlert'
+                           or (event.get('params') or {}).get('connectionId') == owner['connection_id']]
+                for index, event in enumerate(visible):
                     # The batch cursor is attached only to the last message,
                     # so reconnecting midway cannot skip unconsumed events.
-                    prefix = f"id: {cursor}\n" if index == len(events) - 1 else ""
+                    prefix = f"id: {cursor}\n" if index == len(visible) - 1 else ""
                     raw = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
                     self.wfile.write(f"{prefix}event: native\ndata: {raw}\n\n".encode("utf-8"))
                 if time.monotonic() - heartbeat >= 15:
@@ -589,5 +596,7 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             pass
         finally:
+            if registered:
+                self.app.github_watches.stream_disconnected(connection_id)
             self.close_connection = True
             self.server.stream_slots.release()

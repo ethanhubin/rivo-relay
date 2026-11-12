@@ -107,6 +107,13 @@ def main(argv=None):
                 print(json.dumps(pairing.list_connections(args.all), ensure_ascii=False, indent=2))
             elif args.command == "revoke":
                 changed = pairing.revoke(args.connection_id)
+                if changed:
+                    from .github_watch import GithubWatches
+                    watches = GithubWatches(config.workspace / 'data' / 'github-watch.sqlite3')
+                    try:
+                        watches.purge_connection(args.connection_id)
+                    finally:
+                        watches.close()
                 print("Connection revoked" if changed else "Connection not found or already revoked")
             return 0
         finally:
@@ -140,6 +147,7 @@ def serve(config: Config, native_socket: Path | None):
                 print(json.dumps({"time": datetime.datetime.now(datetime.timezone.utc).isoformat(), "event": "native_unavailable"}), file=sys.stderr, flush=True)
             native.activity.start()
             app.queue.start()
+            app.github_watches.start()
             tls = None
             if config.cert:
                 tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

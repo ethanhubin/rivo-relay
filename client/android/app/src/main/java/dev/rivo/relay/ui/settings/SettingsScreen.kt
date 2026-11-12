@@ -27,6 +27,8 @@ import dev.rivo.relay.BuildConfig
 import dev.rivo.relay.data.AppRelease
 import dev.rivo.relay.data.NodeAppUpdates
 import dev.rivo.relay.data.CodexUsage
+import dev.rivo.relay.data.RelayEvent
+import kotlinx.coroutines.flow.Flow
 import dev.rivo.relay.ui.common.CodexQuotaProgressBar
 import java.text.DateFormat
 import java.util.Date
@@ -37,6 +39,7 @@ import android.text.format.Formatter
 fun SettingsScreen(
     connection: dev.rivo.relay.connection.NodeConnection? = null,
     api: dev.rivo.relay.data.RelayApi? = null,
+    githubEvents: Flow<RelayEvent>? = null,
     setConnectionMode: (dev.rivo.relay.connection.ConnectionMode) -> Unit = {},
     savedNodes: List<dev.rivo.relay.connection.SavedNode> = emptyList(),
     resolveConnection: (String) -> dev.rivo.relay.connection.NodeConnection? = { null },
@@ -48,11 +51,13 @@ fun SettingsScreen(
     usageLoading: Boolean = false,
     usageError: String? = null,
     onRefreshUsage: (() -> Unit)? = null,
+    onReviewPr: (String) -> Unit = {},
     checkUpdate: (suspend () -> AppRelease?)? = null,
     downloadAndInstall: (suspend (AppRelease) -> Unit)? = null,
     updates: UpdateViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
     var speechEditorOpen by rememberSaveable { mutableStateOf(false) }
     var notificationEditorOpen by rememberSaveable { mutableStateOf(false) }
+    var githubEditorOpen by rememberSaveable { mutableStateOf(false) }
     val settingsScroll = rememberScrollState()
     var inspectedConnection by remember(connection?.base) { mutableStateOf(connection) }
     val inspectedApi = remember(inspectedConnection, api) {
@@ -70,6 +75,12 @@ fun SettingsScreen(
     var notesOpen by remember { mutableStateOf(false) }
     if (notificationEditorOpen) {
         NotificationSettingsEditor(onBack = { notificationEditorOpen = false })
+        return
+    }
+    if (githubEditorOpen && inspectedApi != null) {
+        GithubWatchSettings(inspectedApi, onBack = { githubEditorOpen = false },
+            canReviewPr = inspectedConnection?.base == connection?.base, onReviewPr = onReviewPr,
+            events = githubEvents.takeIf { inspectedConnection?.base == connection?.base })
         return
     }
     if (speechEditorOpen) {
@@ -166,6 +177,9 @@ fun SettingsScreen(
         }
         SettingsEntry("通知", dev.rivo.relay.R.drawable.ic_notifications, "edit_notification_settings") {
             notificationEditorOpen = true
+        }
+        SettingsEntry("GitHub PR 监听", dev.rivo.relay.R.drawable.connector_github, "edit_github_watches") {
+            githubEditorOpen = true
         }
         SpeechSettings(onEdit = { speechEditorOpen = true })
 

@@ -32,6 +32,7 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
     val api = connection.api()
     private var transportNetwork = defaultNetwork(context)
     private val sync = NodeSessionSync(api, scope)
+    val githubEvents: Flow<RelayEvent> by lazy { sync.events(onInterrupted = { }) }
     val notifications = TaskNotifications(context.applicationContext, api, scope, connection.base, connection.name, requestNotificationPermission, failure, sync)
     val catalog = CatalogController(api, scope, failure, store = conversations, sync = sync)
     val session = SessionController(api, scope, conversations, notifications::observe, notifications::setVisibleThread, sync = sync, failure = failure)
@@ -155,10 +156,19 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
     private val mutable = MutableStateFlow(AppState())
     val state = mutable.asStateFlow()
     private var nodeJob: Job? = null
+    private var githubForegroundJob: Job? = null
+    private var foreground = false
     private val nodeHandoff = NodeJobHandoff()
     private var lastStore: ConversationStore? = null
-    init { mutable.value = AppState(savedNodes = pairing.saved()); pairing.restore()?.let { activate(it) } }
+    init {
+        dev.rivo.relay.github.GithubAlertJob.schedule(application)
+        dev.rivo.relay.github.GithubAlertJob.checkSoon(application)
+        mutable.value = AppState(savedNodes = pairing.saved())
+        pairing.restore()?.let { activate(it) }
+    }
     private fun activate(connection: NodeConnection, openThread: String? = null, openTodos: Boolean = false, openProjects: Boolean = false) {
+        githubForegroundJob?.cancel()
+        githubForegroundJob = null
         val previousStore = lastStore
         val predecessors = nodeHandoff.retire(nodeJob)
         val job = SupervisorJob(viewModelScope.coroutineContext[Job]); nodeJob = job
@@ -181,6 +191,7 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
                     if (nodeJob === job && job.isActive) fail(error)
                 }
                 mutable.value = AppState(node = node, savedNodes = pairing.saved())
+                startGithubForeground(node)
                 openThread?.let(node::openNotificationThread)
                 if (openTodos) node.openNotificationTodos()
                 syncNodeName(node, scope)
@@ -261,11 +272,63 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
         } else mutable.update { it.copy(error = when (error) { is ApiException, is IllegalArgumentException -> error.message; else -> mutable.value.node?.api?.describeFailure(error) ?: connectionFailure(error) }) }
     }
     private var wasBackgrounded = false
-    fun onBackground() { wasBackgrounded = true }
+    fun onBackground() {
+        wasBackgrounded = true
+        foreground = false
+        githubForegroundJob?.cancel()
+        githubForegroundJob = null
+    }
     fun onForeground() {
+        foreground = true
+        startGithubForeground(mutable.value.node)
+        dev.rivo.relay.github.GithubAlertJob.checkSoon(getApplication())
         if (!wasBackgrounded) return
         wasBackgrounded = false
         mutable.value.node?.recovery?.foreground()
+    }
+    private fun startGithubForeground(node: NodeRuntime?) {
+        githubForegroundJob?.cancel()
+        githubForegroundJob = null
+        if (!foreground || node == null) return
+        githubForegroundJob = viewModelScope.launch {
+            val application = getApplication<Application>()
+            val sessionId = java.util.UUID.randomUUID().toString()
+            launch {
+                node.githubEvents.collect { event ->
+                    if (event.type == "connected") {
+                        try { node.api.call("/v1/github/foreground", "POST",
+                            org.json.JSONObject().put("active", true).put("sessionId", sessionId), background = true) }
+                        catch (error: CancellationException) { throw error }
+                        catch (_: Exception) { /* The lease renewal retries after a transient outage. */ }
+                    }
+                    if (event.type in setOf("connected", "reset") || event.payload.string("method") == "relay/githubAlert") {
+                        try { dev.rivo.relay.github.GithubAlertJob.checkNow(application,
+                            "${node.connection.nodeId}:${node.connection.deviceId}") }
+                        catch (error: CancellationException) { throw error }
+                        catch (_: Exception) { /* The durable job retries after transient local or network errors. */ }
+                    }
+                }
+            }
+            launch {
+                try {
+                    while (isActive) {
+                        try { node.api.call("/v1/github/foreground", "POST",
+                            org.json.JSONObject().put("active", true).put("sessionId", sessionId), background = true) }
+                        catch (error: CancellationException) { throw error }
+                        catch (_: Exception) { /* The node's regular scan remains the fallback. */ }
+                        delay(120_000)
+                    }
+                } finally {
+                    withContext(NonCancellable) {
+                        withTimeoutOrNull(5_000) {
+                            try { node.api.call("/v1/github/foreground", "POST",
+                                org.json.JSONObject().put("active", false).put("sessionId", sessionId), background = true) }
+                            catch (_: Exception) { /* The node's five-minute lease also expires automatically. */ }
+                        }
+                    }
+                }
+            }
+        }
     }
     fun retryConnection() {
         mutable.update { it.copy(error = null) }

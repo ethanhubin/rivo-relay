@@ -21,6 +21,8 @@ APK 位于 `app/build/outputs/apk/debug/`。设备测试包使用 `:app:assemble
 - `ui`：项目、聊天、审批、待办和文件交互。
 - `AppState` / `App`：节点生命周期和导航。
 
+GitHub PR 监听由节点查询和保存提醒，App 配置仓库分支并用 Android 后台任务补收；授权与提醒时效见 [GitHub PR 监听](../../docs/github-pr-watch.md)。
+
 ## 会话与附件
 
 首次发送时创建会话，草稿按节点保存。写入使用提交 ID，断线后核对原提交结果。会话权限根据节点最新状态显示，外部占用时可预览接管影响范围。

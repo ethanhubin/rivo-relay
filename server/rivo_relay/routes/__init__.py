@@ -1,6 +1,6 @@
 """Dispatch authenticated JSON requests; transport stays in api.Handler."""
 
-from . import files, media, projects, system, threads, todos
+from . import files, github, media, projects, system, threads, todos
 from .common import ApiError
 
 
@@ -21,6 +21,7 @@ _ROUTES = {
     "projects": projects.route,
     "threads": threads.route,
     "todos": todos.route,
+    "github": github.route,
 }
 
 
