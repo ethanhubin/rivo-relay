@@ -18,27 +18,23 @@ class ApiCompatibilityTest {
     }
     private fun node(versions: String = "[1]", id: String = "n") = JSONObject("{id:'$id',compatibility:{apiVersions:$versions}}")
     @Test fun releaseOrderDoesNotAffectCompatibilityAndIdentityIsRequired() {
-        assertEquals(CompatibilityState.COMPATIBLE, assessNode("n", "节点", setOf(1,3), node("[1,2]")).state)
-        assertEquals(CompatibilityState.INCOMPATIBLE, assessNode("n", "节点", setOf(3), node()).state)
-        assertEquals(CompatibilityState.UNKNOWN, assessNode("n", "节点", setOf(1), node(id="other")).state)
-        assertEquals(CompatibilityState.UNKNOWN, assessNode("n", "节点", setOf(1), JSONObject("{id:n,releaseCode:999}")).state)
+        assertEquals(CompatibilityState.COMPATIBLE, assessNode("n", setOf(1,3), node("[1,2]")).state)
+        assertEquals(CompatibilityState.INCOMPATIBLE, assessNode("n", setOf(3), node()).state)
+        assertEquals(CompatibilityState.UNKNOWN, assessNode("n", setOf(1), node(id="other")).state)
+        assertEquals(CompatibilityState.UNKNOWN, assessNode("n", setOf(1), JSONObject("{id:n,releaseCode:999}")).state)
     }
-    @Test fun updateMatrixAndConsentBinding() {
-        val good = assessNode("n", "节点", setOf(1), node())
-        val bad = assessNode("n", "节点", setOf(2), node())
-        val unknown = assessNode("n", "节点", null, node())
-        assertTrue(UpdateCompatibility(emptyList()).allowed)
-        assertFalse(UpdateCompatibility(emptyList(), false).allowed)
-        assertTrue(UpdateCompatibility(listOf(good)).allowed)
-        assertFalse(UpdateCompatibility(listOf(good)).needsConfirmation)
-        assertFalse(UpdateCompatibility(listOf(bad)).allowed)
-        assertFalse(UpdateCompatibility(listOf(unknown)).allowed)
-        assertFalse(UpdateCompatibility(listOf(bad, unknown)).allowed)
-        val partial = UpdateCompatibility(listOf(good, bad))
-        assertTrue(partial.allowed)
-        assertTrue(partial.needsConfirmation)
-        val release = AppRelease("1.0.0", "", "", "", false, sha256="a", apiVersions=setOf(1))
-        assertNotEquals(partial.confirmationKey(release), partial.confirmationKey(release.copy(sha256="b")))
-        assertNotEquals(partial.confirmationKey(release), partial.copy(nodes=listOf(good, unknown)).confirmationKey(release))
+    @Test fun updateAssessmentNeverIncludesNodeNamesOrIdsInMessages() {
+        val good = assessNode("private-machine-id", setOf(1), node(id="private-machine-id"))
+        val bad = assessNode("private-machine-id", setOf(2), node(id="private-machine-id"))
+        val unknown = assessNode("private-machine-id", null, node(id="private-machine-id"))
+        assertTrue(UpdateCompatibility().allowed)
+        assertFalse(UpdateCompatibility(candidateKnown = false).allowed)
+        assertTrue(UpdateCompatibility(good).allowed)
+        assertEquals("当前节点兼容", UpdateCompatibility(good).summary)
+        assertFalse(UpdateCompatibility(bad).allowed)
+        assertFalse(UpdateCompatibility(unknown).allowed)
+        val message = UpdateCompatibility(bad).summary
+        assertFalse(message.contains("private-machine-id"))
+        assertFalse(message.contains(bad.reason))
     }
 }

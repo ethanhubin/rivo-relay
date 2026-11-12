@@ -197,7 +197,7 @@ fun SettingsScreen(
                             else "${(fraction * 100).toInt()}% · ${Formatter.formatFileSize(context, downloadedBytes)} / ${Formatter.formatFileSize(context, latest.size.coerceAtLeast(0))} · ${Formatter.formatFileSize(context, bytesPerSecond)}/s",
                             style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("update_download_status"))
                     }
-                    updates.compatibility?.takeUnless { it.summary == error }?.let { Text(it.summary) }
+                    updates.compatibility?.takeIf { !it.allowed && it.summary != error }?.let { Text(it.summary) }
                     TextButton(onClick = { notesOpen = true }) { Text("查看更新说明") }
                 }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("update_error")) }

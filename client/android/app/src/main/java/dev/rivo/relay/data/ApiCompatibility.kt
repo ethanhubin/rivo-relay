@@ -40,24 +40,23 @@ data class ApiCompatibility(val apiVersions: Set<Int>, val features: Map<Int, Se
 }
 
 enum class CompatibilityState { COMPATIBLE, INCOMPATIBLE, UNKNOWN }
-data class NodeCompatibility(val id: String, val name: String, val state: CompatibilityState, val reason: String)
-data class UpdateCompatibility(val nodes: List<NodeCompatibility>, val candidateKnown: Boolean = true) {
-    val allowed: Boolean get() = candidateKnown && (nodes.isEmpty() || nodes.any { it.state == CompatibilityState.COMPATIBLE })
-    val needsConfirmation: Boolean get() = allowed && nodes.any { it.state != CompatibilityState.COMPATIBLE }
+data class NodeCompatibility(val state: CompatibilityState, val reason: String)
+data class UpdateCompatibility(val current: NodeCompatibility? = null, val candidateKnown: Boolean = true) {
+    val allowed: Boolean get() = candidateKnown && (current == null || current.state == CompatibilityState.COMPATIBLE)
     val summary: String get() = if (!candidateKnown) "新版未提供有效兼容声明，暂缓安装，请重新检查更新"
-        else if (nodes.isEmpty()) "尚未绑定节点"
-        else nodes.joinToString("\n") { "${it.name}：${it.reason}" }
-    // Bind consent to this release and the entire current assessment, not a persistent Boolean.
-    fun confirmationKey(release: AppRelease): String = "${release.sha256}:${release.apiVersions?.sorted()}:$nodes"
+        else if (current == null) "尚未绑定节点"
+        else if (allowed) "当前节点兼容"
+        else if (current.state == CompatibilityState.INCOMPATIBLE) "当前节点尚不支持新版 App，请升级当前节点后重试"
+        else "无法确认当前节点兼容性，暂缓安装，请检查连接后重试"
 }
 
-fun assessNode(id: String, name: String, candidate: Set<Int>?, info: JSONObject): NodeCompatibility {
+fun assessNode(id: String, candidate: Set<Int>?, info: JSONObject): NodeCompatibility {
     if (info.optString("id") != id || id.isBlank())
-        return NodeCompatibility(id, name, CompatibilityState.UNKNOWN, "节点身份不匹配，暂缓安装")
+        return NodeCompatibility(CompatibilityState.UNKNOWN, "节点身份不匹配，暂缓安装")
     val contract = ApiCompatibility.parse(info.optJSONObject("compatibility"))
     return when {
-        candidate == null || contract == null -> NodeCompatibility(id, name, CompatibilityState.UNKNOWN, "兼容性未知，请先升级节点后重新检查")
-        contract.selected(candidate) == null -> NodeCompatibility(id, name, CompatibilityState.INCOMPATIBLE, "等待节点升级（没有共同 API 版本）")
-        else -> NodeCompatibility(id, name, CompatibilityState.COMPATIBLE, "基础兼容（API v${contract.selected(candidate)}）")
+        candidate == null || contract == null -> NodeCompatibility(CompatibilityState.UNKNOWN, "兼容性未知，请先升级节点后重新检查")
+        contract.selected(candidate) == null -> NodeCompatibility(CompatibilityState.INCOMPATIBLE, "等待节点升级（没有共同 API 版本）")
+        else -> NodeCompatibility(CompatibilityState.COMPATIBLE, "基础兼容（API v${contract.selected(candidate)}）")
     }
 }
