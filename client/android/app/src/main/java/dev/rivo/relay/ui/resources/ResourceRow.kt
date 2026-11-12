@@ -1,4 +1,4 @@
-package dev.rivo.relay.ui.sites
+package dev.rivo.relay.ui.resources
 
 import android.net.Uri
 import androidx.compose.foundation.Image
@@ -15,12 +15,9 @@ import dev.rivo.relay.R
 import dev.rivo.relay.data.NativeResource
 import dev.rivo.relay.data.resourceWebUrl
 
-val LocalSitesApi = staticCompositionLocalOf<dev.rivo.relay.data.RelayApi?> { null }
-
 @Composable
 fun ConnectorIcon(connector: String?, modifier: Modifier = Modifier) {
     val resource = when(connector) {
-        "appgarden" -> R.drawable.connector_appgarden
         "chatgpt_space" -> R.drawable.connector_chatgpt_space
         "documents" -> R.drawable.connector_documents
         "pdf" -> R.drawable.connector_pdf
@@ -48,9 +45,9 @@ fun ResourceRow(resource: NativeResource) {
         Column(Modifier.weight(1f)) {
             Text(resource.title, style = MaterialTheme.typography.bodyLarge)
             if (url != null) Text(Uri.parse(url).host.orEmpty(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (resource.label !in setOf("打开网站", "打开链接")) Text(resource.label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (resource.label != "打开链接") Text(resource.label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (url != null) Text("›")
     }
-    if (browsing && url != null) SiteBrowser(url, resource.title, if (resource.connector == "appgarden") LocalSitesApi.current else null, resource.connector == "appgarden") { browsing = false }
+    if (browsing && url != null) ResourceBrowser(url, resource.title) { browsing = false }
 }

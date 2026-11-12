@@ -28,13 +28,13 @@ class GatewayTests(GatewayFixture, unittest.IsolatedAsyncioTestCase):
             self.assertEqual('GET', record['method'])
             self.assertNotIn('private', str(log.call_args_list))
 
-    async def test_sites_preserves_valid_client_trace(self):
+    async def test_projects_preserves_valid_client_trace(self):
         with patch('rivo_relay.gateway.server.event') as log:
-            async with self.client.get(self.url + '/v1/sites', headers={'X-Rivo-Request-Id': 'b' * 32}) as response:
+            async with self.client.get(self.url + '/v1/projects', headers={'X-Rivo-Request-Id': 'b' * 32}) as response:
                 await response.read()
             record = await self.finished_record(log)
             self.assertEqual('b' * 32, record['request_id'])
-            self.assertEqual('sites', record['route'])
+            self.assertEqual('projects', record['route'])
 
     async def finished_record(self, log):
         for _ in range(100):

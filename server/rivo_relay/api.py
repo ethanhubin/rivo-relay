@@ -448,11 +448,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, issue(self.app.config.workspace, connection['connection_id']))
                 return
 
-            if self.command == 'GET' and path == ['v1', 'sites']:
-                from .codex.sites import list_sites
-                self.send_json(200, list_sites(self.app.codex.connection, query.get('cursor', [None])[0]))
-                return
-
             if self.command == 'GET' and path == ['v1', 'node-updates', 'status']:
                 from .gateway.update_status import public_status
                 self.send_json(200, public_status(self.app.config.workspace))

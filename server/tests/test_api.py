@@ -92,18 +92,6 @@ class ApiTests(RelayHTTPFixture, unittest.TestCase):
                 self.assertEqual(415, status)
                 self.assertEqual('invalid_request', result['error']['code'])
 
-    def test_sites_requires_auth_and_exposes_only_list(self):
-        self.app.codex.connection = Mock()
-        with patch('rivo_relay.codex.sites.list_sites', return_value={'items': [], 'cursor': None}) as sites:
-            self.assertEqual(401, self.request('GET', '/v1/sites')[0])
-            sites.assert_not_called()
-            status, result, _ = self.request('GET', '/v1/sites?cursor=opaque', token=self.token)
-            self.assertEqual(200, status)
-            self.assertEqual([], result['items'])
-            self.assertEqual('opaque', sites.call_args.args[1])
-            self.assertEqual(404, self.request('POST', '/v1/sites', {}, token=self.token)[0])
-            self.assertEqual(1, sites.call_count)
-
     def test_update_lease_requires_local_agent_and_blocks_new_requests(self):
         self.assertEqual(403, self.request('POST', '/internal/update-lease', {})[0])
         self.app.codex.idle_for_update = lambda: True
