@@ -44,12 +44,14 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
@@ -70,7 +72,7 @@ import kotlinx.coroutines.flow.first
 import org.json.JSONObject
 
 /**
- * QiGuang Codex Composer layout with a content-expanding, three-line BasicTextField,
+ * QiGuang Codex Composer layout with a content-expanding BasicTextField,
  * and one compact action row (8x6dp insets, 6dp spacing).
  * Source: QiGuang ui/main/ChatComposerContent.kt and AttachmentAddIcon.kt.
  * Rivo keeps draft ownership and native submission in ChatScreen. Mode icons,
@@ -128,7 +130,17 @@ fun MessageComposer(
     val keyboard = LocalSoftwareKeyboardController.current
     val focusRequester = remember { FocusRequester() }
     val density = LocalDensity.current
-    var visibleTextHeight by remember(density) { mutableStateOf(0.dp) }
+    var inputFocused by remember { mutableStateOf(false) }
+    val expandedInput = inputFocused && WindowInsets.ime.getBottom(density) > 0
+    val visibleLineLimit = if (expandedInput) 5 else 2
+    // A focus/IME change can alter the line budget without triggering onTextLayout.
+    // Retain the paragraph metrics so fallback-font line boxes survive that change.
+    var inputLayout by remember(density) { mutableStateOf<TextLayoutResult?>(null) }
+    val visibleTextHeight = with(density) {
+        inputLayout?.let { layout ->
+            kotlin.math.ceil(layout.getLineBottom(minOf(visibleLineLimit, layout.lineCount) - 1)).toInt().toDp()
+        } ?: 0.dp
+    }
     var inputValue by remember { mutableStateOf(TextFieldValue(text, selection = TextRange(text.length))) }
     val mediaClient = LocalCodexMediaClient.current
     val api = mediaClient?.api
@@ -278,32 +290,27 @@ fun MessageComposer(
                 shadowElevation = 8.dp,
             ) {
                 Column {
-                    Row(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 2.dp),
+                    // Reserve the action row before giving the text its remaining space.
+                    Row(Modifier.weight(1f, fill = false).fillMaxWidth().padding(top = 10.dp, bottom = 2.dp),
                         verticalAlignment = Alignment.Top) {
                         BasicTextField(
                             value = inputValue,
                             onValueChange = { if (it.text != inputValue.text) cancelVoice(); inputValue = it; onTextChange(it.text) },
                             enabled = textEditable,
                             modifier = Modifier.weight(1f).pasteImageAttachments(context, enabled && !preparing, onPasteImages)
-                                .focusRequester(focusRequester)
+                                .focusRequester(focusRequester).onFocusChanged { inputFocused = it.isFocused }
                                 .padding(horizontal = 16.dp).heightIn(min = visibleTextHeight).testTag("message_input"),
                             textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (textEditable) 1f else 0.38f)),
                             cursorBrush = SolidColor(MaterialTheme.colorScheme.onSurface),
-                            minLines = 1,
-                            maxLines = 3,
-                            onTextLayout = { layout ->
-                                // Fallback fonts (including Chinese) can exceed the default
-                                // Latin-based maxLines height. Keep three complete line boxes.
-                                visibleTextHeight = with(density) {
-                                    kotlin.math.ceil(layout.getLineBottom(minOf(3, layout.lineCount) - 1)).toInt().toDp()
-                                }
-                            },
+                            minLines = if (expandedInput) 3 else 1,
+                            maxLines = visibleLineLimit,
+                            onTextLayout = { inputLayout = it },
                             decorationBox = { inner ->
                                 Box {
                                     if (text.isEmpty()) Text(
                                         prediction ?: when { isRunning -> "输入下一项任务或实时引导"; discussionMode -> "输入想讨论的方案或问题"; else -> "描述要实现或修改的功能" },
                                         style = MaterialTheme.typography.bodyMedium,
-                                        maxLines = 3,
+                                        maxLines = visibleLineLimit,
                                         overflow = TextOverflow.Ellipsis,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
