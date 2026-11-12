@@ -40,19 +40,23 @@ internal fun ChatMarkdownTable(
   }
   // Overlap the shared border so the tab and table read as one attached control.
   Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy((-0.5).dp)) {
-    Surface(
-      onClick = { cards = !cards },
-      modifier = Modifier.align(Alignment.End).testTag("markdown_table_toggle"),
-      shape = RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp),
-      color = MaterialTheme.colorScheme.surfaceContainerLow,
-      contentColor = MaterialTheme.colorScheme.onSurface,
-      border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-      Box(
-        modifier = Modifier.heightIn(min = 48.dp).padding(horizontal = 16.dp, vertical = 8.dp),
-        contentAlignment = Alignment.Center,
+    // Keep the tab compact without reserving Material's 48 dp layout height.
+    // Compose still expands the touch target to its platform minimum.
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+      Surface(
+        onClick = { cards = !cards },
+        modifier = Modifier.align(Alignment.End).testTag("markdown_table_toggle"),
+        shape = RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
       ) {
-        Text(if (cards) "切换为表格" else "切换为卡片", style = MaterialTheme.typography.labelLarge)
+        Box(
+          modifier = Modifier.heightIn(min = 32.dp).padding(horizontal = 16.dp, vertical = 4.dp),
+          contentAlignment = Alignment.Center,
+        ) {
+          Text(if (cards) "切换为表格" else "切换为卡片", style = MaterialTheme.typography.labelLarge)
+        }
       }
     }
     if (cards) {
