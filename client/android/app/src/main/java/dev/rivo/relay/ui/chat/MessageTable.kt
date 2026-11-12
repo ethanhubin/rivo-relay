@@ -9,6 +9,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
@@ -33,39 +34,55 @@ internal fun ChatMarkdownTable(
   val visibleTable = remember(table, visibleRows) { table.copy(rows = table.rows.take(visibleRows)) }
   var cards by rememberSaveable(messageId, blockIndex) { mutableStateOf(false) }
   Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-  TextButton(onClick = { cards = !cards }, modifier = Modifier.testTag("markdown_table_toggle")) {
-    Text(if (cards) "切换为表格" else "切换为卡片")
-  }
   if (table.rows.size > MARKDOWN_TABLE_BATCH_SIZE) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
     TextButton(onClick = { onCopyText(markdownTableSource(table)) }, modifier = Modifier.testTag("markdown_table_copy_all")) { Text("复制完整表格") }
     if (onQuoteText != null) TextButton(onClick = { onQuoteText(markdownTableSource(table)) }, modifier = Modifier.testTag("markdown_table_quote_all")) { Text("引用完整表格") }
   }
-  if (cards) {
-    Column(
-      modifier = Modifier.fillMaxWidth().testTag("markdown_table_${messageId}_$blockIndex"),
-      verticalArrangement = Arrangement.spacedBy(8.dp),
+  // Overlap the shared border so the tab and table read as one attached control.
+  Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy((-0.5).dp)) {
+    Surface(
+      onClick = { cards = !cards },
+      modifier = Modifier.align(Alignment.End).testTag("markdown_table_toggle"),
+      shape = RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp),
+      color = MaterialTheme.colorScheme.surfaceContainerLow,
+      contentColor = MaterialTheme.colorScheme.onSurface,
+      border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
-      visibleTable.rows.forEachIndexed { rowIndex, row -> key(rowIndex) {
-        MarkdownTableCard(
-          table = table,
-          row = row,
-          testTag = "markdown_table_card_${messageId}_${blockIndex}_$rowIndex",
-          onCopyText = onCopyText,
-          onQuoteText = onQuoteText,
-          onOpenLink = onOpenLink,
-          onOpenImage = onOpenImage,
-        )
-      } }
+      Box(
+        modifier = Modifier.heightIn(min = 48.dp).padding(horizontal = 16.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+      ) {
+        Text(if (cards) "切换为表格" else "切换为卡片", style = MaterialTheme.typography.labelLarge)
+      }
     }
-  } else {
-    MarkdownTableGrid(
-      table = visibleTable,
-      testTag = "markdown_table_${messageId}_$blockIndex",
-      onCopyText = onCopyText,
-      onQuoteText = onQuoteText,
-      onOpenLink = onOpenLink,
-      onOpenImage = onOpenImage,
-    )
+    if (cards) {
+      Column(
+        modifier = Modifier.fillMaxWidth().testTag("markdown_table_${messageId}_$blockIndex"),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        visibleTable.rows.forEachIndexed { rowIndex, row -> key(rowIndex) {
+          MarkdownTableCard(
+            table = table,
+            row = row,
+            attachedToTab = rowIndex == 0,
+            testTag = "markdown_table_card_${messageId}_${blockIndex}_$rowIndex",
+            onCopyText = onCopyText,
+            onQuoteText = onQuoteText,
+            onOpenLink = onOpenLink,
+            onOpenImage = onOpenImage,
+          )
+        } }
+      }
+    } else {
+      MarkdownTableGrid(
+        table = visibleTable,
+        testTag = "markdown_table_${messageId}_$blockIndex",
+        onCopyText = onCopyText,
+        onQuoteText = onQuoteText,
+        onOpenLink = onOpenLink,
+        onOpenImage = onOpenImage,
+      )
+    }
   }
   if (visibleRows < table.rows.size) TextButton(
     onClick = { visibleRows = (visibleRows + MARKDOWN_TABLE_BATCH_SIZE).coerceAtMost(table.rows.size) },
@@ -84,6 +101,7 @@ internal fun markdownTableSource(table: ChatMarkdownBlock.Table): String = table
 private fun MarkdownTableCard(
   table: ChatMarkdownBlock.Table,
   row: List<String>,
+  attachedToTab: Boolean,
   testTag: String,
   onCopyText: (String) -> Unit,
   onQuoteText: ((String) -> Unit)?,
@@ -92,7 +110,7 @@ private fun MarkdownTableCard(
 ) {
   Surface(
     modifier = Modifier.fillMaxWidth().testTag(testTag),
-    shape = RoundedCornerShape(14.dp),
+    shape = RoundedCornerShape(topStart = 14.dp, topEnd = if (attachedToTab) 0.dp else 14.dp, bottomStart = 14.dp, bottomEnd = 14.dp),
     color = MaterialTheme.colorScheme.surfaceContainerLow,
     border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
   ) {
@@ -131,7 +149,7 @@ private fun MarkdownTableGrid(
     val gridWidth = columnWidths.fold(0.dp) { sum, width -> sum + width }
     Surface(
       modifier = Modifier.fillMaxWidth().testTag(testTag),
-      shape = RoundedCornerShape(12.dp),
+      shape = RoundedCornerShape(topStart = 12.dp, topEnd = 0.dp, bottomStart = 12.dp, bottomEnd = 12.dp),
       border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
       color = MaterialTheme.colorScheme.surface,
     ) {
