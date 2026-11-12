@@ -36,7 +36,7 @@ class GoalPanelUiTest {
     @Test fun goalModeButtonDirectlyEditsExistingGoal() {
         val snapshot = snapshot().copy(queue = listOf(
             QueueTask("one", "检查页面布局与标准边距", "waiting", 0, "", JSONObject()),
-            QueueTask("two", "补充交互验证与截图", "waiting", 0, "", JSONObject()),
+            QueueTask("two", "补充交互验证与截图", "pending_unknown", 0, "", JSONObject()),
             QueueTask("three", "核对任务执行结果", "unknown", 0, "", JSONObject())
         ), goalSupported = true, goal = JSONObject()
             .put("status", "active").put("objective", "完成完整复刻，并做 Playmode 截图验收。")
@@ -51,6 +51,9 @@ class GoalPanelUiTest {
         compose.onNodeWithTag("edit_goal").assertDoesNotExist()
         compose.onNodeWithText("编辑持续目标").assertDoesNotExist()
         compose.onNodeWithTag("execution_queue").assertIsDisplayed()
+        compose.onNodeWithText("结果待核对").assertDoesNotExist()
+        compose.onNodeWithTag("queue_pending_two").assertIsDisplayed()
+        compose.onNodeWithTag("queue_pending_three").assertIsDisplayed()
         evidence("queue-panel-aligned")
         compose.onNodeWithTag("codex_task_mode").assertIsEnabled().performClick()
         compose.onNodeWithText("持续目标").assertIsDisplayed()

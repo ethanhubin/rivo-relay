@@ -74,11 +74,16 @@ fun ExecutionQueuePanel(threadId: String, tasks: List<QueueTask>, enabled: Boole
                             Text(if (task.status == "running") "●" else "○", modifier = Modifier.width(18.dp), color = MaterialTheme.colorScheme.primary)
                             Column(Modifier.weight(1f)) {
                                 val sending = task.status in setOf("submitting", "pending_accepted", "dispatching")
-                                Text(task.text.ifBlank { "附件任务" }, modifier = Modifier.pendingMessageShimmer(sending),
+                                val awaitingConfirmation = task.status in setOf("unknown", "pending_unknown")
+                                if (awaitingConfirmation) ProvideTextStyle(MaterialTheme.typography.bodyMedium) {
+                                    ShimmeringStageText(task.text.ifBlank { "附件任务" },
+                                        modifier = Modifier.testTag("queue_pending_${task.id}"),
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                } else Text(task.text.ifBlank { "附件任务" }, modifier = Modifier.pendingMessageShimmer(sending),
                                     maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-                                if (!sending && task.status != "waiting") Text(when(task.status) {
-                                    "pending_unknown" -> "结果待核对"; "running" -> "执行中"; "unknown" -> "结果待核对"; else -> "执行未完成"
-                                }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                if (!sending && !awaitingConfirmation && task.status != "waiting") Text(
+                                    if (task.status == "running") "执行中" else "执行未完成",
+                                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             if (task.status == "waiting" && canSteer) TextButton(onClick = { onSteer(task) },
                                 enabled = enabled && dragging == null && task.raw.string("mode") != "plan" && task.raw.optJSONObject("review") == null,
