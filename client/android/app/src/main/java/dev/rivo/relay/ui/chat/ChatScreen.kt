@@ -732,6 +732,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         if (goalAvailable) key(state.id) {
             NativeGoalPanel(displayedGoal, goalEnabled, { action ->
                 if (action.string("operation") == "clear") goalModeSelected = false
+                if (action.string("operation") == "set") { selectedMode = "default"; goalModeSelected = true }
                 if (pendingTitle != null) pendingGoal = if (action.string("operation") == "clear") null else action.toString()
                 else onGoal(action)
             }, goalEditing, pending = pendingTitle != null) { goalEditing = it }
@@ -812,7 +813,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             goalMode = goalMode, goalModeEnabled = goalAvailable && goalEnabled,
             onSelectMode = { mode ->
                 if (mode == "goal") {
-                    selectedMode = "default"; goalModeSelected = true; goalEditing = true
+                    goalEditing = true
                 } else {
                     goalModeSelected = false
                     selectedMode = mode

@@ -63,4 +63,21 @@ class GoalPanelUiTest {
         compose.onNodeWithText("取消").performClick()
         compose.onNodeWithTag("native_goal").assertIsDisplayed()
     }
+    @Test fun cancellingFirstGoalKeepsNormalModeAndSendingAvailable() {
+        val snapshot = snapshot().copy(goalSupported = true)
+        compose.setContent { RivoTheme { Surface(Modifier.fillMaxSize().systemBarsPadding()) {
+            ChatScreen(SessionState(id = snapshot.id, snapshot = snapshot), false, false, emptyList(), {},
+                onSend = { _, _, _, _ -> error("Fixture must not send") },
+                onStop = {}, onRespond = { _, _ -> }, onRefresh = {}, onLoadModels = {},
+                onEarlier = {}, readFile = { JSONObject() })
+        } } }
+        compose.onNodeWithTag("codex_task_mode").performClick()
+        compose.onNodeWithTag("composer_mode_goal").performClick()
+        compose.onNodeWithText("持续目标").assertIsDisplayed()
+        compose.onNodeWithText("取消").performClick()
+        compose.onNodeWithText("普通模式").assertIsDisplayed()
+        compose.onNodeWithTag("message_input").performTextInput("继续普通任务")
+        compose.onNodeWithTag("send_message").assertIsEnabled()
+    }
+
 }
