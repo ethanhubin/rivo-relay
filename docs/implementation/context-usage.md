@@ -11,12 +11,14 @@
 
 服务端已有 `thread/tokenUsage/updated` → 会话 `tokenUsage` 投影，Android `SessionSnapshot` 已解析该字段。无需新增统计接口。
 
-输入区发送/停止/继续按钮左侧仅显示环形进度图标，不显示文字或百分比。采用 `last.totalTokens / modelContextWindow` 的实际窗口占比，向下取整并限制到 0–100%；不扣终端的固定基线，以保持百分比和 tip 数值一致。环形填充保留原始比例精度。点击弹出 tip，显示已用/剩余比例、精确已用 tokens 和窗口容量；点击 tip 外部（包括同一图标按钮）或返回关闭，切换会话清除展开状态。
+输入区发送/停止/继续按钮左侧仅显示环形进度图标，不显示文字或百分比。采用 `last.totalTokens / modelContextWindow` 的实际窗口占比，向下取整并限制到 0–100%；不扣终端的固定基线，以保持百分比和 tip 数值一致。环形填充保留原始比例精度。点击弹出 tip，按四行显示「上下文用量」「已使用：百分比」「已使用：已用 tokens」「总容量：窗口 tokens」；点击 tip 外部（包括同一图标按钮）或返回关闭，切换会话清除展开状态。
 
-缺少有效统计时显示空环，tip 说明统计不可用；已上报的 0 在 tip 显示 0%。窗口未知时仍可查看已知占用。超出窗口时环形限制在 100%，tip 保留原始数值；压缩后的最新统计可使比例下降。移除会话标题旁的重复百分比。该统计来自最近一次模型调用，不估算尚未发送的草稿，也不是实时计费消耗。
+缺少有效统计时隐藏环形图标及 tip，不保留按钮占位；包括占用未知、窗口未知或窗口容量无效。已上报的 0 仍显示环形图标，在 tip 显示 0%。超出窗口时环形限制在 100%，tip 保留原始数值；压缩后的最新统计可使比例下降。移除会话标题旁的重复百分比。该统计来自最近一次模型调用，不估算尚未发送的草稿，也不是实时计费消耗。
 
 ## 本次验证
 
 `:app:testDebugUnitTest --tests dev.rivo.relay.ContextUsageTest` 通过（3 项），包含 Android 主代码与单元测试 Kotlin 编译；`git diff --check` 通过。未运行 lint，未进行真机或模拟器 UI 验证，未构建发布 APK。
 
 后续图标与 tip 开关调整：`:app:compileDebugKotlin` 通过；统计逻辑未变，复用上述单元测试结果。未进行真机或模拟器交互验证。
+
+不可用时隐藏及详情格式调整：使用管理节点配置中的 Android SDK 运行 `:app:testDebugUnitTest --tests dev.rivo.relay.ContextUsageTest` 通过（3 项），包含 Android 主代码编译；`git diff --check` 通过。未运行 lint，未进行真机或模拟器验证。
