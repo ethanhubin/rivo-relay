@@ -39,10 +39,14 @@ fun NativeGoalPanel(goal: JSONObject?, enabled: Boolean, onAction: (JSONObject) 
     fun cancelEditing() { objective = savedObjective; budget = savedBudget; onEditingChange(false) }
     if (goal != null) {
         Surface(color = MaterialTheme.colorScheme.surfaceContainerLow,
-            shape = RoundedCornerShape(8.dp),
+            shape = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp, bottomStart = 0.dp, bottomEnd = 0.dp),
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).testTag("native_goal")) {
-            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 6.dp)) {
+            modifier = Modifier.fillMaxWidth()
+                // Cross the panel's 6dp bottom gap and the composer's 8dp top gap, then overlap by 2dp.
+                .offset(y = 14.dp + 2.dp)
+                // Composer inset (12dp) + top corner radius (28dp).
+                .padding(horizontal = 40.dp, vertical = 6.dp).testTag("native_goal")) {
+            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 6.dp + 2.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(vertical = 8.dp)) { Text(if (pending) "目标草稿" else "目标 · ${goalStatusLabel(status)}") }
                     if (status == "active") TextButton(onClick = { onAction(JSONObject().put("operation", "pause")) }, enabled = enabled, contentPadding = PaddingValues(vertical = 8.dp)) { Text("暂停目标") }
