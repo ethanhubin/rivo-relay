@@ -16,6 +16,10 @@ def route(handler, path, query, body, connection):
         return codex.capabilities(refresh=query.get('refresh', ['0'])[0] == '1')
     if path == ['v1', 'usage'] and method == 'GET':
         return {'usage': codex.usage()}
+    if path in (['v1', 'usage', 'reset'], ['v1', 'usage', 'reset', 'reconcile']) and method == 'POST':
+        if set(body) != {'submissionId'}:
+            raise ApiError(400, 'invalid_request', 'Only submissionId is accepted')
+        return handler.app.reset_usage(connection_id, required(body, 'submissionId'), reconcile=path[-1] == 'reconcile')
     if path == ["v1", "activity"] and method == "GET":
         return codex.active_tasks()
     if path == ["v1", "requests", "respond"] and method == "POST":

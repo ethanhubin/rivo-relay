@@ -75,6 +75,7 @@ class RelayApp:
                     pass
                 native_event(event)
             codex.on_event = media_event
+        self._usage_reset_lock = threading.RLock()
         self._todo_dispatch_lock = threading.RLock()
         # serve holds an exclusive file lock before constructing the app.
         self.submissions.recover_pending()
@@ -129,6 +130,57 @@ class RelayApp:
             else:
                 record = self.submissions.mark_unknown(submission_id)
         self.events.publish({"method": "relay/submission", "params": public_submission(record)})
+        return public_submission(record)
+
+    def reset_usage(self, connection_id, submission_id, *, reconcile=False):
+        # This POST is the sole exception to never replaying native mutations:
+        # consume has a documented native idempotency key, reused after restart.
+        with self._usage_reset_lock:
+            try:
+                record = self.submissions.get(submission_id, connection_id)
+            except SubmissionNotFound:
+                if reconcile:
+                    return public_submission(self.submissions.reconcile(submission_id, connection_id))
+                scope = self.codex.usage_reset_scope()
+                previous = self.submissions.find_for_target('usage.reset', scope)
+                unresolved = next((item for item in previous if item['status'] in {'pending', 'unknown'}), None)
+                if unresolved is not None:
+                    if unresolved['status'] == 'pending' or unresolved['connection_id'] == connection_id:
+                        raise SubmissionConflict('此账户已有待核对的额度重置，请先核对原操作')
+                    # A replacement phone cannot read the old owner's receipt.
+                    # Fence its new ID before recovering the account's old key:
+                    # a crash/retry must never redeem using this new ID.
+                    with self.db.transaction():
+                        claim = self.submissions.claim(submission_id, connection_id, 'usage.reset', scope, {})
+                        if not claim['should_dispatch']:
+                            return public_submission(claim['submission'])
+                        record = self.submissions.mark_failed(submission_id, 'usage_reset_recovery_only')
+                    self._recover_usage_reset(unresolved)
+                    return public_submission(record)
+                return self.submit(connection_id, submission_id, 'usage.reset', scope, {},
+                                   lambda: self.codex.reset_usage(submission_id, scope))
+            if record['operation'] != 'usage.reset':
+                if record['operation'] == 'submission.reconcile':
+                    return public_submission(record)
+                raise SubmissionConflict('Submission ID belongs to another operation')
+            if record['status'] != 'unknown' or not reconcile:
+                return public_submission(record)
+            return self._recover_usage_reset(record)
+
+    def _recover_usage_reset(self, record):
+        """Called under _usage_reset_lock, with the original account and native key."""
+        submission_id = record['id']
+        try:
+            receipt = self.codex.reset_usage(submission_id, record['target'])
+            record = self.submissions.mark_accepted(submission_id, receipt)
+            self.events.publish({"method": "relay/submission", "params": public_submission(record)})
+        except Exception as error:
+            # A failed recovery cannot disprove the original request.
+            record = self.submissions.get(submission_id)
+            code = getattr(error, 'code', None)
+            if code in {'usage_reset_account_changed', 'usage_reset_account_unverified',
+                        'usage_reset_unsupported', 'native_auth_required'}:
+                return {**public_submission(record), 'recoveryErrorCode': code}
         return public_submission(record)
 
     def dispatch_todo(self, todo_id: str, connection_id: str, payload: dict) -> dict:

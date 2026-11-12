@@ -6,7 +6,10 @@ data class CodexUsageWindow(val usedPercent: Int, val windowMinutes: Long?, val 
     val remainingPercent: Int get() = 100 - usedPercent
 }
 data class CodexUsageLimit(val id: String, val name: String, val primary: CodexUsageWindow?, val secondary: CodexUsageWindow?)
-data class CodexUsage(val limits: List<CodexUsageLimit>) {
+data class CodexResetCredit(val id: String, val status: String, val expiresAt: Long?)
+data class CodexResetCredits(val availableCount: Int?, val credits: List<CodexResetCredit>?)
+data class CodexUsage(val limits: List<CodexUsageLimit>, val resetCredits: CodexResetCredits? = null,
+    val resetSupported: Boolean = false) {
     val weeklyWindow: CodexUsageWindow? get() =
         (limits.firstOrNull { it.id == "codex" } ?: limits.firstOrNull())?.let { limit ->
             listOfNotNull(limit.primary, limit.secondary).firstOrNull { it.windowMinutes == 7L * 24 * 60 }
@@ -21,10 +24,21 @@ fun catalogUsage(response: JSONObject): CodexUsage {
     val snapshots = if (byId != null && byId.length() > 0) {
         byId.keys().asSequence().mapNotNull { key -> byId.optJSONObject(key)?.let { key to it } }.toList()
     } else listOfNotNull(usage.optJSONObject("rateLimits")?.let { "codex" to it })
+    val resets = usage.optJSONObject("rateLimitResetCredits")?.let { value ->
+        val count = (value.opt("availableCount") as? Number)?.toDouble()?.takeIf { it.isFinite() && it >= 0 && it <= Int.MAX_VALUE && it % 1.0 == 0.0 }?.toInt()
+        val details = value.optJSONArray("credits")?.let { rows -> (0 until rows.length()).mapNotNull { index ->
+            rows.optJSONObject(index)?.let { row ->
+                row.string("id").takeIf { it.isNotBlank() }?.let { id ->
+                    CodexResetCredit(id, row.string("status"), row.optLong("expiresAt").takeIf { it > 0 })
+                }
+            }
+        } }
+        CodexResetCredits(count, details)
+    }
     return CodexUsage(snapshots.map { (key, snapshot) ->
         CodexUsageLimit(snapshot.string("limitId").ifBlank { key }, snapshot.string("limitName").ifBlank { "Codex" },
             usageWindow(snapshot.optJSONObject("primary")), usageWindow(snapshot.optJSONObject("secondary")))
-    }.filter { it.primary != null || it.secondary != null })
+    }.filter { it.primary != null || it.secondary != null }, resets, usage.optBoolean("resetSupported", false))
 }
 
 private fun usageWindow(json: JSONObject?): CodexUsageWindow? {
@@ -62,4 +76,14 @@ fun quotaResetCountdown(resetsAt: Long?, nowSeconds: Long): String? {
         hours > 0 -> "$hours 小时后重置"
         else -> "不足 1 小时后重置"
     }
+}
+
+const val USAGE_RESET_PATH = "/v1/usage/reset"
+val usageResetOutcomes = setOf("reset", "alreadyRedeemed", "nothingToReset", "noCredit")
+fun usageResetMessage(outcome: String): String = when (outcome) {
+    "reset" -> "额度重置成功"
+    "alreadyRedeemed" -> "此前已完成额度重置"
+    "nothingToReset" -> "当前没有可重置的额度"
+    "noCredit" -> "没有可用的重置次数"
+    else -> "额度重置结果待核对"
 }

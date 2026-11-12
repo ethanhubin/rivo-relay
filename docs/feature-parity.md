@@ -10,7 +10,7 @@
 | 工作树 | 新会话从已提交 ref 创建独立工作树；开发工具展示路径、来源、提交、脏状态；清理绑定工作树状态，丢弃有改动的工作树需明确确认 | `NewConversationDialog.kt`、`DeveloperTools.kt`、`codex/developer.py` |
 | 讨论模式 | 使用原生 Plan collaboration mode 与只读 sandbox；普通任务、排队与中途引导仍由 Relay 原有提交身份和队列管理 | `ChatScreen.kt`、`codex/sessions.py` |
 | 代码审查 | 展示当前工作空间 diff，按文件筛选；原生 Review 支持未提交改动、基础分支、指定提交、自定义说明；审查评论支持文件与行号展示 | `DeveloperTools.kt`、`ReviewComment.kt`、`SourcePreview.kt` |
-| 计划与用量 | 展示原生计划、轮次变更统计与上下文占用；读取账户额度，显示剩余比例、周期与重置时间；展示有对应观察的轮次模型 | `NativeProgress.kt`、`CatalogUsage.kt`、`UsageIndicator.kt`、`codex/observations.py` |
+| 计划与用量 | 展示原生计划、轮次变更统计与上下文占用；读取账户额度，显示剩余比例、周期与重置时间；展示可用重置次数，确认后消费并通过原生幂等键核对未知结果；展示有对应观察的轮次模型 | `NativeProgress.kt`、`CatalogUsage.kt`、`UsageIndicator.kt`、`codex/observations.py` |
 | 草稿与通知 | 草稿按节点/会话保存；任务完成与需要处理的交互可发本机通知；点击通知定位已授权节点和相应会话 | `ConversationStore.kt`、`TaskNotifications.kt` |
 | 文件结果 | 源码行号/语法着色、Markdown 预览及相对链接；图片缩放、PDF 预览；通过认证下载后使用系统打开或分享 | `FilePreview.kt`、`SourcePreview.kt` |
 | 待办详情 | 子任务、截止日期、本机提醒、按日/周/月/年重复、节点文件引用；附件通过文件浏览选择，交付时转换为原生 mention 输入 | `TodoDetailsEditor.kt`、`TodoReminderScheduler.kt`、`todos.py` |
@@ -92,3 +92,10 @@ Codex 派发不属于此 outbox。它继续使用既有 submission ID 与结果�
 会话通过原始 MCP/dynamic tool JSON 提取 Sites 和 HTTP(S) `resource_link`，实时与历史使用相同解析器。成功工具结果不等于发布成功：区分发布中、失败、正式地址及预览地址。同轮同一站点在最后相关工具组显示，工具组折叠时仍可点击；不同轮次保留各自入口。仅供 assistant 的资源链接不生成用户卡片，不支持的 URI 保留原始工具详情。跳转不携带节点凭据。网页浏览页提供返回、关闭、重试与外部浏览器入口，支持 JavaScript/网页存储，不开放本地文件访问或原生 JS 桥接；SSL 错误不绕过。普通卡片不再重复显示“打开网站/打开链接”，预览及异常状态仍保留。
 
 Sites、Pages、文档、PDF、表格、演示文稿、GitHub、Slack、Gmail、Notion 使用本地图标，其余回退原有活动图标。图标资产来自本机 ChatGPT Desktop 26.1103.41825 的 `webview/images/ecosystem/apps/`，GitHub/Notion 包含深色版本；只提取资源，没有移植桌面执行代码。工具身份/已知图标元数据映射不触发网络加载，也不意味着连接器已经可用。完整 MCP widget、模板指令扩展、站点创建/编辑/发布不在此次范围。
+
+
+## 额度主动重置（2026-11-11）
+
+统一从“设置 → 额度重置”打开弹窗，优先展示可用次数和已返回的有效期；提交前刷新并确认。兑换复用原生幂等键，持久提交记录支持断网及进程重启后的结果核对；账户身份变化时保留未知记录并提示恢复原账户。旧配对撤销后，新配对可触发节点核对旧操作；先原子封存新请求，再复用原兑换键恢复，刷新额度后需重新确认。重置成功后重新读取额度，读取失败保留旧值和成功提示，不自动继续任务。旧节点、次数未知、离线或有未确认提交时禁止新重置。
+
+验证：本轮服务端额度专项 15 项及提交存储、恢复、原生行为回归共 82 项通过；Android 额度、提交、目录与刷新策略相关 60 项单测及 Debug 源码编译通过。此前已在独立模拟器用演示数据通过额度入口、确认取消与确认提交的 1 项 UI 测试，截图位于 `workspace/artifacts/quota-reset-settings-preview/`；本轮未重复模拟器测试，未做真机或真实账户额度重置验证，未运行 lint，未发布。

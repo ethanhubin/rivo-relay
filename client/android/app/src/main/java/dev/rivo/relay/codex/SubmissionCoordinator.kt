@@ -81,6 +81,12 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
         val returnedId = response.string("submissionId")
         if (returnedId.isNotBlank() && returnedId != pending.id)
             throw IllegalArgumentException("提交回执身份不一致，将继续自动核对")
+        if (pending.path == USAGE_RESET_PATH && response.string("status") == "accepted") {
+            val receipt = response.optJSONObject("receipt")
+            require(receipt?.string("requestId") == pending.id && receipt.string("resetOutcome") in usageResetOutcomes) {
+                "额度重置回执不完整，将继续核对原操作"
+            }
+        }
         val expectedThread = Regex("^/v1/threads/([^/]+)/").find(pending.path)?.groupValues?.get(1)
             ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
         val returnedThread = response.optJSONObject("receipt")?.string("threadId").orEmpty()
@@ -97,6 +103,10 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
     }
     private fun failureMessage(response: JSONObject, label: String): String = when (response.string("errorCode")) {
         "submission_not_received" -> "节点未收到该操作，已解除等待；草稿已保留，请重新发送。"
+        "usage_reset_recovery_only" -> "已尝试核对原额度重置，请查看刷新后的额度再确认；本次未创建新的兑换"
+        "usage_reset_unsupported" -> "此节点不支持额度重置，请更新节点"
+        "usage_reset_account_unverified" -> "无法确认当前 ChatGPT 账户，未重置额度"
+        "usage_reset_account_changed" -> "登录账户已变化，请核对原重置操作"
         "native_auth_required" -> "Codex 登录已失效，请在后台重新授权并检查独立后台登录状态。无需重新配对手机。"
         "writer_still_held" -> "会话仍被进程持有，未确认释放成功"
         "handoff_changed", "handoff_confirmation_required" -> "持锁进程或关联会话已变化，请重新操作并确认"
@@ -203,7 +213,12 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
             var completed: Pair<(JSONObject) -> Unit, JSONObject>? = null
             var receivedResponse = false
             try {
-                val response = api.reconcileSubmission(pending.id)
+                var response = api.reconcileSubmission(pending.id)
+                if (pending.path == USAGE_RESET_PATH && response.string("status") == "unknown") {
+                    // Only this native operation explicitly guarantees idempotent redemption.
+                    // The node retains the original account binding and exact native key.
+                    response = api.call("$USAGE_RESET_PATH/reconcile", "POST", JSONObject().put("submissionId", pending.id))
+                }
                 receivedResponse = true
                 validateResponse(pending, response)
                 when (response.string("status")) {
@@ -216,7 +231,16 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
                         if (succeeded && completion != null)
                             completed = completion to (response.optJSONObject("receipt") ?: JSONObject())
                     }
-                    else -> { onResolved(pending, response); retainReceipt(pending, response); mutable.update { it.copy(notice = "节点仍未确认该操作结果，请稍后核对。") } }
+                    else -> {
+                        onResolved(pending, response); retainReceipt(pending, response)
+                        val notice = if (pending.path == USAGE_RESET_PATH) when (response.string("recoveryErrorCode")) {
+                            "usage_reset_account_changed" -> "登录账户已变化，请恢复原账户后核对；原重置结果仍未知"
+                            "usage_reset_account_unverified", "native_auth_required" -> "请恢复原 ChatGPT 账户登录后核对；原重置结果仍未知"
+                            "usage_reset_unsupported" -> "请更新节点后核对原重置操作，勿另行重复兑换"
+                            else -> "额度重置结果待核对，正在使用原操作身份恢复"
+                        } else "节点仍未确认该操作结果，请稍后核对。"
+                        mutable.update { it.copy(notice = notice) }
+                    }
                 }
             } catch (e: Exception) {
                 // Background receipt polling must not repeatedly raise global connection errors.

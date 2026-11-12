@@ -113,7 +113,7 @@ class NativeParityTests(unittest.TestCase):
         self.assertEqual(30, recreated.get_session('thread')['tokenUsage']['last']['totalTokens'])
 
     def test_quota_does_not_expose_account_identifiers(self):
-        self.assertEqual({'rateLimits': {'primary': {'usedPercent': 25}}}, self.service.usage())
+        self.assertEqual({'rateLimits': {'primary': {'usedPercent': 25}}, 'resetSupported': False}, self.service.usage())
 
     def test_accepted_turn_settings_and_reroute_are_observed_without_guessing_history(self):
         self.assertEqual([], self.service.get_session('thread')['turnSettings'])

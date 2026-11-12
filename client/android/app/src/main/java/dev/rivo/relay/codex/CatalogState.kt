@@ -15,7 +15,7 @@ data class CatalogState(
     val selectedProject: ProjectSummary? = null, val projectsLoading: Boolean = false, val threadsLoading: Boolean = false,
     val models: List<JSONObject> = emptyList(), val archived: Boolean = false,
     val unreadThreadIds: Set<String> = emptySet(), val usage: CodexUsage? = null,
-    val usageLoading: Boolean = false, val usageError: String? = null,
+    val usageLoading: Boolean = false, val usageError: String? = null, val usageResetNotice: String? = null,
     val projectsFresh: Boolean = false, val threadsFresh: Boolean = false, val threadsComplete: Boolean = true, val threadsSummaryFresh: Boolean = false,
     val modelsSource: String = "", val modelsStale: Boolean = false, val modelsError: String? = null,
     val pinnedProjectIds: List<String> = emptyList(),
@@ -453,6 +453,27 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
         val response = api.call(threadsPath(projectId, false))
         store?.saveCatalog(key, response)
         return response.objects("threads").map(::threadSummary)
+    }
+
+    fun clearUsageResetNotice() { mutable.update { it.copy(usageResetNotice = null) } }
+
+    suspend fun usageResetResolved(response: JSONObject) {
+        if (response.string("status") != "accepted") {
+            if (response.string("errorCode") == "usage_reset_recovery_only") {
+                usageJob?.cancelAndJoin()
+                usageUpdatedAt = 0
+                refreshUsage(true)?.join()
+            }
+            if (response.string("errorCode") == "usage_reset_unsupported") mutable.update {
+                it.copy(usage = it.usage?.copy(resetSupported = false), usageResetNotice = "此节点不支持额度重置，请更新节点")
+            }
+            return
+        }
+        mutable.update { it.copy(usageResetNotice = usageResetMessage(response.optJSONObject("receipt")?.string("resetOutcome").orEmpty())) }
+        // Discard reads started before redemption; never synthesize fresh windows.
+        usageJob?.cancelAndJoin()
+        usageUpdatedAt = 0
+        refreshUsage(true)?.join()
     }
 
     fun refreshUsage(force: Boolean = false): Job? {

@@ -1,5 +1,7 @@
 package dev.rivo.relay.ui.common
 
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.progressSemantics
 import androidx.compose.foundation.layout.*
@@ -34,23 +36,49 @@ fun UsageIndicator(usage: CodexUsage?, modifier: Modifier = Modifier, contextPer
         }
         window?.let { CodexQuotaProgressBar(it, Modifier.fillMaxWidth().height(3.dp)) }
     }
-    if (details) AlertDialog(onDismissRequest = { details = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("Codex 用量") } }, text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    if (details) UsageDetailsDialog(usage, loading, error, onRefresh, { details = false })
+}
+
+@Composable
+fun UsageDetailsDialog(usage: CodexUsage?, loading: Boolean, error: String?, onRefresh: (() -> Unit)?,
+    onDismiss: () -> Unit, nodeName: String = "当前节点", canReset: Boolean = false, resetPending: Boolean = false,
+    resetNotice: String? = null, onReset: (() -> Unit)? = null, onReconcile: (() -> Unit)? = null) {
+    var confirming by remember { mutableStateOf(false) }
+    val available = usage?.resetCredits?.availableCount
+    val allowed = canReset && !loading && error == null && usage?.resetSupported == true && (available ?: 0) > 0
+    val format = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("Codex 用量 · $nodeName") }, text = {
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(if (usage?.resetSupported != true) "当前节点或账户尚未提供额度重置能力"
+                else available?.let { "可用重置次数：$it" } ?: "重置次数暂不可用", Modifier.testTag("usage_reset_count"))
+            usage?.resetCredits?.credits?.filter { it.status == "available" }?.forEach { credit ->
+                credit.expiresAt?.let { Text("重置机会有效期至 ${format.format(Date(it * 1000))}", style = MaterialTheme.typography.bodySmall) }
+            }
             usage?.limits.orEmpty().forEach { limit ->
                 Text(limit.name, style = MaterialTheme.typography.titleSmall)
                 listOfNotNull(limit.primary, limit.secondary).forEach { item ->
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("${usageWindowLabel(item.windowMinutes)}剩余 ${item.remainingPercent}%")
-                        LinearProgressIndicator(progress = { item.remainingPercent / 100f }, modifier = Modifier.fillMaxWidth())
-                        item.resetsAt?.let { Text("${DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(it * 1000))} 重置", style = MaterialTheme.typography.bodySmall) }
-                    }
+                    Text("${usageWindowLabel(item.windowMinutes)}剩余 ${item.remainingPercent}%")
+                    LinearProgressIndicator(progress = { item.remainingPercent / 100f }, modifier = Modifier.fillMaxWidth())
+                    item.resetsAt?.let { Text("${format.format(Date(it * 1000))} 重置", style = MaterialTheme.typography.bodySmall) }
                 }
             }
+            resetNotice?.let { Text(it, Modifier.testTag("usage_reset_notice")) }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            if (resetPending) {
+                Text("额度重置结果待核对，请勿重复操作")
+                onReconcile?.let { TextButton(onClick = it, modifier = Modifier.testTag("reconcile_usage_reset")) { Text("核对结果") } }
+            }
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (onReset != null) TextButton(onClick = { confirming = true; onRefresh?.invoke() }, enabled = allowed,
+                modifier = Modifier.testTag("reset_usage")) { Text("重置额度") }
         }
-    } }, confirmButton = { TextButton(onClick = { details = false }) { Text("完成") } },
+    }, confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } },
         dismissButton = { onRefresh?.let { TextButton(onClick = it, enabled = !loading) { Text("刷新") } } })
+    if (confirming) AlertDialog(onDismissRequest = { confirming = false }, title = { Text("确认重置额度？") },
+        text = { Text("将消耗 $nodeName 当前登录账户的 1 次重置机会（当前可用 ${available ?: "未知"} 次），恢复符合条件的额度。完成后可手动继续任务。") },
+        confirmButton = { TextButton(enabled = allowed, onClick = { confirming = false; onReset?.invoke() },
+            modifier = Modifier.testTag("confirm_usage_reset")) { Text("确认重置") } },
+        dismissButton = { TextButton(onClick = { confirming = false }) { Text("取消") } })
 }
 
 @Composable

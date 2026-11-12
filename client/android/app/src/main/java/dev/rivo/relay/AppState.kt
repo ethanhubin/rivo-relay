@@ -38,7 +38,11 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
     private val pendingRevisionMutable = MutableStateFlow(0L)
     val pendingRevision = pendingRevisionMutable.asStateFlow()
     val submissions = SubmissionCoordinator(api, scope, vault, "pending:${connection.nodeId}:${connection.deviceId}:${connection.storageBase}",
-        onResolved = { pending, response ->
+        onResolved = resolved@{ pending, response ->
+            if (pending.path == USAGE_RESET_PATH) {
+                catalog.usageResetResolved(response)
+                return@resolved
+            }
             val refresh = submissionRefresh(pending, response)
             session.invalidateControlFor(refresh.threads)
             if (refresh.projects) catalog.refreshProjects(changed = true)
