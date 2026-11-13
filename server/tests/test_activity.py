@@ -20,6 +20,45 @@ class ActivityTests(unittest.TestCase):
     def registry(self, loader=lambda _token: snapshot()):
         return ActivityRegistry(loader, lambda: 'g')
 
+    def test_discovered_changes_notify_once_without_native_events_or_read_loops(self):
+        changes = []
+        result = snapshot()
+        registry = ActivityRegistry(lambda _: result, lambda: 'g', changes.append)
+        registry.reconcile()
+        changes.clear()
+        registry.observe_execution('t', 'running', token=registry.read_token(), project_id='p', turn_id='one')
+        self.assertEqual(len(changes), 1)
+        notice = changes[-1]
+        self.assertEqual(notice['method'], 'relay/activityChanged')
+        self.assertEqual(notice['params']['threadIds'], ['t'])
+        self.assertEqual(notice['params']['generation'], registry.snapshot()['generation'])
+        self.assertLessEqual(notice['params']['revision'], registry.snapshot()['revision'])
+        result['tasks'] = registry.snapshot()['tasks']
+        result['tasks'][0].pop('turnId')
+        for _ in range(5):
+            registry.reconcile()
+            registry.observe_execution('t', 'running', token=registry.read_token(), project_id='p', turn_id='one')
+        self.assertEqual(len(changes), 1)
+        result['tasks'] = []
+        registry.reconcile()
+        self.assertEqual(len(changes), 2)
+        registry.reconcile()
+        self.assertEqual(len(changes), 2)
+
+    def test_change_sink_can_read_table_and_failed_scan_notifies_uncertainty(self):
+        changes = []
+        registry = ActivityRegistry(lambda _: snapshot(), lambda: 'g')
+        registry.on_change = lambda event: changes.append((event, registry.snapshot()))
+        registry.reconcile()
+        registry.load = Mock(side_effect=RuntimeError('probe failed'))
+        with self.assertRaises(RuntimeError):
+            registry.reconcile()
+        self.assertEqual(changes[-1][1]['unknownThreadIds'], ['t'])
+        before = len(changes)
+        with self.assertRaises(RuntimeError):
+            registry.reconcile()
+        self.assertEqual(len(changes), before)
+
     def test_global_snapshot_does_not_repeat_recovery_attachment(self):
         import json
         from rivo_relay.codex.projection import execution_projection
