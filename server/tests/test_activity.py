@@ -13,7 +13,11 @@ def snapshot(tasks=()):
 
 
 def event(method, turn='one', **params):
-    return {'method': method, 'params': {'threadId': 't', 'turn': {'id': turn}, **params}}
+    result = {'method': method, 'params': {'threadId': 't', 'turn': {'id': turn}, **params}}
+    if method.endswith(('/requestApproval', '/requestUserInput')):
+        result['id'] = method + ':' + turn
+        result['params']['turnId'] = turn
+    return result
 
 
 class ActivityTests(unittest.TestCase):

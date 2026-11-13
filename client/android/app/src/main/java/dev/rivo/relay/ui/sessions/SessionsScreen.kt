@@ -221,7 +221,7 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                                     painterResource(android.R.drawable.ic_menu_edit), "有未发送的文字",
                                     Modifier.padding(start = 8.dp).size(18.dp).testTag("session_draft_${thread.id}"),
                                     tint = MaterialTheme.colorScheme.secondary)
-                                if (!archived && thread.status == "waiting") {
+                                if (!archived && thread.status != "unknown") {
                                     listOf("question" to "待回答", "approval" to "待授权").forEach { (kind, label) ->
                                         if (kind in thread.responseKinds) Surface(
                                             modifier = Modifier.padding(start = 8.dp).testTag("session_response_${kind}_${thread.id}"),

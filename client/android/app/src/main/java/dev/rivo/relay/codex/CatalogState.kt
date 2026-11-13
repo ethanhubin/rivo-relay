@@ -561,10 +561,14 @@ internal fun catalogLifecycleEvent(event: RelayEvent): Boolean {
     if (event.type in setOf("reset", "connected", "revoked", "queue", "submission")) return true
     if (event.type != "native") return false
     val method = event.payload.string("method")
+    val item = event.payload.optJSONObject("params")?.optJSONObject("item")
+    if (method in setOf("item/started", "item/completed") &&
+        (item?.string("type") in setOf("userMessage", "steeringUserMessage") ||
+            item?.string("type") == "agentMessage" && item.has("questions"))) return true
     return (method.startsWith("thread/") && method != "thread/tokenUsage/updated" && !method.endsWith("/delta")) ||
         method.startsWith("project/") || method.startsWith("goal/") || method.startsWith("queue/") ||
         method in setOf("turn/started", "turn/completed", "turn/failed", "turn/interrupted", "serverRequest/resolved", "serverRequest/completed",
-            "execCommandApproval", "applyPatchApproval", "mcpServer/elicitation/request", "relay/interactionAnswered",
+            "execCommandApproval", "applyPatchApproval", "mcpServer/elicitation/request", "relay/interactionAnswered", "relay/questionsAnswered", "relay/questionsAnswerState",
             "relay/queueUpdated", "relay/queueChanged", "relay/historyInvalidated", "relay/ownershipChanged", "relay/writerDisconnected", "relay/nativeDisconnected") ||
         (method.startsWith("item/") && (method.endsWith("/requestApproval") || method.endsWith("/requestUserInput")))
 }
