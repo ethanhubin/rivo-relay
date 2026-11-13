@@ -13,6 +13,7 @@ import logging
 import secrets
 import time
 
+from ..submission_dispatch import creation_phase
 from ..observability import event, request_id as new_request_id
 from .connection import CodexError
 
@@ -112,6 +113,7 @@ class SessionHandoffMixin:
             raise CodexError('释放订阅预览已失效，请重新操作', code='handoff_changed', http_status=409)
         if getattr(self.connection, 'owns_writer', lambda _: False)(thread_id):
             self._verify_release_history(thread_id)
+            creation_phase(thread_id, 'dispatching')
             if self.observations:
                 self.observations.put(thread_id, 'ownership', '', {'released': True, 'releaseState': 'pending'})
             self._observe(thread_id, 'ownership', '', {'released': True, 'releaseState': 'pending'})
@@ -144,6 +146,7 @@ class SessionHandoffMixin:
             return {'threadId': thread_id, 'released': True, 'releaseScope': 'session-writer', 'affectedThreadIds': [thread_id]}
         # Freeze automatic queue/resume before dispatch. An uncertain response
         # must keep this intent rather than reacquiring the writer automatically.
+        creation_phase(thread_id, 'dispatching')
         self._observe(thread_id, 'ownership', '', {'released': True})
         try:
             self.connection.request('thread/unsubscribe', {'threadId': thread_id})
@@ -294,6 +297,7 @@ class SessionHandoffMixin:
                         or preview['generation'] != str(connection.generation)
                         or preview['expires'] < time.monotonic() or rebind_workspace is not None):
                     raise CodexError('恢复预览已失效，请重新操作', code='handoff_changed', http_status=409)
+                creation_phase(thread_id, 'dispatching')
                 if getattr(self.connection, 'owns_writer', lambda _: False)(thread_id) and not connection.status().get('connected'):
                     self.connection.release_writer(thread_id, connection)
                 self._assert_workspace(thread_id)
@@ -345,6 +349,7 @@ class SessionHandoffMixin:
             affected = {thread_id, *(t for holder in snapshot['holders'] for t in holder['threads'])}
             if action == 'release':
                 progress('release')
+                creation_phase(thread_id, 'dispatching')
                 return self._release_process_writer(thread_id, snapshot, affected)
             prepare = getattr(self.connection, 'prepare_takeover', None)
             lease = prepare(thread_id) if prepare and restart_args else nullcontext(None)
@@ -352,6 +357,7 @@ class SessionHandoffMixin:
             with lease as acquire:
                 # Pause all affected Relay queues/automatic subscriptions before killing
                 # the writer. Interrupted instructions are never resumed or replayed.
+                creation_phase(thread_id, 'dispatching')
                 for affected_id in affected:
                     ownership = {'released': True, 'releaseState': 'takeover', 'takeoverThreadId': thread_id}
                     if self.observations:
