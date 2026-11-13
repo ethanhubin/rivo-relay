@@ -81,6 +81,17 @@ fun quotaResetCountdown(resetsAt: Long?, nowSeconds: Long): String? {
 }
 
 const val USAGE_RESET_PATH = "/v1/usage/reset"
+/** Show the next expiry among usable credits, never a redeemed or expired opportunity. */
+fun resetCreditExpiryCountdown(usage: CodexUsage?, nowSeconds: Long): String {
+    val credits = usage?.resetCredits
+    if (credits?.availableCount == 0) return "暂无可用重置次数"
+    val expiresAt = selectableResetCredits(usage, nowSeconds).mapNotNull { it.expiresAt }.minOrNull()
+        ?: return "重置次数到期时间未知"
+    val remaining = expiresAt - nowSeconds
+    return if (remaining < 3600) "最近一次重置机会将在不足 1 小时后过期"
+    else "最近一次重置机会将在 ${remaining / 86400} 天 ${remaining % 86400 / 3600} 小时后过期"
+}
+
 val usageResetOutcomes = setOf("reset", "alreadyRedeemed", "nothingToReset", "noCredit")
 fun usageResetMessage(outcome: String): String = when (outcome) {
     "reset" -> "额度重置成功"

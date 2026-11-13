@@ -53,4 +53,20 @@ class CatalogUsageTest {
             assertFalse(it, validProjectFolderName(it))
         }
     }
+
+    @Test fun creditExpiryUsesNearestAvailableExpiryAndHandlesMissingData() {
+        val now = 1000L
+        fun usage(vararg credits: CodexResetCredit) = CodexUsage(emptyList(), CodexResetCredits(2, credits.toList()))
+        val near = CodexResetCredit("near", "available", now + 26 * 3600)
+        assertEquals("最近一次重置机会将在 1 天 2 小时后过期", resetCreditExpiryCountdown(usage(
+            CodexResetCredit("far", "available", now + 72 * 3600), near,
+            CodexResetCredit("used", "redeemed", now + 3600),
+            CodexResetCredit("expired", "available", now)), now))
+        assertEquals("最近一次重置机会将在不足 1 小时后过期",
+            resetCreditExpiryCountdown(usage(near.copy(expiresAt = now + 3599)), now))
+        assertEquals("重置次数到期时间未知", resetCreditExpiryCountdown(usage(near.copy(expiresAt = null)), now))
+        assertEquals("重置次数到期时间未知", resetCreditExpiryCountdown(null, now))
+        assertEquals("暂无可用重置次数", resetCreditExpiryCountdown(
+            CodexUsage(emptyList(), CodexResetCredits(0, emptyList())), now))
+    }
 }
