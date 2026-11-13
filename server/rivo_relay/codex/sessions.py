@@ -27,7 +27,7 @@ from .files import read_file, read_directory, upload_attachment_stream, stream_d
 from .developer import (project_directory, project_git, review_context, workspace_diff,
                         diff_summary, validate_review, Workspaces)
 from .observations import Observations
-from .projection import execution_projection, control_projection
+from .projection import execution_projection, control_projection, response_kinds, response_waiting
 from .models import ModelCatalog
 from .attachment_context import attachment_context
 from .image_inputs import needs_image_staging, prepare_image_inputs
@@ -122,7 +122,8 @@ class CodexService(SessionHandoffMixin):
         self.native_journal = NativeJournal(self.connection, self.history_adapter, self._history_repaired)
         from .activity import ActivityRegistry
         self._activity_discovery = None
-        self.activity = ActivityRegistry(self._load_activity, lambda: str(self.connection.generation), self.on_event)
+        self.activity = ActivityRegistry(self._load_activity, lambda: str(self.connection.generation),
+            self.on_event, interactions=self.interactions)
         self.model_catalog = ModelCatalog(self._load_models, lambda: str(self.connection.generation))
 
     def _history_repaired(self, thread_id, result):
@@ -323,16 +324,30 @@ class CodexService(SessionHandoffMixin):
             # for every historical conversation before publishing live activity.
             goal = (self.read_goal(tid).get('goal') if thread_status(thread) != 'unknown'
                     or external.get(tid) == 'running' else None)
-            status = ('waiting' if self.interactions.list(tid) or thread_waiting(thread) else
+            requests = self.interactions.list(tid)
+            status = ('waiting' if response_waiting(requests, thread.get('status')) else
                       'running' if goal_running(thread, goal, external) else
                       external.get(tid, thread_status(thread)))
-            projection = execution_projection(status, queues.get(tid, []))
+            projection = execution_projection(status, queues.get(tid, []),
+                requests=requests, native_status=thread.get('status'))
             if status == 'unknown':
                 unknown.append(tid)
             if projection['hasOutstandingWork']:
                 tasks.append({'threadId': tid, 'projectId': associations.get(tid, {}).get('projectId') or
                               thread.get('projectId') or roots.get(thread.get('cwd'), RECENT_PROJECT_ID),
                               'status': status, 'goalActive': (goal or {}).get('status') == 'active', **projection})
+        if hasattr(self, 'history_adapter'):
+            from ..read_budget import read_budget
+            for tid in self.activity.question_candidates(threads):
+                try:
+                    with read_budget(seconds=2):
+                        page = self.history_adapter.read_head(self.connection, tid)
+                        self.activity.observe_questions(tid, page.turns, token=activity_token,
+                            answer_states=self.question_claims.states(tid))
+                except Exception:
+                    # Missing/unavailable history never changes execution. Retry
+                    # via bounded background refresh or the next detail read.
+                    pass
         if generation != str(self.connection.generation):
             raise CodexError('原生运行时已变化，请重新同步任务', code='native_unavailable')
         self._activity_discovery = (generation, time.monotonic() + 60 if full else discovered[1], projects)
@@ -416,6 +431,9 @@ class CodexService(SessionHandoffMixin):
                 "sortKey": "updated_at", "sortDirection": "desc",
             }):
                 by_id[thread["id"]] = thread
+        if not archived:
+            self.activity.prioritize_questions([t['id'] for t in sorted(by_id.values(),
+                key=lambda t: t.get('updatedAt', 0), reverse=True)])
         queues = self.execution_queue.by_thread() if hasattr(self, 'execution_queue') else {}
         managed = {}
         if self.workspaces:
@@ -429,7 +447,7 @@ class CodexService(SessionHandoffMixin):
         external = {} if summary or shared else self._external_execution(list(by_id.values()))
         statuses = {t["id"]: ('unknown' if shared and (t['id'] in unknown or t['id'] not in shared.get('knownThreadIds', [])) else
                     active[t['id']]['status'] if t['id'] in active else 'idle' if shared else
-                    "waiting" if self.interactions.list(t["id"]) or thread_waiting(t) else
+                    "waiting" if response_waiting(self.interactions.list(t["id"]), t.get("status")) else
                     "running" if goal_running(t, None if summary else self.read_goal(t["id"]).get("goal"), external)
                     else external.get(t['id'], thread_status(t))) for t in by_id.values()}
         return [{"id": t["id"], "name": t.get("name") or t.get("preview") or "新会话",
@@ -443,7 +461,10 @@ class CodexService(SessionHandoffMixin):
                  "workspace": ({'id': managed[t['id']]['id'], 'path': managed[t['id']]['path'],
                      'commit': managed[t['id']]['commit_id'], 'status': managed[t['id']]['status']}
                      if t['id'] in managed else None),
-                 **execution_projection(statuses[t["id"]], queues.get(t['id'], []))}
+                 **execution_projection(statuses[t["id"]], queues.get(t['id'], [])),
+                 'responseKinds': (active[t['id']].get('responseKinds', []) if shared and t['id'] in active
+                     else response_kinds(self.interactions.list(t['id']), t.get('status')))
+                     if not archived else []}
                 for t in sorted(by_id.values(), key=lambda t: t.get("updatedAt", 0), reverse=True)]
 
     def pin_session(self, thread_id, pinned):
@@ -608,7 +629,7 @@ class CodexService(SessionHandoffMixin):
         goal_state = self.read_goal(thread_id)
         external = self._external_execution([thread]) if not active else {}
         goal_active = goal_running(thread, goal_state.get("goal"), external)
-        status = "waiting" if requests or thread_waiting(thread) else ("running" if active or goal_active else external.get(thread_id, thread_status(thread)))
+        status = "waiting" if response_waiting(requests, thread.get("status")) else ("running" if active or goal_active else external.get(thread_id, thread_status(thread)))
         observations = self.observations_for(thread_id)
         latest_turn = thread['turns'][-1] if thread['turns'] else {}
         plan = observations.get(('plan', active or latest_turn.get('id', '')))
@@ -624,17 +645,20 @@ class CodexService(SessionHandoffMixin):
         # so an old completed/in-progress turn cannot overwrite a newer event.
         fresh_running = thread_status(thread) == 'running' or external.get(thread_id) == 'running' or goal_active
         if cursor is None:
+            if history_ready:
+                self.activity.observe_questions(thread_id, thread['turns'], token=activity_token,
+                    answer_states=self.question_claims.states(thread_id))
             published = history_ready and self.activity.observe_execution(thread_id, status, token=activity_token,
                 project_id=thread.get('projectId'), turn_id=active,
                 settled_turn_id=latest_turn.get('id') if latest_turn.get('status') in
                     ('completed', 'failed', 'interrupted', 'canceled') else None,
-                goal_active=goal_active, queue=queue)
+                goal_active=goal_active, queue=queue, requests=requests, native_status=thread.get("status"))
             if not published and fresh_running and execution_token.epoch == activity_token.epoch:
                 # The fresh proof establishes execution, not the identity of a
                 # turn from older/unready history. Do not resurrect that turn or
                 # retire one using history that predates this checkpoint.
                 self.activity.observe_execution(thread_id, status, token=execution_token,
-                    project_id=thread.get('projectId'), goal_active=goal_active, queue=queue)
+                    project_id=thread.get('projectId'), goal_active=goal_active, queue=queue, requests=requests, native_status=thread.get("status"))
         review_diagnostics = self.review_guard.diagnostics(thread_id, thread['turns'])
         rebind = None
         if workspace_unavailable:
@@ -1091,15 +1115,22 @@ class CodexService(SessionHandoffMixin):
                 params.pop('expectedTurnId')
             ids = [answer['questionItemId'] for answer in answers]
             self.question_claims.claim(thread_id, ids, client_message_id)
+            self._event({'method': 'relay/questionsAnswerState', 'params': {
+                'threadId': thread_id, 'questionIds': ids, 'state': 'pending'}})
             try:
                 result = self.connection.answer_questions(params, start_turn=start_turn)
                 turn_id = result.get('turn', {}).get('id') if start_turn else result.get('turnId')
                 if not isinstance(turn_id, str) or not turn_id or (not start_turn and turn_id != expected_turn_id):
                     raise CodexError('回答结果待核对', code='native_protocol', request_sent=True)
             except Exception as error:
-                self.question_claims.finish(thread_id, ids, client_message_id, None if getattr(error, 'definite', False) else 'unknown')
+                state = None if getattr(error, 'definite', False) else 'unknown'
+                self.question_claims.finish(thread_id, ids, client_message_id, state)
+                self._event({'method': 'relay/questionsAnswerState', 'params': {
+                    'threadId': thread_id, 'questionIds': ids, 'state': state}})
                 raise
             self.question_claims.finish(thread_id, ids, client_message_id, 'accepted')
+            self._event({'method': 'relay/questionsAnswered', 'params': {'threadId': thread_id,
+                'questionIds': ids}})
             return {'threadId': thread_id, 'turnId': turn_id}
 
     def steer(self, thread_id, text, expected_turn_id, client_message_id=None, *, input_items=None):
@@ -1130,9 +1161,13 @@ class CodexService(SessionHandoffMixin):
         return {"threadId": thread_id, "turnId": turn_id}
 
     def respond(self, key, response):
-        result = self.interactions.respond(key, response)
-        self.on_event({"method": "relay/interactionAnswered", "params": {"key": key}})
-        return result
+        result = None
+        try:
+            result = self.interactions.respond(key, response)
+            return result
+        finally:
+            self._event({"method": "relay/interactionAnswered", "params": {
+                "key": key, "threadId": result.get("threadId") if result else None}})
 
 
     def capabilities(self, refresh=False):
@@ -1362,7 +1397,8 @@ class CodexService(SessionHandoffMixin):
             return
         if event.get("connectionId", self.connection.generation) != self.connection.generation:
             return
-        self.interactions.receive(event)
+        if self.interactions.receive(event) is False:
+            return
         method, params = event.get("method"), event.get("params", {})
         thread_id, turn_id = params.get("threadId", params.get('conversationId')), params.get("turnId")
         if (thread_id is not None and not isinstance(thread_id, str)) or (turn_id is not None and not isinstance(turn_id, str)):

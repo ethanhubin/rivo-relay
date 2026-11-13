@@ -647,6 +647,27 @@ class NativeSemanticsTests(unittest.TestCase):
             service.send("thread", "hello", client_message_id="stable")
         self.assertNotIn("thread", service._created)
 
+    def test_local_answer_invalidates_activity_without_native_resolution_event(self):
+        service = CodexService(connection=FakeNative())
+        service._event({'id': 'r', 'method': 'item/commandExecution/requestApproval',
+                        'params': {'threadId': 'thread', 'turnId': 'turn'}})
+        key = service.interactions.list('thread')[0]['key']
+        self.assertEqual(['approval'], service.activity.tasks['thread']['responseKinds'])
+        service.respond(key, {'decision': 'decline'})
+        self.assertEqual([], service.interactions.list('thread'))
+        self.assertIn('thread', service.activity.snapshot()['unknownThreadIds'])
+
+    def test_terminal_events_expire_only_matching_turn_requests(self):
+        for method in ('turn/completed', 'turn/failed', 'turn/interrupted'):
+            pending = Interactions(FakeNative())
+            for turn in ('older', 'newer'):
+                pending.receive({'id': turn, 'method': 'item/tool/requestUserInput',
+                                 'params': {'threadId': 'thread', 'turnId': turn}})
+            pending.receive({'method': method, 'params': {'threadId': 'thread', 'turnId': 'older'}})
+            self.assertEqual(['newer'], [r['id'] for r in pending.list('thread')])
+            pending.receive({'method': method, 'params': {'threadId': 'thread', 'turn': {'id': 'newer'}}})
+            self.assertEqual([], pending.list('thread'))
+
     def test_other_client_resolution_invalidates_pending_request(self):
         native = FakeNative()
         pending = Interactions(native)

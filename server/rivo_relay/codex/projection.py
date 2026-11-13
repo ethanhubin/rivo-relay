@@ -5,7 +5,60 @@ shared by the catalog and detail views; no second execution history is stored.
 """
 
 
-def execution_projection(status, queue=(), *, read_only=False, requests=(), ownership_unverified=False):
+def request_kind(request):
+    method = request.get('method', '')
+    if method.endswith('/requestApproval') or method in ('execCommandApproval', 'applyPatchApproval'):
+        return 'approval'
+    if method == 'mcpServer/elicitation/request':
+        params = request.get('params') or {}
+        meta = params.get('_meta') or {}
+        if isinstance(meta, dict) and meta.get('codex_approval_kind') == 'mcp_tool_call':
+            return 'approval'
+        if params.get('mode') in ('url', 'openai/userVerification'):
+            return 'approval'
+        return 'question'
+    if method.endswith('/requestUserInput'):
+        return 'question'
+    return None
+
+
+def request_blocks(request):
+    return request_kind(request) is not None and not (
+        request.get('method', '').endswith('/requestUserInput') and
+        (request.get('params') or {}).get('isBlocking') is False)
+
+
+def response_kinds(requests=(), native_status=None):
+    """Classify concrete requests; native flags only fill missing categories.
+
+    MCP forms use the native approval counter even when they ask an ordinary
+    question. Do not turn that one form into two differently coloured prompts.
+    """
+    kinds = {kind for request in requests if (kind := request_kind(request))}
+    if isinstance(native_status, dict) and native_status.get('type') == 'active':
+        flags = native_status.get('activeFlags') or []
+        has_input = any(r.get('method', '').endswith('/requestUserInput') for r in requests)
+        has_permission = any(request_kind(r) == 'approval' or
+                             r.get('method') == 'mcpServer/elicitation/request' for r in requests)
+        if 'waitingOnUserInput' in flags and not has_input:
+            kinds.add('question')
+        if 'waitingOnApproval' in flags and not has_permission:
+            kinds.add('approval')
+    return [kind for kind in ('question', 'approval') if kind in kinds]
+
+
+def response_waiting(requests=(), native_status=None):
+    if any(request_blocks(request) for request in requests):
+        return True
+    if not isinstance(native_status, dict) or native_status.get('type') != 'active':
+        return False
+    flags = set(native_status.get('activeFlags') or [])
+    if any(r.get('method', '').endswith('/requestUserInput') for r in requests):
+        flags.discard('waitingOnUserInput')
+    return bool(flags & {'waitingOnApproval', 'waitingOnUserInput'})
+
+
+def execution_projection(status, queue=(), *, read_only=False, requests=(), ownership_unverified=False, native_status=None):
     running = status in ('running', 'waiting')
     recovery = next((item for item in queue if item.get('recoveryRequired')), None)
     waiting = [item for item in queue if item.get('status') == 'waiting']
@@ -13,13 +66,14 @@ def execution_projection(status, queue=(), *, read_only=False, requests=(), owne
     failed = any(item.get('status') == 'failed' for item in queue)
     delivery = ('recovery' if recovery else 'dispatching' if dispatching else
                 'queued' if waiting else 'failed' if failed else 'idle')
-    display = ('waiting' if requests or status == 'waiting' else 'executing_with_queue' if running and waiting else
+    display = ('waiting' if any(request_blocks(r) for r in requests) or status == 'waiting' else 'executing_with_queue' if running and waiting else
                'executing' if running else 'recovery' if recovery else
                'dispatching' if dispatching else 'queued' if waiting else
                'failed' if failed else 'unknown' if status == 'unknown' else 'idle')
     return {
         'nativeExecution': 'running' if running else 'unknown' if status == 'unknown' else 'idle',
         'deliveryState': delivery, 'displayState': display,
+        'responseKinds': response_kinds(requests, native_status),
         'queueDepth': len(waiting), 'recoveryRequired': recovery is not None,
         'hasOutstandingWork': running or bool(queue), 'recoveryTask': recovery,
         'blockReason': ('ownership_unverified' if ownership_unverified else

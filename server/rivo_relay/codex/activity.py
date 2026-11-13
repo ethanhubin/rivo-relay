@@ -6,7 +6,10 @@ from dataclasses import dataclass, field
 import threading
 import time
 from ..read_budget import read_budget
-from .projection import execution_projection
+from types import SimpleNamespace
+from .projection import execution_projection, response_waiting
+from .interactions import Interactions
+from .response_questions import AsyncQuestionState, FAILED
 
 
 @dataclass
@@ -30,7 +33,7 @@ def publishes_activity(method):
 
 
 class ActivityRegistry:
-    def __init__(self, load, generation=lambda: None, on_change=None):
+    def __init__(self, load, generation=lambda: None, on_change=None, *, interactions=None):
         self.load, self.generation = load, generation
         self.on_change = on_change
         self._notification_lock = threading.Lock()
@@ -40,6 +43,12 @@ class ActivityRegistry:
         self.wake = threading.Event()
         self.stopped = threading.Event()
         self.worker = None
+        self._request_connection = SimpleNamespace(generation=None) if interactions is None else None
+        self.interactions = interactions or Interactions(self._request_connection)
+        self.questions = {}
+        self.question_reads = {}
+        self.question_unknown = set()
+        self.question_priority = set()
         self.epoch = None
         self.revision = 0
         self.snapshot_version = 0
@@ -67,7 +76,7 @@ class ActivityRegistry:
             with self.lock:
                 rows = {tid: (tid in self.known, tid in self.unknown,
                     tuple(self.tasks.get(tid, {}).get(k) for k in fields)
-                    if tid not in self.unknown else ())
+                    if tid not in self.unknown else (), self._response_kinds(tid))
                     for tid in self.known | self.unknown | self.tasks.keys()}
                 changed = sorted(tid for tid in rows.keys() | self._notified_rows.keys()
                                  if rows.get(tid) != self._notified_rows.get(tid))
@@ -91,6 +100,12 @@ class ActivityRegistry:
             if self.epoch is not None:
                 self.revision += 1
             self.epoch = epoch
+            if self._request_connection is not None:
+                self._request_connection.generation = epoch
+            self.questions.clear()
+            self.question_reads.clear()
+            self.question_unknown.clear()
+            self.question_priority.clear()
             self.thread_revisions.clear()
             self.barrier_revision = self.revision
             self.tasks.clear()
@@ -236,11 +251,12 @@ class ActivityRegistry:
                         self.tasks[tid]['projectId'] = project
                 native = thread.get('status', {})
                 if isinstance(native, dict) and native.get('type') == 'active' and tid not in self.turns:
-                    waiting = any(flag in ('waitingOnApproval', 'waitingOnUserInput') for flag in native.get('activeFlags', []))
+                    requests = self.interactions.list(tid)
+                    waiting = response_waiting(requests, native)
                     status = 'waiting' if waiting else 'running'
                     self.confirmed_idle.discard(tid)
                     self.tasks[tid] = {**self.tasks.get(tid, {}), 'threadId': tid, 'projectId': project or '', 'status': status,
-                                       **execution_projection(status)}
+                                       **execution_projection(status, requests=self.interactions.list(tid), native_status=native)}
                     self.known.add(tid)
                     self.unknown.discard(tid)
                     changed = True
@@ -252,6 +268,7 @@ class ActivityRegistry:
     def _finish_execution(self, tid):
         self.turns.pop(tid, None)
         row = self.tasks.get(tid, {})
+        row['responseKinds'] = []
         if row.get('goalActive'):
             row.update(turnId=None, status='running')
             row['nativeExecution'] = 'running'
@@ -274,17 +291,22 @@ class ActivityRegistry:
             return
         if method.endswith(('/delta', 'Delta')) or method in ('thread/tokenUsage/updated', 'turn/plan/updated', 'turn/diff/updated'):
             return
-        relevant = method.startswith(('thread/', 'project/', 'turn/', 'goal/', 'queue/', 'relay/')) or method.endswith(('/requestApproval', '/requestUserInput')) or method == 'serverRequest/resolved'
+        question_item = method in ('item/started', 'item/completed') and (params.get('item') or {}).get('type') in ('agentMessage', 'userMessage', 'steeringUserMessage')
+        relevant = question_item or method.startswith(('thread/', 'project/', 'turn/', 'goal/', 'queue/', 'relay/')) or method.endswith(('/requestApproval', '/requestUserInput')) or method in ('serverRequest/resolved', 'serverRequest/completed', 'execCommandApproval', 'applyPatchApproval', 'mcpServer/elicitation/request')
         if not relevant:
             return
         with self.lock:
             self._generation()
             if event.get('connectionId', self.epoch) != self.epoch:
                 return
+            if self.interactions.receive(event) is False:
+                return
             if method == 'relay/nativeDisconnected':
                 self.revision += 1
                 self.barrier_revision = self.revision
                 self.unknown.update(self.known - self.confirmed_idle)
+                self.question_unknown.update(self.questions)
+                self.question_reads.clear()
                 self.ready = False
                 self.wake.set()
                 return
@@ -304,10 +326,44 @@ class ActivityRegistry:
                 if tid in self.excluded and method not in ('thread/deleted', 'thread/archived'):
                     return
                 status = None
+                native = None
+                if question_item:
+                    current = self.questions.get(tid)
+                    is_answer = params['item'].get('type') in ('userMessage', 'steeringUserMessage')
+                    if (not turn_id or (tid, turn_id) in self.terminal and not is_answer or
+                            self.turns.get(tid) not in (None, turn_id) or
+                            current and current.turn_id != turn_id and current.live):
+                        return
+                    if is_answer and (current is None or current.turn_id != turn_id):
+                        return
+                    if current is None or current.turn_id != turn_id:
+                        current = self.questions[tid] = AsyncQuestionState(turn_id, live=True)
+                    current.item(params['item'])
+                    self.question_unknown.discard(tid)
+                    # Item events do not establish execution or clear uncertainty.
+                if method in ('relay/questionsAnswered', 'relay/questionsAnswerState'):
+                    current = self.questions.get(tid)
+                    if current:
+                        state = params.get('state', 'accepted')
+                        for key in params.get('questionIds', []):
+                            if state is None:
+                                current.submissions.pop(key, None)
+                            else:
+                                current.submissions[key] = state
+                            if state == 'accepted':
+                                current.answered.add(key)
+                if method in ('relay/historyInvalidated', 'thread/closed', 'relay/writerDisconnected'):
+                    self.question_unknown.add(tid)
+                    self.question_reads.pop(tid, None)
+                    if method == 'relay/historyInvalidated':
+                        self.questions.pop(tid, None)
                 if method == 'turn/started' and isinstance(turn_id, str):
                     if (tid, turn_id) in self.terminal:
                         return
                     self.turns[tid] = turn_id
+                    if tid not in self.questions or self.questions[tid].turn_id != turn_id:
+                        self.questions[tid] = AsyncQuestionState(turn_id, live=True)
+                    self.question_unknown.discard(tid)
                     status = 'running'
                 elif method in ('turn/completed', 'turn/failed', 'turn/interrupted'):
                     # A delayed terminal event must never clear a newer turn.
@@ -317,6 +373,14 @@ class ActivityRegistry:
                             self.terminal.popitem(last=False)
                     # Metadata/reconciliation can restore activity without a start event.
                     # Respect any known newer turn, including one restored by the loader.
+                    current = self.questions.get(tid)
+                    if current and current.turn_id == turn_id:
+                        current.live = False
+                        final_status = (turn.get('status') or ('failed' if method == 'turn/failed' else 'interrupted' if method == 'turn/interrupted' else 'completed'))
+                        if current.status not in FAILED or final_status in FAILED:
+                            current.status = final_status
+                        for item in turn.get('items', []):
+                            current.item(item)
                     active_turn = self.turns.get(tid) or self.tasks.get(tid, {}).get('turnId')
                     if turn_id and active_turn == turn_id:
                         self._finish_execution(tid)
@@ -324,21 +388,29 @@ class ActivityRegistry:
                         # A terminal event may belong to an older turn. Reconcile
                         # metadata-only activity instead of declaring it idle.
                         self.unknown.add(tid)
-                elif method.endswith(('/requestApproval', '/requestUserInput')):
+                elif method.endswith(('/requestApproval', '/requestUserInput')) or method in ('execCommandApproval', 'applyPatchApproval', 'mcpServer/elicitation/request'):
                     if turn_id and ((tid, turn_id) in self.terminal or
                                     self.turns.get(tid) not in (None, turn_id)):
                         return
-                    status = 'waiting'
+                    if turn_id and (tid not in self.questions or self.questions[tid].turn_id != turn_id):
+                        self.questions[tid] = AsyncQuestionState(turn_id, live=True)
+                    status = 'waiting' if response_waiting(self.interactions.list(tid)) else 'running'
+                elif method in ('serverRequest/resolved', 'serverRequest/completed', 'relay/writerDisconnected', 'relay/interactionAnswered', 'thread/closed'):
+                    # Request IDs may resolve one of several pending prompts. Reconcile
+                    # the authoritative set rather than clearing all or retaining stale hints.
+                    self.unknown.add(tid)
                 elif method == 'thread/status/changed':
                     native = params.get('status', {})
                     if isinstance(native, dict) and native.get('type') == 'active':
-                        status = 'waiting' if any(flag in ('waitingOnApproval', 'waitingOnUserInput')
-                            for flag in native.get('activeFlags', [])) else 'running'
+                        status = 'waiting' if response_waiting(self.interactions.list(tid), native) else 'running'
                     elif isinstance(native, dict) and native.get('type') == 'idle':
                         self._finish_execution(tid)
                     else:
                         self.unknown.add(tid)
                 elif method in ('thread/deleted', 'thread/archived'):
+                    self.questions.pop(tid, None)
+                    self.question_reads.pop(tid, None)
+                    self.question_unknown.discard(tid)
                     self.excluded.add(tid)
                     self.confirmed_idle.add(tid)
                     self.tasks.pop(tid, None)
@@ -348,12 +420,22 @@ class ActivityRegistry:
                 if status:
                     self.confirmed_idle.discard(tid)
                     self.tasks[tid] = {**self.tasks.get(tid, {}), 'threadId': tid, 'projectId': project or '',
-                                       'turnId': turn_id or self.turns.get(tid) or self.tasks.get(tid, {}).get('turnId'), 'status': status, **execution_projection(status)}
+                                       'turnId': turn_id or self.turns.get(tid) or self.tasks.get(tid, {}).get('turnId'), 'status': status, **execution_projection(status, requests=self.interactions.list(tid), native_status=native)}
                     self.known.add(tid)
                     self.unknown.discard(tid)
             else:
                 self.revision += 1
                 self.barrier_revision = self.revision
+                if method == 'relay/writerDisconnected':
+                    self.question_unknown.update(params.get('threadIds', []))
+                    for lost in params.get('threadIds', []):
+                        self.question_reads.pop(lost, None)
+                if method in ('serverRequest/resolved', 'serverRequest/completed',
+                              'relay/writerDisconnected', 'relay/interactionAnswered', 'thread/closed'):
+                    # Some runtimes send only a request ID. Until reconciliation,
+                    # no waiting row can still claim its pending set is verified.
+                    self.unknown.update(tid for tid, row in self.tasks.items()
+                                        if row.get('status') == 'waiting')
         self.wake.set()
 
     def read_token(self):
@@ -363,7 +445,7 @@ class ActivityRegistry:
 
     @publishes_activity
     def observe_execution(self, thread_id, status, *, token, project_id=None,
-                          turn_id=None, settled_turn_id=None, goal_active=False, queue=()):
+                          turn_id=None, settled_turn_id=None, goal_active=False, queue=(), requests=(), native_status=None):
         """Verified native reads update the same table as events and discovery.
 
         A read that predates a newer event/reconciliation cannot overwrite it.
@@ -384,7 +466,7 @@ class ActivityRegistry:
                 while len(self.terminal) > 1024:
                     self.terminal.popitem(last=False)
             project_id = project_id or self.membership.get(thread_id, '')
-            projection = execution_projection(status, queue)
+            projection = execution_projection(status, queue, requests=requests, native_status=native_status)
             row = {'threadId': thread_id, 'projectId': project_id, 'turnId': turn_id,
                    'status': status, 'goalActive': goal_active, **projection}
             desired = row if projection['hasOutstandingWork'] else None
@@ -409,14 +491,93 @@ class ActivityRegistry:
                 self.confirmed_idle.discard(thread_id)
             return True
 
+    def prioritize_questions(self, thread_ids):
+        with self.lock:
+            self._generation()
+            self.question_priority = set(thread_ids[:50])
+        self.wake.set()
+
+    def question_candidates(self, threads, limit=4):
+        """Bound background history IO; never scan histories in an HTTP list read."""
+        with self.lock:
+            self._generation()
+            now = time.monotonic()
+            candidates = []
+            for thread in threads:
+                tid = thread['id']
+                if tid in self.excluded:
+                    continue
+                fingerprint = (thread.get('updatedAt'), repr(thread.get('status')))
+                prior = self.question_reads.get(tid)
+                if prior is not None and prior[0] != fingerprint:
+                    self.question_unknown.add(tid)
+                if prior is None or prior[0] != fingerprint or now - prior[1] >= 60:
+                    candidates.append((0 if tid in self.question_priority else 1, prior[1] if prior else 0, tid, fingerprint))
+            candidates.sort(key=lambda value: value[:2])
+            for _, _, tid, fingerprint in candidates[:limit]:
+                self.question_reads[tid] = (fingerprint, now)
+            return [tid for _, _, tid, _ in candidates[:limit]]
+
+    @publishes_activity
+    def observe_questions(self, thread_id, turns, *, token, answer_states=None):
+        with self.lock:
+            self._generation()
+            if not self._accepts(thread_id, token) or thread_id in self.excluded:
+                return False
+            turn = turns[-1] if turns else None
+            current = self.questions.get(thread_id)
+            active_turn = self.turns.get(thread_id) or self.tasks.get(thread_id, {}).get('turnId')
+            if active_turn and (not turn or turn['id'] != active_turn):
+                return False
+            if current and turn and turn['id'] == current.turn_id:
+                if current.status in FAILED and turn.get('status') not in FAILED:
+                    return False
+                if current.status == 'completed' and turn.get('status') in ('inProgress', 'notStarted'):
+                    return False
+            # Persisted heads can lag an already observed new turn. A historical
+            # page must not replace the live head or revive a retired old turn.
+            if current and not turn:
+                return False
+            if current and turn['id'] != current.turn_id and (
+                    current.live or turn and (thread_id, turn['id']) in self.terminal):
+                return False
+            if turn:
+                if current is None or current.turn_id != turn['id']:
+                    current = self.questions[thread_id] = AsyncQuestionState(turn['id'])
+                current.observe(turn, answer_states)
+            else:
+                self.questions.pop(thread_id, None)
+            self.question_unknown.discard(thread_id)
+            if current and current.pending:
+                self.known.add(thread_id)
+            self._touch(thread_id)
+            token.metadata_versions[thread_id] = self.thread_revisions[thread_id]
+            return True
+
+    def _response_kinds(self, tid):
+        if tid in self.excluded or tid not in self.known or tid in self.unknown:
+            return ()
+        kinds = set(self.tasks.get(tid, {}).get('responseKinds', []))
+        questions = self.questions.get(tid)
+        if tid not in self.question_unknown and questions and questions.pending:
+            kinds.add('question')
+        return tuple(sorted(kinds))
+
     def snapshot(self):
         with self.lock:
             self._generation()
             self.snapshot_version += 1
             # Activity is node-wide and is embedded in unrelated conversation reads.
             # Recovery input belongs only to its owning conversation, not this summary.
-            tasks = [{key: value for key, value in row.items() if key != 'recoveryTask'}
-                     for row in self.tasks.values()]
+            rows = {tid: {key: value for key, value in row.items() if key != 'recoveryTask'}
+                    for tid, row in self.tasks.items()}
+            for tid, questions in self.questions.items():
+                if (tid not in self.excluded and tid in self.known and tid not in self.unknown and
+                        tid not in self.question_unknown and questions.pending):
+                    row = rows.setdefault(tid, {'threadId': tid, 'projectId': self.membership.get(tid, ''),
+                        'status': 'idle', **execution_projection('idle')})
+                    row['responseKinds'] = list(dict.fromkeys(['question'] + row.get('responseKinds', [])))
+            tasks = list(rows.values())
             return {'version': self.snapshot_version, 'tasks': copy.deepcopy(tasks),
                     'knownThreadIds': sorted(self.known), 'unknownThreadIds': sorted(self.unknown),
                     'generation': self.epoch, 'revision': self.revision,
