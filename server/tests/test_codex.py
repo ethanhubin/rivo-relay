@@ -102,7 +102,10 @@ class NativeSemanticsTests(unittest.TestCase):
         self.assertIsNone(result["goal"])
         self.assertTrue(result["goalSupported"])
         self.assertEqual(1, sum(method == "thread/resume" for method, _ in native.calls))
-        self.assertEqual(2, len(events))
+        self.assertEqual(2, sum(e['method'] != 'relay/activityChanged' for e in events))
+        # Active goal -> idle produces two semantic activity notices; changing
+        # among idle goal states does not publish another notice per read.
+        self.assertEqual(2, sum(e['method'] == 'relay/activityChanged' for e in events))
 
     def test_session_list_keeps_active_goal_running_between_turns(self):
         native = FakeNative()
@@ -557,7 +560,11 @@ class NativeSemanticsTests(unittest.TestCase):
         self.assertEqual(1, methods.count("thread/resume"))
         self.assertEqual(2, methods.count("thread/read"))
         self.assertEqual(3, methods.count("thread/turns/list"))
-        self.assertEqual(1, len(events))
+        self.assertEqual(1, sum(e['method'] != 'relay/activityChanged' for e in events))
+        self.assertEqual(1, sum(e['method'] == 'relay/activityChanged' for e in events))
+        count = len(events)
+        service.get_session("thread")
+        self.assertEqual(count, len(events))
 
     def test_native_settings_event_refreshes_snapshot_without_rejoining(self):
         native = FakeNative()

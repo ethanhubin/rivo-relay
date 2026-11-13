@@ -7,7 +7,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /** The only execution projection consumed by project, list and conversation views. */
-data class NodeActivity(val tasks: Map<String, ThreadSummary> = emptyMap(), val unknown: Set<String> = emptySet(), val confirmed: Boolean = false, val known: Set<String> = emptySet(), val generation: String = "", val version: Long = -1, val retiredGenerations: Set<String> = emptySet()) {
+data class NodeActivity(val tasks: Map<String, ThreadSummary> = emptyMap(), val unknown: Set<String> = emptySet(), val confirmed: Boolean = false, val known: Set<String> = emptySet(), val generation: String = "", val version: Long = -1, val retiredGenerations: Set<String> = emptySet(), val revision: Long = -1) {
     fun status(id: String): String? = if (!confirmed || id in unknown || id !in known) null else tasks[id]?.status ?: "idle"
     fun execution(id: String): ThreadSummary {
         val status = status(id) ?: "unknown"
@@ -36,12 +36,13 @@ internal fun NodeActivity.accept(response: org.json.JSONObject): NodeActivity {
         threadSummary(org.json.JSONObject(row.toString()).put("id", row.string("threadId")))
     }.filter { it.id in known && it.id !in unknown }.associateBy { it.id }
     return NodeActivity(tasks, unknown, true, known, response.string("generation"), nextVersion,
-        retiredGenerations + setOf(generation).filter { it.isNotBlank() && it != response.string("generation") })
+        retiredGenerations + setOf(generation).filter { it.isNotBlank() && it != response.string("generation") }, response.optLong("revision", -1))
 }
 
 /** null means node-wide uncertainty; an empty set changes no execution state. */
 internal fun activityInvalidatedThreads(event: RelayEvent): Set<String>? {
-    if (!catalogLifecycleEvent(event)) return emptySet()
+    val activityChanged = event.type == "native" && event.payload.string("method") == "relay/activityChanged"
+    if (!activityChanged && !catalogLifecycleEvent(event)) return emptySet()
     if (event.type in setOf("reset", "connected", "revoked")) return null
     val method = event.payload.string("method")
     if (method == "relay/nativeDisconnected") return null
@@ -56,19 +57,23 @@ internal fun activityInvalidatedThreads(event: RelayEvent): Set<String>? {
     return id.takeIf(String::isNotBlank)?.let { setOf(it) }
 }
 
+// Keep idle polling as a recovery fallback, not the real-time mechanism.
+// Semantic node notifications and shared detail snapshots update all views;
+// tuning polling frequency cannot fix lost notifications or discarded evidence.
 fun nodeActivity(api: RelayApi, sync: NodeSessionSync, scope: CoroutineScope,
     activeIntervalMillis: Long = 5000, idleIntervalMillis: Long = 60_000): StateFlow<NodeActivity> = channelFlow {
     require(activeIntervalMillis > 0 && idleIntervalMillis > 0)
     var previous = NodeActivity()
-    var epoch = 0L
     val lock = Mutex()
     coroutineScope {
         val signals = Channel<Unit>(Channel.CONFLATED)
         val events = launch {
-            suspend fun invalidate(threads: Set<String>? = null) {
+            suspend fun invalidate(threads: Set<String>? = null, watermark: org.json.JSONObject? = null) {
                 if (threads?.isEmpty() == true) return
                 if (threads == null || threads.isNotEmpty()) lock.withLock {
-                    epoch++
+                    if (watermark != null && previous.confirmed &&
+                        watermark.string("generation") == previous.generation &&
+                        watermark.optLong("revision", -1) >= 0 && previous.revision >= watermark.optLong("revision")) return
                     previous = if (threads == null) previous.copy(confirmed = false)
                         else previous.copy(unknown = previous.unknown + threads)
                     send(previous)
@@ -76,17 +81,17 @@ fun nodeActivity(api: RelayApi, sync: NodeSessionSync, scope: CoroutineScope,
                 signals.trySend(Unit)
             }
             sync.events(onInterrupted = { invalidate() }).collect {
-                if (catalogLifecycleEvent(it)) invalidate(activityInvalidatedThreads(it))
+                invalidate(activityInvalidatedThreads(it), it.payload.optJSONObject("params")
+                    ?.takeIf { _ -> it.payload.string("method") == "relay/activityChanged" })
             }
         }
         val snapshots = launch {
-            sync.activitySnapshots.collect { response ->
+            sync.activitySnapshots.collect { observation ->
                 try {
                     lock.withLock {
-                        val next = previous.accept(response)
+                        val next = sync.filterActivity(observation)?.let { previous.accept(it) } ?: previous
                         if (next !== previous) {
                             previous = next
-                            epoch++
                             send(previous)
                         }
                     }
@@ -96,14 +101,15 @@ fun nodeActivity(api: RelayApi, sync: NodeSessionSync, scope: CoroutineScope,
         }
         try {
             while (currentCoroutineContext().isActive) {
-                val readEpoch = lock.withLock { epoch }
+                val readEpoch = sync.activityReadToken()
                 var failed = false
                 try {
                     val response = api.call("/v1/activity")
                     lock.withLock {
-                        if (readEpoch == epoch && response.optBoolean("complete", false)) {
-                            previous = previous.accept(response)
-                        } else if (readEpoch == epoch) previous = previous.copy(confirmed = false)
+                        val current = sync.filterActivity(ActivityObservation(response, readEpoch))
+                        if (current != null && current.optBoolean("complete", false)) {
+                            previous = previous.accept(current)
+                        } else if (current != null) previous = previous.copy(confirmed = false)
                         send(previous)
                     }
                 } catch (e: CancellationException) { throw e }

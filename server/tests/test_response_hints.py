@@ -55,6 +55,25 @@ class ResponseHintsTests(unittest.TestCase):
     def row(self, service):
         return next((r for r in service.activity.snapshot()['tasks'] if r['threadId'] == 'thread'), {})
 
+    def test_history_only_question_changes_notify_once_without_execution_change(self):
+        s = self.service()
+        notices = []
+        s.activity.on_change = notices.append
+        s.activity.observe_execution('thread', 'idle', token=s.activity.read_token())
+        notices.clear()
+        head = [{'id': 'turn', 'status': 'completed', 'items': [question()]}]
+        for _ in range(2):
+            s.activity.observe_questions('thread', head, token=s.activity.read_token())
+        self.assertEqual(1, len(notices))
+        self.assertEqual(['thread'], notices[0]['params']['threadIds'])
+        self.assertEqual('idle', self.row(s)['status'])
+        self.assertEqual(['question'], self.row(s)['responseKinds'])
+        head[0]['items'].append(reply())
+        for _ in range(2):
+            s.activity.observe_questions('thread', head, token=s.activity.read_token())
+        self.assertEqual(2, len(notices))
+        self.assertFalse(self.row(s).get('responseKinds'))
+
     def test_resolved_then_new_request_does_not_resurrect_type(self):
         s = self.service()
         self.emit(s, 'turn/started')

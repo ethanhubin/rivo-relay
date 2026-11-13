@@ -122,7 +122,8 @@ class CodexService(SessionHandoffMixin):
         self.native_journal = NativeJournal(self.connection, self.history_adapter, self._history_repaired)
         from .activity import ActivityRegistry
         self._activity_discovery = None
-        self.activity = ActivityRegistry(self._load_activity, lambda: str(self.connection.generation), interactions=self.interactions)
+        self.activity = ActivityRegistry(self._load_activity, lambda: str(self.connection.generation),
+            self.on_event, interactions=self.interactions)
         self.model_catalog = ModelCatalog(self._load_models, lambda: str(self.connection.generation))
 
     def _history_repaired(self, thread_id, result):

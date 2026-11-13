@@ -1,6 +1,7 @@
 """Node-owned activity table. HTTP readers never perform native RPCs."""
 from collections import OrderedDict
 import copy
+from functools import wraps
 from dataclasses import dataclass, field
 import threading
 import time
@@ -21,9 +22,23 @@ class ActivityRead:
     running_metadata: set = field(default_factory=set)
 
 
+def publishes_activity(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._notify_changes()
+    return wrapped
+
+
 class ActivityRegistry:
-    def __init__(self, load, generation=lambda: None, *, interactions=None):
+    def __init__(self, load, generation=lambda: None, on_change=None, *, interactions=None):
         self.load, self.generation = load, generation
+        self.on_change = on_change
+        self._notification_lock = threading.Lock()
+        self._notified_epoch = None
+        self._notified_rows = {}
         self.lock = threading.Lock()
         self.wake = threading.Event()
         self.stopped = threading.Event()
@@ -47,6 +62,37 @@ class ActivityRegistry:
         self.ready = False
         self.last_sync = None
         self.error = None
+
+    def _notify_changes(self):
+        if self.on_change is None:
+            return
+        # Real-time list updates come from semantic changes, not faster polling.
+        # Ignore scan/read revisions and turn IDs: metadata scans omit turn IDs,
+        # and repeated detail reads must not create a notification/read loop.
+        fields = ('projectId', 'status', 'nativeExecution', 'deliveryState',
+                  'displayState', 'queueDepth', 'recoveryRequired',
+                  'hasOutstandingWork', 'blockReason', 'goalActive')
+        with self._notification_lock:
+            with self.lock:
+                rows = {tid: (tid in self.known, tid in self.unknown,
+                    tuple(self.tasks.get(tid, {}).get(k) for k in fields)
+                    if tid not in self.unknown else (), self._response_kinds(tid))
+                    for tid in self.known | self.unknown | self.tasks.keys()}
+                changed = sorted(tid for tid in rows.keys() | self._notified_rows.keys()
+                                 if rows.get(tid) != self._notified_rows.get(tid))
+                generation_changed = self._notified_epoch != self.epoch
+                if not changed and not generation_changed:
+                    return
+                if generation_changed:
+                    changed = sorted(rows.keys() | self._notified_rows.keys())
+                params = {'generation': self.epoch, 'revision': self.revision, 'threadIds': changed}
+                self._notified_epoch, self._notified_rows = self.epoch, rows
+                if not changed:
+                    return
+            # Outside the table lock: readers remain available to the event sink.
+            # The watermark lets a detail containing this change satisfy the
+            # notification instead of discarding its own authoritative result.
+            self.on_change({'method': 'relay/activityChanged', 'params': params})
 
     def _generation(self):
         epoch = self.generation()
@@ -124,6 +170,7 @@ class ActivityRegistry:
             self.error = 'reconciliation_failed'
             self.ready = False
 
+    @publishes_activity
     def reconcile(self):
         token = self.read_token()
         try:
@@ -185,6 +232,7 @@ class ActivityRegistry:
                 return True
             return False
 
+    @publishes_activity
     def observe_metadata(self, threads, roots, token):
         """Publish direct running evidence before slower external/goal probes."""
         with self.lock:
@@ -395,6 +443,7 @@ class ActivityRegistry:
             self._generation()
             return ActivityRead(self.epoch, self.revision)
 
+    @publishes_activity
     def observe_execution(self, thread_id, status, *, token, project_id=None,
                           turn_id=None, settled_turn_id=None, goal_active=False, queue=(), requests=(), native_status=None):
         """Verified native reads update the same table as events and discovery.
@@ -469,6 +518,7 @@ class ActivityRegistry:
                 self.question_reads[tid] = (fingerprint, now)
             return [tid for _, _, tid, _ in candidates[:limit]]
 
+    @publishes_activity
     def observe_questions(self, thread_id, turns, *, token, answer_states=None):
         with self.lock:
             self._generation()
@@ -498,10 +548,20 @@ class ActivityRegistry:
             else:
                 self.questions.pop(thread_id, None)
             self.question_unknown.discard(thread_id)
-            self.known.add(thread_id)
+            if current and current.pending:
+                self.known.add(thread_id)
             self._touch(thread_id)
             token.metadata_versions[thread_id] = self.thread_revisions[thread_id]
             return True
+
+    def _response_kinds(self, tid):
+        if tid in self.excluded or tid not in self.known or tid in self.unknown:
+            return ()
+        kinds = set(self.tasks.get(tid, {}).get('responseKinds', []))
+        questions = self.questions.get(tid)
+        if tid not in self.question_unknown and questions and questions.pending:
+            kinds.add('question')
+        return tuple(sorted(kinds))
 
     def snapshot(self):
         with self.lock:
