@@ -87,7 +87,7 @@ class SubmissionStore:
         self._history_cursors = {}
 
     def claim(self, submission_id: str, connection_id: str, operation: str,
-              target: Any, payload: Any) -> dict:
+              target: Any, payload: Any, *, preparing=False) -> dict:
         """Commit ownership before returning should_dispatch=True.
 
         Callers must never dispatch when false, including pending and unknown.
@@ -114,9 +114,9 @@ class SubmissionStore:
             if owner is None:
                 raise ValueError("Submission connection is missing or revoked")
             connection.execute(
-                """INSERT INTO submissions(id,connection_id,operation,target_json,payload_hash,status,created_at,updated_at)
-                   VALUES (?,?,?,?,?,'pending',?,?)""",
-                (submission_id, connection_id, operation, target_json, payload_hash, now, now),
+                """INSERT INTO submissions(id,connection_id,operation,target_json,payload_hash,status,created_at,updated_at,dispatch_phase)
+                   VALUES (?,?,?,?,?,'pending',?,?,?)""",
+                (submission_id, connection_id, operation, target_json, payload_hash, now, now, 'preparing' if preparing else None),
             )
             row = connection.execute("SELECT * FROM submissions WHERE id=?", (submission_id,)).fetchone()
             return {"should_dispatch": True, "submission": _public(row)}
@@ -239,7 +239,7 @@ class SubmissionStore:
         """Called synchronously at the actual turn boundary; failure prevents sending."""
         with self.db.transaction() as db:
             row = db.execute('SELECT * FROM submissions WHERE id=?', (submission_id,)).fetchone()
-            if row is None or row['status'] != 'pending' or row['operation'] not in {'thread.turns', 'thread.continue', 'thread.create', 'thread.fork'}:
+            if row is None or row['status'] != 'pending' or row['operation'] not in {'thread.turns', 'thread.continue', 'thread.create', 'thread.fork', 'thread.goal', 'thread.ownership'}:
                 raise SubmissionConflict('Submission cannot advance dispatch')
             expected = {'preparing': None, 'dispatching': 'preparing', 'received': 'dispatching'}
             if phase not in expected or row['dispatch_phase'] != expected[phase]:
@@ -249,7 +249,8 @@ class SubmissionStore:
                 merged = _merge_receipt(None, receipt)
                 creating = row['operation'] in {'thread.create', 'thread.fork'}
                 valid = merged and (bool(merged.get('threadId')) if creating else
-                    merged.get('threadId') == json.loads(row['target_json']) and bool(merged.get('turnId')))
+                    merged.get('threadId') == json.loads(row['target_json']) and
+                    (row['operation'] in {'thread.goal', 'thread.ownership'} or bool(merged.get('turnId'))))
                 if not valid:
                     raise SubmissionConflict('Native receipt does not match the submission')
             elif receipt is not None:
@@ -269,14 +270,15 @@ class SubmissionStore:
                 return None
             if row['dispatch_phase'] == 'local_transaction' and row['receipt_json'] is None:
                 return self.mark_failed(submission_id, 'operation_not_dispatched')
-            if row['operation'] not in {'thread.turns', 'thread.continue', 'thread.create', 'thread.fork'}:
+            if row['operation'] not in {'thread.turns', 'thread.continue', 'thread.create', 'thread.fork', 'thread.goal', 'thread.ownership'}:
                 return None
             if row['dispatch_phase'] == 'preparing' and row['receipt_json'] is None:
                 return self.mark_failed(submission_id, 'turn_not_dispatched' if row['operation'] in {'thread.turns', 'thread.continue'} else 'operation_not_dispatched')
             if row['dispatch_phase'] == 'received' and row['receipt_json']:
                 receipt = json.loads(row['receipt_json'])
                 creating = row['operation'] in {'thread.create', 'thread.fork'}
-                if (creating and receipt.get('threadId')) or (receipt.get('threadId') == json.loads(row['target_json']) and receipt.get('turnId')):
+                if (creating and receipt.get('threadId')) or (receipt.get('threadId') == json.loads(row['target_json']) and
+                        (row['operation'] in {'thread.goal', 'thread.ownership'} or receipt.get('turnId'))):
                     return self.mark_accepted(submission_id, receipt)
             return None
 

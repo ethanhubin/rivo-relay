@@ -96,7 +96,9 @@ class RelayApp:
 
     def submit(self, connection_id: str, submission_id: str, operation: str,
                target, payload: dict, action: Callable[[], dict]) -> dict:
-        claim = self.submissions.claim(submission_id, connection_id, operation, target, payload)
+        identity_mutation = operation in {'thread.goal', 'thread.ownership'}
+        claim = self.submissions.claim(submission_id, connection_id, operation, target, payload,
+                                       preparing=identity_mutation)
         if not claim["should_dispatch"]:
             return public_submission(claim["submission"])
         try:
@@ -107,7 +109,7 @@ class RelayApp:
             if local:
                 self.submissions.begin_local(submission_id)
             def observe(phase, receipt):
-                if tracked:
+                if tracked or identity_mutation:
                     self.submissions.record_dispatch(submission_id, phase, receipt)
                 elif local and phase == 'committed':
                     self.submissions.mark_accepted(submission_id, receipt)
@@ -115,6 +117,8 @@ class RelayApp:
                     self.submissions.checkpoint(submission_id, receipt)
             with observe_dispatch(submission_id, target, observe):
                 receipt = action()
+                if identity_mutation and receipt:
+                    observe('received', receipt)
             if not receipt:
                 raise RuntimeError("Missing native identity receipt; reconcile before retry")
             record = self.submissions.mark_accepted(submission_id, receipt)

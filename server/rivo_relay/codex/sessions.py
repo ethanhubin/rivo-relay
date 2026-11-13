@@ -1346,6 +1346,8 @@ class CodexService(SessionHandoffMixin):
             params["status"] = "paused" if operation == "pause" else "active"
         with self.operation_gate(thread_id):
             self._resume(thread_id)
+            from ..submission_dispatch import creation_phase
+            creation_phase(thread_id, 'dispatching')
             self.connection.request("thread/goal/clear" if operation == "clear" else "thread/goal/set", params)
         # Submission receipts contain identities only. Goal contents are read
         # through the session snapshot, never persisted as receipt fields.
