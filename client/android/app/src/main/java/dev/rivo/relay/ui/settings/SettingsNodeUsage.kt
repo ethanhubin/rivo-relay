@@ -20,6 +20,8 @@ import dev.rivo.relay.connection.NodeConnection
 import dev.rivo.relay.data.CodexUsage
 import dev.rivo.relay.data.RelayApi
 import dev.rivo.relay.data.USAGE_RESET_PATH
+import dev.rivo.relay.data.resetCreditExpiryCountdown
+import kotlinx.coroutines.delay
 import dev.rivo.relay.ui.common.CodexQuotaProgressBar
 import dev.rivo.relay.ui.common.UsageDetailsDialog
 import org.json.JSONObject
@@ -77,19 +79,29 @@ internal fun SettingsNodeUsage(connection: NodeConnection, api: RelayApi, refres
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 internal fun SettingsWeeklyUsage(usage: CodexUsage?, loading: Boolean, error: String?, onOpen: () -> Unit) {
+    val nowSeconds by produceState(System.currentTimeMillis() / 1000, usage) {
+        while (true) {
+            value = System.currentTimeMillis() / 1000
+            delay(1000)
+        }
+    }
     Column(Modifier.fillMaxWidth().testTag("settings_weekly_usage"),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("周额度", style = MaterialTheme.typography.titleMedium)
         val weekly = usage?.weeklyWindow?.takeIf { it.windowMinutes == 7L * 24 * 60 }
         if (weekly != null) {
-            Text("周额度剩余 ${weekly.remainingPercent}%", style = MaterialTheme.typography.bodyLarge)
-            CodexQuotaProgressBar(weekly, Modifier.fillMaxWidth().height(4.dp))
-            weekly.resetsAt?.let { reset ->
-                val format = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
-                Text("${format.format(Date(reset * 1000))} 重置", style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("周额度剩余 ${weekly.remainingPercent}%", style = MaterialTheme.typography.bodyLarge)
+                weekly.resetsAt?.let { reset ->
+                    val format = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+                    Text("${format.format(Date(reset * 1000))} 重置", style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.align(Alignment.CenterVertically),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
+            CodexQuotaProgressBar(weekly, Modifier.fillMaxWidth().height(4.dp))
         } else Text(if (loading) "正在读取额度…" else "周额度暂不可用",
             style = MaterialTheme.typography.bodyMedium)
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -109,5 +121,9 @@ internal fun SettingsWeeklyUsage(usage: CodexUsage?, loading: Boolean, error: St
             Text("›", style = MaterialTheme.typography.headlineSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        Text(resetCreditExpiryCountdown(usage, nowSeconds),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.testTag("settings_reset_expiry"))
     }
 }
