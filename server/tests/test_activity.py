@@ -20,6 +20,49 @@ class ActivityTests(unittest.TestCase):
     def registry(self, loader=lambda _token: snapshot()):
         return ActivityRegistry(loader, lambda: 'g')
 
+    def test_response_kinds_follow_pending_requests_and_active_flags(self):
+        from rivo_relay.codex.projection import response_kinds
+        self.assertEqual(['question', 'approval'], response_kinds([
+            {'method': 'item/tool/requestUserInput'}, {'method': 'execCommandApproval'}]))
+        self.assertEqual(['approval'], response_kinds(native_status={
+            'type': 'active', 'activeFlags': ['waitingOnApproval']}))
+        self.assertEqual([], response_kinds(native_status={
+            'type': 'idle', 'activeFlags': ['waitingOnApproval']}))
+        registry = self.registry()
+        registry.receive(event('turn/started'))
+        registry.receive(event('item/tool/requestUserInput'))
+        registry.receive(event('item/permissions/requestApproval'))
+        self.assertEqual({'question', 'approval'}, set(registry.tasks['t']['responseKinds']))
+        old = registry.read_token()
+        registry.receive(event('serverRequest/resolved'))
+        self.assertIn('t', registry.snapshot()['unknownThreadIds'])
+        self.assertFalse(registry.observe_execution('t', 'waiting', token=old,
+            requests=[{'method': 'item/tool/requestUserInput'}]))
+        registry.observe_execution('t', 'waiting', token=registry.read_token(),
+            requests=[{'method': 'item/permissions/requestApproval'}])
+        self.assertEqual(['approval'], registry.tasks['t']['responseKinds'])
+        registry.observe_execution('t', 'running', token=registry.read_token())
+        self.assertEqual([], registry.tasks['t']['responseKinds'])
+
+    def test_resolution_without_thread_id_invalidates_pending_rows(self):
+        for method in ('serverRequest/resolved', 'serverRequest/completed', 'relay/writerDisconnected'):
+            registry = self.registry()
+            registry.receive(event('item/tool/requestUserInput'))
+            token = registry.read_token()
+            registry.receive({'method': method, 'params': {'requestId': 'r'}})
+            self.assertIn('t', registry.snapshot()['unknownThreadIds'])
+            self.assertFalse(registry.observe_execution('t', 'waiting', token=token))
+
+    def test_terminal_clears_hints_even_with_goal_or_queue(self):
+        for extra in ({'goal_active': True}, {'queue': [{'status': 'waiting'}]}):
+            registry = self.registry()
+            registry.observe_execution('t', 'waiting', token=registry.read_token(), turn_id='one',
+                requests=[{'method': 'item/tool/requestUserInput'}], **extra)
+            registry.receive(event('turn/completed'))
+            self.assertEqual([], registry.tasks['t']['responseKinds'])
+            registry.receive(event('item/permissions/requestApproval'))
+            self.assertEqual([], registry.tasks['t']['responseKinds'])
+
     def test_global_snapshot_does_not_repeat_recovery_attachment(self):
         import json
         from rivo_relay.codex.projection import execution_projection

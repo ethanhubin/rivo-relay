@@ -40,9 +40,9 @@ class Interactions:
                 request_id = event.get("params", {}).get("requestId")
                 self._pending = {k: v for k, v in self._pending.items()
                                  if type(v['id']) is not type(request_id) or v['id'] != request_id}
-            elif method == "turn/completed":
+            elif method in ("turn/completed", "turn/failed", "turn/interrupted"):
                 params = event.get("params", {})
-                turn_id = params.get("turn", {}).get("id")
+                turn_id = params.get("turnId") or params.get("turn", {}).get("id")
                 thread_id = params.get("threadId", params.get('conversationId'))
                 self._pending = {k: v for k, v in self._pending.items()
                                  if not (v["params"].get("threadId", v['params'].get('conversationId')) == thread_id and

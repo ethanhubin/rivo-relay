@@ -35,7 +35,7 @@ internal fun CatalogState.withNodeActivity(activity: NodeActivity): CatalogState
             if (archived) thread else thread.copy(status = task.status,
                 nativeExecution = task.nativeExecution, hasOutstandingWork = task.hasOutstandingWork,
                 queueDepth = task.queueDepth, deliveryState = task.deliveryState,
-                displayState = task.displayState, recoveryRequired = task.recoveryRequired)
+                displayState = task.displayState, recoveryRequired = task.recoveryRequired, responseKinds = task.responseKinds)
         })
 
 /** Separate catalog/list owner; stale requests cannot overwrite another project or archive filter. */
@@ -244,6 +244,7 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
                             .put("deliveryState", live.deliveryState).put("displayState", live.displayState)
                             .put("queueDepth", live.queueDepth).put("recoveryRequired", live.recoveryRequired)
                             .put("hasOutstandingWork", live.hasOutstandingWork).put("writerOwner", live.writerOwner)
+                            .put("responseKinds", JSONArray(live.responseKinds.toList()))
                     } }
                     mutable.update { it.copy(threadsFresh = !listReadDirty, threadsComplete = !listReadDirty, threadsSummaryFresh = listReadDirty) }
                 }
@@ -550,7 +551,7 @@ private fun catalogRows(response: JSONObject, key: String): List<JSONObject> {
 private fun ThreadSummary.withExecution(state: ThreadSummary): ThreadSummary = copy(
     status = state.status, nativeExecution = state.nativeExecution, deliveryState = state.deliveryState,
     displayState = state.displayState, queueDepth = state.queueDepth, recoveryRequired = state.recoveryRequired,
-    hasOutstandingWork = state.hasOutstandingWork, writerOwner = state.writerOwner)
+    hasOutstandingWork = state.hasOutstandingWork, writerOwner = state.writerOwner, responseKinds = state.responseKinds)
 
 internal fun threadCatalogNeedsFastRefresh(state: CatalogState): Boolean =
     !state.threadsFresh || !state.threadsComplete || state.threads.any { threadIsActive(it) || it.status == "unknown" || it.nativeExecution == "unknown" }
@@ -562,7 +563,8 @@ internal fun catalogLifecycleEvent(event: RelayEvent): Boolean {
     val method = event.payload.string("method")
     return (method.startsWith("thread/") && method != "thread/tokenUsage/updated" && !method.endsWith("/delta")) ||
         method.startsWith("project/") || method.startsWith("goal/") || method.startsWith("queue/") ||
-        method in setOf("turn/started", "turn/completed", "turn/failed", "turn/interrupted", "serverRequest/resolved",
+        method in setOf("turn/started", "turn/completed", "turn/failed", "turn/interrupted", "serverRequest/resolved", "serverRequest/completed",
+            "execCommandApproval", "applyPatchApproval", "mcpServer/elicitation/request", "relay/interactionAnswered",
             "relay/queueUpdated", "relay/queueChanged", "relay/historyInvalidated", "relay/ownershipChanged", "relay/writerDisconnected", "relay/nativeDisconnected") ||
         (method.startsWith("item/") && (method.endsWith("/requestApproval") || method.endsWith("/requestUserInput")))
 }

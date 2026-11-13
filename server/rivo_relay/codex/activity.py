@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import threading
 import time
 from ..read_budget import read_budget
-from .projection import execution_projection
+from .projection import execution_projection, response_kinds
 
 
 @dataclass
@@ -192,7 +192,7 @@ class ActivityRegistry:
                     status = 'waiting' if waiting else 'running'
                     self.confirmed_idle.discard(tid)
                     self.tasks[tid] = {**self.tasks.get(tid, {}), 'threadId': tid, 'projectId': project or '', 'status': status,
-                                       **execution_projection(status)}
+                                       **execution_projection(status, native_status=native)}
                     self.known.add(tid)
                     self.unknown.discard(tid)
                     changed = True
@@ -204,6 +204,7 @@ class ActivityRegistry:
     def _finish_execution(self, tid):
         self.turns.pop(tid, None)
         row = self.tasks.get(tid, {})
+        row['responseKinds'] = []
         if row.get('goalActive'):
             row.update(turnId=None, status='running')
             row['nativeExecution'] = 'running'
@@ -226,7 +227,7 @@ class ActivityRegistry:
             return
         if method.endswith(('/delta', 'Delta')) or method in ('thread/tokenUsage/updated', 'turn/plan/updated', 'turn/diff/updated'):
             return
-        relevant = method.startswith(('thread/', 'project/', 'turn/', 'goal/', 'queue/', 'relay/')) or method.endswith(('/requestApproval', '/requestUserInput')) or method == 'serverRequest/resolved'
+        relevant = method.startswith(('thread/', 'project/', 'turn/', 'goal/', 'queue/', 'relay/')) or method.endswith(('/requestApproval', '/requestUserInput')) or method in ('serverRequest/resolved', 'serverRequest/completed', 'execCommandApproval', 'applyPatchApproval', 'mcpServer/elicitation/request')
         if not relevant:
             return
         with self.lock:
@@ -256,6 +257,8 @@ class ActivityRegistry:
                 if tid in self.excluded and method not in ('thread/deleted', 'thread/archived'):
                     return
                 status = None
+                native = None
+                pending_kinds = []
                 if method == 'turn/started' and isinstance(turn_id, str):
                     if (tid, turn_id) in self.terminal:
                         return
@@ -276,11 +279,17 @@ class ActivityRegistry:
                         # A terminal event may belong to an older turn. Reconcile
                         # metadata-only activity instead of declaring it idle.
                         self.unknown.add(tid)
-                elif method.endswith(('/requestApproval', '/requestUserInput')):
+                elif method.endswith(('/requestApproval', '/requestUserInput')) or method in ('execCommandApproval', 'applyPatchApproval', 'mcpServer/elicitation/request'):
                     if turn_id and ((tid, turn_id) in self.terminal or
                                     self.turns.get(tid) not in (None, turn_id)):
                         return
                     status = 'waiting'
+                    pending_kinds = response_kinds([{'method': method}])
+                    pending_kinds = list(dict.fromkeys(self.tasks.get(tid, {}).get('responseKinds', []) + pending_kinds))
+                elif method in ('serverRequest/resolved', 'serverRequest/completed', 'relay/writerDisconnected', 'relay/interactionAnswered'):
+                    # Request IDs may resolve one of several pending prompts. Reconcile
+                    # the authoritative set rather than clearing all or retaining stale hints.
+                    self.unknown.add(tid)
                 elif method == 'thread/status/changed':
                     native = params.get('status', {})
                     if isinstance(native, dict) and native.get('type') == 'active':
@@ -300,12 +309,20 @@ class ActivityRegistry:
                 if status:
                     self.confirmed_idle.discard(tid)
                     self.tasks[tid] = {**self.tasks.get(tid, {}), 'threadId': tid, 'projectId': project or '',
-                                       'turnId': turn_id or self.turns.get(tid) or self.tasks.get(tid, {}).get('turnId'), 'status': status, **execution_projection(status)}
+                                       'turnId': turn_id or self.turns.get(tid) or self.tasks.get(tid, {}).get('turnId'), 'status': status, **execution_projection(status, native_status=native)}
+                    if pending_kinds:
+                        self.tasks[tid]['responseKinds'] = pending_kinds
                     self.known.add(tid)
                     self.unknown.discard(tid)
             else:
                 self.revision += 1
                 self.barrier_revision = self.revision
+                if method in ('serverRequest/resolved', 'serverRequest/completed',
+                              'relay/writerDisconnected', 'relay/interactionAnswered'):
+                    # Some runtimes send only a request ID. Until reconciliation,
+                    # no waiting row can still claim its pending set is verified.
+                    self.unknown.update(tid for tid, row in self.tasks.items()
+                                        if row.get('status') == 'waiting')
         self.wake.set()
 
     def read_token(self):
@@ -314,7 +331,7 @@ class ActivityRegistry:
             return ActivityRead(self.epoch, self.revision)
 
     def observe_execution(self, thread_id, status, *, token, project_id=None,
-                          turn_id=None, settled_turn_id=None, goal_active=False, queue=()):
+                          turn_id=None, settled_turn_id=None, goal_active=False, queue=(), requests=(), native_status=None):
         """Verified native reads update the same table as events and discovery.
 
         A read that predates a newer event/reconciliation cannot overwrite it.
@@ -335,7 +352,7 @@ class ActivityRegistry:
                 while len(self.terminal) > 1024:
                     self.terminal.popitem(last=False)
             project_id = project_id or self.membership.get(thread_id, '')
-            projection = execution_projection(status, queue)
+            projection = execution_projection(status, queue, requests=requests, native_status=native_status)
             row = {'threadId': thread_id, 'projectId': project_id, 'turnId': turn_id,
                    'status': status, 'goalActive': goal_active, **projection}
             desired = row if projection['hasOutstandingWork'] else None

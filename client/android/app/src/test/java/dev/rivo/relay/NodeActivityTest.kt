@@ -4,6 +4,26 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NodeActivityTest {
+    @Test fun localAnswerInvalidatesOwningThread() {
+        val event = dev.rivo.relay.data.RelayEvent("native", org.json.JSONObject("""{"method":"relay/interactionAnswered","params":{"threadId":"t"}}"""))
+        assertTrue(catalogLifecycleEvent(event))
+        assertEquals(setOf("t"), activityInvalidatedThreads(event))
+    }
+
+    @Test fun responseHintsClearOnCompletionAndUncertainty() {
+        val thread = dev.rivo.relay.data.threadSummary(org.json.JSONObject("""{"id":"t","status":"waiting","responseKinds":["question","approval","future"]}"""))
+        assertEquals(setOf("question", "approval"), thread.responseKinds)
+        val catalog = CatalogState(threads = listOf(thread))
+        val activity = NodeActivity(tasks = mapOf("t" to thread), confirmed = true, known = setOf("t"))
+        assertEquals(thread.responseKinds, catalog.withNodeActivity(activity).threads.single().responseKinds)
+        for (cleared in listOf(activity.copy(tasks = emptyMap()), activity.copy(confirmed = false),
+            activity.copy(unknown = setOf("t")), activity.copy(known = emptySet()))) {
+            assertTrue(catalog.withNodeActivity(cleared).threads.single().responseKinds.isEmpty())
+        }
+        val approvalOnly = activity.copy(tasks = mapOf("t" to thread.copy(responseKinds = setOf("approval"))))
+        assertEquals(setOf("approval"), catalog.withNodeActivity(approvalOnly).threads.single().responseKinds)
+    }
+
     @Test fun staleRunningCacheDoesNotKeepCompletedConversationProcessing() {
         val snapshot = dev.rivo.relay.data.sessionSnapshot(org.json.JSONObject("""{"thread":{"id":"t","turns":[{"id":"turn","status":"completed","items":[]}]},"status":"idle","nativeExecution":"idle"}"""))
         val task = dev.rivo.relay.data.threadSummary(org.json.JSONObject("""{"id":"t","status":"running"}"""))

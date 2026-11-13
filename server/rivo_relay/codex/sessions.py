@@ -27,7 +27,7 @@ from .files import read_file, read_directory, upload_attachment_stream, stream_d
 from .developer import (project_directory, project_git, review_context, workspace_diff,
                         diff_summary, validate_review, Workspaces)
 from .observations import Observations
-from .projection import execution_projection, control_projection
+from .projection import execution_projection, control_projection, response_kinds
 from .models import ModelCatalog
 from .attachment_context import attachment_context
 from .image_inputs import needs_image_staging, prepare_image_inputs
@@ -323,10 +323,12 @@ class CodexService(SessionHandoffMixin):
             # for every historical conversation before publishing live activity.
             goal = (self.read_goal(tid).get('goal') if thread_status(thread) != 'unknown'
                     or external.get(tid) == 'running' else None)
-            status = ('waiting' if self.interactions.list(tid) or thread_waiting(thread) else
+            requests = self.interactions.list(tid)
+            status = ('waiting' if requests or thread_waiting(thread) else
                       'running' if goal_running(thread, goal, external) else
                       external.get(tid, thread_status(thread)))
-            projection = execution_projection(status, queues.get(tid, []))
+            projection = execution_projection(status, queues.get(tid, []),
+                requests=requests, native_status=thread.get('status'))
             if status == 'unknown':
                 unknown.append(tid)
             if projection['hasOutstandingWork']:
@@ -443,7 +445,10 @@ class CodexService(SessionHandoffMixin):
                  "workspace": ({'id': managed[t['id']]['id'], 'path': managed[t['id']]['path'],
                      'commit': managed[t['id']]['commit_id'], 'status': managed[t['id']]['status']}
                      if t['id'] in managed else None),
-                 **execution_projection(statuses[t["id"]], queues.get(t['id'], []))}
+                 **execution_projection(statuses[t["id"]], queues.get(t['id'], [])),
+                 'responseKinds': (active[t['id']].get('responseKinds', []) if shared and t['id'] in active
+                     else response_kinds(self.interactions.list(t['id']), t.get('status')))
+                     if not archived and statuses[t['id']] == 'waiting' else []}
                 for t in sorted(by_id.values(), key=lambda t: t.get("updatedAt", 0), reverse=True)]
 
     def pin_session(self, thread_id, pinned):
@@ -628,13 +633,13 @@ class CodexService(SessionHandoffMixin):
                 project_id=thread.get('projectId'), turn_id=active,
                 settled_turn_id=latest_turn.get('id') if latest_turn.get('status') in
                     ('completed', 'failed', 'interrupted', 'canceled') else None,
-                goal_active=goal_active, queue=queue)
+                goal_active=goal_active, queue=queue, requests=requests, native_status=thread.get("status"))
             if not published and fresh_running and execution_token.epoch == activity_token.epoch:
                 # The fresh proof establishes execution, not the identity of a
                 # turn from older/unready history. Do not resurrect that turn or
                 # retire one using history that predates this checkpoint.
                 self.activity.observe_execution(thread_id, status, token=execution_token,
-                    project_id=thread.get('projectId'), goal_active=goal_active, queue=queue)
+                    project_id=thread.get('projectId'), goal_active=goal_active, queue=queue, requests=requests, native_status=thread.get("status"))
         review_diagnostics = self.review_guard.diagnostics(thread_id, thread['turns'])
         rebind = None
         if workspace_unavailable:
@@ -1131,7 +1136,7 @@ class CodexService(SessionHandoffMixin):
 
     def respond(self, key, response):
         result = self.interactions.respond(key, response)
-        self.on_event({"method": "relay/interactionAnswered", "params": {"key": key}})
+        self._event({"method": "relay/interactionAnswered", "params": {"key": key, "threadId": result.get("threadId")}})
         return result
 
 

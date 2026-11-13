@@ -5,7 +5,23 @@ shared by the catalog and detail views; no second execution history is stored.
 """
 
 
-def execution_projection(status, queue=(), *, read_only=False, requests=(), ownership_unverified=False):
+def response_kinds(requests=(), native_status=None):
+    """Only current pending requests/active flags, never historical messages."""
+    kinds = set()
+    for request in requests:
+        method = request.get('method', '')
+        kinds.add('approval' if method.endswith('/requestApproval') or method in
+                  ('execCommandApproval', 'applyPatchApproval') else 'question')
+    if isinstance(native_status, dict) and native_status.get('type') == 'active':
+        flags = native_status.get('activeFlags') or []
+        if 'waitingOnUserInput' in flags:
+            kinds.add('question')
+        if 'waitingOnApproval' in flags:
+            kinds.add('approval')
+    return [kind for kind in ('question', 'approval') if kind in kinds]
+
+
+def execution_projection(status, queue=(), *, read_only=False, requests=(), ownership_unverified=False, native_status=None):
     running = status in ('running', 'waiting')
     recovery = next((item for item in queue if item.get('recoveryRequired')), None)
     waiting = [item for item in queue if item.get('status') == 'waiting']
@@ -20,6 +36,7 @@ def execution_projection(status, queue=(), *, read_only=False, requests=(), owne
     return {
         'nativeExecution': 'running' if running else 'unknown' if status == 'unknown' else 'idle',
         'deliveryState': delivery, 'displayState': display,
+        'responseKinds': response_kinds(requests, native_status) if status == 'waiting' or requests else [],
         'queueDepth': len(waiting), 'recoveryRequired': recovery is not None,
         'hasOutstandingWork': running or bool(queue), 'recoveryTask': recovery,
         'blockReason': ('ownership_unverified' if ownership_unverified else

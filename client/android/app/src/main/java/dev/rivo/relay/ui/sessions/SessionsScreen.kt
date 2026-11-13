@@ -26,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -220,6 +221,18 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
                                     painterResource(android.R.drawable.ic_menu_edit), "有未发送的文字",
                                     Modifier.padding(start = 8.dp).size(18.dp).testTag("session_draft_${thread.id}"),
                                     tint = MaterialTheme.colorScheme.secondary)
+                                if (!archived && thread.status == "waiting") {
+                                    listOf("question" to "待回答", "approval" to "待授权").forEach { (kind, label) ->
+                                        if (kind in thread.responseKinds) Surface(
+                                            modifier = Modifier.padding(start = 8.dp).testTag("session_response_${kind}_${thread.id}"),
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = if (kind == "question") Color(0xFF354F65) else Color(0xFF36584B),
+                                            contentColor = Color(0xFFF1F4F3)) {
+                                            Text(label, Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                                style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                                        }
+                                    }
+                                }
 
                             }
                         }
