@@ -309,6 +309,15 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual('accepted', recovered['status'])
         self.assertEqual({'threadId': 'thread', 'itemId': 'request'}, recovered['receipt'])
 
+    def test_worktree_preparation_failure_keeps_its_error_code(self):
+        self.service.start()
+        with patch.object(self.service, 'workspaces') as workspaces:
+            workspaces.create.side_effect = CodexError('Git could not create worktree', code='git_operation_failed')
+            result = self.app.submit(self.owner, 'create', 'thread.create', 'project', {},
+                lambda: self.service.create_session('project', worktree_ref='ref'))
+        self.assertEqual(('failed', 'git_operation_failed'), (result['status'], result['errorCode']))
+        self.assertFalse(any(method == 'thread/start' for method, _ in self.native.calls))
+
     def test_create_receipt_is_saved_before_derived_metadata_failure(self):
         self.service.start()
         with patch.object(self.service.projects, 'invalidate', side_effect=RuntimeError('derived metadata failed')):

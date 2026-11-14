@@ -262,7 +262,7 @@ class SubmissionStore:
         with self.db.transaction() as db:
             db.execute("UPDATE submissions SET dispatch_phase='local_transaction' WHERE id=? AND status='pending'", (submission_id,))
 
-    def resolve_dispatch(self, submission_id):
+    def resolve_dispatch(self, submission_id, *, preparation_error=None):
         """Only after action exit, or with the service stopped. Never resolve a live preparation."""
         with self.db.transaction() as db:
             row = db.execute('SELECT * FROM submissions WHERE id=?', (submission_id,)).fetchone()
@@ -273,7 +273,7 @@ class SubmissionStore:
             if row['operation'] not in {'thread.turns', 'thread.continue', 'thread.create', 'thread.fork', 'thread.goal', 'thread.ownership'}:
                 return None
             if row['dispatch_phase'] == 'preparing' and row['receipt_json'] is None:
-                return self.mark_failed(submission_id, 'turn_not_dispatched' if row['operation'] in {'thread.turns', 'thread.continue'} else 'operation_not_dispatched')
+                return self.mark_failed(submission_id, 'turn_not_dispatched' if row['operation'] in {'thread.turns', 'thread.continue'} else (preparation_error or 'operation_not_dispatched'))
             if row['dispatch_phase'] == 'received' and row['receipt_json']:
                 receipt = json.loads(row['receipt_json'])
                 creating = row['operation'] in {'thread.create', 'thread.fork'}

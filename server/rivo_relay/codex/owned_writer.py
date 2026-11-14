@@ -221,10 +221,10 @@ class OwnedWriter(NativeConnection):
             super()._receive_event(event)
 
     def host_command(self, params, *, timeout=None):
-        if os.name != 'nt':
+        if os.name != 'nt' and sys.platform != 'darwin':
             raise CodexError('此节点未启用本机进程接口')
         command = params.get('command', [])
-        if command[:1] == ['python3']:
+        if os.name == 'nt' and command[:1] == ['python3']:
             interpreter = Path(sys.executable).with_name('python.exe')
             params = {**params, 'command': [str(interpreter), *command[1:]]}
         return self._commands.run(params, timeout)
@@ -362,6 +362,10 @@ class SessionWriters:
         result = self.metadata.status()
         with self._lock:
             live = any(writer.status().get('connected') for writer in self._writers.values())
+        if sys.platform == 'darwin':
+            # command/exec cannot write protected Git metadata on macOS.
+            # Only fixed workspace mutations use the isolated host helper.
+            result = {**result, 'workspaceWrites': 'native-process'}
         return {**result, 'connected': bool(result.get('connected') or live),
                 'metadataConnected': bool(result.get('connected')), 'generation': self.generation, 'sessionIsolation': True}
 
