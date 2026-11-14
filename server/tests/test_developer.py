@@ -261,6 +261,29 @@ class DeveloperTests(unittest.TestCase):
         self.assertEqual(2, sum(method == 'thread/start' for method, _ in self.native.calls))
         self.assertFalse(any(method == 'command/exec' and 'remove' in params['command'] for method, params in self.native.calls))
 
+    def test_macos_worktree_mutations_use_the_host_helper(self):
+        from contextlib import contextmanager
+
+        calls = []
+        native = self.native
+
+        @contextmanager
+        def lease():
+            class Helper:
+                def host_command(self, params, **kwargs):
+                    calls.append(params['command'])
+                    return native.request('command/exec', params, **kwargs)
+            yield Helper()
+
+        native.status = lambda: {'workspaceWrites': 'native-process'}
+        native.auxiliary_connection = lease
+        path = self.create()
+        self.assertEqual('before\n', (path / 'tracked.txt').read_text())
+        current = self.workspaces.inspect('thread')
+        self.workspaces.cleanup('thread', current['revision'], False)
+        self.assertFalse(path.exists())
+        self.assertEqual(['add', 'remove'], [argv[argv.index('worktree') + 1] for argv in calls])
+
     def test_clean_worktree_create_and_cleanup_preserve_source(self):
         path = self.create()
         self.assertTrue(path.is_dir())

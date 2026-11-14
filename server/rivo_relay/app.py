@@ -126,7 +126,10 @@ class RelayApp:
             # Resolve a proven turn boundary first. For uninstrumented/sent
             # requests only an explicit definite rejection is safe to fail.
             current = self.submissions.get(submission_id)
-            proven = current if current['status'] in {'accepted', 'failed'} else self.submissions.resolve_dispatch(submission_id)
+            preparation_error = (getattr(error, 'code', None) if operation in {'thread.create', 'thread.fork'}
+                                 and getattr(error, 'definite', False) else None)
+            proven = current if current['status'] in {'accepted', 'failed'} else self.submissions.resolve_dispatch(
+                submission_id, preparation_error=preparation_error)
             if proven is not None:
                 record = proven
             elif getattr(error, "definite", False):
