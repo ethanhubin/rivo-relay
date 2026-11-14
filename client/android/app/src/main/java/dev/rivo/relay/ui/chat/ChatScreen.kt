@@ -643,12 +643,33 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                             onFork = { forkTurn = message.turnId },
                             historicalTiming = inlineHistoricalTiming[message.turnId].takeIf { isLastReply })
                     }
-                    else if (message.type == "imageGeneration" && (message.raw.string("savedPath").isNotBlank() || message.raw.string("result").isNotBlank())) {
-                        val source = generatedImageSource(message, mediaIndex)
-                        if (source != null) NativeImage(source, readFile, downloadFile = downloadFile, identity = "${message.turnId}:${message.id}")
-                        else if (message.raw.optBoolean("mediaRef")) {
-                            val failed = mediaIndex[NativeMediaIdentity(message.turnId, message.id)]?.string("status") in setOf("failed", "deleted")
-                            Text(if (failed) "图片暂时无法读取" else "图片正在准备…", style = MaterialTheme.typography.bodySmall)
+                    else if (message.type.equals("imageGeneration", ignoreCase = true)) {
+                        val source = remember(message, mediaIndex) { generatedImageSource(message, mediaIndex) }
+                        val status = message.raw.string("status")
+                        val generating = status in setOf("in_progress", "inProgress")
+                        val active = snapshot?.activeTurnId == message.turnId
+                        val awaitingMedia = message.raw.optBoolean("mediaRef")
+                        val mediaFailed = mediaIndex[NativeMediaIdentity(message.turnId, message.id)]?.string("status") in setOf("failed", "deleted")
+                        var sawPlaceholder by remember { mutableStateOf(false) }
+                        val showPlaceholder = source == null && when {
+                            generating -> active
+                            status == "failed" || status in setOf("interrupted", "cancelled", "canceled") -> false
+                            else -> awaitingMedia && !mediaFailed
+                        }
+                        SideEffect {
+                            if (showPlaceholder || (source != null && active)) sawPlaceholder = true
+                        }
+                        when {
+                            source != null -> NativeImage(source, readFile, downloadFile = downloadFile,
+                                identity = "${message.turnId}:${message.id}", fadeIn = sawPlaceholder || active,
+                                loadingContent = {
+                                    ImageGenerationPlaceholder(generating = false, animate = !state.stale)
+                                })
+                            showPlaceholder -> ImageGenerationPlaceholder(generating, animate = !state.stale)
+                            generating || status in setOf("interrupted", "cancelled", "canceled") ->
+                                Text("图片生成已停止", style = MaterialTheme.typography.bodySmall)
+                            status == "failed" -> Text("图片生成失败", style = MaterialTheme.typography.bodySmall)
+                            else -> Text("图片暂时无法读取", style = MaterialTheme.typography.bodySmall)
                         }
                     }
                     else Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = MaterialTheme.shapes.small) {

@@ -32,6 +32,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -97,7 +98,8 @@ private suspend fun imageBytes(source: String, readFile: suspend (String) -> JSO
 internal fun NativeImage(source: String, readFile: suspend (String) -> JSONObject,
     downloadFile: suspend (String, OutputStream, (Long, Long) -> Unit) -> Unit = { path, output, progress ->
         val bytes = imageBytes(path, readFile); output.write(bytes); progress(bytes.size.toLong(), bytes.size.toLong())
-    }, modifier: Modifier = Modifier, identity: String = source, compact: Boolean = false, remaining: Int = 0) {
+    }, modifier: Modifier = Modifier, identity: String = source, compact: Boolean = false, remaining: Int = 0,
+    fadeIn: Boolean = false, loadingContent: (@Composable () -> Unit)? = null) {
     var bitmap by remember(source) { mutableStateOf<ImageBitmap?>(null) }
     var error by remember(source) { mutableStateOf<String?>(null) }
     var origin by remember(source) { mutableStateOf(Rect.Zero) }
@@ -140,12 +142,29 @@ internal fun NativeImage(source: String, readFile: suspend (String) -> JSONObjec
         }
         catch (e: Exception) { if (e is CancellationException) throw e; bitmap = dev.rivo.relay.data.imageAfterValidationFailure(bitmap, e); error = e.message ?: "图片暂时无法读取" }
     }
+    val ready = bitmap != null
+    var reveal by remember(identity) { mutableFloatStateOf(if (fadeIn) 0f else 1f) }
+    LaunchedEffect(ready, identity) {
+        if (!ready || reveal == 1f) return@LaunchedEffect
+        val scale = coroutineContext[MotionDurationScale]?.scaleFactor ?: 1f
+        if (scale > 0f) {
+            val start = withFrameNanos { it }
+            while (reveal < 1f) {
+                reveal = withFrameNanos { ((it - start) / (240_000_000f * scale)).coerceIn(0f, 1f) }
+            }
+        } else reveal = 1f
+    }
     when {
         bitmap != null -> Box(if (compact) modifier.size(76.dp, 88.dp)
             .clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surface)
             .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(10.dp)) else modifier) {
             Image(bitmap!!, "会话图片，点击放大", (if (compact) Modifier.fillMaxSize() else Modifier.widthIn(max = with(density) { (windowSize.width / 2).toDp() }).heightIn(max = with(density) { (windowSize.height / 2).toDp() }))
+                .then(if (loadingContent != null) Modifier.clip(MaterialTheme.shapes.large) else Modifier)
                 .onGloballyPositioned { origin = it.boundsInWindow() }.combinedClickable(onClick = { imageAction = null; viewerSource = source; fullscreen = true }, onLongClick = { menu = true }).testTag("native_image"), contentScale = ContentScale.Fit)
+            if (reveal < 1f) {
+                ImageGenerationPlaceholder(generating = false, animate = false,
+                    modifier = Modifier.matchParentSize().graphicsLayer { alpha = 1f - reveal }, showLabel = false)
+            }
             if (compact && remaining > 0) Box(Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.5f)), contentAlignment = Alignment.Center) {
                 Text("+$remaining", color = Color.White, style = MaterialTheme.typography.headlineSmall)
             }
@@ -161,6 +180,7 @@ internal fun NativeImage(source: String, readFile: suspend (String) -> JSONObjec
             }
         }
         error != null -> Text(if (compact) "加载失败\n点击重试" else "${error!!} · 点击重试", (if (compact) modifier.size(76.dp, 88.dp) else modifier).clickable { attempt++ }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        loadingContent != null -> loadingContent()
         else -> if (compact) Box(modifier.size(76.dp, 88.dp).clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surface), contentAlignment = Alignment.Center) {
             CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
         } else LinearProgressIndicator(modifier.fillMaxWidth().padding(vertical = 16.dp))
