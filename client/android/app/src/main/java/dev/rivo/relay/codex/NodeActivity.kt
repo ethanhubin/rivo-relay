@@ -112,8 +112,12 @@ fun nodeActivity(api: RelayApi, sync: NodeSessionSync, scope: CoroutineScope,
                         } else if (current != null) previous = previous.copy(confirmed = false)
                         send(previous)
                     }
-                } catch (e: CancellationException) { throw e }
-                catch (e: Exception) {
+                } catch (e: CancellationException) {
+                    // A route reset cancels the HTTP call while this subscription
+                    // is still active. Keep collecting detail snapshots and retry.
+                    currentCoroutineContext().ensureActive()
+                    failed = true
+                } catch (e: Exception) {
                     failed = true
                     if (e is ApiException && e.status in setOf(401, 403)) lock.withLock {
                         previous = previous.copy(confirmed = false)

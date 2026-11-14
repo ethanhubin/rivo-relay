@@ -12,6 +12,63 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 class ActivityDetailSyncTest {
+    @Test fun transportResetKeepsDetailAndPollingUpdatesLive() = runBlocking {
+        val server = MockWebServer()
+        val pollStarted = CountDownLatch(1)
+        val pollRelease = CountDownLatch(1)
+        val polls = AtomicInteger()
+        fun activity(version: Int, running: Boolean) = """{"complete":true,"generation":"g","version":$version,
+            "tasks":${if (running) """[{"threadId":"t","projectId":"p","status":"running","nativeExecution":"running"}]""" else "[]"},
+            "knownThreadIds":["t"],"unknownThreadIds":[]}"""
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.requestUrl?.encodedPath) {
+                "/v1/events" -> MockResponse().setHeader("Content-Type", "text/event-stream")
+                    .setBody(":".repeat(65536)).throttleBody(1024, 1, TimeUnit.SECONDS)
+                "/v1/activity" -> when (polls.incrementAndGet()) {
+                    1 -> {
+                        pollStarted.countDown()
+                        pollRelease.await(10, TimeUnit.SECONDS)
+                        MockResponse().setBody(activity(1, false))
+                    }
+                    else -> {
+                        pollRelease.await(10, TimeUnit.SECONDS)
+                        MockResponse().setBody(activity(3, false))
+                    }
+                }
+                "/v1/threads/t" -> MockResponse().setBody("""{"status":"running","activity":${activity(2, true)}}""")
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        try {
+            val api = RelayApi(server.url("/").newBuilder().host("127.0.0.1").build().toString())
+            val sync = NodeSessionSync(api, scope)
+            val connected = CompletableDeferred<Unit>()
+            val disconnected = CompletableDeferred<Unit>()
+            scope.launch {
+                sync.events(onInterrupted = { disconnected.complete(Unit) }).collect {
+                    if (it.type == "connected") connected.complete(Unit)
+                }
+            }
+            withTimeout(5000) { connected.await() }
+            scope.launch { sync.activity.collect {} }
+            withContext(Dispatchers.IO) { assertTrue(pollStarted.await(5, TimeUnit.SECONDS)) }
+            api.resetTransport()
+            withTimeout(5000) { disconnected.await() }
+
+            // Keep polling responses blocked so only the detail can update the list.
+            assertEquals("running", sync.read("t").getString("status"))
+            val running = withTimeout(4000) { sync.activity.first { it.status("t") == "running" } }
+            val catalog = CatalogState(threads = listOf(threadSummary(org.json.JSONObject("""{"id":"t"}"""))))
+            assertTrue(threadIsExecuting(catalog.withNodeActivity(running).threads.single()))
+
+            pollRelease.countDown()
+            val completed = withTimeout(8000) { sync.activity.first { it.version >= 3 && it.status("t") == "idle" } }
+            assertFalse(threadIsExecuting(catalog.withNodeActivity(completed).threads.single()))
+        } finally { pollRelease.countDown(); scope.cancel(); server.shutdown() }
+    }
+
     @Test fun unrelatedCompletionMustNotDiscardRunningDetailForList() = runBlocking {
         val server = MockWebServer()
         val pollRelease = CountDownLatch(1)
