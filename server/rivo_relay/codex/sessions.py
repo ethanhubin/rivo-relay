@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from .writers import WriterProcesses
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 
 from ..operation_gates import ThreadGates
 from .connection import CodexError, NativeConnection
@@ -204,30 +206,83 @@ class CodexService(SessionHandoffMixin):
         self.connection.close()
 
     def idle_for_update(self):
-        # Metadata only: never resume a writer or repair history to decide whether
-        # an update may stop Relay. All reads share one short budget.
-        from ..read_budget import read_budget, read_lock
+        return self.update_blocker() is None
+
+    def update_blocker(self):
+        # Metadata only: never resume a writer or repair history to authorize a stop.
+        from ..read_budget import ReadStopped, read_budget, read_lock
         try:
-            with read_budget(seconds=2):
+            with read_budget(seconds=4):
                 if not self.status().get('connected'):
-                    return False
+                    return 'native_state_unknown'
                 with read_lock(self._lock):
-                    if self._unmaterialized:
-                        return False
-                    threads = set(self._joined) | set(self._active) | {tid for tid, _ in self._live}
+                    live = {tid for tid, _ in self._live}
+                    threads = set(self._joined) | set(self._active) | live | self._unmaterialized
+                    unmaterialized = set(self._unmaterialized)
+                    empty = unmaterialized.intersection(self._created) - self._active.keys() - live
                 threads.update(getattr(self.connection, 'update_threads', lambda: [])())
-                for thread_id in threads:
-                    if self.interactions.list(thread_id):
-                        return False
-                    thread = self.connection.request('thread/read',
-                        {'threadId': thread_id, 'includeTurns': False}, timeout=2)['thread']
-                    if thread_status(thread) != 'idle' or thread_waiting(thread):
-                        return False
-                    if (self.read_goal(thread_id).get('goal') or {}).get('status') == 'active':
-                        return False
-                return True
+                if not threads:
+                    return None
+                # Each worker inherits the same deadline. Independent sessions can
+                # inspect their own writer without serial round trips across writers.
+                with ThreadPoolExecutor(max_workers=8) as executor:
+                    checks = [executor.submit(copy_context().run, self._thread_update_blocker,
+                                              tid, tid in empty, tid in unmaterialized)
+                              for tid in threads]
+                    blockers = {check.result() for check in checks}
+                for reason in ('native_waiting_user', 'native_running', 'native_check_timeout', 'native_state_unknown'):
+                    if reason in blockers:
+                        return reason
+        except (ReadStopped, TimeoutError):
+            return 'native_check_timeout'
         except Exception:
-            return False
+            return 'native_state_unknown'
+        return None
+
+    def _thread_update_blocker(self, thread_id, empty, unmaterialized):
+        from ..read_budget import ReadStopped
+        try:
+            if self.interactions.list(thread_id):
+                return 'native_waiting_user'
+            try:
+                thread = self.connection.request('thread/read',
+                    {'threadId': thread_id, 'includeTurns': False}, timeout=2)['thread']
+            except CodexError as error:
+                if not (empty and awaiting_rollout(error)):
+                    raise
+                # A just-created thread can lack a rollout until its first turn.
+                thread = None
+            if thread is not None:
+                if thread_waiting(thread):
+                    return 'native_waiting_user'
+                status = thread_status(thread)
+                if status == 'running':
+                    return 'native_running'
+                if unmaterialized and not empty:
+                    ownership = self.observations_for(thread_id).get(('ownership', ''), {})
+                    if ownership.get('released') and ownership.get('releaseState') in (None, 'pending', 'failed'):
+                        return 'native_state_unknown'
+                if status != 'idle':
+                    native_status = thread.get('status')
+                    if isinstance(native_status, dict):
+                        native_status = native_status.get('type')
+                    if native_status != 'notLoaded':
+                        return 'native_state_unknown'
+                    status = self._external_execution([{'id': thread_id, 'status': native_status}]).get(thread_id)
+                    return {'idle': None, 'running': 'native_running'}.get(status, 'native_state_unknown')
+            try:
+                goal = self.read_goal(thread_id).get('goal')
+            except CodexError as error:
+                if thread is None and awaiting_rollout(error):
+                    return None
+                raise
+            return 'native_running' if (goal or {}).get('status') == 'active' else None
+        except (ReadStopped, TimeoutError):
+            return 'native_check_timeout'
+        except CodexError as error:
+            return 'native_check_timeout' if error.code == 'native_timeout' else 'native_state_unknown'
+        except Exception:
+            return 'native_state_unknown'
 
     def status(self):
         return self.connection.status()

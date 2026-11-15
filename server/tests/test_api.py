@@ -94,7 +94,7 @@ class ApiTests(RelayHTTPFixture, unittest.TestCase):
 
     def test_update_lease_requires_local_agent_and_blocks_new_requests(self):
         self.assertEqual(403, self.request('POST', '/internal/update-lease', {})[0])
-        self.app.codex.idle_for_update = lambda: True
+        self.app.codex.update_blocker = lambda: None
         with patch.dict('os.environ', {'RIVO_UPDATE_TOKEN': 'test-agent-only'}):
             self.assertEqual(403, self.request('POST', '/internal/update-lease', {}, token=self.token)[0])
             self.assertEqual(200, self.request('POST', '/internal/update-lease', {}, token='test-agent-only')[0])
@@ -115,7 +115,7 @@ class ApiTests(RelayHTTPFixture, unittest.TestCase):
         self.assertNotIn('private', json.dumps(data))
 
     def test_update_stop_requires_explicit_lease(self):
-        self.app.codex.idle_for_update = Mock(return_value=True)
+        self.app.codex.update_blocker = Mock(return_value=None)
         with patch.dict('os.environ', {'RIVO_UPDATE_TOKEN': 'test-agent-only'}):
             with patch.object(self.server, 'shutdown') as stop:
                 for body in ({}, {'lease': None}, {'lease': ''}, {'lease': 123}):
@@ -124,11 +124,11 @@ class ApiTests(RelayHTTPFixture, unittest.TestCase):
                     self.assertEqual(status, 400)
                     self.assertEqual(result['error']['code'], 'invalid_request')
                 stop.assert_not_called()
-                self.app.codex.idle_for_update.assert_not_called()
+                self.app.codex.update_blocker.assert_not_called()
             self.assertEqual(self.request('GET', '/health')[0], 200)
 
     def test_expired_stop_permit_does_not_shutdown(self):
-        self.app.codex.idle_for_update = lambda: True
+        self.app.codex.update_blocker = lambda: None
         with patch.dict('os.environ', {'RIVO_UPDATE_TOKEN': 'test-agent-only'}):
             status, permit, _ = self.request('POST', '/internal/update-lease', {}, token='test-agent-only')
             self.assertEqual(status, 200)
