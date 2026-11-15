@@ -414,6 +414,21 @@ class ActivityDiscoveryTests(unittest.TestCase):
         service.activity = ActivityRegistry(service._load_activity, lambda: 'g')
         return service
 
+    def test_cold_list_skips_goal_only_for_confirmed_idle_unloaded_threads(self):
+        for native_status, evidence, expected, calls in (
+                ('notLoaded', 'idle', 'idle', 0),
+                ('notLoaded', 'running', 'running', 1),
+                ('notLoaded', None, 'running', 1),
+                ('idle', 'idle', 'running', 1)):
+            with self.subTest(native_status=native_status, evidence=evidence):
+                service = self.service()
+                service.projects.thread_catalog.list.return_value = [
+                    {'id': 't', 'projectId': 'p', 'status': {'type': native_status}}]
+                service._external_execution.return_value = {'t': evidence} if evidence else {}
+                service.read_goal.return_value = {'goal': {'status': 'active'}}
+                self.assertEqual(service.list_sessions('p')[0]['status'], expected)
+                self.assertEqual(service.read_goal.call_count, calls)
+
     def test_unknown_cached_task_is_not_published_as_running_in_list(self):
         service = self.service()
         service.projects.thread_catalog.list.return_value = [

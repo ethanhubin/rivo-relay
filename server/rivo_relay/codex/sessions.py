@@ -448,7 +448,7 @@ class CodexService(SessionHandoffMixin):
         statuses = {t["id"]: ('unknown' if shared and (t['id'] in unknown or t['id'] not in shared.get('knownThreadIds', [])) else
                     active[t['id']]['status'] if t['id'] in active else 'idle' if shared else
                     "waiting" if response_waiting(self.interactions.list(t["id"]), t.get("status")) else
-                    "running" if goal_running(t, None if summary else self.read_goal(t["id"]).get("goal"), external)
+                    "running" if goal_running(t, None if summary or (thread_status(t) == "unknown" and external.get(t["id"]) == "idle") else self.read_goal(t["id"]).get("goal"), external)
                     else external.get(t['id'], thread_status(t))) for t in by_id.values()}
         return [{"id": t["id"], "name": t.get("name") or t.get("preview") or "新会话",
                  "preview": t.get("preview", ""), "status": statuses[t["id"]],
