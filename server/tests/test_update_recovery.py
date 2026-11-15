@@ -193,7 +193,7 @@ class LeaseTests(unittest.TestCase):
         from contextlib import nullcontext
         db = Mock(); db.execute.return_value.fetchone.return_value = None
         return SimpleNamespace(queue=SimpleNamespace(_tick_lock=threading.Lock()),
-            db=SimpleNamespace(read=lambda: nullcontext(db)),codex=SimpleNamespace(idle_for_update=lambda:True))
+            db=SimpleNamespace(read=lambda: nullcontext(db)),codex=SimpleNamespace(update_blocker=lambda: None))
 
     def test_expired_lease_cannot_stop_node(self):
         app=self.app(); gate=UpdateGate()
@@ -218,8 +218,8 @@ class LeaseTests(unittest.TestCase):
         app = self.app(); gate = UpdateGate()
         entered, release = threading.Event(), threading.Event()
         def slow():
-            entered.set(); release.wait(2); return True
-        app.codex.idle_for_update = slow
+            entered.set(); release.wait(2); return None
+        app.codex.update_blocker = slow
         result = []
         worker = threading.Thread(target=lambda: result.append(gate.acquire(app)))
         worker.start()

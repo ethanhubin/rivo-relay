@@ -260,23 +260,76 @@ class GateTests(unittest.TestCase):
         db = Mock(); db.execute.return_value.fetchone.return_value = None
         app = SimpleNamespace(queue=SimpleNamespace(_tick_lock=threading.Lock()),
                               db=SimpleNamespace(read=lambda: nullcontext(db)),
-                              codex=SimpleNamespace(idle_for_update=lambda: True))
+                              codex=SimpleNamespace(update_blocker=lambda: None))
         gate = UpdateGate()
         self.assertTrue(gate.enter()); self.assertFalse(gate.acquire(app)); gate.leave()
-        app.codex.idle_for_update = lambda: False
+        app.codex.update_blocker = lambda: 'native_running'
         self.assertFalse(gate.acquire(app)); self.assertTrue(gate.enter()); gate.leave()
-        app.codex.idle_for_update = lambda: True
+        app.codex.update_blocker = lambda: None
         self.assertTrue(gate.acquire(app)); self.assertFalse(gate.enter())
         gate.until = 0
         self.assertTrue(gate.enter()); gate.leave()
 
 class NativeIdleTests(unittest.TestCase):
+    def test_empty_unloaded_and_parallel_native_checks(self):
+        import threading
+        from rivo_relay.codex.connection import CodexError
+        from rivo_relay.codex.sessions import CodexService
+        service = CodexService.__new__(CodexService)
+        service._lock = threading.RLock()
+        service._joined = {'empty', 'unloaded'}
+        service._active = {}
+        service._live = {}
+        service._created = {'empty': {}}
+        service._unmaterialized = {'empty'}
+        service.interactions = SimpleNamespace(list=lambda _: [])
+        service.read_goal = Mock(return_value={'goal': None})
+        service._external_execution = Mock(return_value={'unloaded': 'idle'})
+        barrier = threading.Barrier(2)
+
+        def request(method, params, **kwargs):
+            barrier.wait(timeout=1)
+            if params['threadId'] == 'empty':
+                raise CodexError('thread not materialized', code='native_rejected')
+            return {'thread': {'status': {'type': 'notLoaded'}}}
+
+        service.connection = SimpleNamespace(status=lambda: {'connected': True}, request=request)
+        self.assertIsNone(service.update_blocker())
+        service.read_goal.assert_called_once_with('empty')
+        service._external_execution.return_value = {}
+        self.assertEqual('native_state_unknown', service.update_blocker())
+        service._external_execution.return_value = {'unloaded': 'running'}
+        self.assertEqual('native_running', service.update_blocker())
+
+    def test_native_waiting_running_unknown_and_timeout_are_distinct(self):
+        import threading
+        from rivo_relay.codex.sessions import CodexService
+        from rivo_relay.read_budget import ReadStopped
+        service = CodexService.__new__(CodexService)
+        service._lock = threading.RLock()
+        service._joined = {'thread'}
+        service._active = {}
+        service._live = {}
+        service._created = {}
+        service._unmaterialized = set()
+        service.interactions = SimpleNamespace(list=lambda _: [])
+        service.connection = SimpleNamespace(status=lambda: {'connected': True}, request=Mock())
+        for native, expected in (
+            ({'type': 'active', 'activeFlags': ['waitingOnUserInput']}, 'native_waiting_user'),
+            ({'type': 'active'}, 'native_running'),
+            ({'type': 'unknown'}, 'native_state_unknown'),
+        ):
+            service.connection.request.return_value = {'thread': {'status': native}}
+            self.assertEqual(expected, service.update_blocker())
+        service.connection.request.side_effect = ReadStopped('deadline')
+        self.assertEqual('native_check_timeout', service.update_blocker())
+
     def test_live_turn_keys_are_thread_ids_and_owned_writers_survive_metadata_reset(self):
         import threading
         from rivo_relay.codex.sessions import CodexService
         service = CodexService.__new__(CodexService)
         service._lock = threading.RLock()
-        service._joined = set(); service._active = {}; service._unmaterialized = set()
+        service._joined = set(); service._active = {}; service._unmaterialized = set(); service._created = {}
         service._live = {('live-thread', 'turn-1'): {'status': 'completed'}}
         service.connection = SimpleNamespace(status=lambda: {'connected': True}, update_threads=lambda: {'owned-thread'})
         service.interactions = SimpleNamespace(list=lambda _: [])

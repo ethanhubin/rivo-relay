@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -56,6 +57,18 @@ from relay_test_support.http import RelayHTTPFixture
 
 
 class NodeMonitorTests(RelayHTTPFixture, unittest.TestCase):
+    def test_monitor_reports_native_blocker_with_older_supervisor(self):
+        from rivo_relay.gateway.config import save_private
+        workspace = self.app.config.workspace
+        (workspace / 'auto-update').mkdir(exist_ok=True)
+        save_private(workspace / 'auto-update/status.json', {
+            'phase': 'waiting_idle', 'reason': 'node_busy', 'updatedAt': time.time(),
+        })
+        for reason in ('native_running', 'native_waiting_user', 'native_state_unknown', 'native_check_timeout'):
+            self.app.update_gate.reason = reason
+            _, body, _ = self.request('GET', '/internal/monitor')
+            self.assertEqual(reason, body['update']['reason'])
+
     def test_authenticated_reads_count_once_and_monitor_does_not_count(self):
         self.request('GET', '/health')
         status, body, _ = self.request('GET', '/internal/monitor')

@@ -5,6 +5,11 @@ import threading
 import time
 
 
+NATIVE_UPDATE_BLOCKERS = frozenset({
+    'native_waiting_user', 'native_running', 'native_state_unknown', 'native_check_timeout',
+})
+
+
 class UpdateGate:
     def __init__(self):
         self.lock = threading.RLock()
@@ -69,9 +74,9 @@ class UpdateGate:
         # Never hold admission/queue locks during native RPC. An overrun opens
         # admission automatically and cannot later authorize a delayed shutdown.
         try:
-            idle = app.codex.idle_for_update()
+            blocker = app.codex.update_blocker()
         except Exception:
-            idle = False
+            blocker = 'native_state_unknown'
         with self.lock:
             if self.lease != reservation or self.until != deadline:
                 return False
@@ -79,8 +84,10 @@ class UpdateGate:
                 self.reason = 'native_check_timeout'
                 if time.monotonic() >= deadline:
                     return False
-                self.reason = 'native_busy_or_unverified'
-                if not idle or not self._local_idle(app):
+                if blocker is not None:
+                    self.reason = blocker
+                    return False
+                if not self._local_idle(app):
                     return False
                 self.until = time.monotonic() + 10
                 self.reason = 'ready'

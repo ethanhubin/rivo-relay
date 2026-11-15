@@ -390,13 +390,21 @@ class Handler(BaseHTTPRequestHandler):
                 if self.client_address[0] not in ('127.0.0.1', '::1'):
                     raise ApiError(403, 'forbidden', 'Local monitor required')
                 from .gateway.update_status import public_status
+                from .update_gate import NATIVE_UPDATE_BLOCKERS
+                update = public_status(self.app.config.workspace)
+                # Older supervisor installations map unfamiliar reasons to node_busy.
+                if (update.get('phase') == 'waiting_idle' and update.get('reason') == 'node_busy'
+                        and not update.get('stale')):
+                    reason = self.app.update_gate.reason
+                    if reason in NATIVE_UPDATE_BLOCKERS:
+                        update['reason'] = reason
                 authorized = {c['connection_id'] for c in self.app.pairing.list_connections()}
                 self.send_json(200, {'kind': 'relay', 'nodeId': self.app.config.node_id,
                     'name': self.app.node_name.get(),
                     'releaseCode': int(os.environ.get('RIVO_RELEASE_CODE', '0')),
                     'nativeConnected': bool(self.app.codex.status().get('connected')),
                     'apps': self.app.presence.snapshot(authorized),
-                    'update': public_status(self.app.config.workspace)})
+                    'update': update})
                 return
             if self.command == "GET" and path == ["health"]:
                 self.send_json(200, {"status": "ok", "nodeId": self.app.config.node_id, "releaseCode": int(os.environ.get("RIVO_RELEASE_CODE", "0")), "nativeConnected": bool(self.app.codex.status().get("connected"))})
