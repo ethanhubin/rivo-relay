@@ -30,10 +30,34 @@ def main():
     phases.add_argument('--restore-bootstrap', action='store_true', help='Restore the previous stopped bootstrap after an interrupted/failed upgrade')
     phases.add_argument('--upgrade-bootstrap', action='store_true', help='Upgrade a stopped existing agent with rollback; does not start services')
     phases.add_argument('--activate', action='store_true', help='Register a prepared bootstrap after old services stop')
+    parser.add_argument('--system-service', action='store_true', help='macOS boot service; activate with sudo and --service-user')
+    parser.add_argument('--service-user', help='Non-root account running the macOS system service')
     args = parser.parse_args()
+    account = None
+    if args.system_service:
+        if sys.platform != 'darwin' or not args.service_user:
+            parser.error('--system-service requires macOS and --service-user')
+        if not (args.prepare_only or args.activate or args.upgrade_bootstrap or args.restore_bootstrap):
+            parser.error('System services require separate --prepare-only and --activate phases')
+        import pwd
+        account = pwd.getpwnam(args.service_user)
+        if account.pw_uid == 0:
+            parser.error('The service must run as a non-root user')
+        if args.codex_runtime != 'stdio' or not args.codex_executable or not args.codex_home:
+            parser.error('System services require explicit stdio runtime, executable and codex-home')
+        if args.native_socket:
+            parser.error('System services cannot use a desktop native socket')
+        if args.activate and os.geteuid() != 0:
+            parser.error('Activate system services with sudo')
+        if not args.activate and os.geteuid() != account.pw_uid:
+            parser.error('Prepare bootstrap as the service user, then activate with sudo')
+    elif args.service_user:
+        parser.error('--service-user requires --system-service')
     workspace = args.workspace.resolve()
     path = workspace / 'gateway-client.json'
     config = json.loads(path.read_text())
+    if account and config.get('native_socket'):
+        parser.error('Stored native_socket conflicts with stdio; back up gateway-client.json and remove native_socket before migration')
     if not config.get('key') or config.get('mode') == 'direct':
         parser.error('Initialize this node with its VPS credential before installing the agent')
     if not args.prepare_only:
@@ -98,14 +122,21 @@ Start-ScheduledTask -TaskName $env:RIVO_AGENT_NAME
                        env=dict(os.environ, RIVO_AGENT_NAME=identifier, RIVO_AGENT_ROOT=str(bootstrap)))
     elif sys.platform == 'darwin':
         label = 'local.' + identifier
-        target = Path.home() / 'Library/LaunchAgents' / (label + '.plist')
-        if target.exists(): raise ValueError('Managed LaunchAgent already exists')
+        target = (Path('/Library/LaunchDaemons') if account else Path.home() / 'Library/LaunchAgents') / (label + '.plist')
+        if target.exists(): raise ValueError('Managed launchd service already exists')
         target.parent.mkdir(parents=True, exist_ok=True)
         value = {'Label': label, 'ProgramArguments': [str(python), '-m', 'rivo_relay.gateway', *arguments],
                  'WorkingDirectory': str(bootstrap), 'RunAtLoad': True, 'KeepAlive': True, 'ThrottleInterval': 30,
                  'EnvironmentVariables': {'PATH': os.environ.get('PATH', '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin')}}
+        if account:
+            old = Path(account.pw_dir) / 'Library/LaunchAgents' / (label + '.plist')
+            if old.exists():
+                raise ValueError('Remove the old LaunchAgent registration after stopping idle tasks before activation')
+            value['UserName'] = account.pw_name
+            value['EnvironmentVariables'].update(HOME=account.pw_dir, USER=account.pw_name, LOGNAME=account.pw_name)
         target.write_bytes(plistlib.dumps(value))
-        subprocess.run(['launchctl', 'bootstrap', f'gui/{os.getuid()}', str(target)], check=True)
+        target.chmod(0o644)
+        subprocess.run(['launchctl', 'bootstrap', 'system' if account else f'gui/{os.getuid()}', str(target)], check=True)
     else:
         def quoted(value):
             return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%') + '"'

@@ -38,3 +38,15 @@ class InstallerTests(unittest.TestCase):
             self.assertIn('managed-node', value['ProgramArguments'])
             self.assertIn('--native-socket', value['ProgramArguments'])
             self.assertIn('PATH', value['EnvironmentVariables'])
+
+    def test_system_service_rejects_desktop_runtime_before_install(self):
+        import pwd
+        user = pwd.getpwuid(__import__('os').getuid()).pw_name
+        with patch.object(sys, 'argv', [str(SCRIPT), '--workspace', '/nonexistent',
+                                       '--system-service', '--service-user', user,
+                                       '--codex-runtime', 'app_server', '--prepare-only']), \
+                patch.object(sys, 'platform', 'darwin'), \
+                patch.object(installer.subprocess, 'run') as run:
+            with self.assertRaises(SystemExit):
+                installer.main()
+            run.assert_not_called()
