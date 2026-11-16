@@ -45,14 +45,14 @@ Windows 创建 Limited/S4U 无窗口计划任务；macOS 创建登录用户 Laun
 
 ## 日常发布
 
-纯服务端改动使用 `scripts/release.py prepare --node-only --server-test <模块>`。此模式只递增节点发布版本和版本码，保持 Android `versionName/versionCode` 与已发布 APK 不变；发布前仍从 VPS 下载并验证旧 APK 的大小、SHA-256、包身份和签名。`run <版本> --commit` 随后提交发布说明、同步 ASR、部署节点包并原子更新 VPS 清单，不运行 Gradle，也不改写本地 App 更新清单或重新上传 APK。VPS 必须先部署支持复用已有 APK 的新版网关代码；网关核对存储中的 APK 完整性后才接受新节点包。客户端更新接口继续返回原客户端版本及说明；节点更新代理读取清单顶层的新节点版本。涉及客户端代码的发布不要使用 `--node-only`，仍走正常构建和签名流程。
+纯服务端改动使用 `scripts/release.py prepare --node-only --server-test <模块>`。此模式只递增节点发布版本和版本码，保持 Android `versionName/versionCode` 与已发布 APK 不变；发布前仍从 VPS 下载并验证旧 APK 的大小、SHA-256、包身份和签名。`run <版本> --commit` 随后提交发布说明、按需同步 ASR、部署节点包并原子更新 VPS 清单，不运行 Gradle，也不改写本地 App 更新清单或重新上传 APK。VPS 必须先部署支持复用已有 APK 的新版网关代码；网关核对存储中的 APK 完整性后才接受新节点包。客户端更新接口继续返回原客户端版本及说明；节点更新代理读取清单顶层的新节点版本。涉及客户端代码的发布不要使用 `--node-only`，仍走正常构建和签名流程。
 
 统一清单从此在 `app` 项内单独记录客户端 `version`、`versionCode` 和 `notes`；旧清单缺少这些字段时按顶层版本读取。相同客户端版本码不得替换不同 APK，节点版本也不得降级或同版本替换内容。
 
 发布准备和执行前必须核对 VPS 实际 `/v1/app-updates/latest` 响应与统一清单一致，尤其是 APK 的兼容声明；缺失或不一致时在递增版本、构建和切换服务前停止。VPS 发布后的验收也检查客户端实际读取的接口，不能只验 `/v1/releases/latest` 和文件下载。网关服务代码若落后于发布清单，先部署并重启网关，再重新检查；不得通过重新发布相同版本的 APK 绕过。
 纯节点发布还须从运行中网关取得 `/v1/releases/capabilities` 的独立客户端版本能力响应；没有该响应就停止，不能仅凭磁盘上的新版发布模块推断服务已升级。
 
-沿用 `scripts/release.py prepare/run/resume` 的版本递增、相关测试、APK 签名和主节点发布流程；纯服务端发布使用上面的 `--node-only`，保持客户端版本与 APK 不变。发布主节点/VPS 更新清单之前，必须完成 e2mac 独立 ASR 同步与验收；随后完成 VPS 发布及 HTTP 验收，全部成功才记录 complete。VPS 清单采用单次原子替换，同一清单同时指定 App 与节点程序包；相同版本码不得替换不同内容，不得降级。
+沿用 `scripts/release.py prepare/run/resume` 的版本递增、相关测试、APK 签名和主节点发布流程；纯服务端发布使用上面的 `--node-only`，保持客户端版本与 APK 不变。发布主节点/VPS 更新清单之前，对照该管理节点上次验收通过的 E2 ASR 代码和依赖锁摘要。内容一致时跳过 E2；代码或依赖变化、更换 ASR 主机，或缺少可追溯到上一次发布的有效验收记录时，须完成同步与验收。随后完成 VPS 发布及 HTTP 验收，全部成功才记录 complete。VPS 清单采用单次原子替换，同一清单同时指定 App 与节点程序包；相同版本码不得替换不同内容，不得降级。
 
 底层 `scripts/publish-gateway-update.py --commit <发布提交>` 仅导出已锁定提交的 server 代码，并复用已通过签名验证的本地主节点 APK；不能把它当成跳过构建/签名检查的通用发布入口。上传只通过管理员 SSH，节点接入密钥没有发布权限。上传后经固定证书验证的 HTTPS 完整下载 APK 和节点包核验大小与 SHA-256。中断可复用同一提交/产物重跑，仍不创建 GitHub 发布。
 

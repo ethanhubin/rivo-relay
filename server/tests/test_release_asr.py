@@ -105,7 +105,16 @@ class AsrCoordinatorTest(unittest.TestCase):
                     self.assertTrue(call.args[0][-1].startswith('abc123:scripts/asr/'))
                 self.assertIn('BatchMode=yes', ssh.call_args.args[0])
                 self.assertEqual(release.state['steps']['asr'], receipt)
+                ssh.reset_mock()
+                asr.deploy(release)
+                ssh.assert_not_called()
+                self.assertEqual('unchanged', release.state['steps']['asr']['skipped'])
+
+                read.side_effect = lambda command, **_: (b'changed lock'
+                    if command[-1].endswith('requirements.lock') else raw)
                 receipt['sha256']['server.py'] = 'wrong'
                 ssh.return_value.stdout = json.dumps(receipt)
                 with self.assertRaisesRegex(RuntimeError, '验收不一致'):
                     asr.deploy(release)
+                ssh.assert_called_once()
+                self.assertEqual({}, json.loads((root / 'workspace/asr-verified.json').read_text()))
