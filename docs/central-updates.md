@@ -22,9 +22,9 @@ App 与节点独立升级，发布成功不表示所有绑定节点已升级。�
 
 1. VPS：更新 `/opt/rivo-relay` 的服务端代码和必要依赖，保留 `/var/lib/rivo-gateway` 的证书、接入密钥和服务用户，安排重启 `rivo-gateway.service`。此次重启会短暂断开现有中转连接，连接器会重连。原 443 Merge Release 与 Tailscale 服务不变。
 2. 其他电脑：复制本版源码，等待任务完成，停止并禁用原 Relay 和独立连接器的自动启动服务。不要停止 Codex Desktop 或共享 daemon。
-3. 推荐先在旧服务仍运行时用 `--prepare-only` 安装独立 bootstrap，检查依赖准备成功。确认空闲、停止旧服务后，用相同参数将 `--prepare-only` 换成 `--activate` 注册后台服务，缩短停机时间。始终使用**原 workspace 绝对路径**；激活拒绝接管仍占用端口的服务。省略这两个选项会一次完成安装和注册。
+3. 推荐先在旧服务仍运行时用 `--prepare-only` 安装独立 bootstrap，检查依赖准备成功。确认空闲、停止旧服务后，用相同参数将 `--prepare-only` 换成 `--activate` 注册后台服务，缩短停机时间。始终使用**原 workspace 绝对路径**；激活拒绝接管仍占用端口的服务。默认用户服务模式省略这两个选项会一次完成安装和注册；macOS 系统服务必须分阶段准备和激活。
 
-macOS / Linux 示例：
+macOS 登录用户服务 / Linux 示例（macOS 无 GUI 开机服务见下文）：
 
 ```sh
 .venv/bin/python scripts/install-managed-node.py --workspace /原节点/workspace/local-node
@@ -38,7 +38,9 @@ Windows 示例（使用节点用户的管理员 PowerShell）：
 .\.venv\Scripts\python.exe scripts\install-managed-node.py --workspace C:\Rivo\workspace\windows-node --codex-runtime stdio --codex-executable C:\实际路径\codex.exe --codex-home C:\Users\实际用户\.codex
 ```
 
-Windows 创建 Limited/S4U 无窗口计划任务；macOS 创建登录用户 LaunchAgent；Linux 创建用户 systemd 服务，需要注销后运行时另按原部署规范配置 linger。准备成功只表示依赖就绪，激活命令成功只表示服务已注册，须检查 `workspace/auto-update/agent.log`、`node.log`、本地 `/health` 和经 VPS 的手机连接。若安装中断，保留现场检查 bootstrap，安装器不会覆盖已有 bootstrap。
+Windows 创建 Limited/S4U 无窗口计划任务；macOS 默认创建登录用户 LaunchAgent，无 GUI 开机启动使用 `--system-service --service-user <原普通用户>`，显式指定 stdio、executable 和 codex-home 绝对路径，以原用户准备、sudo 激活为 LaunchDaemon；Linux 创建用户 systemd 服务，需要注销后运行时另按原部署规范配置 linger。准备成功只表示依赖就绪，激活命令成功只表示服务已注册，须检查 `workspace/auto-update/agent.log`、`node.log`、本地 `/health` 和经 VPS 的手机连接。若安装中断，保留现场检查 bootstrap，安装器不会覆盖已有 bootstrap。
+
+macOS 系统服务的参数、旧 socket 清理及已有 bootstrap 迁移步骤见 [节点部署](node-deployment.md#macos-无-gui-开机服务) 和 [节点迁移提示词](agent-migration-prompt.md)。普通版本发布不会自动转换现有 LaunchAgent。
 
 4. 手机覆盖安装一次包含此功能的 APK。之后连接任一已配对 VPS 节点即可检查统一更新；无需额外配置更新源。
 5. 本机主发布节点继续由原发布 CLI 管理，无需同时再装代理，避免两个管理器争用同一节点。
