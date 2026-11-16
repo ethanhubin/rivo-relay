@@ -111,3 +111,11 @@ Linux 可使用用户 systemd 服务，`ExecStart` 使用上述绝对路径参�
 未迁移的旧节点仍需单独复制源码升级；迁移到[统一更新代理](central-updates.md)后，日常发布会由 VPS 分发节点程序和 APK。当前发布约定不推送 GitHub；首次迁移将本版源码安全复制到目标机器，再按统一更新指南安装。源码中不应包含 workspace、凭据或配对图。
 
 验证依据：[历史验证归档说明](validation.md)、[VPS 通道说明](vps-gateway.md)。2026-11-08 用户已确认 Windows 双通道二维码手机配对成功；不把此结果扩大为其他机器或全部功能已验收。
+
+### macOS 无 GUI 开机服务
+
+`install-managed-node.py` 支持 `--system-service --service-user <普通用户名>`，将代理注册到 `/Library/LaunchDaemons` 的 system 域，进程仍以指定普通用户运行。必须显式传入 `--codex-runtime stdio --codex-executable <绝对路径> --codex-home <绝对路径>`，不能使用桌面 socket。
+
+先以服务用户运行 `--prepare-only`，再以 sudo 使用相同参数运行 `--activate`。切换已有节点前等待任务结束，停止并备份移走对应旧 LaunchAgent；保留 workspace、凭证及节点身份。切换 stdio 前须备份 gateway-client.json 并移除其中的 native_socket，否则安装器会拒绝继续。已有 bootstrap 应沿用原安装环境，核对 prepared.json 与运行时参数后再迁移，不可覆盖安装。此模式不会迁移桌面运行时正在执行的任务，也不会自动转换其他服务（例如语音后端）。
+
+验收应检查本地 health、VPS 节点连接和实际任务执行，并在退出 GUI 后及重启后复验。启用 FileVault 的 Mac 断电重启后仍可能需要先解锁磁盘。
