@@ -307,8 +307,8 @@ class Release:
 
     def publish(self):
         self.source_unchanged()
-        from .asr import deploy as deploy_asr
-        deploy_asr(self)
+        from . import asr
+        asr.deploy(self)
         self.record('publishing')
         if not self.state.get('nodeOnly'):
             self.command([self.python, self.root / 'scripts/publish-update.py',
@@ -331,6 +331,7 @@ class Release:
                       *configuration.gateway_args(self.root)],
                      'gateway-publication.log')
         self.state['steps']['gateway'] = {'verified': True}
+        asr.mark_published(self)
         if self.state.get('mode') == 'manager':
             from .compatibility import mirror
             mirror(self)
