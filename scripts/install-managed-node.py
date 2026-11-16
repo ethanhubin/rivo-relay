@@ -15,6 +15,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+LAUNCH_DAEMONS = Path('/Library/LaunchDaemons')
 
 
 def main():
@@ -45,6 +46,8 @@ def main():
             parser.error('The service must run as a non-root user')
         if args.codex_runtime != 'stdio' or not args.codex_executable or not args.codex_home:
             parser.error('System services require explicit stdio runtime, executable and codex-home')
+        if not args.codex_executable.is_absolute() or not args.codex_home.is_absolute():
+            parser.error('System service executable and codex-home must be absolute paths')
         if args.native_socket:
             parser.error('System services cannot use a desktop native socket')
         if args.activate and os.geteuid() != 0:
@@ -122,7 +125,7 @@ Start-ScheduledTask -TaskName $env:RIVO_AGENT_NAME
                        env=dict(os.environ, RIVO_AGENT_NAME=identifier, RIVO_AGENT_ROOT=str(bootstrap)))
     elif sys.platform == 'darwin':
         label = 'local.' + identifier
-        target = (Path('/Library/LaunchDaemons') if account else Path.home() / 'Library/LaunchAgents') / (label + '.plist')
+        target = (LAUNCH_DAEMONS if account else Path.home() / 'Library/LaunchAgents') / (label + '.plist')
         if target.exists(): raise ValueError('Managed launchd service already exists')
         target.parent.mkdir(parents=True, exist_ok=True)
         value = {'Label': label, 'ProgramArguments': [str(python), '-m', 'rivo_relay.gateway', *arguments],
