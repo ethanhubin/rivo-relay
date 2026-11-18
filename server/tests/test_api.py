@@ -1019,6 +1019,17 @@ class ApiTests(RelayHTTPFixture, unittest.TestCase):
         self.assertEqual(result["error"]["code"], "thread_not_found")
         self.assertNotIn("private/test-only-path", json.dumps(result))
 
+    def test_handoff_errors_have_specific_safe_messages(self):
+        for code, text in [('handoff_process_unverified', '无法核验持锁进程身份'),
+                           ('workspace_unavailable', '原工作目录不可用'),
+                           ('writer_still_held', '会话写锁仍被占用')]:
+            self.native.get_error = NativeFailure(code, http_status=409)
+            status, result, _ = self.request('GET', '/v1/threads/thread-1', token=self.token)
+            self.assertEqual(409, status)
+            self.assertIn(text, result['error']['message'])
+            self.assertNotIn('请刷新', result['error']['message'])
+            self.assertNotIn('private/test-only-path', json.dumps(result))
+
     def test_history_failure_is_not_mislabeled_as_desktop_disconnection(self):
         self.native.get_error = NativeFailure('native_history_unavailable', http_status=503)
         status, result, _ = self.request('GET', '/v1/threads/thread-1', token=self.token)

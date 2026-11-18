@@ -527,6 +527,15 @@ class Handler(BaseHTTPRequestHandler):
                 501: "当前节点版本暂不支持此功能",
                 413: "文件超过此操作的大小限制",
             }.get(status, "原生服务连接暂不可用，请检查节点服务")
+            message = {
+                'handoff_process_unverified': '无法核验持锁进程身份，请检查节点上的 Codex 进程',
+                'handoff_changed': '接管进程、会话锁或确认凭据已变化，请重新发起接管',
+                'writer_still_held': '会话写锁仍被占用，请在原客户端释放后重试',
+                'workspace_unavailable': '原工作目录不可用，且无法确认可恢复的项目目录',
+                'workspace_rebind_confirmation_required': '工作目录已变化，请重新接管并确认恢复到原项目目录',
+                'handoff_confirmation_required': '请先确认将结束的进程及受影响会话',
+                'thread_unmaterialized': '会话历史尚未保存，请等待首条消息保存后重试',
+            }.get(code, message)
             if code in ('native_host_unverified', 'handoff_host_unverified', 'handoff_host_mismatch', 'handoff_host_changed'):
                 message = '无法核验接管所需的原生主机身份，请检查节点运行时连接'
             if code == 'handoff_desktop_shared':
