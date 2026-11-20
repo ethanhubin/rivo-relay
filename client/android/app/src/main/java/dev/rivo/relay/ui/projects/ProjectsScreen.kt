@@ -68,7 +68,7 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
     usage: CodexUsage? = null, usageLoading: Boolean = false, usageError: String? = null, onRefreshUsage: (() -> Unit)? = null, canAdd: Boolean = true,
     savedNodes: List<dev.rivo.relay.connection.SavedNode> = emptyList(), currentBase: String = "",
     onSelectNode: (String) -> Unit = {}, onAddNode: () -> Unit = {}, canAddNode: Boolean = true, nodeConnected: Boolean? = null,
-    pinnedProjectIds: List<String> = emptyList(), onPinProject: ((String, Boolean) -> Unit)? = null) {
+    pinnedProjectIds: List<String> = emptyList(), onPinProject: ((String, Boolean) -> Unit)? = null, nodeRuntime: String = "") {
     var nodeMenuOpen by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val pinRanks = remember(pinnedProjectIds) { pinnedProjectIds.withIndex().associate { it.value to it.index } }
@@ -86,8 +86,7 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                             modifier = Modifier.heightIn(min = 56.dp).testTag("node_settings")) {
                             ConnectionStatusDot(nodeConnected, Modifier.testTag("node_connection_status"))
                             Spacer(Modifier.width(8.dp))
-                            Icon(painterResource(R.drawable.ic_openai), contentDescription = "Codex",
-                                modifier = Modifier.size(24.dp))
+                            dev.rivo.relay.ui.common.RuntimeIcon(nodeRuntime)
                             Spacer(Modifier.width(10.dp))
                             Text(nodeName, Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
                             Text(" ›", style = MaterialTheme.typography.labelLarge)
@@ -96,8 +95,9 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                             modifier = Modifier.widthIn(max = 320.dp).testTag("node_switch_menu")) {
                             savedNodes.filter { it.authorized }.forEach { saved ->
                                 val selected = saved.base == currentBase
-                                DropdownMenuItem(text = { Text(saved.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
-                                    leadingIcon = { Text(if (selected) "✓" else "", Modifier.width(20.dp)) },
+                                DropdownMenuItem(text = { Text(saved.name + " · " + dev.rivo.relay.connection.runtimeDisplayName(saved.runtime), maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                                    leadingIcon = { dev.rivo.relay.ui.common.RuntimeIcon(saved.runtime) },
+                                    trailingIcon = { if (selected) Text("✓") },
                                     onClick = { nodeMenuOpen = false; if (!selected) onSelectNode(saved.base) },
                                     modifier = Modifier.testTag("switch_node_${saved.base}"))
                             }

@@ -94,10 +94,12 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     var defaultSettings by remember(node) { mutableStateOf(node.conversations.defaultSettings()) }
     fun canOperateRuntime(operation: String): Boolean = node.capabilities.withOverrides(
         node.session.state.value.snapshot?.takeIf { route == "chat" && it.id == threadId }?.capabilities).allows(operation)
+    fun allowedSettings(settings: JSONObject): JSONObject = node.capabilities.withOverrides(
+        node.session.state.value.snapshot?.takeIf { route == "chat" && it.id == threadId }?.capabilities).filterSettings(settings)
     fun saveDefaults(settings: JSONObject) {
         if (!canOperateRuntime("session.settings")) return
         handoffScope.launch {
-            try { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { node.conversations.saveDefaultSettings(settings) }; defaultSettings = node.conversations.defaultSettings() }
+            try { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { node.conversations.saveDefaultSettings(allowedSettings(settings)) }; defaultSettings = node.conversations.defaultSettings() }
             catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; setError(e.message ?: "无法保存默认模型设置") }
         }
     }
@@ -303,7 +305,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     { route = "settings"; setError(null) }, { node.catalog.refreshProjects() }, { if (node.capabilities.allows("project.create") && node.catalog.state.value.projectsFresh) addProject = true },
                     usage = catalog.usage, usageLoading = catalog.usageLoading, usageError = catalog.usageError,
                     onRefreshUsage = { node.catalog.refreshUsage(true) }, canAdd = projectsWritable && node.capabilities.allows("project.create"),
-                    savedNodes = savedNodes, currentBase = node.connection.base,
+                    savedNodes = savedNodes, currentBase = node.connection.base, nodeRuntime = node.connection.runtime,
                     pinnedProjectIds = catalog.pinnedProjectIds, onPinProject = node.catalog::setProjectPinned,
                     nodeConnected = when (connectionIndicator) {
                         RecoveryState.CONNECTED -> true
@@ -395,7 +397,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             val draftForSubmission = pendingDraft
                             val sendId = java.util.UUID.randomUUID().toString()
                             val body = JSONObject().put("input", input)
-                            model?.let { body.put("model", it) }; effort?.let { body.put("effort", it) }; mode?.let { body.put("mode", it) }; serviceTier?.let { body.put("serviceTier", it) }
+                            model?.let { body.put("model", it) }; effort?.let { body.put("effort", it) }; mode?.let { body.put("mode", it) }; serviceTier?.takeIf { canOperateRuntime("session.service_tier") }?.let { body.put("serviceTier", it) }
                             fun clearPreviousCreate() {
                                 node.session.pendingMessagesFor(draftKey).filter { it.kind == "create" }.forEach { message ->
                                     node.session.resolveSubmission(message.submissionId, JSONObject().put("status", "failed"))
@@ -447,7 +449,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             val existing = createdThread ?: node.conversations.pendingThreadId(localId)
                             if (existing != null) sendFirst(existing)
                             else {
-                                val create = JSONObject(permissions.toString()).apply { remove("goal") }.put("projectId", project.id)
+                                val create = allowedSettings(permissions).apply { remove("goal") }.put("projectId", project.id)
                                 pendingRef?.let { create.put("worktreeRef", it) }
                                 node.submissions.submit("/v1/threads", create, "新建会话",
                                     prepared = { pending ->
@@ -510,7 +512,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             val queued = currentState.control().canOperate && current.shouldQueueInput
                             val body = JSONObject().put("input", input)
                             if (queued) body.put("operation", "enqueue")
-                            model?.let { body.put("model", it) }; effort?.let { body.put("effort", it) }; mode?.let { body.put("mode", it) }; serviceTier?.let { body.put("serviceTier", it) }
+                            model?.let { body.put("model", it) }; effort?.let { body.put("effort", it) }; mode?.let { body.put("mode", it) }; serviceTier?.takeIf { canOperateRuntime("session.service_tier") }?.let { body.put("serviceTier", it) }
                             setError(null)
                             val sentDraft = node.conversations.captureDraftAsync(id)
                             node.submissions.submit("/v1/threads/${encoded(id)}/" + if (queued) "queue" else "turns", body, if (queued) "加入队列" else "发送任务",
@@ -542,7 +544,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         val current = node.session.state.value
                         val id = threadId
                         if (canOperateRuntime("session.settings") && id != null && current.id == id && current.snapshot?.id == id && !current.stale && current.control().canOperate && writable)
-                            node.submissions.submit("/v1/threads/${encoded(id)}/settings", settings, "更新会话设置") { if (threadId == id) node.session.refresh() }
+                            node.submissions.submit("/v1/threads/${encoded(id)}/settings", allowedSettings(settings), "更新会话设置") { if (threadId == id) node.session.refresh() }
                     }, onContinue = {
                         val current = node.session.state.value
                         if (canOperateRuntime("session.continue") && writable && current.id == threadId && current.canContinueTask()) {
@@ -635,7 +637,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     }, onOpenThread = { openChat(it.threadId, "todos") }, onRefresh = { node.todos.refresh(); node.catalog.refreshProjects() },
                     onSaveDetails = node.todos::saveDetails, onUpdateDetails = node.todos::updateDetails,
                     onSynchronize = node.todos::synchronizeNow, onDiscardLocal = node.todos::discardLocalChanges,
-                    readDirectory = { path -> node.api.call("/v1/directories?path=" + encoded(path)) }, onOpenAttachment = { todoAttachment = it })
+                    readDirectory = if (node.capabilities.allows("files.browse")) { { path -> node.api.call("/v1/directories?path=" + encoded(path)) } } else null,
+                    onOpenAttachment = if (node.capabilities.allows("files.read")) { { todoAttachment = it } } else null)
             }
         }
         val cached = network != null && catalogCacheNoticeVisible(route, catalog, true)
@@ -664,6 +667,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                 icon = { Text("⚙") }, label = { Text("设置") }, modifier = Modifier.testTag("nav_settings"))
         }
     }
+    } // Runtime capability provider
     handoffPrompt?.let { (id, operation, preview) ->
         ModalBottomSheet(onDismissRequest = { handoffPrompt = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp).navigationBarsPadding()) {

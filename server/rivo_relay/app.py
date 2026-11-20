@@ -48,6 +48,8 @@ class RelayApp:
         self.db = Database(config.database_path)
         if hasattr(codex, 'configure_storage'):
             codex.configure_storage(self.db)
+        if hasattr(codex, 'configure_attachments'):
+            codex.configure_attachments(config.workspace / 'dsh-uploads')
         self.pairing = PairingStore(self.db)
         self.submissions = SubmissionStore(self.db)
         self.todos = TodoStore(self.db)
@@ -90,8 +92,8 @@ class RelayApp:
         capabilities = self.backend_capabilities(connected=bool(native.get('connected')))
         return {"id": self.config.node_id, "name": self.node_name.get(),
                 "releaseCode": int(os.environ.get("RIVO_RELEASE_CODE", "0")),
-                "connected": bool(native.get("connected")), "compatibility": declaration(),
-                "capabilities": {**native.get("capabilities", {}), **self.media_capabilities(capabilities),
+                "connected": bool(native.get("connected")), "compatibility": declaration(capabilities),
+                "capabilities": {**native.get("capabilities", {}), "runtime": self.config.runtime, **self.media_capabilities(capabilities),
                                  **capabilities,
                                  "todoAttachmentUpload": all(capabilities['operations'][name]['available']
                                      for name in ('files.upload', 'todo.dispatch'))}, "runtime": native}
@@ -106,7 +108,7 @@ class RelayApp:
 
     def media_capabilities(self, capabilities=None):
         capabilities = capabilities or self.backend_capabilities()
-        readable = (capabilities.get('operations', {}).get('files.read') or {}).get('available') is True
+        readable = (capabilities.get('operations', {}).get('media.read') or {}).get('available') is True
         return {'media': {'proxy': readable, 'thumbnails': readable, 'thumbnailProfile': 'max-1536-webp-q82-v2',
                           'generatedProvenance': readable, 'library': readable, 'favorites': readable},
                 'speech': self.speech.capabilities()}
@@ -128,7 +130,9 @@ class RelayApp:
             if local:
                 self.submissions.begin_local(submission_id)
             def observe(phase, receipt):
-                if tracked or identity_mutation:
+                if phase == 'intent':
+                    self.submissions.record_intent(submission_id, receipt)
+                elif tracked or identity_mutation:
                     self.submissions.record_dispatch(submission_id, phase, receipt)
                 elif local and phase == 'committed':
                     self.submissions.mark_accepted(submission_id, receipt)
@@ -145,10 +149,8 @@ class RelayApp:
             # Resolve a proven turn boundary first. For uninstrumented/sent
             # requests only an explicit definite rejection is safe to fail.
             current = self.submissions.get(submission_id)
-            preparation_error = (getattr(error, 'code', None) if operation in {'thread.create', 'thread.fork'}
-                                 and getattr(error, 'definite', False) else None)
-            proven = current if current['status'] in {'accepted', 'failed'} else self.submissions.resolve_dispatch(
-                submission_id, preparation_error=preparation_error)
+            failure_code = getattr(error, 'code', 'native_rejected') if getattr(error, 'definite', False) else None
+            proven = current if current['status'] in {'accepted', 'failed'} else self.submissions.resolve_dispatch(submission_id, failure_code=failure_code)
             if proven is not None:
                 record = proven
             elif getattr(error, "definite", False):
@@ -159,6 +161,7 @@ class RelayApp:
         return public_submission(record)
 
     def reset_usage(self, connection_id, submission_id, *, credit_id=None, reconcile=False):
+        self.require_capability('usage.reset')
         # This POST is the sole exception to never replaying native mutations:
         # consume has a documented native idempotency key, reused after restart.
         with self._usage_reset_lock:

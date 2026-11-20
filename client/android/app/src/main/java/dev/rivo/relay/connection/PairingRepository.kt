@@ -5,18 +5,30 @@ import dev.rivo.relay.data.RelayApi
 import dev.rivo.relay.data.string
 import org.json.JSONObject
 
-class NodeConnection(val base: String, val name: String, val nodeId: String, val deviceId: String, private val token: String, val storageBase: String = base, val routes: NodeRoutes? = null) {
+/** Runtime identity is supplied by authenticated node metadata, never inferred from a display name. */
+internal fun nodeRuntimeIdentity(info: JSONObject): String? =
+    (info.opt("runtime") as? String)?.trim()?.takeIf(String::isNotBlank)
+        ?: (info.optJSONObject("capabilities")?.opt("runtime") as? String)?.trim()?.takeIf(String::isNotBlank)
+
+fun runtimeDisplayName(runtime: String): String = when (runtime) {
+    "codex" -> "Codex"
+    "dsh" -> "DeepSeek Harness"
+    else -> "运行时待识别"
+}
+
+class NodeConnection(val base: String, val name: String, val nodeId: String, val deviceId: String, private val token: String, val storageBase: String = base, val routes: NodeRoutes? = null, val runtime: String = "") {
     fun api(dns: okhttp3.Dns = dev.rivo.relay.data.TailnetDns()) = RelayApi(base, token, dns, routes, nodeId)
     fun withNodeInfo(info: JSONObject): NodeConnection {
         // A display-name refresh must never migrate credentials or local storage.
         if (info.optString("id") != nodeId) return this
-        val updated = (info.opt("name") as? String)?.trim().orEmpty()
-        if (updated.isBlank() || updated == name) return this
-        return NodeConnection(base, updated, nodeId, deviceId, token, storageBase, routes)
+        val updated = (info.opt("name") as? String)?.trim()?.takeIf(String::isNotBlank) ?: name
+        val updatedRuntime = nodeRuntimeIdentity(info) ?: runtime
+        if (updated == name && updatedRuntime == runtime) return this
+        return NodeConnection(base, updated, nodeId, deviceId, token, storageBase, routes, updatedRuntime)
     }
-    fun serialized() = JSONObject().put("base", base).put("name", name).put("nodeId", nodeId).put("deviceId", deviceId).put("token", token).put("storageBase", storageBase).apply { routes?.let { put("routes", it.json()) } }.toString()
+    fun serialized() = JSONObject().put("base", base).put("name", name).put("nodeId", nodeId).put("deviceId", deviceId).put("token", token).put("storageBase", storageBase).put("runtime", runtime).apply { routes?.let { put("routes", it.json()) } }.toString()
 }
-data class SavedNode(val base: String, val name: String, val authorized: Boolean)
+data class SavedNode(val base: String, val name: String, val authorized: Boolean, val runtime: String = "")
 class PairingRepository internal constructor(
     private val read: (String) -> String?,
     private val save: (String, String) -> Unit,
@@ -40,7 +52,7 @@ class PairingRepository internal constructor(
     fun saved(): List<SavedNode> {
         restore()?.let { remember(it.base, it) }
         val all = records()
-        return (0 until all.length()).map { all.getJSONObject(it) }.map { SavedNode(it.string("base"), it.string("name"), it.string("token").isNotBlank()) }
+        return (0 until all.length()).map { all.getJSONObject(it) }.map { SavedNode(it.string("base"), it.string("name"), it.string("token").isNotBlank(), it.string("runtime")) }
     }
     /** Includes previously paired nodes whose token was revoked, but not address-only bookmarks. */
     fun boundNodes(): List<SavedNode> {
@@ -58,7 +70,7 @@ class PairingRepository internal constructor(
     fun select(base: String): NodeConnection? = connection(base)?.also { save("connection", it.serialized()) }
     private fun decode(value: String): NodeConnection {
         val j = JSONObject(value)
-        return NodeConnection(j.getString("base"), j.getString("name"), j.string("nodeId"), j.string("deviceId"), j.getString("token"), j.optString("storageBase", j.getString("base")), j.optJSONObject("routes")?.let(NodeRoutes::from))
+        return NodeConnection(j.getString("base"), j.getString("name"), j.string("nodeId"), j.string("deviceId"), j.getString("token"), j.optString("storageBase", j.getString("base")), j.optJSONObject("routes")?.let(NodeRoutes::from), j.string("runtime"))
     }
     fun invalidate() {
         val active = restore()
@@ -68,7 +80,7 @@ class PairingRepository internal constructor(
         forget()
     }
     fun restore(): NodeConnection? = read("connection")?.let { value -> runCatching {
-        val j = JSONObject(value); NodeConnection(j.getString("base"), j.getString("name"), j.string("nodeId"), j.string("deviceId"), j.getString("token"), j.optString("storageBase", j.getString("base")), j.optJSONObject("routes")?.let(NodeRoutes::from))
+        val j = JSONObject(value); NodeConnection(j.getString("base"), j.getString("name"), j.string("nodeId"), j.string("deviceId"), j.getString("token"), j.optString("storageBase", j.getString("base")), j.optJSONObject("routes")?.let(NodeRoutes::from), j.string("runtime"))
     }.getOrElse { remove("connection"); null } }
     suspend fun pair(input: String, code: String): NodeConnection {
         val address = PairingParser.parse(input, code.ifBlank { "address-only" }, BuildConfig.DEBUG).baseUrl
@@ -96,7 +108,7 @@ class PairingRepository internal constructor(
         } else j.getString("token").also { require(it.isNotBlank()) { "节点授权为空" } }
         val stableBase = old?.string("base") ?: pairing.baseUrl
         val connection = NodeConnection(stableBase, node.string("name"), node.string("id"), j.string("deviceId"), token,
-            old?.optString("storageBase", stableBase) ?: stableBase, pairing.routes)
+            old?.optString("storageBase", stableBase) ?: stableBase, pairing.routes, nodeRuntimeIdentity(node).orEmpty())
         remember(connection.base, connection)
         if (pairing.updateSource && pairing.routes != null) save("update-routes", pairing.routes.copy(mode = ConnectionMode.AUTO).json().toString())
         save("connection", connection.serialized())

@@ -123,6 +123,8 @@ class Database:
                     connection.execute("ALTER TABLE submissions ADD COLUMN dispatch_phase TEXT")
                 if 'recovery_json' not in columns:
                     connection.execute("ALTER TABLE submissions ADD COLUMN recovery_json TEXT")
+                if 'intent_json' not in columns:
+                    connection.execute("ALTER TABLE submissions ADD COLUMN intent_json TEXT")
                 # Ensure indexes also exist on current-version databases created
                 # before these query optimizations were introduced.
                 for statement in (

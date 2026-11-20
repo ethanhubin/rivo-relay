@@ -299,7 +299,7 @@ class ResponseHintsTests(unittest.TestCase):
         self.emit(s, 'turn/started')
         self.emit(s, 'item/permissions/requestApproval', request_id='r')
         key = s.interactions.list('thread')[0]['key']
-        def respond(*args):
+        def respond(*args, **kwargs):
             with ThreadPoolExecutor(max_workers=1) as pool:
                 pool.submit(self.emit, s, 'serverRequest/resolved', requestId='r').result(timeout=2)
             raise CodexError('definite rejection')

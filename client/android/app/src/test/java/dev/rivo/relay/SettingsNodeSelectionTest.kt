@@ -13,6 +13,24 @@ class SettingsNodeSelectionTest {
         RouteMemory.write = originalWrite
     }
 
+    @Test fun sameNamedNodesKeepRuntimeIdentityAcrossRestartAndSelection() {
+        val codex = NodeConnection("https://same.example:18886", "Same computer", "codex-node", "device-c", "secret-c", runtime = "codex")
+        val old = NodeConnection("https://same.example:18887", "Same computer", "dsh-node", "device-d", "secret-d")
+        val values = mutableMapOf("connection" to old.serialized(),
+            "nodes" to JSONArray().put(org.json.JSONObject(codex.serialized())).put(org.json.JSONObject(old.serialized())).toString())
+        fun repository() = PairingRepository(values::get, { key, value -> values[key] = value }, { values.remove(it) })
+        repository().updateName(old.withNodeInfo(org.json.JSONObject().put("id", "dsh-node").put("runtime", "dsh")))
+        val restarted = repository()
+        assertEquals("dsh", restarted.restore()?.runtime)
+        assertEquals(mapOf(codex.base to "codex", old.base to "dsh"), restarted.saved().associate { it.base to it.runtime })
+        assertEquals("codex", restarted.select(codex.base)?.runtime)
+        assertEquals("dsh", restarted.select(old.base)?.runtime)
+        assertEquals(old.storageBase, restarted.restore()?.storageBase)
+        val legacy = org.json.JSONObject(old.serialized()).apply { remove("runtime") }
+        values["connection"] = legacy.toString()
+        assertEquals("", repository().restore()?.runtime)
+    }
+
     @Test fun inspectingAndEditingAnotherNodeDoesNotSwitchActiveNode() {
         val a = NodeConnection("https://a.example", "A", "a", "device-a", "secret-a")
         val b = NodeConnection("https://b.example", "B", "b", "device-b", "secret-b",

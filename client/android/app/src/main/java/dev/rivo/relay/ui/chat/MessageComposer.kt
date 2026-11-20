@@ -360,7 +360,8 @@ fun MessageComposer(
                                 onWorkspace = onAddWorkspaceFile, workspaceEnabled = capabilities.allows("files.browse"), uploadEnabled = capabilities.allows("files.upload"))
                         }
                         ComposerModeSelector(if (goalMode) "goal" else if (discussionMode) "plan" else "default",
-                            enabled && (capabilities.allows("session.plan") || goalModeEnabled), goalModeEnabled, capabilities.allows("session.plan")) { mode ->
+                            enabled && (capabilities.allows("session.plan") || goalModeEnabled), goalModeEnabled, capabilities.allows("session.plan"),
+                            goalSupported = capabilities.supports("session.goal"), planSupported = capabilities.supports("session.plan")) { mode ->
                             if (onSelectMode != null) onSelectMode(mode)
                             else if ((mode == "plan") != discussionMode) onToggleMode()
                         }

@@ -27,6 +27,13 @@ def creation_phase(target, phase, receipt=None):
         observer[2](phase, receipt)
 
 
+def creation_intent(target, session_id, project_id):
+    """Persist a planned identity before create; it is not native acceptance."""
+    observer = _observer.get()
+    if observer and observer[1] == target:
+        observer[2]('intent', {'kind': 'session-create', 'sessionId': session_id, 'projectId': project_id})
+
+
 def local_commit(target, receipt):
     """Record a local mutation's receipt in the same SQLite transaction."""
     observer = _observer.get()

@@ -29,6 +29,9 @@ class FakeBridge:
         self.generation = 'generation-1'
         self.prompts = {}
         self.drop_prompt_reply = False
+        self.drop_create_reply = False
+        self.created = {}
+        self.errors = {}
         self.running = False
         self.requests = []
         self.last_response = None
@@ -38,19 +41,27 @@ class FakeBridge:
             event(3, 'turn/end', {'turn': 7, 'reason': {'kind': 'completed'}})]
 
     def rpc(self, method, params):
+        if method in self.errors:
+            raise BridgeFailure(self.errors[method])
         if method == 'status':
             return {'generation': self.generation, 'connected': True}
         if method == 'projects':
-            return {'items': [{'workspaceId': 'p', 'path': '/tmp/project', 'title': 'Project', 'sessionIds': ['s']}], 'archivedSessionIds': [], 'pinnedSessionIds': []}
+            return {'items': [{'workspaceId': 'p', 'path': '/tmp/project', 'title': 'Project', 'sessionIds': ['s', *self.created]}], 'archivedSessionIds': [], 'pinnedSessionIds': []}
         if method == 'sessions':
-            return {'items': [{'sessionId': 's', 'updatedAt': 1000, 'running': False}]}
+            return {'generation': self.generation, 'items': [{'sessionId': 's', 'projectId': 'p', 'updatedAt': 1000, 'running': self.running},
+                    *[{'sessionId': sid, 'updatedAt': 1000, 'running': False} for sid in self.created]]}
         if method == 'snapshot':
             return {'generation': self.generation, 'page': {'cursor': 3, 'header': {'id': 's'}, 'hasMore': False,
                      'records': [{'type': 'event', 'event': e} for e in self.events]},
                     'state': {'cursor': 3, 'running': self.running}, 'requests': self.requests}
         if method == 'create':
-            if set(params) != {'workspaceId'}: raise ValueError('workspace and cwd cannot coexist')
-            return {'sessionId': 'new-session'}
+            if set(params) != {'workspaceId', 'sessionId'}: raise ValueError('workspace and cwd cannot coexist')
+            self.created[params['sessionId']] = params['workspaceId']
+            if self.drop_create_reply:
+                raise ConnectionResetError()
+            return {'sessionId': params['sessionId']}
+        if method == 'createReceipt':
+            return {'created': self.created.get(params['sessionId']) == params['workspaceId'], **params}
         if method == 'prompt':
             self.prompts.setdefault(params['requestId'], params)
             if self.drop_prompt_reply:
@@ -61,7 +72,15 @@ class FakeBridge:
         if method == 'respond':
             self.last_response = params
             return {'accepted': True}
+        if method == 'cancel':
+            self.last_cancel = params
+            return {'accepted': True}
         raise ValueError(method)
+
+
+class BridgeFailure(Exception):
+    def __init__(self, error):
+        self.error = error
 
 
 class BridgeHandler(BaseHTTPRequestHandler):
@@ -73,8 +92,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
         except ConnectionResetError:
             self.close_connection = True
             return
-        encoded = json.dumps({'result': result}).encode()
-        self.send_response(200)
+        except BridgeFailure as error:
+            encoded, status = json.dumps({'error': error.error}).encode(), 400
+        else:
+            encoded, status = json.dumps({'result': result}).encode(), 200
+        self.send_response(status)
         self.send_header('Content-Length', str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
@@ -131,7 +153,8 @@ class DshHttpTests(RelayHTTPFixture, unittest.TestCase):
         status, result, _ = self.request('POST', '/v1/threads', {'submissionId': 'new', 'projectId': 'p'}, token=self.token)
         self.assertEqual(200, status)
         self.assertEqual('accepted', result['status'])
-        self.assertEqual('new-session', result['receipt']['threadId'])
+        self.assertEqual({result['receipt']['threadId']: 'p'}, self.bridge.created)
+        self.assertTrue(result['receipt']['threadId'].startswith('session-'))
 
     def test_disconnect_after_acceptance_recovers_without_resending(self):
         self.bridge.drop_prompt_reply = True
@@ -162,6 +185,65 @@ class DshHttpTests(RelayHTTPFixture, unittest.TestCase):
         self.native._disconnected()
         with self.assertRaises(CodexError): self.native.respond(key, {'decision': 'accept'})
 
+    def test_plan_review_roundtrip_and_stale_identity(self):
+        self.bridge.requests = [{'key': 'generation-1:plan', 'sessionId': 's', 'kind': 'questions',
+            'questions': [{'id': 'review', 'question': 'Approve?', 'detail': '# Plan\nDo work',
+                'options': [{'label': 'Approve'}, {'label': 'Keep planning'}],
+                'intent': {'kind': 'plan-review', 'approve': 'Approve'}}]}]
+        _, snap, _ = self.request('GET', '/v1/threads/s', token=self.token)
+        state = snap['sessionState']
+        card, = state['interactions']
+        self.assertEqual('approval', card['kind'])
+        self.assertEqual('# Plan\nDo work', card['detail'])
+        payload = {'submissionId': 'plan-answer', 'sessionId': 's',
+            'runtimeGeneration': state['runtimeGeneration'], 'interactionId': card['id'],
+            'revision': card['revision'], 'response': {'choiceId': card['choices'][0]['id']}}
+        for changes in ({'runtimeGeneration': 'old'}, {'revision': 'old'}, {'sessionId': 'other'}):
+            with self.assertRaises(CodexError):
+                self.native.respond_interaction(changes.get('sessionId', 's'),
+                    changes.get('runtimeGeneration', state['runtimeGeneration']), card['id'],
+                    changes.get('revision', card['revision']), payload['response'])
+        self.assertIsNone(self.bridge.last_response)
+        status, receipt, _ = self.request('POST', '/v1/interactions/respond', payload, token=self.token)
+        self.assertEqual(200, status)
+        self.assertEqual('accepted', receipt['status'])
+        self.assertEqual({'key': card['id'], 'answers': [{'id': 'review', 'selected': ['Approve']}]}, self.bridge.last_response)
+        with self.assertRaises(CodexError):
+            self.native.respond_interaction('s', state['runtimeGeneration'], card['id'], card['revision'], payload['response'])
+
+    def test_native_questions_project_existing_app_form_and_answer(self):
+        self.bridge.requests = [{'key': 'generation-1:q', 'sessionId': 's', 'kind': 'questions',
+            'questions': [{'id': 'pick', 'question': 'Which?', 'options': [{'label': 'A'}]},
+                          {'id': 'text', 'question': 'Why?', 'detail': 'Context'}]}]
+        _, snap, _ = self.request('GET', '/v1/threads/s', token=self.token)
+        state = snap['sessionState']
+        card, = state['interactions']
+        self.assertEqual('questions', card['kind'])
+        self.assertTrue(card['payload']['questions'][0]['isOther'])
+        self.assertIn('Context', card['payload']['questions'][1]['question'])
+        with self.assertRaises(CodexError):
+            self.native.respond_interaction('s', state['runtimeGeneration'], card['id'], card['revision'],
+                {'answers': {'pick': {'answers': ['A']}}})
+        payload = {'submissionId': 'question-answer', 'sessionId': 's',
+            'runtimeGeneration': state['runtimeGeneration'], 'interactionId': card['id'],
+            'revision': card['revision'], 'response': {'answers': {
+                'pick': {'answers': ['A']}, 'text': {'answers': ['My reason']}}}}
+        status, receipt, _ = self.request('POST', '/v1/interactions/respond', payload, token=self.token)
+        self.assertEqual(200, status)
+        self.assertEqual('accepted', receipt['status'])
+        self.assertEqual([{'id': 'pick', 'selected': ['A']}, {'id': 'text', 'selected': [], 'custom': 'My reason'}],
+                         self.bridge.last_response['answers'])
+
+    def test_codex_only_compatibility_and_reset_are_not_advertised_or_dispatched(self):
+        _, node, _ = self.request('GET', '/v1/node', token=self.token)
+        features = node['compatibility']['features']['1']
+        self.assertNotIn('session.goals', features)
+        self.assertNotIn('todos', features)
+        self.assertFalse(node['capabilities']['operations']['usage.reset']['supported'])
+        status, result, _ = self.request('POST', '/v1/usage/reset', {'submissionId': 'reset'}, token=self.token)
+        self.assertEqual(409, status)
+        self.assertEqual('runtime_unsupported', result['error']['code'])
+
     def test_socket_permissions_and_unsupported_queue_fail_closed(self):
         os.chmod(self.native.transport.path, 0o666)
         with self.assertRaises(CodexError) as caught: self.native.list_projects()
@@ -187,7 +269,7 @@ class DshActivityTests(unittest.TestCase):
         self.assertTrue(activity['complete'])
         self.assertEqual(['s'], activity['knownThreadIds'])
         self.assertEqual([], activity['tasks'])
-        self.assertEqual(activity, self.service.active_tasks())
+        self.assertEqual(activity, self.service._activity_snapshot())
         self.assertGreater(self.service.get_session('s')['activity']['version'], activity['version'])
 
     def test_approval_and_status_events_update_confirmed_activity(self):
@@ -204,6 +286,7 @@ class DshActivityTests(unittest.TestCase):
         self.assertEqual('waiting', snapshot['status'])
         self.assertEqual('waiting', snapshot['activity']['tasks'][0]['status'])
         self.service._event({'type': 'approval-resolved', 'sessionId': 's', 'key': 'approval'})
+        self.bridge.running = False
         self.service._event({'type': 'status', 'sessionId': 's', 'running': False})
         self.assertEqual([], self.service.active_tasks()['tasks'])
 
@@ -329,6 +412,8 @@ class DshPollGenerationTests(unittest.TestCase):
         service._cursor = 12
         calls = []
         class Transport:
+            def call(self, method, params=None):
+                return {'generation': service._generation}
             def poll(self, generation, cursor):
                 calls.append((generation, cursor))
                 if len(calls) == 1:

@@ -15,8 +15,21 @@ class UpdateViewModelTest {
     @After fun cleanup() { Dispatchers.resetMain() }
     private val latest = AppRelease("1.0.0", "说明", "", "", false)
 
+    @Test fun localTestPolicyNeverChecksOrPromptsForProductionUpdates() = runTest {
+        val model = UpdateViewModel(updatesEnabled = false)
+        var checks = 0
+        model.onLogin(true) { checks++; latest }
+        model.check({ checks++; latest }, prompt = true)
+        runCurrent()
+        assertEquals(0, checks)
+        assertFalse(model.checking)
+        assertFalse(model.checked)
+        assertNull(model.release)
+        assertFalse(model.promptVisible)
+    }
+
     @Test fun loginPromptsOnceAndDismissalSurvivesRepeatedLoginState() = runTest {
-        val model = UpdateViewModel()
+        val model = UpdateViewModel(updatesEnabled = true)
         var checks = 0
         val check: suspend () -> AppRelease? = { checks++; latest }
         model.onLogin(false, check)
@@ -38,7 +51,7 @@ class UpdateViewModelTest {
     }
 
     @Test fun currentVersionAndCheckFailureDoNotPrompt() = runTest {
-        val model = UpdateViewModel()
+        val model = UpdateViewModel(updatesEnabled = true)
         model.onLogin(true) { null }
         runCurrent()
         assertTrue(model.checked)
@@ -51,7 +64,7 @@ class UpdateViewModelTest {
     }
 
     @Test fun logoutWhileCheckingDoesNotShowPrompt() = runTest {
-        val model = UpdateViewModel()
+        val model = UpdateViewModel(updatesEnabled = true)
         model.onLogin(true) { latest }
         model.onLogin(false) { null }
         runCurrent()

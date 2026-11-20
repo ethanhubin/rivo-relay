@@ -6,6 +6,15 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NativeSettingsPresentationTest {
+    @Test fun defaultsDoNotRequireUnsupportedPermissionOrServiceTierFields() {
+        val settings = JSONObject().put("model", "example").put("reasoningEffort", "high")
+        assertNull(nativeDefaultsUnavailableReason(settings, false, "example", "high", null,
+            permissionsSupported = false, serviceTierSupported = false))
+        assertNotNull(nativeDefaultsUnavailableReason(settings, false, "example", "high", null))
+        assertNotNull(nativeDefaultsUnavailableReason(settings, false, null, "high", null,
+            permissionsSupported = false, serviceTierSupported = false))
+    }
+
     @Test fun newSessionPermissionsUseDefaultsUnlessDraftHasAChoice() {
         val defaults = JSONObject().put("approvalPolicy", "preset-full").put("sandbox", "danger-full-access")
         assertEquals("preset-full", newSessionSetting(null, defaults, "approvalPolicy"))

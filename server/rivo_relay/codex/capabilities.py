@@ -7,7 +7,8 @@ SUPPORTED = frozenset({
     'session.archive', 'session.delete', 'session.settings', 'session.models', 'session.goal',
     'session.queue', 'session.ownership', 'session.review', 'session.prediction', 'session.plan',
     'files.read', 'files.upload', 'files.browse', 'attachments.images', 'workspace.manage',
-    'interaction.respond', 'todo.dispatch', 'sites.read',
+    'interaction.respond', 'todo.dispatch', 'usage.reset', 'media.read',
+    'session.service_tier', 'session.permissions',
 })
 
 

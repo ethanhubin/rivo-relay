@@ -6,6 +6,44 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RuntimeContractTest {
+    @Test fun attachmentLimitsAreConservativeAcrossNodeAndSession() {
+        fun declaration(limit: Any? = null) = JSONObject().put("schemaVersion", 1).put("operations", JSONObject())
+            .apply { if (limit != null) put("limits", JSONObject().put("maxAttachmentBytes", limit)) }
+        val twentyMiB = 20L * 1024 * 1024
+        val node = RuntimeCapabilities.from(declaration(twentyMiB))
+        assertEquals(twentyMiB, node.maxAttachmentBytes)
+        assertEquals(1024L * 1024 * 1024, RuntimeCapabilities.Legacy.maxAttachmentBytes)
+        assertEquals(twentyMiB, node.withOverrides(declaration()).maxAttachmentBytes)
+        assertEquals(twentyMiB, node.withOverrides(declaration(40L * 1024 * 1024)).maxAttachmentBytes)
+        assertEquals(1024L, node.withOverrides(declaration(1024)).maxAttachmentBytes)
+        for (invalid in listOf(0, -1, "20971520", 1.5, JSONObject.NULL))
+            assertEquals(0L, RuntimeCapabilities.from(declaration(invalid)).maxAttachmentBytes)
+        assertEquals(0L, RuntimeCapabilities.from(declaration().put("limits", "invalid")).maxAttachmentBytes)
+    }
+
+    @Test fun optionalSettingsCapabilitiesFallbackOnlyWhenAbsent() {
+        val legacy = RuntimeCapabilities.from(JSONObject("""{"schemaVersion":1,"operations":{"session.models":{"supported":true,"available":true},"session.settings":{"supported":true,"available":true}}}"""))
+        assertTrue(legacy.allows("session.service_tier"))
+        assertTrue(legacy.allows("session.permissions"))
+        assertTrue(RuntimeCapabilities.Legacy.allows("session.permissions"))
+        val declaration = JSONObject("""{"schemaVersion":1,"operations":{"session.models":{"supported":true,"available":true},"session.settings":{"supported":true,"available":true},"session.service_tier":{"supported":false,"available":false},"session.permissions":{"supported":true,"available":false}}}""")
+        val restricted = legacy.withOverrides(declaration)
+        assertFalse(restricted.supports("session.service_tier"))
+        assertTrue(restricted.supports("session.permissions"))
+        assertFalse(restricted.allows("session.permissions"))
+        assertFalse(RuntimeCapabilities.from(declaration).withOverrides(JSONObject("""{"schemaVersion":1,"operations":{"session.models":{"supported":true,"available":true},"session.settings":{"supported":true,"available":true}}}""")).allows("session.service_tier"))
+        assertFalse(RuntimeCapabilities.Unavailable.allows("session.permissions"))
+        val draft = JSONObject("""{"model":"example","effort":"high","serviceTier":"priority","sandbox":"workspace-write","approvalPolicy":"never","goal":{"objective":"example"}}""")
+        val filtered = restricted.filterSettings(draft)
+        assertFalse(filtered.has("serviceTier"))
+        assertFalse(filtered.has("sandbox"))
+        assertFalse(filtered.has("approvalPolicy"))
+        assertEquals("example", filtered.getString("model"))
+        assertTrue(filtered.has("goal"))
+        assertTrue(draft.has("serviceTier"))
+        assertEquals("priority", legacy.filterSettings(draft).getString("serviceTier"))
+    }
+
     @Test fun missingProtocolKeepsLegacyBehaviorButDeclaredUnknownOperationsFailClosed() {
         assertTrue(RuntimeCapabilities.from(null).allows("session.fork"))
         assertTrue(RuntimeCapabilities.from(JSONObject("""{"media":{}}""")).allows("session.send"))

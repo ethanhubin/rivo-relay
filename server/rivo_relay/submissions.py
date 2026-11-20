@@ -9,7 +9,7 @@ import threading
 from typing import Any, Callable
 
 from .database import Database
-from .receipts import ReceiptConflict, merge_receipts, validate_receipt, dispatch_receipt_matches
+from .receipts import ReceiptConflict, merge_receipts, validate_receipt, dispatch_receipt_matches, identity
 
 
 class SubmissionConflict(ValueError):
@@ -50,7 +50,12 @@ def _validate_receipt(receipt, row, *, accepted=False, dispatched=False):
     try:
         validate = dispatch_receipt_matches if dispatched else validate_receipt
         args = (receipt, row['id'], row['operation'], json.loads(row['target_json']))
-        return validate(*args) if dispatched else validate(*args, accepted=accepted)
+        valid = validate(*args) if dispatched else validate(*args, accepted=accepted)
+        if row['intent_json'] and receipt:
+            intent = json.loads(row['intent_json'])
+            if identity(receipt, 'thread') is not None and identity(receipt, 'thread') != intent['sessionId']:
+                raise ReceiptConflict('Native creation receipt does not match its reserved session')
+        return valid
     except ReceiptConflict as error:
         raise SubmissionConflict(str(error)) from error
 
@@ -64,6 +69,7 @@ def _public(row) -> dict:
         "error_code": row["error_code"],
         "created_at": row["created_at"], "updated_at": row["updated_at"],
         "dispatch_phase": row["dispatch_phase"],
+        "intent": json.loads(row['intent_json']) if row['intent_json'] else None,
     }
 
 
@@ -244,22 +250,41 @@ class SubmissionStore:
             db.execute('UPDATE submissions SET dispatch_phase=?,receipt_json=COALESCE(?,receipt_json),updated_at=? WHERE id=?',
                        (phase, _json(merged) if merged else None, self.clock(), submission_id))
 
+    def record_intent(self, submission_id, intent):
+        """Bind an unpredictable native creation identity before any dispatch."""
+        if not isinstance(intent, dict) or set(intent) != {'kind', 'sessionId', 'projectId'} or intent['kind'] != 'session-create':
+            raise SubmissionConflict('Invalid creation intent')
+        _identifier(intent['sessionId'], 'sessionId')
+        _identifier(intent['projectId'], 'projectId')
+        value = _json(intent)
+        with self.db.transaction() as db:
+            row = db.execute('SELECT * FROM submissions WHERE id=?', (submission_id,)).fetchone()
+            if (row is None or row['operation'] != 'thread.create' or row['status'] != 'pending'
+                    or row['dispatch_phase'] != 'preparing' or json.loads(row['target_json']) != intent['projectId']):
+                raise SubmissionConflict('Creation intent does not match its pending project')
+            if row['intent_json'] is not None and row['intent_json'] != value:
+                raise SubmissionConflict('Creation identity is already reserved')
+            db.execute('UPDATE submissions SET intent_json=?,updated_at=? WHERE id=?',
+                       (value, self.clock(), submission_id))
+
     def begin_local(self, submission_id):
         with self.db.transaction() as db:
             db.execute("UPDATE submissions SET dispatch_phase='local_transaction' WHERE id=? AND status='pending'", (submission_id,))
 
-    def resolve_dispatch(self, submission_id, *, preparation_error=None):
+    def resolve_dispatch(self, submission_id, *, failure_code=None):
         """Only after action exit, or with the service stopped. Never resolve a live preparation."""
+        if failure_code is not None:
+            _identifier(failure_code, 'failure_code')
         with self.db.transaction() as db:
             row = db.execute('SELECT * FROM submissions WHERE id=?', (submission_id,)).fetchone()
             if row is None or row['status'] not in {'pending', 'unknown'}:
                 return None
             if row['dispatch_phase'] == 'local_transaction' and row['receipt_json'] is None:
-                return self.mark_failed(submission_id, 'operation_not_dispatched')
+                return self.mark_failed(submission_id, failure_code or 'operation_not_dispatched')
             if row['operation'] not in {'thread.turns', 'thread.continue', 'thread.create', 'thread.fork', 'thread.goal', 'thread.ownership'}:
                 return None
             if row['dispatch_phase'] == 'preparing' and row['receipt_json'] is None:
-                return self.mark_failed(submission_id, 'turn_not_dispatched' if row['operation'] in {'thread.turns', 'thread.continue'} else (preparation_error or 'operation_not_dispatched'))
+                return self.mark_failed(submission_id, failure_code or ('turn_not_dispatched' if row['operation'] in {'thread.turns', 'thread.continue'} else 'operation_not_dispatched'))
             if row['dispatch_phase'] == 'received' and row['receipt_json']:
                 receipt = json.loads(row['receipt_json'])
                 if _validate_receipt(receipt, row, dispatched=True):

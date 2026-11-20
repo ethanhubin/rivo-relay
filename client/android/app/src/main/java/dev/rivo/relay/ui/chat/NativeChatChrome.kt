@@ -198,7 +198,7 @@ internal fun NativeComposerSettings(settings: JSONObject?, models: List<JSONObje
     serviceTier: String? = null, onServiceTier: (String) -> Unit = {}, savesToSession: Boolean = false,
     sandboxChoice: String? = null, approvalChoice: String? = null, newSession: Boolean = false, permissionsEditable: Boolean = true,
     onSandbox: (String?) -> Unit = {}, onApproval: (String?) -> Unit = {},
-    defaultSettings: JSONObject? = null, onSaveDefaults: ((JSONObject) -> Unit)? = null, catalogNotice: String? = null) {
+    defaultSettings: JSONObject? = null, onSaveDefaults: ((JSONObject) -> Unit)? = null, catalogNotice: String? = null, capabilities: RuntimeCapabilities = RuntimeCapabilities.Legacy) {
     Column(Modifier.verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(if (savesToSession) "会话设置" else "下一项任务", style = MaterialTheme.typography.titleSmall)
         val modelOptions = models.map { model ->
@@ -219,16 +219,16 @@ internal fun NativeComposerSettings(settings: JSONObject?, models: List<JSONObje
             style = MaterialTheme.typography.labelSmall, modifier = Modifier.testTag("composer_effort_status"))
         if (models.isEmpty()) Text("暂未取得可用模型，可继续沿用当前设置。", style = MaterialTheme.typography.labelSmall)
         catalogNotice?.let { Text(it, Modifier.testTag("model_catalog_notice"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        if (capabilities.supports("session.service_tier")) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("快速模式", style = MaterialTheme.typography.bodyMedium)
                 Text("提升响应速度，会更快消耗额度", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Switch(checked = serviceTier == "priority", onCheckedChange = { onServiceTier(if (it) "priority" else "default") }, enabled = enabled,
+            Switch(checked = serviceTier == "priority", onCheckedChange = { onServiceTier(if (it) "priority" else "default") }, enabled = enabled && capabilities.allows("session.service_tier"),
                 modifier = Modifier.testTag("codex_fast_mode_switch"))
         }
         val sandboxOptions = sandboxSettingOptions
-        if (serviceTier.isNullOrBlank()) Text(
+        if (capabilities.supports("session.service_tier") && serviceTier.isNullOrBlank()) Text(
             if (newSession || settings?.has("serviceTier") == true && settings.isNull("serviceTier")) "服务等级沿用原生默认"
             else "服务等级尚未读取；切换开关后将明确设置快速模式。",
             style = MaterialTheme.typography.labelSmall, modifier = Modifier.testTag("service_tier_status"))
@@ -237,18 +237,18 @@ internal fun NativeComposerSettings(settings: JSONObject?, models: List<JSONObje
         val effectiveSandbox = if (newSession) sandboxChoice?.takeUnless { it == "inherit" } else currentSandbox
         val effectiveApproval = if (newSession) approvalChoice?.takeUnless { it == "inherit" } else permissionPreset(settings)
         val inPlan = (selectedMode ?: settings?.optJSONObject("collaborationMode")?.string("mode")) == "plan"
-        if (newSession || savesToSession) {
+        if (capabilities.supports("session.permissions") && (newSession || savesToSession)) {
             SettingsSelector("权限模式", approvalSettingLabel(settings, newSession, approvalChoice),
-                approvalOptions, enabled && permissionsEditable && (newSession || !inPlan), "composer_approval", onApproval)
+                approvalOptions, enabled && capabilities.allows("session.permissions") && permissionsEditable && (newSession || !inPlan), "composer_approval", onApproval)
             if (!permissionsEditable) Text("会话已创建，发送完成后可在会话设置中修改权限。", style = MaterialTheme.typography.labelSmall)
             if (inPlan) Text("讨论模式使用只读权限；退出后恢复所选权限。", style = MaterialTheme.typography.labelSmall)
         }
         if (onSaveDefaults != null) {
-            val unavailable = nativeDefaultsUnavailableReason(settings, newSession, effectiveModel, effectiveEffort, serviceTier)
+            val unavailable = nativeDefaultsUnavailableReason(settings, newSession, effectiveModel, effectiveEffort, serviceTier, capabilities.supports("session.permissions"), capabilities.supports("session.service_tier"))
             val tier = serviceTier?.takeIf(String::isNotBlank)
-            val defaults = JSONObject().put("model", effectiveModel?.takeIf(String::isNotBlank)).put("effort", effectiveEffort?.takeIf(String::isNotBlank)).put("serviceTier", tier)
-                .put("sandbox", effectiveSandbox).put("approvalPolicy", effectiveApproval)
-            SaveConversationDefaultsButton(defaults, defaultSettings, enabled, onSaveDefaults, unavailable)
+            val defaults = capabilities.filterSettings(JSONObject().put("model", effectiveModel?.takeIf(String::isNotBlank)).put("effort", effectiveEffort?.takeIf(String::isNotBlank)).put("serviceTier", tier)
+                .put("sandbox", effectiveSandbox).put("approvalPolicy", effectiveApproval))
+            SaveConversationDefaultsButton(defaults, defaultSettings?.let(capabilities::filterSettings), enabled, onSaveDefaults, unavailable)
             unavailable?.let { Text(it, style = MaterialTheme.typography.labelSmall, modifier = Modifier.testTag("codex_default_unavailable")) }
         }
         if (selectedMode != null) TextButton(onClick = onInheritMode, enabled = enabled, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("inherit_task_mode")) { Text("恢复继承会话模式") }
@@ -271,7 +271,7 @@ internal fun NewSessionSettings(models: List<JSONObject>, model: String?, effort
     sandbox: String?, approval: String?, enabled: Boolean, permissionsEditable: Boolean,
     onModel: (String?) -> Unit, onEffort: (String?) -> Unit,
     onSandbox: (String?) -> Unit, onApproval: (String?) -> Unit, workspace: (@Composable () -> Unit)? = null,
-    serviceTier: String? = null, defaultSettings: JSONObject? = null, onSaveDefaults: ((JSONObject) -> Unit)? = null) {
+    serviceTier: String? = null, defaultSettings: JSONObject? = null, onSaveDefaults: ((JSONObject) -> Unit)? = null, capabilities: RuntimeCapabilities = RuntimeCapabilities.Legacy) {
     val capability = models.firstOrNull { it.string("model").ifBlank { it.string("id") } == model }
     val efforts = capability?.objects("supportedReasoningEfforts").orEmpty()
         .map { it.string("reasoningEffort") }.filter(String::isNotBlank)
@@ -283,10 +283,10 @@ internal fun NewSessionSettings(models: List<JSONObject>, model: String?, effort
                 horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("会话设置", style = MaterialTheme.typography.titleSmall)
                 if (onSaveDefaults != null) {
-                    val defaults = JSONObject().put("model", model).put("effort", effort).put("serviceTier", serviceTier)
+                    val defaults = capabilities.filterSettings(JSONObject().put("model", model).put("effort", effort).put("serviceTier", serviceTier)
                         .put("sandbox", sandbox?.takeUnless { it == "inherit" })
-                        .put("approvalPolicy", approval?.takeUnless { it == "inherit" })
-                    SaveConversationDefaultsButton(defaults, defaultSettings, enabled, onSaveDefaults,
+                        .put("approvalPolicy", approval?.takeUnless { it == "inherit" }))
+                    SaveConversationDefaultsButton(defaults, defaultSettings?.let(capabilities::filterSettings), enabled, onSaveDefaults,
                         tag = "new_session_set_default")
                 }
             }
@@ -305,10 +305,12 @@ internal fun NewSessionSettings(models: List<JSONObject>, model: String?, effort
                     HorizontalDivider(Modifier.padding(horizontal = 16.dp))
                     SettingsPanelRow("思考强度", effort ?: "沿用节点默认",
                         efforts.map { it to it }, enabled, "new_session_effort", onEffort)
-                    HorizontalDivider(Modifier.padding(horizontal = 16.dp))
-                    SettingsPanelRow("权限模式", approvalSettingLabel(null, true, approval),
-                        approvalSettingOptions,
-                        enabled && permissionsEditable, "new_session_approval", onApproval)
+                    if (capabilities.supports("session.permissions")) {
+                        HorizontalDivider(Modifier.padding(horizontal = 16.dp))
+                        SettingsPanelRow("权限模式", approvalSettingLabel(null, true, approval),
+                            approvalSettingOptions,
+                            enabled && capabilities.allows("session.permissions") && permissionsEditable, "new_session_approval", onApproval)
+                    }
                 }
             }
         }

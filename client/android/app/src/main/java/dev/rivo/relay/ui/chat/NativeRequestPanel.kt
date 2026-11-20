@@ -45,8 +45,11 @@ fun NativeRequestPanel(request: NativeRequest, enabled: Boolean, onRespond: (JSO
                     request.interaction?.kind == "permissions" || request.method == "item/permissions/requestApproval" -> PermissionRequest(params, enabled, onRespond)
                     request.interaction?.kind == "elicitation" || request.method == "mcpServer/elicitation/request" -> McpRequest(params, enabled, onRespond)
                     else -> {
-                        Text(request.method, style = MaterialTheme.typography.titleMedium)
-                        Text("此原生请求暂不支持在手机处理，请回到 Desktop 完成。完成后会自动刷新。", style = MaterialTheme.typography.bodyMedium)
+                        val interaction = request.interaction
+                        Text(interaction?.title?.takeIf(String::isNotBlank) ?: request.method, style = MaterialTheme.typography.titleMedium)
+                        Text(interaction?.description?.takeIf(String::isNotBlank)
+                            ?: "此原生请求暂不支持在手机处理，请回到 Desktop 完成。完成后会自动刷新。", style = MaterialTheme.typography.bodyMedium)
+                        interaction?.detail?.takeIf(String::isNotBlank)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                     }
                 }
             }

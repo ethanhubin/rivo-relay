@@ -348,6 +348,7 @@ internal fun FullScreenImage(
     }
   }
 
+  val currentMediaMime = mediaAssetsBySource()[currentImage.original]?.optString("mimeType").orEmpty()
   val menuActions = buildList {
     fun action(label: String, title: String, tag: String, enabled: Boolean = true, block: () -> Unit) {
       add(ImageMenuAction(label, title, tag, enabled, block))
@@ -363,7 +364,7 @@ internal fun FullScreenImage(
     if (forwardLink != null && currentImage.forwardSource != null) action("转发", "转发到 Codex", "fullscreen_forward") { forwardLink(CodexLinkAttachment(currentImage.forwardSource!!, fileDisplayName(currentImage.forwardSource!!))) }
     if (onShare != null) action("分享", "分享图片", "fullscreen_share") { onShare(currentImage.original) }
     if (onSave != null) action("保存", "保存图片", "fullscreen_save") { onSave(currentImage.original) }
-    if (onEditComplete != null) action("编辑", "编辑图片", "fullscreen_edit") { editingSource = Uri.parse(currentImage.original) }
+    if (onEditComplete != null && canEditMediaImage(currentImage.original, currentMediaMime)) action("编辑", "编辑图片", "fullscreen_edit") { editingSource = Uri.parse(currentImage.original) }
   }
 
   LaunchedEffect(viewerIdentity) {

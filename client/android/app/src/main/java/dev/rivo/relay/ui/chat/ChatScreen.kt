@@ -176,6 +176,11 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     BackHandler(settingsOpen) { settingsOpen = false }
     var developerOpen by remember(state.id) { mutableStateOf(false) }
     var selectedMode by rememberSaveable(state.id) { mutableStateOf<String?>(null) }
+    val nativeMode = snapshot?.settings?.optJSONObject("collaborationMode")?.string("mode")
+    LaunchedEffect(state.id, nativeMode, selectedMode, pendingTitle) {
+        if (pendingTitle == null && selectedMode != null && selectedMode == nativeMode) selectedMode = null
+    }
+
     var goalModeSelected by rememberSaveable(state.id) { mutableStateOf(false) }
     var pendingGoal by rememberSaveable(state.id) { mutableStateOf<String?>(null) }
     var goalCapability by remember(state.id) { mutableStateOf<Boolean?>(null) }
@@ -225,7 +230,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     LaunchedEffect(settingsUnavailable) {
         if (settingsUnavailable) settingsOpen = false
     }
-    fun openFile(path: String) { if (capabilities.allows("files.read")) { fileAction = null; filePath = path } }
+    fun openFile(path: String) { if (capabilities.allows("files.read") || capabilities.allows("media.read") && isMediaImageSource(path)) { fileAction = null; filePath = path } }
     var pendingImageUris by androidx.compose.runtime.saveable.rememberSaveable(state.id) { mutableStateOf(arrayListOf<String>()) }
     fun addImages(uris: List<android.net.Uri>) {
         val targetId = state.id
@@ -357,7 +362,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 val available = (16 - files.size).coerceAtLeast(0)
                 for (uri in uris.take(available)) {
                 if (currentSessionId != sessionId || latestInputLocked) break
-                val prepared = prepareFile(context, uri)
+                val prepared = prepareFile(context, uri, capabilities.maxAttachmentBytes)
                 if (latestInputLocked) { prepared.file.delete(); break }
                 val uploaded = try { uploadFile(sessionId, prepared.name, prepared.file) } finally { prepared.file.delete() }
                 if (currentSessionId == sessionId && !latestInputLocked) files = files + JSONObject().put("type", "mention")
@@ -611,13 +616,13 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                                             showDeliveryInfo = false
                                             val retried = { onDismissFailedMessage(message.raw.string("clientId")) }
                                             val input = if (content.isEmpty()) JSONArray().put(JSONObject().put("type", "text").put("text", message.text)) else JSONArray(content)
-                                            if (onConfiguredSend != null) onConfiguredSend(input, effectiveModel, effectiveEffort, selectedMode, selectedServiceTier, JSONObject().apply {
+                                            if (onConfiguredSend != null) onConfiguredSend(input, effectiveModel, effectiveEffort, selectedMode, selectedServiceTier.takeIf { capabilities.allows("session.service_tier") }, capabilities.filterSettings(JSONObject().apply {
                                                 if (pendingTitle != null) {
                                                     pendingGoal?.let { put("goal", JSONObject(it)) }
                                                     selectedSandbox?.takeUnless { it == "inherit" }?.let { put("sandbox", it) }
                                                     selectedApproval?.takeUnless { it == "inherit" }?.let { put("approvalPolicy", it) }
                                                 }
-                                            }, retried)
+                                            }), retried)
                                             else if (onSendWithMode != null) onSendWithMode(input, effectiveModel, effectiveEffort, selectedMode, retried)
                                             else onSend(input, effectiveModel, effectiveEffort, retried)
                                         },
@@ -813,7 +818,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 }, onEffort = { selectedEffort = it },
                 onSandbox = { selectedSandbox = it ?: "inherit" },
                 onApproval = { selectedApproval = it ?: "inherit" }, workspace = pendingWorkspace.takeIf { (capabilities.allows("workspace.manage") && capabilities.allows("project.git")) },
-                serviceTier = selectedServiceTier, defaultSettings = defaultSettings, onSaveDefaults = onSaveDefaults)
+                capabilities = capabilities, serviceTier = selectedServiceTier, defaultSettings = defaultSettings, onSaveDefaults = onSaveDefaults)
         }
         MessageComposer(
             tokenUsage = snapshot?.tokenUsage, contextThreadId = state.id,
@@ -867,7 +872,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                         if (pendingTitle != null) selectedApproval = value ?: "inherit"
                         else value?.let { onSettingsChange?.invoke(JSONObject().put("approvalPolicy", it)) }
                     }, savesToSession = onSettingsChange != null, defaultSettings = defaultSettings, onSaveDefaults = onSaveDefaults,
-                    catalogNotice = modelCatalogNotice)
+                    catalogNotice = modelCatalogNotice, capabilities = capabilities)
             },
             onSend = {
                 val targetId = state.id
@@ -880,13 +885,13 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                     targetId?.let { onPersistDraft(it, ConversationDraft(model = sentDraft.model, effort = sentDraft.effort, mode = sentDraft.mode, serviceTier = sentDraft.serviceTier, sandbox = sentDraft.sandbox, approvalPolicy = sentDraft.approvalPolicy)) }
                 }
                     Unit }
-                if (onConfiguredSend != null) onConfiguredSend(nativeInputs(sendText.ifBlank { pendingGoal?.let { JSONObject(it).string("objective") }.orEmpty() }, images, files), effectiveModel, effectiveEffort, selectedMode, selectedServiceTier, JSONObject().apply {
+                if (onConfiguredSend != null) onConfiguredSend(nativeInputs(sendText.ifBlank { pendingGoal?.let { JSONObject(it).string("objective") }.orEmpty() }, images, files), effectiveModel, effectiveEffort, selectedMode, selectedServiceTier.takeIf { capabilities.allows("session.service_tier") }, capabilities.filterSettings(JSONObject().apply {
                     if (pendingTitle != null) {
                         pendingGoal?.let { put("goal", JSONObject(it)) }
                         selectedSandbox?.takeUnless { it == "inherit" }?.let { put("sandbox", it) }
                         selectedApproval?.takeUnless { it == "inherit" }?.let { put("approvalPolicy", it) }
                     }
-                }, accepted)
+                }), accepted)
                 else if (onSendWithMode != null) onSendWithMode(nativeInputs(sendText, images, files), effectiveModel, effectiveEffort, selectedMode, accepted)
                 else onSend(nativeInputs(sendText, images, files), effectiveModel, effectiveEffort, accepted)
             },
@@ -913,7 +918,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text(if (task.recoveryRequired) "仅移除此队列记录，不会停止或重新发送原任务。请先核对会话历史。" else "该任务将从等待队列移除，不再执行。") } },
         confirmButton = { TextButton(onClick = { onQueue(JSONObject().put("operation", if (task.recoveryRequired) "dismiss" else "remove").put("itemId", task.id).put("revision", task.revision)) { removingQueue = null } }, enabled = !busy && !blocked && !writerBusy && state.canManageQueue(), modifier = Modifier.testTag("queue_remove")) { Text(if (task.recoveryRequired) "确认忽略" else "确认撤回") } },
         dismissButton = { TextButton(onClick = { removingQueue = null }) { Text("取消") } }) }
-    filePath?.takeIf { capabilities.allows("files.read") }?.let { FilePreviewDialog(it, readFile, downloadFile, initialAction = fileAction) { filePath = null; fileAction = null } }
+    filePath?.takeIf { capabilities.allows("files.read") || capabilities.allows("media.read") && isMediaImageSource(it) }?.let { FilePreviewDialog(it, readFile, downloadFile, initialAction = fileAction, forceKind = FileOpenKind.IMAGE.takeIf { _ -> isMediaImageSource(it) }) { filePath = null; fileAction = null } }
     if (workspaceFileDialog && capabilities.allows("files.browse") && !inputLocked) WorkspaceFilePicker(cwd, readDirectory,
         onDismiss = { workspaceFileDialog = false }, onSelect = { file ->
             if (files.size < 16 && files.none { it.string("path") == file.string("path") }) files = files + file

@@ -128,6 +128,37 @@ class SubmissionTests(unittest.TestCase):
             self.store.mark_accepted("request-1", {"turn_id": "different"})
         self.assertEqual(self.store.mark_failed("request-1", "native_rejected")["status"], "failed")
 
+    def test_creation_intent_is_durable_immutable_and_not_an_acceptance_receipt(self):
+        self.claim(operation='thread.create', target='project-1')
+        self.store.record_dispatch('request-1', 'preparing')
+        intent = {'kind': 'session-create', 'sessionId': 'reserved-native-id', 'projectId': 'project-1'}
+        self.store.record_intent('request-1', intent)
+        reopened = Database(self.path)
+        self.addCleanup(reopened.close)
+        record = SubmissionStore(reopened).get('request-1')
+        self.assertEqual(intent, record['intent'])
+        self.assertIsNone(record['receipt'])
+        for change in ({'sessionId': 'other'}, {'projectId': 'other'}):
+            with self.assertRaises(SubmissionConflict): self.store.record_intent('request-1', {**intent, **change})
+        self.store.record_dispatch('request-1', 'dispatching')
+        for key in ('threadId', 'thread_id'):
+            with self.assertRaises(SubmissionConflict): self.store.mark_accepted('request-1', {key: 'other'})
+        self.store.mark_unknown('request-1')
+        self.assertFalse(self.claim(operation='thread.create', target='project-1')['should_dispatch'])
+        self.assertEqual('accepted', self.store.mark_accepted('request-1', {'threadId': intent['sessionId']})['status'])
+
+    def test_pre_dispatch_creation_intent_and_specific_input_errors_fail_safely(self):
+        self.claim(operation='thread.create', target='project-1')
+        self.store.record_dispatch('request-1', 'preparing')
+        self.store.record_intent('request-1', {'kind': 'session-create', 'sessionId': 'unused', 'projectId': 'project-1'})
+        self.store.recover_pending()
+        result = self.store.get('request-1')
+        self.assertEqual(('failed', 'operation_not_dispatched', None), (result['status'], result['error_code'], result['receipt']))
+        self.claim(submission_id='expired', operation='thread.turns', target='thread')
+        self.store.record_dispatch('expired', 'preparing')
+        result = self.store.resolve_dispatch('expired', failure_code='attachment_expired')
+        self.assertEqual(('failed', 'attachment_expired'), (result['status'], result['error_code']))
+
     def test_record_lookup_is_scoped_and_revoked_owner_cannot_claim_new_work(self):
         self.claim()
         with self.assertRaises(SubmissionNotFound):

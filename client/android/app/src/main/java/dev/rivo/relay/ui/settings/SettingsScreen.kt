@@ -126,11 +126,12 @@ fun SettingsScreen(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("应用更新", style = MaterialTheme.typography.titleMedium)
-                Text("Rivo Relay ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyLarge)
+                Text("${if (BuildConfig.LOCAL_TEST) "Rivo 本机测试" else "Rivo Relay"} ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyLarge)
+                if (!updates.updatesEnabled) Text("独立测试包不检查或安装正式更新。", Modifier.testTag("local_test_updates_disabled"))
                 Button(onClick = {
                     updates.check(checkUpdate ?: { NodeAppUpdates.configured(context).check(BuildConfig.VERSION_NAME) },
                         assess = { dev.rivo.relay.data.UpdateCompatibilityChecker.check(context, it) })
-                }, enabled = !checking && !downloading, modifier = Modifier.testTag("check_updates")) {
+                }, enabled = updates.updatesEnabled && !checking && !downloading, modifier = Modifier.testTag("check_updates")) {
                     if (checking) {
                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(8.dp))

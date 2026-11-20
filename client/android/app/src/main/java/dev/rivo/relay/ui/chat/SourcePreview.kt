@@ -162,3 +162,13 @@ internal fun fileMimeType(path: String, declared: String = ""): String {
         else -> "application/octet-stream"
     }
 }
+
+/** Media links use the authenticated image route, including SVG which file previews treat as text. */
+internal fun isMediaImageSource(source: String): Boolean =
+    (isHttpWebLink(source) || source.startsWith("/v1/media/")) && fileMimeType(source).startsWith("image/")
+
+internal fun canEditMediaImage(source: String, declaredMime: String = ""): Boolean {
+    val mime = if (source.startsWith("data:")) source.substringAfter("data:").substringBefore(';').substringBefore(',')
+        else fileMimeType(source, declaredMime)
+    return mime in setOf("image/jpeg", "image/png", "image/webp")
+}

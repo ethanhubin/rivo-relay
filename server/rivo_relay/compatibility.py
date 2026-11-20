@@ -6,8 +6,14 @@ API_VERSIONS = [1]
 FEATURES = ['voice.direct', 'voice.stream', 'session.goals', 'attachments', 'todos']
 
 
-def declaration():
-    return {'apiVersions': list(API_VERSIONS), 'features': {'1': list(FEATURES)}}
+def declaration(capabilities=None):
+    features = list(FEATURES)
+    if capabilities is not None:
+        operations = capabilities.get('operations', {})
+        for feature, operation in {'session.goals': 'session.goal', 'todos': 'todo.dispatch', 'attachments': 'files.upload'}.items():
+            if not operations.get(operation, {}).get('supported'):
+                features.remove(feature)
+    return {'apiVersions': list(API_VERSIONS), 'features': {'1': features}}
 
 
 def validate_app(value):

@@ -3,12 +3,32 @@ import time
 import unittest
 
 from relay_test_support.http import RelayHTTPFixture
-from rivo_relay.runtime_capabilities import CapabilityError, declare, require
+from rivo_relay.runtime_capabilities import CapabilityError, declare, require, submission_requirements
 from rivo_relay.codex.capabilities import capabilities as codex_capabilities
 from rivo_relay.dsh.capabilities import capabilities as dsh_capabilities
 
 
 class CapabilityContractTests(unittest.TestCase):
+    def test_model_selection_does_not_grant_tier_or_permission_changes(self):
+        declaration = declare({'session.send', 'session.settings', 'session.models'})
+        for operation, payload in (
+            ('thread.turns', {'model': 'model', 'effort': 'high'}),
+            ('thread.settings', {'model': 'model'}),
+        ):
+            for required in submission_requirements(operation, payload):
+                require(declaration, required)
+        for payload, capability in (({'serviceTier': 'fast'}, 'session.service_tier'),
+                                    ({'sandbox': 'workspace-write'}, 'session.permissions'),
+                                    ({'approvalPolicy': 'never'}, 'session.permissions')):
+            required = submission_requirements('thread.turns', payload)
+            self.assertIn(capability, required)
+            with self.assertRaises(CapabilityError):
+                for operation in required:
+                    require(declaration, operation)
+        codex = codex_capabilities(connected=True)
+        for operation in ('media.read', 'session.service_tier', 'session.permissions'):
+            require(codex, operation)
+
     def test_unknown_and_unavailable_operations_fail_closed(self):
         declaration = declare({'session.send'})
         require(declaration, 'session.send')
@@ -89,9 +109,11 @@ class CapabilityHttpTests(RelayHTTPFixture, unittest.TestCase):
         self.assertFalse(node['capabilities']['todoAttachmentUpload'])
         self.assertFalse(node['capabilities']['media']['proxy'])
         self.assertTrue(node['capabilities']['operations']['session.send']['available'])
+        self.assertEqual(self.config.runtime, node['capabilities']['runtime'])
+        self.assertEqual(self.config.runtime, self.paired['node']['runtime'])
 
     def test_unsupported_reads_rejected_before_adapter_internals(self):
-        for path in ('/v1/sites', '/v1/files?path=/tmp/a', '/v1/project-directories',
+        for path in ('/v1/files?path=/tmp/a', '/v1/project-directories',
                      '/v1/media/content?source=/tmp/a', '/v1/media/library',
                      '/v1/projects/project-1/git', '/v1/threads/thread-1/fork-context',
                      '/v1/threads/thread-1/workspace'):
@@ -133,6 +155,13 @@ class CapabilityHttpTests(RelayHTTPFixture, unittest.TestCase):
     def test_existing_download_ticket_does_not_bypass_changed_capability(self):
         self.app.download_links['old-ticket'] = ('/tmp/test-only-file', time.time() + 60)
         status, body, _ = self.request('GET', '/v1/download-links/old-ticket')
+        self.assertEqual(409, status)
+        self.assertEqual('runtime_unsupported', body['error']['code'])
+
+    def test_uploads_do_not_grant_todo_dispatch(self):
+        self.native.runtime_capabilities = lambda **kwargs: declare({'files.upload'})
+        status, body, _ = self.request('POST', '/v1/todos/attachments?name=test.txt',
+            token=self.token, raw=b'fixture', extra_headers={'Content-Type': 'application/octet-stream'})
         self.assertEqual(409, status)
         self.assertEqual('runtime_unsupported', body['error']['code'])
 

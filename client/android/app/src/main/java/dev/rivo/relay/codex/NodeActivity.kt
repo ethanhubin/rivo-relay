@@ -119,8 +119,8 @@ fun nodeActivity(api: RelayApi, sync: NodeSessionSync, scope: CoroutineScope,
                     failed = true
                 } catch (e: Exception) {
                     failed = true
-                    if (error is CancellationException || error is ApiException && error.status in setOf(401, 403)) lock.withLock {
-                        if (readEpoch == epoch) previous = previous.copy(confirmed = false)
+                    if (e is ApiException && e.status in setOf(401, 403)) lock.withLock {
+                        if (readEpoch == sync.activityReadToken()) previous = previous.copy(confirmed = false)
                         send(previous)
                     }
                 }

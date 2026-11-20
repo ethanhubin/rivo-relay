@@ -8,6 +8,18 @@ import org.junit.Test
 class NodeNameTest {
     private val original = NodeConnection("https://node.ts.net", "旧名称", "node-id", "device-id", "credential", "old-storage")
 
+    @Test fun authenticatedRuntimeRefreshWorksWithoutRenameAndNeverUsesDisplayName() {
+        val updated = original.withNodeInfo(JSONObject().put("id", "node-id")
+            .put("capabilities", JSONObject().put("runtime", "dsh")))
+        assertEquals("dsh", updated.runtime)
+        assertEquals(original.name, updated.name)
+        assertSame(updated, updated.withNodeInfo(JSONObject().put("id", "wrong").put("runtime", "codex")))
+        assertSame(updated, updated.withNodeInfo(JSONObject().put("id", "node-id")))
+        assertEquals("codex", updated.withNodeInfo(JSONObject().put("id", "node-id").put("runtime", "codex")).runtime)
+        assertEquals("", original.withNodeInfo(JSONObject().put("id", "node-id").put("name", "DeepSeek Harness")).runtime)
+        assertEquals("运行时待识别", dev.rivo.relay.connection.runtimeDisplayName(""))
+    }
+
     @Test fun renamePreservesPairingAndLocalDataScope() {
         val updated = original.withNodeInfo(JSONObject().put("id", "node-id").put("name", "tailnet-machine"))
         assertEquals("tailnet-machine", updated.name)

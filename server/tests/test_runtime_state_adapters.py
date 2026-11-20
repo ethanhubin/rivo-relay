@@ -130,13 +130,15 @@ class CodexStateContractTests(unittest.TestCase):
     def test_definite_rejection_restores_only_an_uninvalidated_claim(self):
         for event_kind in ('none', 'resolved', 'replacement', 'disconnect', 'discard'):
             with self.subTest(event_kind=event_kind):
+                self.setUp()  # Each native request identity is scoped to a fresh connection.
                 view = self.approval()
                 replacement = []
                 def rejected(*args, **kwargs):
                     if event_kind == 'resolved':
                         self.service._event({'method': 'serverRequest/resolved', 'params': {'requestId': 7}})
                     elif event_kind == 'replacement':
-                        replacement.append(self.approval({'command': 'new command'}))
+                        self.service._event({'id': 7, 'method': 'item/commandExecution/requestApproval',
+                            'params': {'threadId': 'thread', 'command': 'new command'}})
                     elif event_kind == 'disconnect':
                         self.service._event({'method': 'relay/nativeDisconnected', 'params': {}})
                     elif event_kind == 'discard':
@@ -145,7 +147,7 @@ class CodexStateContractTests(unittest.TestCase):
                 with patch.object(self.native, 'respond', side_effect=rejected):
                     with self.assertRaises(CodexError): self.respond(view)
                 pending = self.service.interactions.snapshot('thread')['interactions']
-                self.assertEqual([view] if event_kind == 'none' else replacement, pending)
+                self.assertEqual([view] if event_kind in ('none', 'replacement') else replacement, pending)
                 self.assertEqual({}, self.service.interactions._claims)
                 self.service.interactions.discard_thread('thread')
 

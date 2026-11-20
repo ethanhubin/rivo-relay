@@ -194,6 +194,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def receive_file(self, target_id, query, *, project=False):
         self.app.require_capability('files.upload')
+        if target_id is None:
+            self.app.require_capability('todo.dispatch')
         if self.headers.get("Transfer-Encoding"):
             raise ApiError(400, "invalid_request", "不支持无长度上传")
         lengths = self.headers.get_all("Content-Length", [])
@@ -257,6 +259,9 @@ class Handler(BaseHTTPRequestHandler):
             if partial: self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
             self.send_header('Cache-Control', 'private, no-cache')
             self.send_header('X-Content-Type-Options', 'nosniff')
+            if mime == 'image/svg+xml':
+                self.send_header('Content-Disposition', 'attachment; filename="image.svg"')
+                self.send_header('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'")
             self.send_header('Connection', 'close'); self.end_headers()
             self._file_started = True; self.close_connection = True
             stream.seek(start); remaining = max(0, end - start + 1)
@@ -431,7 +436,8 @@ class Handler(BaseHTTPRequestHandler):
                     resume=body.get("resume"), node_id=self.app.config.node_id,
                     route_binding=pairing_route_binding(self.app.config.workspace, self.app.config.public_url))
                 self.send_json(200, {"token": result["token"], "deviceId": result["connection_id"], "reuseProof": result.get("reuseProof", ""),
-                    "node": {"id": self.app.config.node_id, "name": self.app.node_name.get()}})
+                    "node": {"id": self.app.config.node_id, "name": self.app.node_name.get(),
+                             "runtime": self.app.config.runtime}})
                 return
             if self.command == "GET" and len(path) == 3 and path[:2] == ["v1", "download-links"]:
                 with self.app.download_lock:
@@ -463,7 +469,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, public_status(self.app.config.workspace))
                 return
             if self.command == 'GET' and path == ['v1', 'media', 'versions']:
-                self.app.require_capability('files.read')
+                self.app.require_capability('media.read')
                 source = required({'source': query.get('source', [None])[0]}, 'source', 8192)
                 parts = source.strip('/').split('/')
                 stored = len(parts) == 5 and parts[:3] in (['v1', 'media', 'library'], ['v1', 'media', 'generated']) and parts[4] in ('content', 'thumbnail')
@@ -476,12 +482,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, versions)
                 return
             if self.command == 'GET' and path in (['v1', 'media', 'content'], ['v1', 'media', 'thumbnail']):
-                self.app.require_capability('files.read')
+                self.app.require_capability('media.read')
                 source = required({'source': query.get('source', [None])[0]}, 'source', 8192)
                 self.send_media(self.app.media.open_source(source, thumbnail=path[-1] == 'thumbnail'))
                 return
             if self.command == 'GET' and len(path) == 5 and path[:3] in (['v1', 'media', 'library'], ['v1', 'media', 'generated']) and path[4] in ('content', 'thumbnail'):
-                self.app.require_capability('files.read')
+                self.app.require_capability('media.read')
                 self.send_media(self.app.media.open_stored(path[3], thumbnail=path[4] == 'thumbnail'))
                 return
             if self.command == 'POST' and path == ['v1', 'speech', 'transcriptions']:

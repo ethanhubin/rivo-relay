@@ -30,8 +30,8 @@ class BridgeTransport:
         if not os.path.isabs(self.path):
             raise ValueError('DSH bridge socket must be absolute')
 
-    def _request(self, method, path, body=None):
-        conn = UnixHTTPConnection(self.path)
+    def _request(self, method, path, body=None, *, timeout=25):
+        conn = UnixHTTPConnection(self.path, timeout=timeout)
         sent = False
         try:
             info = os.stat(self.path, follow_symlinks=False)
@@ -51,9 +51,13 @@ class BridgeTransport:
                 raise ValueError('Expected object')
             if response.status != 200 or 'error' in value:
                 error = value.get('error') or {}
+                # New bridges report certainty for this operation's boundary.
+                # Unknown/unrecognised declarations never become a safe retry.
+                sent = (error.get('certainty') != 'rejected' if 'certainty' in error
+                        else error.get('uncertain') is not False)
                 raise CodexError(str(error.get('message', 'DSH bridge rejected request')),
                                  code=str(error.get('code', 'dsh_rejected')), http_status=409,
-                                 request_sent=error.get('uncertain') is not False)
+                                 request_sent=sent)
             return value
         except CodexError:
             raise
@@ -63,8 +67,8 @@ class BridgeTransport:
         finally:
             conn.close()
 
-    def call(self, method, params=None):
-        value = self._request('POST', '/rpc', {'method': method, 'params': params or {}})
+    def call(self, method, params=None, *, timeout=25):
+        value = self._request('POST', '/rpc', {'method': method, 'params': params or {}}, timeout=timeout)
         if 'result' not in value:
             raise CodexError('DSH result missing', code='dsh_protocol', request_sent=True)
         return value['result']

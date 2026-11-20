@@ -15,8 +15,9 @@ OPERATIONS = frozenset({
     'session.delete', 'session.settings', 'session.models', 'session.goal',
     'session.queue', 'session.ownership', 'session.review', 'session.prediction',
     'session.plan', 'files.read', 'files.upload', 'files.browse',
-    'attachments.images', 'workspace.manage', 'interaction.respond',
-    'todo.dispatch', 'sites.read',
+    'attachments.images', 'media.read', 'session.service_tier', 'session.permissions',
+    'workspace.manage', 'interaction.respond',
+    'todo.dispatch', 'sites.read', 'usage.reset',
 })
 
 
@@ -56,7 +57,7 @@ def session_restrictions(snapshot):
     stale = not history_usable(snapshot)
     guarded = {'session.send', 'session.interrupt', 'session.continue', 'session.steer',
                'session.settings', 'session.goal', 'session.review', 'session.prediction',
-               'session.plan', 'interaction.respond'}
+               'session.plan', 'session.service_tier', 'session.permissions', 'interaction.respond'}
     reason = 'session_stale' if stale else 'session_read_only' if blocked else None
     return {name: reason for name in guarded} if reason else {}
 
@@ -100,7 +101,7 @@ def submission_requirements(operation, payload):
         'thread.settings': 'session.settings', 'thread.goal': 'session.goal',
         'thread.ownership': 'session.ownership', 'thread.review': 'session.review',
         'thread.answers': 'interaction.respond', 'request.respond': 'interaction.respond',
-        'interaction.respond': 'interaction.respond',
+        'interaction.respond': 'interaction.respond', 'usage.reset': 'usage.reset',
         'workspace.cleanup': 'workspace.manage', 'todo.dispatch': 'todo.dispatch',
     }
     result = set()
@@ -120,10 +121,12 @@ def submission_requirements(operation, payload):
         if payload.get('uploadedAttachments') or (payload.get('details') or {}).get('attachments'):
             result.add('files.upload')
     if operation in {'thread.turns', 'thread.steer', 'thread.queue.enqueue', 'thread.create', 'thread.settings'}:
-        if any(payload.get(key) is not None for key in ('model', 'effort', 'serviceTier')):
+        if any(payload.get(key) is not None for key in ('model', 'effort')):
             result.add('session.models')
+        if payload.get('serviceTier') is not None:
+            result.add('session.service_tier')
         if any(payload.get(key) is not None for key in ('sandbox', 'approvalPolicy')):
-            result.add('session.settings')
+            result.add('session.permissions')
         if payload.get('mode') == 'plan':
             result.add('session.plan')
         if payload.get('requireGoalSupport'):
@@ -141,7 +144,7 @@ def submission_requirements(operation, payload):
 
 def read_requirement(method, path):
     if len(path) >= 3 and path[:2] == ['v1', 'media'] and path[2] != 'capabilities':
-        return 'files.read'
+        return 'media.read'
     if method == 'GET':
         exact = {
             ('v1', 'project-directories'): 'project.browse',
