@@ -17,7 +17,6 @@ class NodeNameTest {
         assertSame(updated, updated.withNodeInfo(JSONObject().put("id", "node-id")))
         assertEquals("codex", updated.withNodeInfo(JSONObject().put("id", "node-id").put("runtime", "codex")).runtime)
         assertEquals("", original.withNodeInfo(JSONObject().put("id", "node-id").put("name", "DeepSeek Harness")).runtime)
-        assertEquals("运行时待识别", dev.rivo.relay.connection.runtimeDisplayName(""))
     }
 
     @Test fun legacyCodexStatusIdentifiesBackendEvenWhenDisconnected() {

@@ -81,7 +81,7 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
                         savedNodes.filter { it.authorized }.forEach { saved ->
                             val selected = saved.base == connection.base
                             DropdownMenuItem(
-                                text = { Text(saved.name + " · " + runtimeDisplayName(saved.runtime), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                text = { Text(saved.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                 leadingIcon = { dev.rivo.relay.ui.common.RuntimeIcon(saved.runtime) },
                                 trailingIcon = { if (selected) Text("✓") },
                                 onClick = { nodeMenuOpen = false; if (!selected) onSelectNode(saved.base) },

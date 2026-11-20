@@ -18,12 +18,6 @@ internal fun nodeRuntimeIdentity(info: JSONObject): String? {
     }
 }
 
-fun runtimeDisplayName(runtime: String): String = when (runtime) {
-    "codex" -> "Codex"
-    "dsh" -> "DeepSeek Harness"
-    else -> "运行时待识别"
-}
-
 class NodeConnection(val base: String, val name: String, val nodeId: String, val deviceId: String, private val token: String, val storageBase: String = base, val routes: NodeRoutes? = null, val runtime: String = "") {
     fun api(dns: okhttp3.Dns = dev.rivo.relay.data.TailnetDns()) = RelayApi(base, token, dns, routes, nodeId)
     fun withNodeInfo(info: JSONObject): NodeConnection {
