@@ -292,6 +292,29 @@ class ResponseHintsTests(unittest.TestCase):
         self.emit(s, 'item/completed', item=question())
         self.assertFalse(self.row(s).get('responseKinds'))
 
+    def test_scoped_reply_invalidates_node_activity_without_native_resolution_event(self):
+        s = self.service()
+        self.emit(s, 'turn/started')
+        self.emit(s, 'item/commandExecution/requestApproval', request_id='r', availableDecisions=['accept'])
+        self.assertEqual(['approval'], self.row(s)['responseKinds'])
+        view, = s.interactions.snapshot('thread')['interactions']
+        s.respond_interaction('thread', str(s.connection.generation), view['id'], view['revision'],
+                              {'choiceId': view['choices'][0]['id']})
+        self.assertFalse(s.interactions.list('thread'))
+        self.assertIn('thread', s.activity.snapshot()['unknownThreadIds'])
+
+    def test_uncertain_reply_invalidates_node_activity_without_native_resolution_event(self):
+        from rivo_relay.codex.connection import CodexError
+        s = self.service()
+        self.emit(s, 'turn/started')
+        self.emit(s, 'item/commandExecution/requestApproval', request_id='r')
+        key = s.interactions.list('thread')[0]['key']
+        s.connection.respond = Mock(side_effect=CodexError('reply may have arrived', request_sent=True))
+        with self.assertRaises(CodexError):
+            s.respond(key, {'decision': 'accept'})
+        self.assertFalse(s.interactions.list('thread'))
+        self.assertIn('thread', s.activity.snapshot()['unknownThreadIds'])
+
     def test_resolution_during_failed_send_is_not_restored(self):
         from concurrent.futures import ThreadPoolExecutor
         from rivo_relay.codex.connection import CodexError

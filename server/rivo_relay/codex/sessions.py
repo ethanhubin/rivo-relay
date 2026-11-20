@@ -1255,7 +1255,6 @@ class CodexService(SessionHandoffMixin):
             result = self.interactions.respond(key, response)
         finally:
             self._interaction_invalidated(thread_id)
-        self._event({"method": "relay/interactionAnswered", "params": {"key": key, "threadId": thread_id}})
         return result
 
     def respond_interaction(self, session_id, generation, interaction_id, revision, response):
@@ -1270,6 +1269,10 @@ class CodexService(SessionHandoffMixin):
                 self._control_epoch += 1
                 generation = self.connection.generation
             self.on_event(invalidated(session_id, generation, 'interactions'))
+            # Replies need not produce a native resolution event. Invalidate
+            # the node-wide waiting projection for both scoped and legacy
+            # replies, including uncertain sends, before another read uses it.
+            self._event({"method": "relay/interactionAnswered", "params": {"threadId": session_id}})
 
     def capabilities(self, refresh=False):
         return self.model_catalog.public(refresh=refresh)
