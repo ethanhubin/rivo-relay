@@ -10,9 +10,16 @@ import secrets
 import threading
 import time
 from typing import Callable
+from urllib.parse import urlencode
 import uuid
 
 from .database import Database
+
+
+def direct_pairing_link(node_id: str, url: str, code: str) -> str:
+    url = url.rstrip('/')
+    fragment = urlencode({'v': '2', 'code': code, 'node': node_id, 'direct': url, 'relay': '', 'pin': ''})
+    return f'{url}/pair#{fragment}'
 
 
 class PairingError(ValueError):
@@ -73,7 +80,7 @@ class PairingStore:
         self._global: deque = deque()
         self._lock = threading.Lock()
 
-    def create(self, ttl_seconds: float = 300) -> dict:
+    def create(self, ttl_seconds: float = 300, *, route_binding: str | None = None) -> dict:
         if isinstance(ttl_seconds, bool) or not 0 < ttl_seconds <= 300:
             raise ValueError("Pairing lifetime must be between 0 and 300 seconds")
         now = self.clock()
@@ -84,11 +91,22 @@ class PairingStore:
         with self.db.transaction() as connection:
             connection.execute("DELETE FROM pairing_codes WHERE expires_at <= ?", (now,))
             connection.execute(
-                "INSERT INTO pairing_codes(id,code_hash,created_at,expires_at) VALUES (?,?,?,?)",
-                (pairing_id, _digest(raw), now, now + ttl_seconds),
+                "INSERT INTO pairing_codes(id,code_hash,created_at,expires_at,route_binding) VALUES (?,?,?,?,?)",
+                (pairing_id, _digest(raw), now, now + ttl_seconds, route_binding),
             )
         return {"pairing_id": pairing_id, "code": "-".join(raw[i:i+4] for i in range(0, 16, 4)),
                 "expires_at": now + ttl_seconds}
+
+    def code_status(self, pairing_id: str) -> str:
+        with self.db.read() as connection:
+            row = connection.execute(
+                'SELECT consumed_at, expires_at FROM pairing_codes WHERE id = ?', (pairing_id,),
+            ).fetchone()
+        if row is None:
+            return 'expired'
+        if row['consumed_at'] is not None:
+            return 'consumed'
+        return 'expired' if self.clock() >= row['expires_at'] else 'pending'
 
     def _limit(self, client_key: str, now: float) -> None:
         key = _digest(str(client_key)[:256])
@@ -128,6 +146,8 @@ class PairingStore:
                 connection.execute("UPDATE pairing_codes SET attempts=attempts+1 WHERE id=?", (row["id"],))
                 valid = row["consumed_at"] is None and now < row["expires_at"]
                 if valid:
+                    if row["route_binding"] is not None:
+                        route_binding = row["route_binding"]
                     resumed = None
                     if isinstance(resume, dict) and isinstance(resume.get('deviceId'), str) and isinstance(resume.get('proof'), str):
                         candidate = connection.execute("SELECT id,token_hash FROM connections WHERE id=? AND revoked_at IS NULL",

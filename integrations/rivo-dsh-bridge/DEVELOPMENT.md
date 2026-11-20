@@ -1,22 +1,29 @@
-# Rivo DSH 本机桥
+# Rivo Relay for DeepSeek Harness
 
-将 Rivo 节点接到已经运行的 DSH Web/Desktop Host，复用原生会话、模型与工具。插件不启动另一套 DSH，不读写 DSH 历史文件，不持有独立 Agent writer。本轮目标契约为 DSH `0.2.2-rc.2`；已核实其官方 `list/state` 实现与 `rc.1` 一致，并通过真实 HTTP 聊天、审批和更新许可验证，见[记录](../../验证记录/DSH-Update-Readiness-2026-11-11/README.md)。此前模拟器完整闭环对应 `rc.1`，未在新版重跑；`status.supportedRuntimeVersion` 只是适配目标。
+`rivo-dsh-bridge` 为 DeepSeek Harness `0.2.2-rc.5` 提供 Rivo Relay 插件。打开「插件 → Rivo Relay」配置本机连接、查看状态并生成直连配对二维码。
 
-## 安装与边界
+## 安装与配对
 
-以 Host 插件加载 `index.mjs`，注入 `sessionController`、`typertGateway`、`connection`、`workspaceRegistry`、`agents`、`fileUploads` 和 `fs`。例如在现有 profile 的 patch 追加：
-
-```yaml
-- insert:
-    - id: rivo-dsh-bridge
-      name: /absolute/path/to/rivo-dsh-bridge/index.mjs
-      config:
-        socketPath: /Users/example/.dsh/rivo/bridge.sock
+```sh
+# 在 Rivo Relay 仓库根目录打包
+npm pack ./integrations/rivo-dsh-bridge
+# 选择实际运行的 DSH profile，例如 desktop 或 web
+dsh plugin --profile desktop add /absolute/path/to/rivo-dsh-bridge-0.2.1.tgz
 ```
 
-实际安装使用本机可维护路径，并先保留原 patch。已启用配置热加载的 Host 可增量挂载；替换源码后可递增该行的 `config.revision` 整数触发 HMR，并核实桥 `generation` 已改变。本插件不重启 Host。默认 socket 位于 `$DSH_HOME/rivo/bridge.sock`，未设置 `DSH_HOME` 时使用 `~/.dsh/rivo/bridge.sock`。父目录必须归当前用户且权限 `0700`，socket 权限为 `0600`。不会覆盖已有 socket；异常退出遗留 socket 需确认所属进程已停止后处理。
+从旧版迁移时，先在当前 profile 停用之前手动加载的 `index.mjs` 行，释放其桥接 socket。安装后在 DSH 插件页确认 Rivo Relay 已启用。
 
-这条本机连接拥有 DSH owner 权限，只供同一 OS 用户下的 Rivo 节点使用。手机继续通过 Rivo 原有的一次性扫码、撤销与鉴权流程进入，不能直接连接该 socket。插件没有 TCP 监听。
+按 Rivo 仓库的 `docs/dsh-integration.md` 启动同一用户下的 Rivo 节点。`scripts/run-server.sh --runtime dsh` 需要桥接路径 `--dsh-bridge-socket`。要在 DSH 页面内配对，再传入 `--dsh-admin-socket` 和手机可访问的 `--url`。
+
+1. 打开「插件 → Rivo Relay」。桥接 socket 留空时使用 `$DSH_HOME/rivo/bridge.sock`，未设置 `DSH_HOME` 时使用 `~/.dsh/rivo/bridge.sock`。
+2. 默认从 DSH 用户目录的 `rivo/relay-admin.sock` 连接本机 Relay。使用自定义管理路径时，在「高级配置」中填写与 `--dsh-admin-socket` 一致的绝对路径。两个 socket 的父目录均归当前用户且权限为 `0700`，socket 权限为 `0600`。
+3. 看见「Relay 已连接」后生成二维码，在 Rivo Relay APP 的连接管理中扫码。每个码 5 分钟有效且仅能兑换一次。二维码包含临时凭据。
+
+更改桥接路径时，Relay 的 `--dsh-bridge-socket` 也需指向新路径。保存配置可能重新加载桥，在待处理审批结束后再修改。异常退出遗留 socket 时，先确认所属进程已经停止。要卸载时，从 DSH 插件页卸载 Rivo Relay，或运行 `dsh plugin --profile desktop remove rivo-dsh-bridge`。
+
+管理接口仅供 DSH owner 使用，配对码在 Relay 的同用户 Unix 管理 socket 上签发。手机通过节点原有的 HTTP 配对入口兑换。本版插件页面支持直连。
+
+已有部署仍可通过绝对路径加载本目录的 `index.mjs`，继续使用原有桥接协议。
 
 ## 协议
 
@@ -61,7 +68,7 @@
 ## 验证
 
 ```sh
-node --test integrations/dsh-bridge/bridge.test.mjs
+npm test --prefix integrations/rivo-dsh-bridge
 ```
 
 测试覆盖 Unix socket 权限和 HTTP 信封、输入身份、官方快照入口、事件缺口、审批单次答复、失联退回、请求取消与持久 provenance 恢复。这些测试不代替实际 DSH 或 Android 扫码验收。

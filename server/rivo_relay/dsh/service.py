@@ -271,6 +271,19 @@ class DshService:
         else:
             self._emit('relay/historyInvalidated')
 
+    def pairing_status(self, generation: str) -> str:
+        try:
+            live = self.transport.call('status', timeout=1)
+        except CodexError:
+            return 'bridge_disconnected'
+        observed = live.get('generation') if isinstance(live, dict) else None
+        if not observed:
+            return 'bridge_disconnected'
+        if observed != generation:
+            return 'wrong_bridge'
+        with self._lock:
+            return 'ready' if self._connected and self._generation == observed else 'bridge_disconnected'
+
     def status(self):
         self.start()
         try:
@@ -285,6 +298,9 @@ class DshService:
         from .capabilities import capabilities
         return capabilities(connected=self._connected if connected is None else connected,
                             snapshot=snapshot, features=self._features)
+
+    def update_blocker(self):
+        return None if self.idle_for_update() else 'native_state_unknown'
 
     def idle_for_update(self):
         # Cached activity is incomplete after invalidation. Ask the bridge for

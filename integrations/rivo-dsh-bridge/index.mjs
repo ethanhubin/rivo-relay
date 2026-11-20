@@ -878,8 +878,15 @@ export async function serve(bridge, socketPath) {
   });
   server.maxConnections = 16; server.requestTimeout = 30000; server.headersTimeout = 10000;
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve); });
-  await chmod(socketPath, 0o600);
-  const identity = await lstat(socketPath);
+  let identity;
+  try {
+    identity = await lstat(socketPath);
+    await chmod(socketPath, 0o600);
+  } catch (error) {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    throw error;
+  }
   return async () => {
     bridge.close(); server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
