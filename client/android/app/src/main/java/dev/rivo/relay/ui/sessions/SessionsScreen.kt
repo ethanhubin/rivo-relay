@@ -242,10 +242,11 @@ fun SessionsScreen(projectName: String, threads: List<ThreadSummary>, loading: B
             }
         }
         // Surface supplies the same round FAB geometry while preserving the disabled-write contract.
-        if (showCreate && capabilities.allows("session.create")) Surface(onClick = onNew, enabled = canCreate, modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp).size(62.dp)
+        val createEnabled = canCreate && capabilities.allows("session.create")
+        if (showCreate && capabilities.shows("session.create")) Surface(onClick = onNew, enabled = createEnabled, modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp).size(62.dp)
             .testTag("new_thread").semantics { contentDescription = "新建会话" }, shape = CircleShape,
-            color = if (canCreate) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHighest,
-            contentColor = if (canCreate) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, shadowElevation = 6.dp) {
+            color = if (createEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHighest,
+            contentColor = if (createEnabled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, shadowElevation = 6.dp) {
             Box(contentAlignment = Alignment.Center) { Text("＋", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Light) }
         }
     }

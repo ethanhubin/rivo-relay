@@ -5,13 +5,16 @@ import org.json.JSONObject
 
 /** Operations describe behavior, never a particular runtime implementation. */
 data class RuntimeOperation(val supported: Boolean, val available: Boolean, val reasonCode: String? = null)
-class RuntimeCapabilities private constructor(private val operations: Map<String, RuntimeOperation>?, val maxAttachmentBytes: Long = 1024L * 1024 * 1024) {
+class RuntimeCapabilities private constructor(private val operations: Map<String, RuntimeOperation>?, val maxAttachmentBytes: Long = 1024L * 1024 * 1024, private val pending: Boolean = false) {
     fun operation(id: String): RuntimeOperation = operations?.get(id)
         ?: settingFallbacks[id]?.let { operation(it) }
         ?: if (operations == null) RuntimeOperation(true, true) else RuntimeOperation(false, false, "unsupported")
     fun allows(id: String) = operation(id).let { it.supported && it.available }
     fun supports(id: String) = operation(id).supported
+    /** Keep entry points visible while loading, without granting execution. */
+    fun shows(id: String) = pending || supports(id)
     fun withOverrides(value: JSONObject?): RuntimeCapabilities {
+        if (pending) return this
         if (value == null || !value.has("schemaVersion") && !value.has("operations")) return this
         val override = from(value)
         if (operations == null) return RuntimeCapabilities(override.operations, minOf(maxAttachmentBytes, override.maxAttachmentBytes))
@@ -30,6 +33,7 @@ class RuntimeCapabilities private constructor(private val operations: Map<String
     companion object {
         private val settingFallbacks = mapOf("session.service_tier" to "session.models", "session.permissions" to "session.settings")
         val Legacy = RuntimeCapabilities(null)
+        val Pending = RuntimeCapabilities(emptyMap(), 0, pending = true)
         val Unavailable = RuntimeCapabilities(emptyMap(), 0)
         fun from(value: JSONObject?): RuntimeCapabilities {
             if (value == null || !value.has("schemaVersion") && !value.has("operations")) return Legacy

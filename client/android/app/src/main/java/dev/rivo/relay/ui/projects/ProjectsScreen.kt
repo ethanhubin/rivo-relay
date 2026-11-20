@@ -103,7 +103,7 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                             }
                         }
                     }
-                    if (onAdd != null && dev.rivo.relay.data.LocalRuntimeCapabilities.current.let { it.allows("project.create") && it.allows("project.browse") }) Surface(onClick = onAdd, enabled = canAdd, modifier = Modifier.size(48.dp).testTag("add_project")
+                    if (onAdd != null && dev.rivo.relay.data.LocalRuntimeCapabilities.current.let { it.shows("project.create") && it.shows("project.browse") }) Surface(onClick = onAdd, enabled = canAdd && dev.rivo.relay.data.LocalRuntimeCapabilities.current.let { it.allows("project.create") && it.allows("project.browse") }, modifier = Modifier.size(48.dp).testTag("add_project")
                         .semantics { contentDescription = "新建项目" },
                         shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.primaryContainer) {
                         Box(contentAlignment = Alignment.Center) { Text("＋", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Light, color = MaterialTheme.colorScheme.onPrimaryContainer) }

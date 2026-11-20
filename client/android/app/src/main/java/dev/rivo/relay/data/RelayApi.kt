@@ -31,6 +31,8 @@ const val JSON_READ_IDLE_TIMEOUT_MILLIS = 30_000L
 
 /** Adapted from QiGuang HttpTransport: cancellable JSON and SSE, with Rivo envelopes and no write retry. */
 class RelayApi(private val base: String, private val token: String = "", private val dns: Dns = TailnetDns(), private val routes: NodeRoutes? = null, private val nodeId: String = "") {
+    private val runtimeCapabilitiesMutable = kotlinx.coroutines.flow.MutableStateFlow(RuntimeCapabilities.Pending)
+    val runtimeCapabilities: kotlinx.coroutines.flow.StateFlow<RuntimeCapabilities> = runtimeCapabilitiesMutable
     private val compatibilityMutex = kotlinx.coroutines.sync.Mutex()
     @Volatile private var compatibilityRead = false
     @Volatile private var compatibilityCheckedAt = 0L
@@ -56,6 +58,7 @@ class RelayApi(private val base: String, private val token: String = "", private
         compatibilityMutable.value = ApiCompatibility.parse(info.optJSONObject("compatibility"))
         compatibilityCheckedAt = System.nanoTime()
         compatibilityRead = true
+        runtimeCapabilitiesMutable.value = RuntimeCapabilities.from(info.optJSONObject("capabilities"))
     }
     private suspend fun ensureCompatibility() {
         if (nodeId.isBlank()) return // Unpaired/public API clients have no business identity.
