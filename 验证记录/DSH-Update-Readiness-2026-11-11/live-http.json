@@ -1,0 +1,17 @@
+{
+  "runtime": "dsh",
+  "version": "0.2.2-rc.2",
+  "transport": "real bridge + HTTP",
+  "androidRun": false,
+  "nativeRestartDuringTest": false,
+  "initialIdleLease": true,
+  "sessionId": "session-ba7ddfc7-9542-4f56-b313-8498fd299bb0",
+  "inputAccepted": true,
+  "pendingApprovalBlocksUpdate": true,
+  "finalIdleLease": true,
+  "proofMatches": true,
+  "singleNativeInput": true,
+  "oldApprovalRejected": true,
+  "relayReconnectPreservesResult": true,
+  "passed": true
+}

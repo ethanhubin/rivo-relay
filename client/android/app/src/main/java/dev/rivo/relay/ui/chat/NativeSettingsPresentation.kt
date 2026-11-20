@@ -60,30 +60,34 @@ internal fun releaseUnavailableReason(runtime: JSONObject?): String? =
 
 /** Existing settings may be copied only when every stored preset has a known representation. */
 internal fun nativeDefaultsUnavailableReason(settings: JSONObject?, newSession: Boolean,
-    effectiveModel: String?, effectiveEffort: String?, serviceTier: String?): String? {
+    effectiveModel: String?, effectiveEffort: String?, serviceTier: String?, permissionsSupported: Boolean = true, serviceTierSupported: Boolean = true): String? {
     if (newSession) return null // Null choices deliberately mean inherit node defaults.
     if (effectiveModel.isNullOrBlank() || (effectiveEffort.isNullOrBlank() && settings?.has("reasoningEffort") != true))
         return "模型设置尚未读取完整，暂不能设为新会话默认。"
-    if (nativeSandbox(settings)?.string("type").isNullOrBlank())
-        return "文件访问权限尚未读取，暂不能设为新会话默认。"
-    if (nativeSandboxChoice(settings) == null)
-        return "当前自定义文件权限无法保存为权限预设；请先明确选择文件访问权限。"
-    val sandbox = nativeSandbox(settings)!!
-    val roots = sandbox.optJSONArray("writableRoots")
-    val cwd = settings?.string("cwd").orEmpty()
-    val knownFields = setOf("type", "networkAccess", "writableRoots", "excludeTmpdirEnvVar", "excludeSlashTmp")
-    if (sandbox.keys().asSequence().any { it !in knownFields } || sandbox.optBoolean("networkAccess") ||
-        sandbox.optBoolean("excludeTmpdirEnvVar") || sandbox.optBoolean("excludeSlashTmp") ||
-        roots != null && (0 until roots.length()).any { cwd.isBlank() || roots.optString(it) != cwd })
-        return "当前权限包含自定义路径或网络限制，不能简化为新会话默认；可在新会话中明确选择权限预设。"
-    val approval = settings?.opt("approvalPolicy")
-    if (approval == null || approval == JSONObject.NULL || approval is String && approval.isBlank())
-        return "审批策略尚未读取，暂不能设为新会话默认。"
-    if (permissionPreset(settings) == null)
-        return "当前自定义审批无法保存为审批预设；请先明确选择审批策略。"
-    val inheritedTier = settings?.has("serviceTier") == true && settings.isNull("serviceTier")
-    if (serviceTier.isNullOrBlank() && !inheritedTier) return "快速模式尚未读取，暂不能设为新会话默认。"
-    if (!serviceTier.isNullOrBlank() && serviceTier !in setOf("default", "priority")) return "当前服务等级无法保存为新会话默认。"
+    if (permissionsSupported) {
+        if (nativeSandbox(settings)?.string("type").isNullOrBlank())
+            return "文件访问权限尚未读取，暂不能设为新会话默认。"
+        if (nativeSandboxChoice(settings) == null)
+            return "当前自定义文件权限无法保存为权限预设；请先明确选择文件访问权限。"
+        val sandbox = nativeSandbox(settings)!!
+        val roots = sandbox.optJSONArray("writableRoots")
+        val cwd = settings?.string("cwd").orEmpty()
+        val knownFields = setOf("type", "networkAccess", "writableRoots", "excludeTmpdirEnvVar", "excludeSlashTmp")
+        if (sandbox.keys().asSequence().any { it !in knownFields } || sandbox.optBoolean("networkAccess") ||
+            sandbox.optBoolean("excludeTmpdirEnvVar") || sandbox.optBoolean("excludeSlashTmp") ||
+            roots != null && (0 until roots.length()).any { cwd.isBlank() || roots.optString(it) != cwd })
+            return "当前权限包含自定义路径或网络限制，不能简化为新会话默认；可在新会话中明确选择权限预设。"
+        val approval = settings?.opt("approvalPolicy")
+        if (approval == null || approval == JSONObject.NULL || approval is String && approval.isBlank())
+            return "审批策略尚未读取，暂不能设为新会话默认。"
+        if (permissionPreset(settings) == null)
+            return "当前自定义审批无法保存为审批预设；请先明确选择审批策略。"
+    }
+    if (serviceTierSupported) {
+        val inheritedTier = settings?.has("serviceTier") == true && settings.isNull("serviceTier")
+        if (serviceTier.isNullOrBlank() && !inheritedTier) return "快速模式尚未读取，暂不能设为新会话默认。"
+        if (!serviceTier.isNullOrBlank() && serviceTier !in setOf("default", "priority")) return "当前服务等级无法保存为新会话默认。"
+    }
     return null
 }
 

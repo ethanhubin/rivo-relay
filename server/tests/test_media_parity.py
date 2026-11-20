@@ -14,6 +14,7 @@ from PIL import Image
 
 from rivo_relay.media import MediaService, MediaError, public_target, public_media, media_type, atomic_json, read_record
 from rivo_relay.speech import SpeechService
+from rivo_relay.runtime_capabilities import declare
 from relay_test_support.http import RelayHTTPFixture
 
 
@@ -30,6 +31,23 @@ class MediaParityTests(unittest.TestCase):
                 'result': base64.b64encode(self.native.raw).decode(), 'revisedPrompt': 'Native revision',
                 'model': 'native-recorded-model', 'secret': 'must-not-be-persisted'} | changes
         return {'method': 'item/completed', 'params': {'threadId': 'thread', 'turnId': 'turn', 'item': item}}
+
+    def test_adapter_virtual_media_uses_native_reader_and_invalid_origin_never_fetches(self):
+        source = 'https://dsh-attachment.invalid/v1/session-test/2/0/0/image.png'
+        self.native.is_media_source = lambda value: value == source
+        self.media.fetch_public = lambda *_: self.fail('Virtual image must not use the network')
+        path, mime, _ = self.media.resolve(source)
+        self.assertEqual(self.native.raw, path.read_bytes())
+        self.assertEqual('image/png', mime)
+        self.assertEqual([source], self.native.calls)
+        for invalid in (source + '?path=/etc/passwd', source.replace('.invalid/', '.invalid:443/'),
+                        source.replace('https://', 'https://user@')):
+            with self.assertRaises(MediaError) as caught:
+                self.media.resolve(invalid)
+            self.assertEqual('invalid_media_source', caught.exception.code)
+        self.native.is_media_source = None
+        with self.assertRaises(MediaError):
+            self.media.resolve(source)
 
     def test_view_is_not_import_and_thumbnail_profile_native_host_change(self):
         self.native.raw = png((3000, 2000))
@@ -229,6 +247,58 @@ class PublicMediaTests(unittest.TestCase):
 
 
 class MediaHTTPTests(RelayHTTPFixture, unittest.TestCase):
+
+    def test_native_svg_preserves_download_and_renders_inert_thumbnail(self):
+        self.native.runtime_capabilities = lambda **kwargs: declare({'media.read'})
+        raw = b'<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="500"><rect width="1000" height="500" fill="blue"/><script>alert(1)</script></svg>'
+        image = NativeMedia(raw)
+        source = 'https://dsh-attachment.invalid/v1/session-test/2/0/0/image.svg'
+        self.native.is_media_source = lambda value: value == source
+        self.native.prepare_download = image.prepare_download
+        query = '?source=' + quote(source, safe='')
+        status, content, headers = self.binary('/v1/media/content' + query)
+        self.assertEqual((200, raw), (status, content))
+        self.assertEqual('image/svg+xml', headers['Content-Type'])
+        self.assertIn('attachment', headers['Content-Disposition'])
+        self.assertIn('sandbox', headers['Content-Security-Policy'])
+        status, thumbnail, headers = self.binary('/v1/media/thumbnail' + query)
+        self.assertEqual(200, status)
+        self.assertEqual('image/webp', headers['Content-Type'])
+        import io
+        with Image.open(io.BytesIO(thumbnail)) as result:
+            self.assertEqual((512, 256), result.size)
+
+    def test_bitmap_and_icon_images_keep_original_bytes(self):
+        import io
+        for fmt in ('BMP', 'ICO'):
+            with self.subTest(format=fmt):
+                output = io.BytesIO()
+                Image.new('RGB', (32, 32), color='blue').save(output, format=fmt)
+                native = NativeMedia(output.getvalue())
+                self.native.prepare_download = native.prepare_download
+                path = '/v1/media/content?source=' + quote('/native/image.' + fmt.lower(), safe='')
+                self.assertEqual((200, native.raw), self.binary(path)[:2])
+                self.assertEqual(200, self.binary(path.replace('/content?', '/thumbnail?'))[0])
+
+    def test_media_read_supports_preview_and_download_without_file_access(self):
+        self.native.runtime_capabilities = lambda **kwargs: declare({'media.read'})
+        image = NativeMedia()
+        source = 'https://dsh-attachment.invalid/v1/session-test/2/0/0/image.png'
+        self.native.is_media_source = lambda value: value == source
+        self.native.prepare_download = image.prepare_download
+        query = '?source=' + quote(source, safe='')
+        status, versions, _ = self.request('GET', '/v1/media/versions' + query, token=self.token)
+        self.assertEqual(200, status)
+        self.assertEqual(200, self.binary('/v1/media/thumbnail' + query)[0])
+        status, raw, headers = self.binary('/v1/media/content' + query, {'If-Match': versions['original']})
+        self.assertEqual(200, status)
+        self.assertEqual(image.raw, raw)
+        self.assertEqual(206, self.binary('/v1/media/content' + query, {'Range': 'bytes=0-9'})[0])
+        self.assertEqual(401, self.binary('/v1/media/content' + query, authenticated=False)[0])
+        self.assertEqual(409, self.request('GET', '/v1/files?path=/private/fixture', token=self.token)[0])
+        node = self.request('GET', '/v1/node', token=self.token)[1]
+        self.assertTrue(node['capabilities']['media']['proxy'])
+        self.assertFalse(node['capabilities']['operations']['files.read']['available'])
 
     def binary(self, path, headers=None, authenticated=True):
         connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)

@@ -12,6 +12,7 @@
 | 更新文件发布 | `publish-update.py`、`publish-gateway-update.py` | [统一更新中心](../docs/central-updates.md) |
 | 节点状态与重启 | `node-update-status.py`、`restart-service.py` | [更新与发布](../docs/node-updates.md) |
 | Codex 重新授权 | `reauthorize-codex.py` | 先查看脚本参数，按节点授权场景使用 |
+| DSH 只读连接检查 | `verify-dsh.py` | [DSH 既有运行时接入](../docs/dsh-integration.md)；不修改 profile 或 APP 数据 |
 | 服务验证 | `verify-service.py` | [验证记录](../docs/validation.md) |
 | Windows 验证 | `verify-windows-node.py`、`verify-windows-full-access.py` | [历史验证归档说明](../docs/validation.md) |
 | Android 模拟器验证 | `verify-emulator.sh` | 会清除测试 App 本地数据，先查看 `--help` |

@@ -18,6 +18,8 @@ from .todos import TodoStore
 from .media import MediaService
 from .speech import SpeechService
 from .node_name import NodeName
+from .runtime_capabilities import declare, require, submission_requirements
+from .runtime_sessions import SessionService
 
 
 def public_submission(record: dict) -> dict:
@@ -40,16 +42,20 @@ class RelayApp:
         from .presence import Presence
         self.presence = Presence()
         self.node_name = NodeName()
-        self.codex = codex
+        self.backend = codex
+        self.codex = codex  # Compatibility for optional services still being migrated.
         self.events = events or EventBus()
         self.db = Database(config.database_path)
         if hasattr(codex, 'configure_storage'):
             codex.configure_storage(self.db)
+        if hasattr(codex, 'configure_attachments'):
+            codex.configure_attachments(config.workspace / 'dsh-uploads')
         self.pairing = PairingStore(self.db)
         self.submissions = SubmissionStore(self.db)
         self.todos = TodoStore(self.db)
         self.todo_completion = TodoCompletion(self.db, self.todos, self.events)
-        self.queue = ExecutionQueue(self.db, self.codex, self.events)
+        self.queue = ExecutionQueue(self.db, self.backend, self.events)
+        self.sessions = SessionService(self.backend, self.backend_capabilities, self.queue)
         self.download_links = {}
         self.download_lock = threading.Lock()
         self.file_transfer_slots = threading.BoundedSemaphore(2)
@@ -82,16 +88,29 @@ class RelayApp:
 
     def node(self) -> dict:
         from .compatibility import declaration
-        native = self.codex.status()
+        native = self.backend.status()
+        capabilities = self.backend_capabilities(connected=bool(native.get('connected')))
         return {"id": self.config.node_id, "name": self.node_name.get(),
                 "releaseCode": int(os.environ.get("RIVO_RELEASE_CODE", "0")),
-                "connected": bool(native.get("connected")), "compatibility": declaration(),
-                "capabilities": {**native.get("capabilities", {}), **self.media_capabilities(),
-                             "todoAttachmentUpload": True}, "runtime": native}
+                "connected": bool(native.get("connected")), "compatibility": declaration(capabilities),
+                "capabilities": {**native.get("capabilities", {}), "runtime": self.config.runtime, **self.media_capabilities(capabilities),
+                                 **capabilities,
+                                 "todoAttachmentUpload": all(capabilities['operations'][name]['available']
+                                     for name in ('files.upload', 'todo.dispatch'))}, "runtime": native}
 
-    def media_capabilities(self):
-        return {'media': {'proxy': True, 'thumbnails': True, 'thumbnailProfile': 'max-1536-webp-q82-v2',
-                          'generatedProvenance': True, 'library': True, 'favorites': True},
+    def backend_capabilities(self, *, snapshot=None, connected=None):
+        provider = getattr(self.backend, 'runtime_capabilities', None)
+        # A backend without a declaration is closed, never assumed to be Codex.
+        return provider(snapshot=snapshot, connected=connected) if provider else declare(set(), connected=False)
+
+    def require_capability(self, operation):
+        require(self.backend_capabilities(), operation)
+
+    def media_capabilities(self, capabilities=None):
+        capabilities = capabilities or self.backend_capabilities()
+        readable = (capabilities.get('operations', {}).get('media.read') or {}).get('available') is True
+        return {'media': {'proxy': readable, 'thumbnails': readable, 'thumbnailProfile': 'max-1536-webp-q82-v2',
+                          'generatedProvenance': readable, 'library': readable, 'favorites': readable},
                 'speech': self.speech.capabilities()}
 
     def submit(self, connection_id: str, submission_id: str, operation: str,
@@ -102,6 +121,8 @@ class RelayApp:
         if not claim["should_dispatch"]:
             return public_submission(claim["submission"])
         try:
+            for capability in sorted(submission_requirements(operation, payload)):
+                self.require_capability(capability)
             from .submission_dispatch import observe_dispatch
             tracked = operation in {'thread.turns', 'thread.continue', 'thread.create', 'thread.fork'}
             local = operation in {'thread.queue.enqueue', 'thread.queue.remove', 'thread.queue.dismiss',
@@ -109,7 +130,9 @@ class RelayApp:
             if local:
                 self.submissions.begin_local(submission_id)
             def observe(phase, receipt):
-                if tracked or identity_mutation:
+                if phase == 'intent':
+                    self.submissions.record_intent(submission_id, receipt)
+                elif tracked or identity_mutation:
                     self.submissions.record_dispatch(submission_id, phase, receipt)
                 elif local and phase == 'committed':
                     self.submissions.mark_accepted(submission_id, receipt)
@@ -126,10 +149,8 @@ class RelayApp:
             # Resolve a proven turn boundary first. For uninstrumented/sent
             # requests only an explicit definite rejection is safe to fail.
             current = self.submissions.get(submission_id)
-            preparation_error = (getattr(error, 'code', None) if operation in {'thread.create', 'thread.fork'}
-                                 and getattr(error, 'definite', False) else None)
-            proven = current if current['status'] in {'accepted', 'failed'} else self.submissions.resolve_dispatch(
-                submission_id, preparation_error=preparation_error)
+            failure_code = getattr(error, 'code', 'native_rejected') if getattr(error, 'definite', False) else None
+            proven = current if current['status'] in {'accepted', 'failed'} else self.submissions.resolve_dispatch(submission_id, failure_code=failure_code)
             if proven is not None:
                 record = proven
             elif getattr(error, "definite", False):
@@ -140,6 +161,7 @@ class RelayApp:
         return public_submission(record)
 
     def reset_usage(self, connection_id, submission_id, *, credit_id=None, reconcile=False):
+        self.require_capability('usage.reset')
         # This POST is the sole exception to never replaying native mutations:
         # consume has a documented native idempotency key, reused after restart.
         with self._usage_reset_lock:
@@ -218,13 +240,13 @@ class RelayApp:
         previous = self.submissions.find_for_target("todo.dispatch", todo_id)
         if todo.get("thread_id") or any(item["status"] != "failed" or item.get("receipt") for item in previous):
             raise SubmissionConflict("This todo already has a dispatch; continue its linked thread or reconcile it")
-        if supplied_thread and not any(thread["id"] == supplied_thread for thread in self.codex.list_sessions(project_id)):
+        if supplied_thread and not any(thread["id"] == supplied_thread for thread in self.backend.list_sessions(project_id)):
             raise SubmissionConflict("The selected thread does not belong to the selected project")
 
         def dispatch():
             thread_id = supplied_thread
             if not thread_id:
-                receipt = self.codex.create_session(project_id, title=todo["title"])
+                receipt = self.backend.create_session(project_id, title=todo["title"])
                 thread_id = receipt["threadId"]
                 self.submissions.checkpoint(submission_id, {"threadId": thread_id})
             self.todos.link(todo_id, project_id, thread_id)
@@ -249,9 +271,9 @@ class RelayApp:
             attachments = details.get('attachments', []) + payload.get('uploadedAttachments', [])
             if attachments:
                 inputs = [{'type': 'text', 'text': text, 'text_elements': []}] + [{'type': 'mention', 'name': item['name'], 'path': item['path']} for item in attachments]
-                receipt = self.codex.send(thread_id, text, client_message_id=submission_id, input_items=inputs)
+                receipt = self.backend.send(thread_id, text, client_message_id=submission_id, input_items=inputs)
             else:
-                receipt = self.codex.send(thread_id, text, client_message_id=submission_id)
+                receipt = self.backend.send(thread_id, text, client_message_id=submission_id)
             return {**receipt, "threadId": thread_id, "todoId": todo_id}
 
         return self.submit(connection_id, submission_id, "todo.dispatch", todo_id,
@@ -261,5 +283,5 @@ class RelayApp:
         self.queue.close()
         self.media.close()
         self.events.close()
-        self.codex.close()
+        self.backend.close()
         self.db.close()

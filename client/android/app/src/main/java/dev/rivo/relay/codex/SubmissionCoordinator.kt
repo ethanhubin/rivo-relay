@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.*
 import org.json.JSONObject
 import java.util.UUID
 
-data class PendingSubmission(val id: String, val path: String, val label: String, val threadId: String? = null)
+data class PendingSubmission(val id: String, val path: String, val label: String, val threadId: String? = null, val interaction: InteractionIdentity? = null)
 data class SubmissionState(val busy: Boolean = false, val pending: PendingSubmission? = null, val notice: String? = null, val reconciling: Boolean = false, val resolvedRevision: Long = 0)
 data class BatchSubmission(val path: String, val body: JSONObject, val label: String)
 
@@ -54,7 +54,7 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
             val j = JSONObject(it)
             val id = j.getString("id"); val path = j.getString("path")
             require(id.isNotBlank() && path.startsWith("/v1/"))
-            PendingSubmission(id, path, j.getString("label"), j.string("threadId").takeIf(String::isNotBlank))
+            PendingSubmission(id, path, j.getString("label"), j.string("threadId").takeIf(String::isNotBlank), j.optJSONObject("interaction")?.let(::interactionIdentity))
         } catch (e: Exception) {
             throw IllegalArgumentException("无法读取未确认提交记录，已保留原记录，未允许重新提交", e)
         }
@@ -94,11 +94,20 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
             throw IllegalArgumentException("回执对应其他会话，将继续自动核对")
         if (response.string("status") != "accepted") return
         val receipt = response.optJSONObject("receipt") ?: throw IllegalArgumentException("成功回执缺少身份信息，将继续自动核对")
+        pending.interaction?.let { expected ->
+            require(receipt.opt("kind") == "mutation-applied" && receipt.opt("submissionId") == pending.id &&
+                receipt.opt("threadId") == expected.sessionId && receipt.opt("interactionId") == expected.id &&
+                receipt.opt("runtimeGeneration") == expected.runtimeGeneration && receipt.opt("revision") == expected.revision) {
+                "交互回执身份不一致，将继续自动核对"
+            }
+        }
         val threadOperation = pending.path == "/v1/threads" || pending.path.startsWith("/v1/threads/")
         if (receipt.length() == 0 || threadOperation && receipt.string("threadId").isBlank())
             throw IllegalArgumentException("成功回执缺少会话身份，将继续自动核对")
         if (pending.path.endsWith("/turns") || pending.path.endsWith("/continue") || pending.path.endsWith("/answers")) {
-            if (receipt.string("turnId").isBlank()) throw IllegalArgumentException("成功回执缺少任务身份，将继续自动核对")
+            val inputReceipt = decodeInputReceipt(receipt, pending.id, expectedThread)
+            if (inputReceipt !is InputReceipt.Started && !(pending.path.endsWith("/turns") && inputReceipt is InputReceipt.Accepted))
+                throw IllegalArgumentException("成功回执缺少任务身份，将继续自动核对")
         }
     }
     private fun failureMessage(response: JSONObject, label: String): String = when (response.string("errorCode")) {
@@ -118,7 +127,7 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
     private suspend fun save(pending: PendingSubmission?) {
         withContext(Dispatchers.IO) {
             if (pending == null) vault.remove(storageKey)
-            else vault.save(storageKey, JSONObject().put("id", pending.id).put("path", pending.path).put("label", pending.label).put("threadId", pending.threadId).toString())
+            else vault.save(storageKey, JSONObject().put("id", pending.id).put("path", pending.path).put("label", pending.label).put("threadId", pending.threadId).put("interaction", pending.interaction?.responseBody(JSONObject())).toString())
         }
         mutable.update { it.copy(pending = pending) }
     }
@@ -130,7 +139,8 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
         prepared: (PendingSubmission) -> Unit = {}, beforeSend: suspend (PendingSubmission) -> Unit = {},
         prepareBody: suspend (JSONObject) -> JSONObject = { it }, accepted: (JSONObject) -> Unit = {}) {
         val originalThread = Regex("^/v1/threads/([^/]+)/").find(path)?.groupValues?.get(1)?.let { java.net.URLDecoder.decode(it, "UTF-8") }
-        val pending = PendingSubmission(submissionId, path, label, originalThread)
+        val identity = if (path == "/v1/interactions/respond") interactionIdentity(body) else null
+        val pending = PendingSubmission(submissionId, path, label, originalThread ?: identity?.sessionId, identity)
         val frozenBody = copyJsonObject(body).put("submissionId", pending.id)
         while (true) {
             val current = mutable.value

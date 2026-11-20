@@ -17,7 +17,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** Activity-owned: switching tabs does not cancel an update or discard its status. */
-class UpdateViewModel : ViewModel() {
+class UpdateViewModel(val updatesEnabled: Boolean = !dev.rivo.relay.BuildConfig.LOCAL_TEST) : ViewModel() {
     var downloading by mutableStateOf(false); private set
     var downloadedBytes by mutableLongStateOf(0L); private set
     var bytesPerSecond by mutableLongStateOf(0L); private set
@@ -42,6 +42,7 @@ class UpdateViewModel : ViewModel() {
     fun onLogin(loggedIn: Boolean, checkUpdate: suspend () -> AppRelease?) = onLogin(loggedIn, null, checkUpdate)
 
     fun onLogin(loggedIn: Boolean, assess: (suspend (AppRelease) -> UpdateCompatibility)?, checkUpdate: suspend () -> AppRelease?) {
+        if (!updatesEnabled) return
         if (!loggedIn) { loginChecked = false; promptVisible = false; return }
         if (loginChecked) return
         loginChecked = true
@@ -51,6 +52,7 @@ class UpdateViewModel : ViewModel() {
     fun dismissPrompt() { promptVisible = false }
 
     fun check(checkUpdate: suspend () -> AppRelease?, prompt: Boolean = false, assess: (suspend (AppRelease) -> UpdateCompatibility)? = null) {
+        if (!updatesEnabled) return
         if (checking || downloading) return
         checking = true; checked = false; error = null; compatibility = null
         viewModelScope.launch {
@@ -67,6 +69,7 @@ class UpdateViewModel : ViewModel() {
     }
 
     fun download(context: Context, latest: AppRelease, customInstall: (suspend (AppRelease) -> Unit)? = null) {
+        if (!updatesEnabled) return
         if (downloading || checking) return
         downloadedBytes = 0L; bytesPerSecond = 0L; downloading = true; error = null
         viewModelScope.launch {

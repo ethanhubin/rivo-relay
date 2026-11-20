@@ -1,0 +1,12 @@
+[
+  {
+    "apk": "client/android/app/build/outputs/apk/debug/app-debug.apk",
+    "sha256": "c5552e17d2f48db58a48633bc92ccd13e87d2515285cf52dc827a25aa3d37fbe",
+    "install": "Performing Streamed Install\nSuccess"
+  },
+  {
+    "apk": "client/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
+    "sha256": "2f186534a15ba2e8ef060ac9bb432efd8d870b6787000d139d6d0b8ccaf334a2",
+    "install": "Performing Streamed Install\nSuccess"
+  }
+]

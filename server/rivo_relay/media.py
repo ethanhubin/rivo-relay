@@ -1,4 +1,4 @@
-"""Codex media transport and durable, identity-bound generated-image provenance.
+"""Runtime media transport and durable, identity-bound generated-image provenance.
 
 Adapted from QiGuang's media proxy, bounded WebP profile and image ingest.
 Native paths are always read by the connected daemon. Relay-owned copies are
@@ -12,6 +12,7 @@ from contextlib import nullcontext, contextmanager, ExitStack
 import hashlib
 import http.client
 import ipaddress
+import io
 import json
 import os
 import re
@@ -34,7 +35,8 @@ PROXY_IMAGE_LIMIT = 40 * 1024 * 1024
 MEDIA_LIMIT = 1024 * 1024 * 1024
 THUMBNAIL_PROFILE = 'max-512-webp-q78-v3'
 _FORMATS = {'PNG': ('image/png', '.png'), 'JPEG': ('image/jpeg', '.jpg'),
-            'WEBP': ('image/webp', '.webp'), 'GIF': ('image/gif', '.gif'), 'AVIF': ('image/avif', '.avif')}
+            'WEBP': ('image/webp', '.webp'), 'GIF': ('image/gif', '.gif'), 'AVIF': ('image/avif', '.avif'),
+            'BMP': ('image/bmp', '.bmp'), 'ICO': ('image/x-icon', '.ico')}
 
 
 class MediaError(CodexError):
@@ -155,10 +157,10 @@ def public_media(url, target):
     raise MediaError('媒体重定向过多', http_status=502)
 
 
-def media_type(path, declared=''):
+def media_type(path, declared='', *, allow_svg=False):
     with path.open('rb') as stream:
         prefix = stream.read(64)
-    if prefix.startswith((b'\x89PNG', b'\xff\xd8', b'GIF87a', b'GIF89a')) or prefix[8:12] == b'WEBP' or prefix[4:12] in (b'ftypavif', b'ftypavis'):
+    if prefix.startswith((b'\x89PNG', b'\xff\xd8', b'GIF87a', b'GIF89a', b'BM', b'\x00\x00\x01\x00')) or prefix[8:12] == b'WEBP' or prefix[4:12] in (b'ftypavif', b'ftypavis'):
         if path.stat().st_size > IMAGE_LIMIT:
             raise MediaError('图片超过 64 MiB', code='media_too_large', http_status=413)
         try:
@@ -172,7 +174,12 @@ def media_type(path, declared=''):
                 if result: return result
         except (OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
             raise MediaError('图片内容无法解码', code='invalid_media', http_status=415) from error
-    # Active formats such as SVG/HTML never enter image or media previews.
+    if allow_svg:
+        from .svg_media import is_svg
+        if is_svg(path.read_bytes()):
+            return 'image/svg+xml', '.svg'
+    # SVG is admitted only through a verified adapter reference. HTML is never
+    # media; SVG previews use a static renderer and originals download inertly.
     if prefix.startswith(b'OggS'): return ('video/ogg', '.ogv') if declared.startswith('video/') else ('audio/ogg', '.ogg')
     if prefix.startswith(b'fLaC'): return 'audio/flac', '.flac'
     if prefix.startswith(b'ID3') or (len(prefix) >= 2 and prefix[0] == 255 and prefix[1] & 0xe0 == 0xe0): return 'audio/mpeg', '.mp3'
@@ -256,7 +263,18 @@ class MediaService:
     def resolve(self, source, *, thumbnail=False, _open=False):
         if not isinstance(source, str) or not source or len(source) > 8192 or '\0' in source:
             raise MediaError('媒体来源无效', code='invalid_media_source', http_status=400)
-        native = not source.startswith(('http://', 'https://'))
+        resolver = getattr(self.codex, 'is_media_source', None)
+        adapter_source = callable(resolver) and resolver(source)
+        native = adapter_source or not source.startswith(('http://', 'https://'))
+        if not native:
+            try:
+                host = (urllib.parse.urlsplit(source).hostname or '').rstrip('.').lower()
+            except ValueError as error:
+                raise MediaError('媒体来源无效', code='invalid_media_source', http_status=400) from error
+            # Reserved virtual origins are adapter references, never network
+            # requests. An unknown adapter or malformed reference fails closed.
+            if host == 'invalid' or host.endswith('.invalid'):
+                raise MediaError('此媒体来源不受当前运行时支持', code='invalid_media_source', http_status=400)
         generation = str(getattr(getattr(self.codex, 'connection', None), 'generation', ''))
         key = hashlib.sha256(('native:' + generation + source if native else source).encode()).hexdigest()
         # Coalesce one resource, not all resources. A slow origin cannot hold
@@ -287,7 +305,7 @@ class MediaService:
                                 output.flush(); os.fsync(output.fileno())
                             if temporary.stat().st_size != download['size']: raise MediaError('媒体读取不完整', code='media_incomplete')
                         else: declared = self.fetch_public(source, temporary)
-                        mime, suffix = media_type(temporary, declared)
+                        mime, suffix = media_type(temporary, declared, allow_svg=adapter_source)
                         if not native and mime.startswith('image/') and temporary.stat().st_size > PROXY_IMAGE_LIMIT:
                             raise MediaError('公开图片超过 40 MiB', code='media_too_large', http_status=413)
                         with temporary.open('rb') as stream: digest = hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -354,7 +372,17 @@ class MediaService:
                 try:
                     with self._pin(temporary), warnings.catch_warnings():
                         warnings.simplefilter('error', Image.DecompressionBombWarning)
-                        with Image.open(original) as opened:
+                        source = original
+                        if str(getattr(original, 'name', original)).endswith('.svg'):
+                            from .svg_media import thumbnail_png
+                            if hasattr(original, 'read'):
+                                original.seek(0)
+                                raw = original.read()
+                                original.seek(0)
+                            else:
+                                raw = Path(original).read_bytes()
+                            source = io.BytesIO(thumbnail_png(raw))
+                        with Image.open(source) as opened:
                             if opened.width * opened.height > 80_000_000: raise ValueError('pixel limit')
                             image = ImageOps.exif_transpose(opened)
                             image.thumbnail((512, 512), Image.Resampling.LANCZOS)

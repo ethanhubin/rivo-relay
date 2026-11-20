@@ -108,7 +108,7 @@ class LiveSmokeTest {
         compose.onNodeWithTag("scan_connect").assertIsDisplayed().performClick()
         // Only a genuine ZXing capture result can navigate to the authenticated project screen.
         waitForTag("projects_page", 300_000)
-        compose.onNodeWithText("Codex 项目").assertIsDisplayed()
+        compose.onNodeWithTag("projects_page").assertIsDisplayed()
         waitForProject()
         saveEvidence("qr-paired-projects")
     }
@@ -134,7 +134,7 @@ class LiveSmokeTest {
                 ?.isVisible(WindowInsetsCompat.Type.ime()) == true
         }
         compose.onNodeWithTag("send_message").assertIsDisplayed().assertIsEnabled()
-        compose.onNodeWithText("Codex 原生会话").assertIsDisplayed()
+        compose.onNodeWithTag("conversation_header").assertIsDisplayed()
         saveEvidence("native-conversation-keyboard")
     }
 
@@ -527,7 +527,7 @@ class LiveSmokeTest {
         waitForTag("projects_page")
         waitForTag("app_error", 60_000)
         compose.onNodeWithTag("scan_connect").assertDoesNotExist()
-        compose.onNodeWithText("Codex 项目").assertIsDisplayed()
+        compose.onNodeWithTag("projects_page").assertIsDisplayed()
         saveEvidence("offline-home")
     }
 
@@ -568,7 +568,7 @@ class LiveSmokeTest {
         saveEvidence("saved-nodes")
         compose.onNodeWithTag("saved_node_$address").performClick()
         waitForTag("projects_page")
-        compose.onNodeWithText("Codex 项目").assertIsDisplayed()
+        compose.onNodeWithTag("projects_page").assertIsDisplayed()
         compose.onNodeWithTag("app_error").assertDoesNotExist()
         saveEvidence("saved-node-reconnected")
     }
@@ -584,7 +584,7 @@ class LiveSmokeTest {
         compose.onNodeWithTag("pairing_code").performTextInput(code)
         compose.onNodeWithTag("manual_connect").performClick()
         waitForTag("projects_page", 60_000)
-        compose.onNodeWithText("Codex 项目").assertIsDisplayed()
+        compose.onNodeWithTag("projects_page").assertIsDisplayed()
         waitForProject()
         saveEvidence("manual-paired-projects")
     }

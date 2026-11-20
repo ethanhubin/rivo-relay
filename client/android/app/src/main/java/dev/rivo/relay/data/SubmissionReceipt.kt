@@ -19,3 +19,32 @@ suspend fun RelayApi.reconcileSubmission(id: String): JSONObject {
     }
     return response
 }
+
+/** Accepted input and started execution are distinct provider-neutral facts. */
+internal sealed interface InputReceipt {
+    data class Accepted(val submissionId: String, val threadId: String) : InputReceipt
+    data class Started(val submissionId: String, val threadId: String, val executionId: String) : InputReceipt
+}
+
+internal fun decodeInputReceipt(receipt: JSONObject, submissionId: String, threadId: String? = null): InputReceipt? {
+    val returnedThread = receipt.opt("threadId") as? String ?: return null
+    if (returnedThread.isBlank() || threadId != null && threadId != returnedThread) return null
+    if (receipt.has("kind")) {
+        if (receipt.opt("submissionId") != submissionId) return null
+        if (receipt.has("submission_id") && receipt.opt("submission_id") != submissionId) return null
+        if (receipt.has("thread_id") && receipt.opt("thread_id") != returnedThread) return null
+        return when (receipt.opt("kind")) {
+            "input-accepted" -> if (listOf("turnId", "turn_id", "executionId", "execution_id").any(receipt::has)) null else InputReceipt.Accepted(submissionId, returnedThread)
+            "execution-started" -> (receipt.opt("executionId") as? String)?.takeIf(String::isNotBlank)
+                ?.takeIf { execution -> listOf("turnId", "turn_id", "execution_id").all { !receipt.has(it) || receipt.opt(it) == execution } }
+                ?.let { InputReceipt.Started(submissionId, returnedThread, it) }
+            else -> null
+        }
+    }
+    // Decode persisted receipts issued before the neutral protocol; no product branch
+    // escapes this compatibility boundary, and malformed new receipts never fall back.
+    val turn = (receipt.opt("turnId") as? String)?.takeIf(String::isNotBlank)
+    if (turn != null) return InputReceipt.Started(submissionId, returnedThread, turn)
+    return if (receipt.opt("runtime") == "dsh" && receipt.opt("acceptance") == "input" && receipt.opt("requestId") == submissionId)
+        InputReceipt.Accepted(submissionId, returnedThread) else null
+}

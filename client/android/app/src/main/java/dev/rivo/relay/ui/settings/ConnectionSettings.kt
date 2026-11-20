@@ -72,6 +72,8 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
                 Box(Modifier.weight(1f)) {
                     OutlinedButton(onClick = { nodeMenuOpen = true },
                         modifier = Modifier.fillMaxWidth().testTag("settings_node_selector")) {
+                        dev.rivo.relay.ui.common.RuntimeIcon(connection.runtime)
+                        Spacer(Modifier.width(8.dp))
                         Text(connection.name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(" ›")
                     }
@@ -79,8 +81,9 @@ fun ConnectionSettings(connection: NodeConnection, api: RelayApi?, setMode: (Con
                         savedNodes.filter { it.authorized }.forEach { saved ->
                             val selected = saved.base == connection.base
                             DropdownMenuItem(
-                                text = { Text(saved.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
-                                leadingIcon = { Text(if (selected) "✓" else "", Modifier.width(20.dp)) },
+                                text = { Text(saved.name + " · " + runtimeDisplayName(saved.runtime), maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                                leadingIcon = { dev.rivo.relay.ui.common.RuntimeIcon(saved.runtime) },
+                                trailingIcon = { if (selected) Text("✓") },
                                 onClick = { nodeMenuOpen = false; if (!selected) onSelectNode(saved.base) },
                                 modifier = Modifier.testTag("settings_switch_node_${saved.base}"),
                             )

@@ -4,8 +4,11 @@ from __future__ import annotations
 from collections import OrderedDict
 import copy
 import threading
+from contextlib import contextmanager
 
 from .connection import CodexError
+from .interaction_contract import project_interaction, native_response
+from ..runtime_state import revision_of
 
 
 class Interactions:
@@ -13,7 +16,9 @@ class Interactions:
         self.connection = connection
         self._lock = threading.RLock()
         self._pending = {}
-        self._inflight = {}
+        self._revision = 0
+        self._request_revisions = {}
+        self._claims = {}
         self._generation = connection.generation
         self._resolved = OrderedDict()
         self._terminal = OrderedDict()
@@ -31,17 +36,22 @@ class Interactions:
         if self._generation != self.connection.generation:
             self._generation = self.connection.generation
             self._pending.clear()
-            self._inflight.clear()
+            self._claims.clear()
+            self._request_revisions.clear()
+            self._revision += 1
             self._resolved.clear()
             self._terminal.clear()
             self._turns.clear()
             self._excluded.clear()
 
     def _drop(self, predicate):
-        for key, request in list({**self._pending, **self._inflight}.items()):
+        for key, request in list({**self._pending, **{k: c['request'] for k, c in self._claims.items()}}.items()):
             if predicate(request):
                 self._remember(self._resolved, key)
                 self._pending.pop(key, None)
+                self._claims.pop(key, None)
+                self._request_revisions.pop(key, None)
+                self._revision += 1
 
     def _key(self, request_id):
         return f"{self._generation}:{type(request_id).__name__}:{request_id}"
@@ -55,6 +65,9 @@ class Interactions:
         with self._lock:
             if event.get('connectionId', self.connection.generation) != self.connection.generation:
                 return
+            before = copy.deepcopy(self._pending)
+            before_claims = set(self._claims)
+            previous_sessions = {self._thread(r['params']) for r in [*self._pending.values(), *(c['request'] for c in self._claims.values())]}
             self._sync_generation()
             method = event.get("method", "")
             params = event.get('params') or {}
@@ -71,7 +84,7 @@ class Interactions:
                 return False
             elif "id" in event:
                 key = self._key(event['id'])
-                if (key in self._resolved or key in self._inflight or thread_id in self._excluded or
+                if (key in self._resolved or key in self._claims or thread_id in self._excluded or
                         (thread_id, turn_id) in self._terminal or
                         turn_id and self._turns.get(thread_id) not in (None, turn_id) and
                         (thread_id, self._turns[thread_id]) not in self._terminal):
@@ -82,6 +95,7 @@ class Interactions:
                 key = self._key(params.get('requestId'))
                 self._remember(self._resolved, key)
                 self._pending.pop(key, None)
+                self._claims.pop(key, None)
             elif method == 'turn/started' and thread_id and turn_id:
                 if (thread_id, turn_id) in self._terminal:
                     return False
@@ -106,7 +120,14 @@ class Interactions:
                 self._drop(lambda r: self._thread(r['params']) == thread_id)
             elif method in ('thread/unarchived', 'thread/started'):
                 self._excluded.discard(thread_id or (params.get('thread') or {}).get('id'))
-            return True
+            if before != self._pending or before_claims != set(self._claims):
+                self._revision += 1
+            for key, request in self._pending.items():
+                if before.get(key) != request or key not in self._request_revisions:
+                    self._request_revisions[key] = revision_of(str(self._generation), self._revision, request)
+            self._request_revisions = {key: value for key, value in self._request_revisions.items() if key in self._pending}
+            current_sessions = {self._thread(r['params']) for r in self._pending.values()}
+            return {sid for sid in previous_sessions | current_sessions if isinstance(sid, str) and sid} if before != self._pending or before_claims != set(self._claims) else set()
 
     def discard_thread(self, thread_id):
         """Expire requests after the owning writer has stopped; never answer them."""
@@ -121,7 +142,45 @@ class Interactions:
                     if v["connectionId"] == self.connection.generation and
                     v["params"].get("threadId", v["params"].get("conversationId")) == thread_id]
 
+    def session_for(self, key):
+        with self._lock:
+            params = (self._pending.get(key) or {}).get('params', {})
+            return params.get('threadId', params.get('conversationId'))
+
+    def snapshot(self, thread_id):
+        with self._lock:
+            requests = self.list(thread_id)
+            return {'generation': str(self.connection.generation), 'revision': str(self._revision), 'requests': requests,
+                    'interactions': [project_interaction(request, self._request_revisions[request['key']]) for request in requests]}
+
+    @contextmanager
+    def guard(self, snapshot):
+        """No native I/O while held; prevent a late HTTP cut reviving requests."""
+        with self._lock:
+            if (snapshot['generation'] != str(self.connection.generation)
+                    or snapshot['revision'] != str(self._revision)):
+                raise CodexError('原生交互已变化，请重新读取会话', code='session_changed', http_status=409)
+            yield
+
+    def respond_interaction(self, session_id, generation, interaction_id, revision, response):
+        with self._lock:
+            request = self._pending.get(interaction_id)
+            if (str(self.connection.generation) != generation or request is None
+                    or str(request['connectionId']) != generation
+                    or request['params'].get('threadId', request['params'].get('conversationId')) != session_id
+                    or self._request_revisions.get(interaction_id) != revision):
+                raise CodexError('此原生请求已失效，请刷新会话', code='interaction_expired', http_status=409)
+            result = native_response(request, revision, response)
+            claim = self._claim(interaction_id, result)
+        receipt = self._dispatch(interaction_id, claim, result)
+        return {**receipt, 'interactionId': interaction_id, 'runtimeGeneration': generation, 'revision': revision}
+
     def respond(self, key, result):
+        with self._lock:
+            claim = self._claim(key, result)
+        return self._dispatch(key, claim, result)
+
+    def _claim(self, key, result):
         if not isinstance(result, dict):
             raise CodexError("原生交互响应必须是对象", code="invalid_response", http_status=400)
         with self._lock:
@@ -145,15 +204,26 @@ class Interactions:
             # the state lock across transport IO: events must still resolve/cancel
             # requests while an answer is being sent.
             del self._pending[key]
-            self._inflight[key] = request
+            self._revision += 1
+            claim = {'request': request, 'revision': self._request_revisions.pop(key)}
+            self._claims[key] = claim
+            return claim
+
+    def _dispatch(self, key, claim, result):
+        request = claim['request']
+        # Native writer retirement synchronously publishes invalidations. Never
+        # hold the pending lock while waiting for that writer's operation lock.
+        # The transport checks this generation again under its final send lock.
         try:
-            self.connection.respond(request["id"], result)
+            self.connection.respond(request['id'], result, expected_generation=request['connectionId'])
         except Exception as error:
             with self._lock:
-                if (getattr(error, 'definite', False) and request['connectionId'] == self.connection.generation and
-                        key not in self._resolved and
-                        (self._thread(request['params']), request['params'].get('turnId')) not in self._terminal):
+                if (getattr(error, 'definite', False) and self._claims.get(key) is claim
+                        and request['connectionId'] == self.connection.generation and key not in self._resolved
+                        and (self._thread(request['params']), request['params'].get('turnId')) not in self._terminal):
                     self._pending[key] = request
+                    self._request_revisions[key] = claim['revision']
+                    self._revision += 1
                 else:
                     self._remember(self._resolved, key)
             raise
@@ -162,9 +232,10 @@ class Interactions:
                 self._remember(self._resolved, key)
         finally:
             with self._lock:
-                self._inflight.pop(key, None)
-        receipt = {"requestId": key}
-        thread_id = self._thread(request["params"])
+                if self._claims.get(key) is claim:
+                    self._claims.pop(key, None)
+        receipt = {'requestId': key}
+        thread_id = request['params'].get('threadId') or request['params'].get('conversationId')
         if isinstance(thread_id, str) and thread_id:
-            receipt["threadId"] = thread_id
+            receipt['threadId'] = thread_id
         return receipt

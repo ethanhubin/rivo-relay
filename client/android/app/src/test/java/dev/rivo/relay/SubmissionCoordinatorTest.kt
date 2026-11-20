@@ -14,6 +14,27 @@ import org.junit.Test
 import java.io.IOException
 
 class SubmissionCoordinatorTest {
+    @Test fun neutralInteractionReceiptChecksIdentityIncludingAfterRestart() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val vault = MemoryVault()
+        try {
+            val receipt = JSONObject("""{"kind":"mutation-applied","submissionId":"submit","threadId":"s","interactionId":"i","runtimeGeneration":"g","revision":"wrong"}""")
+            fun result() = JSONObject().put("status", "accepted").put("submissionId", "submit").put("receipt", receipt).toString()
+            server.enqueue(MockResponse().setBody(result()))
+            val coordinator = SubmissionCoordinator(api(server), scope, vault, "interaction", recoveryDelayMillis = 60000, failure = {})
+            coordinator.submit("/v1/interactions/respond", InteractionIdentity("s", "g", "i", "r").responseBody(JSONObject().put("choiceId", "choice")), "respond", submissionId = "submit") {}
+            idle(coordinator)
+            assertNotNull(coordinator.state.value.pending)
+            val restored = SubmissionCoordinator(api(server), scope, vault, "interaction", recoveryDelayMillis = 60000, failure = {})
+            assertEquals(InteractionIdentity("s", "g", "i", "r"), restored.state.value.pending!!.interaction)
+            receipt.put("revision", "r")
+            server.enqueue(MockResponse().setBody(result()))
+            restored.reconcile(); idle(restored)
+            assertNull(restored.state.value.pending)
+        } finally { scope.cancel(); server.shutdown() }
+    }
+
     @Test fun disconnectedSendUsesPendingThenDefinitiveNoticeWithoutGlobalError() = runBlocking {
         val server = MockWebServer(); server.start()
         val scope = CoroutineScope(coroutineContext + SupervisorJob())
@@ -33,6 +54,50 @@ class SubmissionCoordinatorTest {
             assertEquals("POST", server.takeRequest().method)
             assertEquals("GET", server.takeRequest().method)
         } finally { scope.cancel(); server.shutdown() }
+    }
+
+    @Test fun dshInboxAcceptanceRequiresExactRuntimeOperationAndSubmissionIdentity() = runBlocking {
+        data class Case(val operation: String = "turns", val runtime: String? = "dsh",
+            val requestId: Any = "send-id", val acceptance: String? = "input", val accepted: Boolean = false)
+        val cases = listOf(
+            Case(accepted = true), Case(runtime = "codex"), Case(runtime = null),
+            Case(requestId = "other"), Case(requestId = 42), Case(acceptance = null),
+            Case(operation = "continue"), Case(operation = "answers"))
+        for (case in cases) {
+            val server = MockWebServer(); server.start()
+            val scope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                val receipt = JSONObject().put("threadId", "native").put("runtime", case.runtime)
+                    .put("requestId", case.requestId).put("acceptance", case.acceptance)
+                server.enqueue(MockResponse().setBody(JSONObject().put("status", "accepted")
+                    .put("submissionId", "send-id").put("receipt", receipt).toString()))
+                var callback = false
+                val coordinator = SubmissionCoordinator(api(server), scope, MemoryVault(), "key",
+                    recoveryDelayMillis = 60_000, failure = {})
+                coordinator.submit("/v1/threads/native/${case.operation}", JSONObject(), "send", submissionId = "send-id") { callback = true }
+                idle(coordinator)
+                assertEquals(case.toString(), case.accepted, callback)
+                assertEquals(case.toString(), !case.accepted, coordinator.state.value.pending != null)
+                assertEquals(1, server.requestCount)
+                assertEquals("POST", server.takeRequest().method)
+            } finally { scope.cancel(); server.shutdown() }
+        }
+    }
+
+    @Test fun neutralInputReceiptSettlesOnlySendAndPreservesExecutionRequirements() = runBlocking {
+        for (operation in listOf("turns", "continue", "answers")) {
+            val server = MockWebServer(); server.start()
+            val scope = CoroutineScope(coroutineContext + SupervisorJob())
+            try {
+                server.enqueue(MockResponse().setBody("""{"status":"accepted","submissionId":"s","receipt":{"kind":"input-accepted","submissionId":"s","threadId":"native"}}"""))
+                var accepted = false
+                val coordinator = SubmissionCoordinator(api(server), scope, MemoryVault(), "key", recoveryDelayMillis = 60_000, failure = {})
+                coordinator.submit("/v1/threads/native/$operation", JSONObject(), "send", submissionId = "s") { accepted = true }
+                idle(coordinator)
+                assertEquals(operation == "turns", accepted)
+                assertEquals(operation != "turns", coordinator.state.value.pending != null)
+            } finally { scope.cancel(); server.shutdown() }
+        }
     }
 
     private class MemoryVault : CredentialStorage {

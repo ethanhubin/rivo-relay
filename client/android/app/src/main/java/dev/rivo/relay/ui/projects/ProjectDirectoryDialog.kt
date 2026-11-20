@@ -75,7 +75,7 @@ fun ProjectDirectoryDialog(readDirectory: suspend (String) -> JSONObject, writab
                     Column(Modifier.fillMaxWidth().padding(horizontal = RivoSpacing.Page, vertical = RivoSpacing.Sm), verticalArrangement = Arrangement.spacedBy(RivoSpacing.Xs)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             TextButton(onClick = goBack, enabled = !busy && !loading, modifier = Modifier.testTag("project_directory_parent")) { Text("‹ 返回") }
-                            Text("添加 Codex 项目", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                            Text("添加项目", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                         }
                         if (nodeName.isNotBlank()) Text(nodeName, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                         Text(path.ifBlank { "正在读取节点目录…" }, Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).testTag("project_directory_path"),

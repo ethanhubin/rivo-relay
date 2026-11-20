@@ -1,0 +1,13 @@
+{
+  "passed": false,
+  "failure": "network restoration did not revalidate APP session before 180s timeout",
+  "testDurationSeconds": 192.491,
+  "threadId": "01a1ca0c-8b26-7e72-abd9-7e431955579a",
+  "submissionId": "408e72b773724d8e9d319861bd802adc",
+  "interruptedExecutionId": "01a1ca0c-8c48-7f62-b4c7-3cfc8a682ebd",
+  "interruptAccepted": true,
+  "finalExecution": "idle",
+  "pendingCount": 0,
+  "proofExists": false,
+  "inputWasNotResubmitted": true
+}

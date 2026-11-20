@@ -94,7 +94,7 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
                     add(runtime.string("handoffUnavailableReason"))
             }
         }.map(String::trim).filter(String::isNotBlank).distinct()
-        AlertDialog(onDismissRequest = { runtimeDetails = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("Codex 连接") } },
+        AlertDialog(onDismissRequest = { runtimeDetails = false }, title = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Text("运行时连接") } },
             text = { dev.rivo.relay.ui.chat.ThemedTextContextMenu { Column(Modifier.testTag("writer_runtime_details").verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 details.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
@@ -108,7 +108,7 @@ internal fun NativeWriterStatus(state: SessionState, nodeName: String, busy: Boo
 internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: () -> Unit, onSettings: () -> Unit,
     onRefresh: () -> Unit, onReview: () -> Unit, onStop: () -> Unit, canStop: Boolean,
     pinned: Boolean, canManage: Boolean, onPin: ((Boolean) -> Unit)?, onArchive: (() -> Unit)?,
-    onWriterAction: ((String) -> Unit)? = null, writerBusy: Boolean = false, writerBlockedReason: String? = null, recoveryState: RecoveryState? = null, onDelete: (() -> Unit)? = null) {
+    onWriterAction: ((String) -> Unit)? = null, writerBusy: Boolean = false, writerBlockedReason: String? = null, recoveryState: RecoveryState? = null, onDelete: (() -> Unit)? = null, capabilities: dev.rivo.relay.data.RuntimeCapabilities = dev.rivo.relay.data.RuntimeCapabilities.Legacy) {
     val snapshot = state.snapshot
     val context = LocalContext.current
     var confirmDelete by remember(state.id) { mutableStateOf(false) }
@@ -122,7 +122,7 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
     val activeSettings = snapshot?.let { current -> current.turnSettings.firstOrNull { it.turnId == current.activeTurnId } }
     val model = activeSettings?.model ?: snapshot?.settings?.string("model").orEmpty()
     val effort = activeSettings?.effort ?: snapshot?.settings?.string("reasoningEffort").orEmpty()
-    val configuration = listOf(model, effort).filter(String::isNotBlank).joinToString(" · ").ifBlank { "Codex" }
+    val configuration = listOf(model, effort).filter(String::isNotBlank).joinToString(" · ").ifBlank { snapshot?.nativeRuntime?.string("displayName")?.takeIf(String::isNotBlank) ?: "运行时" }
     val status = state.syncStatusLabel()
     Box(Modifier.fillMaxWidth().height(64.dp).testTag("conversation_header")) {
         Row(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically,
@@ -138,7 +138,7 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
                     drawLine(arrowColor, tip, Offset(size.width * .49f, size.height * .77f), stroke, StrokeCap.Round)
                 }
             }
-            Column(Modifier.weight(1f).fillMaxHeight().clickable(onClick = onSettings).padding(horizontal = 8.dp).testTag("conversation_status"), verticalArrangement = Arrangement.Center) {
+            Column(Modifier.weight(1f).fillMaxHeight().clickable(enabled = capabilities.allows("session.settings"), onClick = onSettings).padding(horizontal = 8.dp).testTag("conversation_status"), verticalArrangement = Arrangement.Center) {
                 SelectionContainer { Text(snapshot?.name ?: if (state.readError != null && !state.loading) "会话读取失败" else "正在读取会话…",
                     Modifier.testTag("conversation_title"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium,
                     maxLines = 1, overflow = TextOverflow.Ellipsis) }
@@ -165,24 +165,24 @@ internal fun NativeChatHeader(state: SessionState, usage: CodexUsage?, onBack: (
                 DropdownMenu(menu, { menu = false }, modifier = Modifier.width(248.dp),
                     shape = RoundedCornerShape(28.dp), containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
                     tonalElevation = 0.dp, shadowElevation = 12.dp) {
-                    ConversationMenuItem(icon = "review", text = { Text("改动与代码审查") }, onClick = { menu = false; onReview() }, enabled = snapshot != null,
+                    if (capabilities.allows("session.review")) ConversationMenuItem(icon = "review", text = { Text("改动与代码审查") }, onClick = { menu = false; onReview() }, enabled = snapshot != null,
                         modifier = Modifier.testTag("open_codex_review"))
                     ConversationMenuItem(icon = "refresh", text = { Text("刷新会话") }, onClick = { menu = false; onRefresh() }, modifier = Modifier.testTag("refresh_conversation"))
-                    if (onPin != null) ConversationMenuItem(icon = "pin", text = { Text(if (pinned) "取消置顶" else "置顶") },
+                    if (onPin != null && capabilities.allows("session.pin")) ConversationMenuItem(icon = "pin", text = { Text(if (pinned) "取消置顶" else "置顶") },
                         onClick = { menu = false; onPin(!pinned) }, enabled = true, modifier = Modifier.testTag("set_session_pinned"))
-                    if (onArchive != null) ConversationMenuItem(icon = "archive", text = { Text("归档") }, onClick = { menu = false; onArchive() },
+                    if (onArchive != null && capabilities.allows("session.archive")) ConversationMenuItem(icon = "archive", text = { Text("归档") }, onClick = { menu = false; onArchive() },
                         enabled = canManage && snapshot != null && snapshot.activeTurnId.isBlank() && snapshot.requests.isEmpty() && snapshot.queue.isEmpty(),
                         modifier = Modifier.testTag("archive_session"))
-                    if (onDelete != null) ConversationMenuItem(icon = "delete", text = { Text("永久删除", color = MaterialTheme.colorScheme.error) },
+                    if (onDelete != null && capabilities.allows("session.delete")) ConversationMenuItem(icon = "delete", text = { Text("永久删除", color = MaterialTheme.colorScheme.error) },
                         onClick = { menu = false; confirmDelete = true }, enabled = canDelete, modifier = Modifier.testTag("delete_session"))
-                    ConversationMenuItem(icon = "release", text = { Text("释放权限") },
+                    if (capabilities.allows("session.ownership")) ConversationMenuItem(icon = "release", text = { Text("释放权限") },
                         onClick = { menu = false; onWriterAction?.invoke("release") },
                         enabled = state.showRelease() && onWriterAction != null && !writerBusy && writerBlockedReason == null &&
                             releaseUnavailableReason(snapshot?.nativeRuntime) == null,
                         modifier = Modifier.testTag("release_session_permission"))
                     ConversationMenuItem(icon = "copy", text = { Text("复制会话 ID") }, enabled = state.id != null, modifier = Modifier.testTag("copy_session_id"),
                         onClick = { menu = false; state.id?.let { id -> context.getSystemService(ClipboardManager::class.java)
-                            .setPrimaryClip(ClipData.newPlainText("Codex 会话 ID", id)); Toast.makeText(context, "已复制会话 ID", Toast.LENGTH_SHORT).show() } })
+                            .setPrimaryClip(ClipData.newPlainText("会话 ID", id)); Toast.makeText(context, "已复制会话 ID", Toast.LENGTH_SHORT).show() } })
                 }
             }
         }
@@ -198,7 +198,7 @@ internal fun NativeComposerSettings(settings: JSONObject?, models: List<JSONObje
     serviceTier: String? = null, onServiceTier: (String) -> Unit = {}, savesToSession: Boolean = false,
     sandboxChoice: String? = null, approvalChoice: String? = null, newSession: Boolean = false, permissionsEditable: Boolean = true,
     onSandbox: (String?) -> Unit = {}, onApproval: (String?) -> Unit = {},
-    defaultSettings: JSONObject? = null, onSaveDefaults: ((JSONObject) -> Unit)? = null, catalogNotice: String? = null) {
+    defaultSettings: JSONObject? = null, onSaveDefaults: ((JSONObject) -> Unit)? = null, catalogNotice: String? = null, capabilities: RuntimeCapabilities = RuntimeCapabilities.Legacy) {
     Column(Modifier.verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(if (savesToSession) "会话设置" else "下一项任务", style = MaterialTheme.typography.titleSmall)
         val modelOptions = models.map { model ->
@@ -219,16 +219,16 @@ internal fun NativeComposerSettings(settings: JSONObject?, models: List<JSONObje
             style = MaterialTheme.typography.labelSmall, modifier = Modifier.testTag("composer_effort_status"))
         if (models.isEmpty()) Text("暂未取得可用模型，可继续沿用当前设置。", style = MaterialTheme.typography.labelSmall)
         catalogNotice?.let { Text(it, Modifier.testTag("model_catalog_notice"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        if (capabilities.supports("session.service_tier")) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("快速模式", style = MaterialTheme.typography.bodyMedium)
                 Text("提升响应速度，会更快消耗额度", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Switch(checked = serviceTier == "priority", onCheckedChange = { onServiceTier(if (it) "priority" else "default") }, enabled = enabled,
+            Switch(checked = serviceTier == "priority", onCheckedChange = { onServiceTier(if (it) "priority" else "default") }, enabled = enabled && capabilities.allows("session.service_tier"),
                 modifier = Modifier.testTag("codex_fast_mode_switch"))
         }
         val sandboxOptions = sandboxSettingOptions
-        if (serviceTier.isNullOrBlank()) Text(
+        if (capabilities.supports("session.service_tier") && serviceTier.isNullOrBlank()) Text(
             if (newSession || settings?.has("serviceTier") == true && settings.isNull("serviceTier")) "服务等级沿用原生默认"
             else "服务等级尚未读取；切换开关后将明确设置快速模式。",
             style = MaterialTheme.typography.labelSmall, modifier = Modifier.testTag("service_tier_status"))
@@ -237,18 +237,18 @@ internal fun NativeComposerSettings(settings: JSONObject?, models: List<JSONObje
         val effectiveSandbox = if (newSession) sandboxChoice?.takeUnless { it == "inherit" } else currentSandbox
         val effectiveApproval = if (newSession) approvalChoice?.takeUnless { it == "inherit" } else permissionPreset(settings)
         val inPlan = (selectedMode ?: settings?.optJSONObject("collaborationMode")?.string("mode")) == "plan"
-        if (newSession || savesToSession) {
+        if (capabilities.supports("session.permissions") && (newSession || savesToSession)) {
             SettingsSelector("权限模式", approvalSettingLabel(settings, newSession, approvalChoice),
-                approvalOptions, enabled && permissionsEditable && (newSession || !inPlan), "composer_approval", onApproval)
+                approvalOptions, enabled && capabilities.allows("session.permissions") && permissionsEditable && (newSession || !inPlan), "composer_approval", onApproval)
             if (!permissionsEditable) Text("会话已创建，发送完成后可在会话设置中修改权限。", style = MaterialTheme.typography.labelSmall)
             if (inPlan) Text("讨论模式使用只读权限；退出后恢复所选权限。", style = MaterialTheme.typography.labelSmall)
         }
         if (onSaveDefaults != null) {
-            val unavailable = nativeDefaultsUnavailableReason(settings, newSession, effectiveModel, effectiveEffort, serviceTier)
+            val unavailable = nativeDefaultsUnavailableReason(settings, newSession, effectiveModel, effectiveEffort, serviceTier, capabilities.supports("session.permissions"), capabilities.supports("session.service_tier"))
             val tier = serviceTier?.takeIf(String::isNotBlank)
-            val defaults = JSONObject().put("model", effectiveModel?.takeIf(String::isNotBlank)).put("effort", effectiveEffort?.takeIf(String::isNotBlank)).put("serviceTier", tier)
-                .put("sandbox", effectiveSandbox).put("approvalPolicy", effectiveApproval)
-            SaveConversationDefaultsButton(defaults, defaultSettings, enabled, onSaveDefaults, unavailable)
+            val defaults = capabilities.filterSettings(JSONObject().put("model", effectiveModel?.takeIf(String::isNotBlank)).put("effort", effectiveEffort?.takeIf(String::isNotBlank)).put("serviceTier", tier)
+                .put("sandbox", effectiveSandbox).put("approvalPolicy", effectiveApproval))
+            SaveConversationDefaultsButton(defaults, defaultSettings?.let(capabilities::filterSettings), enabled, onSaveDefaults, unavailable)
             unavailable?.let { Text(it, style = MaterialTheme.typography.labelSmall, modifier = Modifier.testTag("codex_default_unavailable")) }
         }
         if (selectedMode != null) TextButton(onClick = onInheritMode, enabled = enabled, contentPadding = PaddingValues(0.dp), modifier = Modifier.testTag("inherit_task_mode")) { Text("恢复继承会话模式") }
@@ -271,7 +271,7 @@ internal fun NewSessionSettings(models: List<JSONObject>, model: String?, effort
     sandbox: String?, approval: String?, enabled: Boolean, permissionsEditable: Boolean,
     onModel: (String?) -> Unit, onEffort: (String?) -> Unit,
     onSandbox: (String?) -> Unit, onApproval: (String?) -> Unit, workspace: (@Composable () -> Unit)? = null,
-    serviceTier: String? = null, defaultSettings: JSONObject? = null, onSaveDefaults: ((JSONObject) -> Unit)? = null) {
+    serviceTier: String? = null, defaultSettings: JSONObject? = null, onSaveDefaults: ((JSONObject) -> Unit)? = null, capabilities: RuntimeCapabilities = RuntimeCapabilities.Legacy) {
     val capability = models.firstOrNull { it.string("model").ifBlank { it.string("id") } == model }
     val efforts = capability?.objects("supportedReasoningEfforts").orEmpty()
         .map { it.string("reasoningEffort") }.filter(String::isNotBlank)
@@ -283,10 +283,10 @@ internal fun NewSessionSettings(models: List<JSONObject>, model: String?, effort
                 horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("会话设置", style = MaterialTheme.typography.titleSmall)
                 if (onSaveDefaults != null) {
-                    val defaults = JSONObject().put("model", model).put("effort", effort).put("serviceTier", serviceTier)
+                    val defaults = capabilities.filterSettings(JSONObject().put("model", model).put("effort", effort).put("serviceTier", serviceTier)
                         .put("sandbox", sandbox?.takeUnless { it == "inherit" })
-                        .put("approvalPolicy", approval?.takeUnless { it == "inherit" })
-                    SaveConversationDefaultsButton(defaults, defaultSettings, enabled, onSaveDefaults,
+                        .put("approvalPolicy", approval?.takeUnless { it == "inherit" }))
+                    SaveConversationDefaultsButton(defaults, defaultSettings?.let(capabilities::filterSettings), enabled, onSaveDefaults,
                         tag = "new_session_set_default")
                 }
             }
@@ -305,10 +305,12 @@ internal fun NewSessionSettings(models: List<JSONObject>, model: String?, effort
                     HorizontalDivider(Modifier.padding(horizontal = 16.dp))
                     SettingsPanelRow("思考强度", effort ?: "沿用节点默认",
                         efforts.map { it to it }, enabled, "new_session_effort", onEffort)
-                    HorizontalDivider(Modifier.padding(horizontal = 16.dp))
-                    SettingsPanelRow("权限模式", approvalSettingLabel(null, true, approval),
-                        approvalSettingOptions,
-                        enabled && permissionsEditable, "new_session_approval", onApproval)
+                    if (capabilities.supports("session.permissions")) {
+                        HorizontalDivider(Modifier.padding(horizontal = 16.dp))
+                        SettingsPanelRow("权限模式", approvalSettingLabel(null, true, approval),
+                            approvalSettingOptions,
+                            enabled && capabilities.allows("session.permissions") && permissionsEditable, "new_session_approval", onApproval)
+                    }
                 }
             }
         }

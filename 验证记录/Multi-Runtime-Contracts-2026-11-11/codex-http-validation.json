@@ -1,0 +1,44 @@
+{
+  "node": "127.0.0.1:18786",
+  "startedAt": 1794387853.9452631,
+  "checks": {
+    "httpPairing": true,
+    "nativeConnected": true,
+    "newSessionCreated": true,
+    "duplicateSubmissionIdentical": true,
+    "neutralExecutionReceipt": true,
+    "historyOneSubmittedInput": true,
+    "historyAssistantReply": true,
+    "noToolActivity": true,
+    "noPendingApproval": true,
+    "historyCompleted": true,
+    "credentialOwnerOnly": true
+  },
+  "threadId": "01a1c9d9-caa4-78b2-a54d-beeb5e6e8545",
+  "projectId": "01a1c9d9-c816-77b0-8fb0-2a08a205dfe8",
+  "projectName": "project",
+  "submissionId": "77010d2c95c547a0a38358dd2952783c",
+  "updatedAt": 1794387903.7810729,
+  "sendStatus": "accepted",
+  "receipt": {
+    "executionId": "01a1c9d9-e914-72e2-a8a2-d15d0dbb8821",
+    "kind": "execution-started",
+    "submissionId": "77010d2c95c547a0a38358dd2952783c",
+    "threadId": "01a1c9d9-caa4-78b2-a54d-beeb5e6e8545",
+    "turnId": "01a1c9d9-e914-72e2-a8a2-d15d0dbb8821"
+  },
+  "turnCount": 1,
+  "matchingInputCount": 1,
+  "assistantReplyCount": 1,
+  "toolTypes": [],
+  "status": "idle",
+  "nativeSync": {
+    "state": "ready",
+    "generation": 0,
+    "checked_at": 1794387903,
+    "journalCheck": "verified",
+    "historyReady": true
+  },
+  "latestTurnStatus": "completed",
+  "passed": true
+}

@@ -31,6 +31,15 @@ class UnusedNative:
 
 
 class ConfigTests(unittest.TestCase):
+    def test_dsh_requires_explicit_socket_and_rejects_mixed_backends(self):
+        replace(self.config, runtime='dsh', dsh_bridge_socket=Path('/tmp/rivo-dsh/bridge.sock')).validate()
+        for changes in ({'runtime': 'other'}, {'runtime': 'dsh'},
+                        {'runtime': 'dsh', 'dsh_bridge_socket': Path('relative.sock')},
+                        {'dsh_bridge_socket': Path('/tmp/bridge.sock')},
+                        {'runtime': 'dsh', 'dsh_bridge_socket': Path('/tmp/bridge.sock'), 'codex_runtime': 'desktop'}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                replace(self.config, **changes).validate()
+
     def test_serve_rejects_removed_name_override(self):
         import contextlib
         import io

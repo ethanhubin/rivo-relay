@@ -1,6 +1,7 @@
 import groovy.json.JsonSlurper
 
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.plugin.compose") }
+val rivoLocalTest = providers.gradleProperty("rivoLocalTest").map { it.toBooleanStrict() }.orElse(false)
 android {
     namespace = "dev.rivo.relay"
     compileSdk = 37
@@ -10,11 +11,23 @@ android {
         require(versions.isNotEmpty() && versions.all { it is Int && it > 0 } && versions.distinct().size == versions.size)
         buildConfigField("String", "API_VERSIONS", "\"${versions.joinToString(",")}\"")
         applicationId = "dev.rivo.relay"
+        manifestPlaceholders["appLabel"] = "Rivo Relay"
+        buildConfigField("boolean", "LOCAL_TEST", "false")
         minSdk = 26
         targetSdk = 36
         versionCode = 120
         versionName = "0.2.108"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+    buildTypes {
+        getByName("debug") {
+            if (rivoLocalTest.get()) {
+                applicationIdSuffix = ".localtest"
+                versionNameSuffix = "-local.4"
+                manifestPlaceholders["appLabel"] = "Rivo 本机测试"
+                buildConfigField("boolean", "LOCAL_TEST", "true")
+            }
+        }
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     buildFeatures { compose = true; buildConfig = true }
@@ -24,6 +37,11 @@ android {
         signingConfigs.getByName("debug") { storeFile = file(signingPath) }
     }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+}
+androidComponents {
+    onVariants(selector().withBuildType("debug")) { variant ->
+        if (rivoLocalTest.get()) variant.outputs.forEach { it.versionCode.set(123) }
+    }
 }
 kotlin { jvmToolchain(17) }
 dependencies {
@@ -39,6 +57,7 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("io.coil-kt:coil-svg:2.7.0")
     implementation("io.coil-kt:coil-video:2.7.0")
     implementation("androidx.media3:media3-exoplayer:1.11.0")
     implementation("androidx.media3:media3-ui:1.11.0")

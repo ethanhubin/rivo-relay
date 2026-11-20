@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
 from ..operation_gates import ThreadGates
+from ..runtime_state import session_state, invalidated
 from .connection import CodexError, NativeConnection
 from .history import NativeHistoryAdapter, NativeHistoryProtocolError
 from .host_probe import read_identity
@@ -102,6 +103,7 @@ class CodexService(SessionHandoffMixin):
         self._subscription_releases = OrderedDict()
         self._handoff_capabilities = OrderedDict()
         self._generation = None
+        self._control_epoch = 0
         self.observations = None
         self.workspaces = None
         self._observed = OrderedDict()
@@ -121,6 +123,8 @@ class CodexService(SessionHandoffMixin):
         from .questions import QuestionClaims
         self.question_claims = QuestionClaims()
         self.history_adapter = NativeHistoryAdapter()
+        from .receipts import HistoryReceiptRecovery
+        self.receipt_recovery = HistoryReceiptRecovery()
         self.native_journal = NativeJournal(self.connection, self.history_adapter, self._history_repaired)
         from .activity import ActivityRegistry
         self._activity_discovery = None
@@ -198,6 +202,7 @@ class CodexService(SessionHandoffMixin):
                 self._live.clear()
                 self._pending_terminal.clear()
                 self._generation = self.connection.generation
+                self._control_epoch += 1
         return status
 
     def close(self):
@@ -286,6 +291,11 @@ class CodexService(SessionHandoffMixin):
 
     def status(self):
         return self.connection.status()
+
+    def runtime_capabilities(self, *, snapshot=None, connected=None):
+        from .capabilities import capabilities
+        return capabilities(connected=bool(self.status().get('connected')) if connected is None else connected,
+                            snapshot=snapshot)
 
     def _thread_connection(self, thread_id):
         bind = getattr(self.connection, 'history_host_connection', None)
@@ -630,7 +640,17 @@ class CodexService(SessionHandoffMixin):
 
     @read_identity
     def get_session(self, thread_id, cursor=None, limit=30, native_revision=None):
+        for attempt in range(3):
+            try:
+                return self._session_snapshot(thread_id, cursor=cursor, limit=limit, native_revision=native_revision)
+            except CodexError as error:
+                if error.code != 'session_changed' or attempt == 2:
+                    raise
+
+    def _session_snapshot(self, thread_id, cursor=None, limit=30, native_revision=None):
         self.start()
+        with self._lock:
+            generation, control_epoch = self.connection.generation, self._control_epoch
         activity_token = self.activity.read_token()
         # Reconcile the idle persisted history before resume takes a writer lock.
         # A live Desktop/CLI writer remains authoritative and is never released.
@@ -669,7 +689,8 @@ class CodexService(SessionHandoffMixin):
             thread = self.connection.request("thread/read", {"threadId": thread_id, "includeTurns": False})["thread"]
             read_only = True
         thread = {**thread, "turns": history["turns"]}
-        requests = self.interactions.list(thread_id)
+        interaction_snapshot = self.interactions.snapshot(thread_id)
+        requests = interaction_snapshot['requests']
         with self._lock:
             settings = copy.deepcopy(self._settings.get(thread_id, {}))
             active = self._active.get(thread_id)
@@ -762,7 +783,7 @@ class CodexService(SessionHandoffMixin):
                 question_reply_available = getattr(self.connection, 'can_answer_questions', lambda _: False)(thread_id)
             except CodexError:
                 pass
-        return {"activity": self.activity.snapshot(), "thread": thread, "requests": requests, "settings": settings, 'control': control, 'plan': plan,
+        result = {"activity": self.activity.snapshot(), "thread": thread, "requests": requests, "settings": settings, 'control': control, 'plan': plan,
                 'canAnswerQuestions': question_reply_available, 'questionAnswerStates': answer_states,
                 **goal_state,
                 'tokenUsage': usage, 'changes': changes, 'turnSettings': turn_settings,
@@ -777,6 +798,15 @@ class CodexService(SessionHandoffMixin):
                 'reviewDiagnostics': review_diagnostics,
                 **execution_projection(status, queue, read_only=read_only, requests=requests,
                                        ownership_unverified=writer_owner == 'unknown')}
+        with self.interactions.guard(interaction_snapshot), self._lock:
+            if (generation != self.connection.generation or control_epoch != self._control_epoch
+                    or interaction_snapshot['generation'] != str(generation)):
+                raise CodexError('会话控制状态已变化，请重新读取', code='session_changed', http_status=409)
+            result['sessionState'] = session_state(session_id=thread_id, generation=generation,
+                control_revision=[control_epoch, interaction_snapshot['revision']], execution_status=status,
+                execution_id=active, synchronization=history['nativeSync'], control=control,
+                interactions=interaction_snapshot['interactions'])
+        return result
 
     def _history_revision(self, thread_id, turns, *, content=False):
         # Streaming text AND newly appended tool items stay within the same
@@ -1002,8 +1032,12 @@ class CodexService(SessionHandoffMixin):
             raise CodexError("请输入消息", code="invalid_message", http_status=400)
         return [{"type": "text", "text": text, "text_elements": []}]
 
+    def recover_submission(self, record):
+        return self.receipt_recovery.recover(record, self.history)
+
     def send(self, thread_id, text, model=None, effort=None, client_message_id=None, *, input_items=None, mode=None, service_tier=None, acquire_released=False, require_goal_support=False, resume_turn_id=None):
         from ..submission_dispatch import dispatch_phase
+        from .receipts import accepted_receipt
         dispatch_phase(client_message_id, thread_id, 'preparing')
         self.start()
         with self.operation_gate(thread_id):
@@ -1081,8 +1115,8 @@ class CodexService(SessionHandoffMixin):
                     self._created.pop(thread_id, None)
                 raise CodexError("Codex 没有返回可核对的 turn ID", code="native_protocol", request_sent=True)
             # Preserve the native receipt before any derived-state work can fail.
-            dispatch_phase(client_message_id, thread_id, 'received',
-                           {'threadId': thread_id, 'turnId': turn['id']})
+            receipt = accepted_receipt(thread_id, turn['id'], client_message_id)
+            dispatch_phase(client_message_id, thread_id, 'received', receipt)
             with self._lock:
                 created = self._created.pop(thread_id, None)
                 if created is not None:
@@ -1105,7 +1139,7 @@ class CodexService(SessionHandoffMixin):
                     self._observe(thread_id, 'turnSettings', turn['id'], turn_settings)
             if mode == 'default':
                 self._forget_observation(thread_id, 'modeBaseline')
-            return {"threadId": thread_id, "turnId": turn.get("id")}
+            return receipt
 
     def _assert_submission_ready(self, thread_id, *, allow_active_queue=False, allow_recovery=False):
         with self._lock:
@@ -1216,14 +1250,29 @@ class CodexService(SessionHandoffMixin):
         return {"threadId": thread_id, "turnId": turn_id}
 
     def respond(self, key, response):
-        result = None
+        thread_id = self.interactions.session_for(key)
         try:
             result = self.interactions.respond(key, response)
-            return result
         finally:
-            self._event({"method": "relay/interactionAnswered", "params": {
-                "key": key, "threadId": result.get("threadId") if result else None}})
+            self._interaction_invalidated(thread_id)
+        return result
 
+    def respond_interaction(self, session_id, generation, interaction_id, revision, response):
+        try:
+            return self.interactions.respond_interaction(session_id, generation, interaction_id, revision, response)
+        finally:
+            self._interaction_invalidated(session_id)
+
+    def _interaction_invalidated(self, session_id):
+        if isinstance(session_id, str) and session_id:
+            with self._lock:
+                self._control_epoch += 1
+                generation = self.connection.generation
+            self.on_event(invalidated(session_id, generation, 'interactions'))
+            # Replies need not produce a native resolution event. Invalidate
+            # the node-wide waiting projection for both scoped and legacy
+            # replies, including uncertain sends, before another read uses it.
+            self._event({"method": "relay/interactionAnswered", "params": {"threadId": session_id}})
 
     def capabilities(self, refresh=False):
         return self.model_catalog.public(refresh=refresh)
@@ -1454,12 +1503,21 @@ class CodexService(SessionHandoffMixin):
             return
         if event.get("connectionId", self.connection.generation) != self.connection.generation:
             return
-        if self.interactions.receive(event) is False:
+        affected_interactions = self.interactions.receive(event)
+        if affected_interactions is False:
             return
+        affected_interactions = affected_interactions or set()
         method, params = event.get("method"), event.get("params", {})
         thread_id, turn_id = params.get("threadId", params.get('conversationId')), params.get("turnId")
         if (thread_id is not None and not isinstance(thread_id, str)) or (turn_id is not None and not isinstance(turn_id, str)):
             return
+        interaction_change = ('id' in event and method != 'item/tool/call') or method in {
+            'serverRequest/resolved', 'serverRequest/completed', 'turn/completed'}
+        control_change = interaction_change or method in {
+            'turn/started', 'thread/started', 'thread/status/changed', 'thread/settings/updated',
+            'thread/goal/updated', 'thread/goal/cleared', 'thread/closed', 'thread/deleted', 'thread/archived',
+            'relay/nativeDisconnected', 'relay/writerDisconnected', 'relay/ownershipChanged', 'relay/historyInvalidated'}
+        invalidated_sessions = set(affected_interactions)
         if method in {'turn/started', 'thread/settings/updated'} and thread_id:
             self._prediction_epochs[thread_id] = self._prediction_epochs.get(thread_id, 0) + 1
         # Token usage does not change project membership or activity counters.
@@ -1469,6 +1527,14 @@ class CodexService(SessionHandoffMixin):
                 "turn/started", "turn/completed", "relay/nativeDisconnected", "relay/writerDisconnected"}:
             self.projects.invalidate()
         with self._lock:
+            if control_change:
+                self._control_epoch += 1
+                if thread_id:
+                    invalidated_sessions.add(thread_id)
+                if method == 'relay/nativeDisconnected':
+                    invalidated_sessions.update(self._joined | set(self._active) | set(self._created))
+                elif method == 'relay/writerDisconnected':
+                    invalidated_sessions.update(params.get('threadIds', []))
             if thread_id and turn_id and method == 'turn/plan/updated':
                 self._observe(thread_id, 'plan', turn_id, {'turnId': turn_id, 'plan': params.get('plan', []), 'explanation': params.get('explanation')})
             elif thread_id and turn_id and method == 'turn/diff/updated':
@@ -1553,6 +1619,10 @@ class CodexService(SessionHandoffMixin):
         # update the table before publishing the event to HTTP subscribers.
         if hasattr(self, 'activity'):
             self.activity.receive(event)
+        for sid in invalidated_sessions:
+            if isinstance(sid, str) and sid:
+                self.on_event(invalidated(sid, self.connection.generation,
+                    'interactions' if interaction_change or sid in affected_interactions else 'control'))
         # Account / remote-control notifications can carry personal account
         # metadata and do not belong in a chat event stream.
         if ("id" in event or method.startswith(("thread/", "turn/", "item/", "serverRequest/", "relay/"))

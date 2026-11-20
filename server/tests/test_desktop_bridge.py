@@ -255,7 +255,10 @@ class Backend:
         self.calls.append((method, params))
         if method == 'thread/start': return {'thread': {'id': self.name + '-thread'}}
         return {}
-    def respond(self, request_id, result): self.calls.append(('respond', request_id))
+    def respond(self, request_id, result, *, expected_generation=None):
+        if expected_generation is not None and expected_generation != self.generation:
+            raise CodexError('generation changed', code='interaction_expired', http_status=409)
+        self.calls.append(('respond', request_id))
     def native_host_info(self):
         return {'pid':1,'processStart':'one','executable':'/native/codex','codexHome':self.home,
                 'hostName':'native-host','platform':'darwin'}

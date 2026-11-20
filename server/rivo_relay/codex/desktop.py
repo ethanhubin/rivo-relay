@@ -151,10 +151,11 @@ class DesktopConnection(NativeConnection):
     def sample_prediction(self, params):
         return super().request('prediction', params, timeout=30)
 
-    def respond(self, request_id, result):
+    def respond(self, request_id, result, *, expected_generation=None):
         if not self.status()['connected']:
             raise CodexError('Desktop 原生连接尚未就绪', code='desktop_not_ready')
-        return super().request('server/respond', {'requestId': request_id, 'result': result}, timeout=10)
+        return super().request('server/respond', {'requestId': request_id, 'result': result}, timeout=10,
+                               expected_generation=expected_generation)
 
     def notify(self, method, params=None):
         return self.request(method, params)

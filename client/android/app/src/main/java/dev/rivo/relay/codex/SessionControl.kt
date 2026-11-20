@@ -10,7 +10,7 @@ data class SessionControl(val state: ControlState, val action: String? = null, v
 /** One projection for both the status notice and native mutation controls. */
 fun SessionState.control(): SessionControl {
     val snapshot = snapshot ?: return SessionControl(ControlState.UNKNOWN)
-    if (stale || loading) return SessionControl(ControlState.UNKNOWN)
+    if (stale || loading || snapshot.runtimeSessionValid == false) return SessionControl(ControlState.UNKNOWN)
     val wire = snapshot.control
     val state = if (wire != null) when (wire.string("state")) {
         "writable" -> if (wire.optBoolean("canOperate") && !snapshot.readOnly) ControlState.WRITABLE else ControlState.UNKNOWN
@@ -72,7 +72,7 @@ fun SessionState.canCompose(): Boolean = control().let {
 
 /** Queue bookkeeping does not acquire a native writer or execute input. */
 fun SessionState.canManageQueue(): Boolean =
-    !stale && !loading && snapshot != null && id == snapshot.id
+    !stale && !loading && snapshot != null && snapshot.runtimeSessionValid != false && id == snapshot.id
 
 fun SessionState.canQueueOperation(operation: String): Boolean =
     if (operation in setOf("edit", "remove", "reorder", "dismiss")) canManageQueue()

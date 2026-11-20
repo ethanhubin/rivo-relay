@@ -1,0 +1,43 @@
+{
+  "checkedAt": "2026-11-11T17:56:37+08:00",
+  "readOnly": true,
+  "checks": [
+    {
+      "check": "desktop",
+      "ok": true,
+      "installedVersion": "0.2.2-rc.1",
+      "officialFeed": "https://download.deepseek.com/dsh-desk/feeds/mac-arm64/nightly-mac.yml"
+    },
+    {
+      "check": "officialFeed",
+      "ok": true,
+      "latestVersion": "0.2.2-rc.1"
+    },
+    {
+      "check": "versionMatchesFeed",
+      "ok": true,
+      "installedVersion": "0.2.2-rc.1",
+      "latestVersion": "0.2.2-rc.1",
+      "note": "版本一致"
+    },
+    {
+      "check": "bridge",
+      "ok": true,
+      "protocol": 1,
+      "supportedRuntimeVersion": "0.2.2-rc.1"
+    },
+    {
+      "check": "bridgeCompatibilityTarget",
+      "ok": true,
+      "note": "仅核对声明的适配目标；不等同于聊天或审批验收"
+    },
+    {
+      "check": "relayHealth",
+      "ok": true,
+      "status": "ok",
+      "nativeConnected": true,
+      "note": "/health 不返回后端类型；启动命令须明确 --runtime dsh"
+    }
+  ],
+  "scope": "Version and connectivity only; no pairing, chat, approval, or reconnect acceptance test."
+}

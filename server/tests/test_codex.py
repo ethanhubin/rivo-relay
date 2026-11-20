@@ -102,7 +102,7 @@ class NativeSemanticsTests(unittest.TestCase):
         self.assertIsNone(result["goal"])
         self.assertTrue(result["goalSupported"])
         self.assertEqual(1, sum(method == "thread/resume" for method, _ in native.calls))
-        self.assertEqual(2, sum(e['method'] != 'relay/activityChanged' for e in events))
+        self.assertEqual(2, sum(e['method'] not in ('relay/activityChanged', 'session/invalidated') for e in events))
         # Active goal -> idle produces two semantic activity notices; changing
         # among idle goal states does not publish another notice per read.
         self.assertEqual(2, sum(e['method'] == 'relay/activityChanged' for e in events))
@@ -530,7 +530,8 @@ class NativeSemanticsTests(unittest.TestCase):
         self.assertEqual({"threadId": "thread"}, service.create_session("project"))
         self.assertEqual([], service.get_session("thread")["thread"]["turns"])
         receipt = service.send("thread", "hello", client_message_id="stable-client-id")
-        self.assertEqual({"threadId": "thread", "turnId": "turn"}, receipt)
+        self.assertEqual({'kind': 'execution-started', 'submissionId': 'stable-client-id', 'executionId': 'turn',
+                          "threadId": "thread", "turnId": "turn"}, receipt)
         self.assertNotIn("thread/resume", [method for method, _ in native.calls])
         for _, params in native.calls:
             self.assertFalse({"permissions", "approvalPolicy", "sandbox", "sandboxPolicy"} & params.keys())
@@ -554,17 +555,18 @@ class NativeSemanticsTests(unittest.TestCase):
             return response
 
         native.request = request
-        for _ in range(3):
+        service.get_session('thread')
+        # Joining can change control once; its fenced snapshot retries. Later
+        # reads must neither resume again nor trigger another refresh loop.
+        reads_after_join = sum(method == 'thread/read' for method, _ in native.calls)
+        history_after_join = sum(method == 'thread/turns/list' for method, _ in native.calls)
+        for _ in range(2):
             service.get_session("thread")
         methods = [method for method, _ in native.calls]
         self.assertEqual(1, methods.count("thread/resume"))
-        self.assertEqual(2, methods.count("thread/read"))
-        self.assertEqual(3, methods.count("thread/turns/list"))
-        self.assertEqual(1, sum(e['method'] != 'relay/activityChanged' for e in events))
-        self.assertEqual(1, sum(e['method'] == 'relay/activityChanged' for e in events))
-        count = len(events)
-        service.get_session("thread")
-        self.assertEqual(count, len(events))
+        self.assertEqual(2, methods.count("thread/read") - reads_after_join)
+        self.assertEqual(2, methods.count("thread/turns/list") - history_after_join)
+        self.assertEqual(1, len([e for e in events if e['method'] not in ('relay/activityChanged', 'session/invalidated')]))
 
     def test_native_settings_event_refreshes_snapshot_without_rejoining(self):
         native = FakeNative()

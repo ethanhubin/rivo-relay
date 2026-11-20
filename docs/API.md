@@ -32,7 +32,9 @@
 
 配对码只由电脑本地 `pair` CLI 生成，没有远程生成码路由。默认 5 分钟且只兑换一次；大小写和分组连字符可归一化，过期/已消费/无效码均返回 401，限流返回 429。节点连接 token 与 OpenAI/Codex 登录 token 不同。
 
-`runtime` 包含连接方式、runtimeId、generation、runtimeMode、preferredWriter 与 bridge 就绪/验证状态。只有已验证的 Desktop 桥接连接可报告 `desktopShared=true`；普通 daemon 或未知状态不能推断为 Desktop 共享。`capabilities.media/speech` 明确广告可用媒体/语音能力，缺省字段不能推断支持。
+`runtime` 保留各后端的连接元数据。Codex 的连接方式、runtimeId、generation、runtimeMode、preferredWriter 与 bridge 就绪/验证状态不应作为所有后端的必选字段。只有已验证的 Desktop 桥接连接可报告 `desktopShared=true`；普通 daemon 或未知状态不能推断为 Desktop 共享。`capabilities.media/speech` 明确广告可用媒体/语音能力，缺省字段不能推断支持。
+
+新节点通过 `capabilities: {schemaVersion:1,operations:{…}}` 声明行为能力；每项包含 `supported`、`available` 和可选 `reasonCode`。操作名包括 `session.send/interrupt/queue/settings/models/goal`、`interaction.respond`、`files.read/upload/browse` 等，完整集合见 [`runtime_capabilities.py`](../server/rivo_relay/runtime_capabilities.py)。会话快照同样返回 `capabilities`，会话只能收紧节点权限。新协议的未知操作、未知版本和缺失声明默认拒绝；旧节点没有这套声明时，新 APP 保留旧兼容行为。服务端使用同一声明准入，并在原生执行边界继续校验权限和请求代际。
 
 添加项目时，省略 `folderName` 表示添加已有目录；提供它则在 path 下新建单层文件夹并添加项目。名称不能是 `.`、`..` 或包含路径分隔符、NUL。Git 信息中的 refs 最多包含当前 HEAD 和 200 条本地/远程分支；`worktreeRef` 使用其 commit ID，不传用户拼接的工作树路径。项目列表只返回项目元数据；运行状态由 `/v1/activity` 提供。
 
@@ -56,15 +58,47 @@
 | `GET /v1/threads/{id}/fork-context` | — | 来源 `projectId`、`cwd` 和 Git 来源选项 |
 | `GET /v1/threads/{threadId}` | 可选 `cursor`、`limit`（默认 30，钳制到 1–100） | `{thread,requests,settings,activeTurnId,status,readOnly,nextCursor,backwardsCursor,queue,plan,tokenUsage,changes,turnSettings}`；`thread.turns` 是本页原生 turns |
 | `GET /v1/threads/{threadId}/history` | 同上 | `{turns,nextCursor,backwardsCursor}` |
-| `POST /v1/threads/{threadId}/turns` | `{submissionId,text,model?,effort?,mode?,serviceTier?,requireGoalSupport?}`，或用 `input` 数组 | 提交记录；接受时 `{threadId,turnId}` |
+| `POST /v1/threads/{threadId}/turns` | `{submissionId,text,model?,effort?,mode?,serviceTier?,requireGoalSupport?}`，或用 `input` 数组 | 提交记录；接受时返回下述中立输入回执；选项须由后端能力允许 |
 | `POST /v1/threads/{threadId}/settings` | `{submissionId,model?,effort?,serviceTier?}` | 更新原生 thread settings；至少一个设置；`serviceTier` 为 `default` / `priority`；不改审批和权限 |
 | `POST /v1/threads/{threadId}/steer` | `{submissionId,expectedTurnId,text}`，或用 `input` 数组 | 提交记录；接受时 `{threadId,turnId}` |
 | `POST /v1/threads/{threadId}/interrupt` | `{submissionId,turnId}` | 提交记录；接受时 `{threadId,turnId}` |
 | `POST /v1/threads/{threadId}/archive` | `{submissionId,archived:boolean}` | 提交记录；接受时 `{threadId}`；false 为恢复 |
 | `POST /v1/threads/{threadId}/answers` | `{submissionId,expectedTurnId,answers:[{questionItemId,answer}]}` | 回答原生异步问题；接受时 `{threadId,turnId}`，不接管 writer |
 | `POST /v1/requests/respond` | `{submissionId,key,response:{…}}` | 提交记录；接受时 `{requestId,threadId}` |
+| `POST /v1/interactions/respond` | `{submissionId,sessionId,runtimeGeneration,interactionId,revision,response:{…}}` | 提交记录；接受时为绑定完整交互身份的 `mutation-applied` 回执 |
+
+新版会话读取额外返回 `sessionState`，与旧 `thread/turn/item` 历史投影共存：
+
+```json
+{
+  "schemaVersion": 1,
+  "sessionId": "session-id",
+  "runtimeGeneration": "opaque-runtime-generation",
+  "revision": "opaque-control-revision",
+  "execution": {"status": "waiting"},
+  "synchronization": {"state": "ready", "historyReady": true},
+  "control": {"state": "writable", "canOperate": true},
+  "interactions": [{
+    "id": "opaque-interaction-id", "revision": "opaque-request-revision",
+    "kind": "approval", "status": "pending", "title": "请求操作授权",
+    "description": "操作原因", "detail": "实际命令或参数",
+    "choices": [{"id": "opaque-choice-id", "label": "仅允许本次", "effect": "allow-once"}],
+    "payload": {}
+  }]
+}
+```
+
+`execution.id` 仅在适配器确认真实执行身份时提供。运行时代际、控制 revision 和历史 revision 是三个不同域，不互相替代；`sessionState` 由适配器在同一次控制读取中生成。新 APP 优先使用该协议的执行、同步、控制和交互字段；未知版本或格式异常禁止操作，仅在字段完全不存在时兼容旧节点。
+
+交互 `kind` 为 `approval/questions/permissions/elicitation/unsupported`。审批答复为 `{choiceId}`，选项 ID 由适配器映射，客户端不从文案生成原生授权值。结构化问题和表单保留原有回答形状。`unsupported` 只显示，不能响应。适配器在答复边界重新核验会话、运行时代际、请求版本和 pending 状态，另一端先回答、请求取消或代际失效后拒绝旧答复。
+
+接受交互的回执为 `{kind:"mutation-applied",submissionId,threadId,interactionId,runtimeGeneration,revision}`，可附原生 `requestId`。它证明该次回答被接受，不证明后续工具执行成功；身份缺失或冲突保持未知，不自动重送。相同 submissionId 的已接受重放返回原回执。
+
+SSE `session/invalidated` 的 `params` 含 `sessionId/runtimeGeneration/scope`，scope 为 `interactions/control/history`。这是失效提示：APP 清除可操作请求、阻止旧在途快照恢复控制并重新读取；history 还使旧分页失效。通知和重连均不直接授予操作权。APP 进程重启保留配对、消息展示及未核对提交，磁盘快照不保存待审批请求；重新同步后才恢复操作。
 
 `GET /v1/submissions/{submissionId}` 仅查询当前连接的回执。返回 `submission_not_found` 时，客户端可调用 `POST /v1/submissions/{submissionId}/reconcile`（空 JSON 对象）：已有记录原样返回；不存在时在与提交 claim 相同的事务锁内写入 `failed / submission_not_received` 记录，阻止同 ID 的迟到请求执行。不能仅凭 GET 404 就允许重新发送。旧节点不支持该接口时继续保留未知状态，不重放原操作。
+
+新输入回执有两类：`{kind:"input-accepted",submissionId,threadId}` 证明输入已接收；`{kind:"execution-started",submissionId,threadId,executionId}` 还证明真实执行身份。前者不包含 turn/execution ID。当前 Codex 追加 `turnId`，值必须与 `executionId` 一致；DSH 追加原型的 `runtime/acceptance/requestId` 供旧 APP 解码。旧持久回执仍可读取，新协议身份或别名冲突必须拒绝，不能退回宽松兼容。结果未知时由 adapter 查询原生正证据，通用存储不解析原生历史、不自动重发；已接受回执的重复读取也不受后来能力变化影响。
 
 `requests` 项含 `{key,id,method,params,connectionId}`。使用原样 key 和原生 method 对应的 response；不自行生成审批默认回答。请求失效或另一端已回答时不能再次响应。`settings` 仅包含该原生版本返回的模型、effort、cwd、审批、sandbox 等设置；GET 会 resume/join 原生会话以取得实时状态，不能当作纯数据库读取。
 

@@ -139,7 +139,8 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                         }
                         val params = event.payload.optJSONObject("params")
                         val method = event.payload.string("method")
-                        val eventThread = params?.string("threadId")?.ifBlank { params.string("conversationId") }
+                        val eventThread = params?.string("sessionId")?.ifBlank { params.string("threadId") }
+                            ?.ifBlank { params.string("conversationId") }
                             ?.ifBlank { params.optJSONObject("thread")?.string("id").orEmpty() }.orEmpty()
                         val eventThreads = params?.optJSONArray("threadIds")
                         // Empty threadIds means a metadata-only disconnect. It must not
@@ -149,6 +150,11 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                         // Ignore only known unrelated metadata. An unscoped ownership,
                         // history or request notification may affect this chat too.
                         if (event.type == "native" && (method == "relay/todos" || method.startsWith("project/"))) return@collect
+                        val sessionInvalidated = method == "session/invalidated"
+                        if (sessionInvalidated) {
+                            invalidateControl("会话状态已变化，正在重新核验")
+                            mutable.update { it.copy(snapshot = it.snapshot?.copy(requests = emptyList())) }
+                        }
                         val writerDisconnected = event.type == "native" && method in setOf("relay/writerDisconnected", "relay/nativeDisconnected")
                         if (writerDisconnected) {
                             pendingDeltas.clear()
@@ -164,7 +170,7 @@ class SessionController(private val api: RelayApi, private val scope: CoroutineS
                         }
                         if (event.type == "native" && method in setOf("relay/ownershipChanged", "thread/deleted"))
                             invalidateControl("会话权限已变化，正在重新确认")
-                        val historyInvalidated = writerDisconnected || event.type == "reset" || (event.type == "native" &&
+                        val historyInvalidated = sessionInvalidated && params?.string("scope") == "history" || writerDisconnected || event.type == "reset" || (event.type == "native" &&
                             event.payload.string("method") == "relay/historyInvalidated")
                         if (historyInvalidated) pendingDeltas.clear() else flushDeltas()
                         if (historyInvalidated) {

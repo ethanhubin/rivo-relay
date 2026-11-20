@@ -35,11 +35,14 @@ internal fun TaskModeIcon(mode: String) {
 }
 
 @Composable
-internal fun ComposerModeSelector(mode: String, enabled: Boolean, goalEnabled: Boolean, onSelect: (String) -> Unit) {
+internal fun ComposerModeSelector(mode: String, enabled: Boolean, goalEnabled: Boolean, planEnabled: Boolean = true, goalSupported: Boolean = goalEnabled, planSupported: Boolean = planEnabled, onSelect: (String) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     androidx.activity.compose.BackHandler(expanded) { expanded = false }
     LaunchedEffect(enabled) { if (!enabled) expanded = false }
-    val labels = listOf("default" to "普通模式", "plan" to "计划模式", "goal" to "目标模式")
+    val labels = listOf("default" to "普通模式") +
+        (if (planSupported) listOf("plan" to "计划模式") else emptyList()) +
+        (if (goalSupported) listOf("goal" to "目标模式") else emptyList())
+    if (labels.size == 1) return
     val gap = with(LocalDensity.current) { 10.dp.roundToPx() }
     Box {
         TextButton(onClick = { if (mode == "goal") onSelect("goal") else expanded = !expanded },
@@ -47,7 +50,7 @@ internal fun ComposerModeSelector(mode: String, enabled: Boolean, goalEnabled: B
             modifier = Modifier.height(40.dp).testTag("codex_task_mode"), contentPadding = PaddingValues(horizontal = 10.dp)) {
             TaskModeIcon(mode)
             Spacer(Modifier.width(6.dp))
-            Text(labels.first { it.first == mode }.second, style = MaterialTheme.typography.labelMedium)
+            Text(labels.firstOrNull { it.first == mode }?.second ?: "普通模式", style = MaterialTheme.typography.labelMedium)
         }
         if (expanded) Popup(popupPositionProvider = remember(gap) { ModeMenuPosition(gap) },
             onDismissRequest = { expanded = false }, properties = PopupProperties(focusable = true)) {
@@ -55,7 +58,7 @@ internal fun ComposerModeSelector(mode: String, enabled: Boolean, goalEnabled: B
                 color = MaterialTheme.colorScheme.surfaceContainerLow, shadowElevation = 8.dp) {
                 Column(Modifier.padding(6.dp)) {
                     labels.forEach { (value, label) ->
-                        val available = value != "goal" || goalEnabled
+                        val available = when (value) { "goal" -> goalEnabled; "plan" -> planEnabled; else -> true }
                         Surface(shape = RoundedCornerShape(12.dp), color = if (mode == value) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerLow) {
                             DropdownMenuItem(text = { Column {
                                 Text(label)

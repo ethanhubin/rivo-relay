@@ -25,6 +25,14 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
         self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
 
+    def test_current_schema_adds_creation_intent_without_rewriting_existing_rows(self):
+        with self.db.transaction() as connection:
+            connection.execute("INSERT INTO connections VALUES ('existing','digest','Phone',1,NULL)")
+            connection.execute('ALTER TABLE submissions DROP COLUMN intent_json')
+        with closing(Database(self.path)) as reopened, reopened.read() as connection:
+            self.assertIn('intent_json', {row[1] for row in connection.execute('PRAGMA table_info(submissions)')})
+            self.assertEqual('Phone', connection.execute("SELECT name FROM connections WHERE id='existing'").fetchone()[0])
+
     def test_outer_rollback_undoes_successful_nested_operation(self):
         with self.assertRaises(RuntimeError):
             with self.db.transaction() as connection:

@@ -25,17 +25,31 @@ def route(handler, path, query, body, connection):
         return handler.app.reset_usage(connection_id, required(body, 'submissionId'),
                                        credit_id=credit_id, reconcile=reconcile)
     if path == ["v1", "activity"] and method == "GET":
-        return codex.active_tasks()
+        return handler.app.sessions.activity()
+    if path == ["v1", "interactions", "respond"] and method == "POST":
+        sid = required(body, 'submissionId')
+        session_id = required(body, 'sessionId')
+        generation = required(body, 'runtimeGeneration', 1024)
+        interaction_id = required(body, 'interactionId', 1024)
+        revision = required(body, 'revision', 1024)
+        response = body.get('response')
+        if not isinstance(response, dict):
+            raise ApiError(400, 'invalid_request', 'response must be an object')
+        # Submission identity binds the entire immutable body, including scope
+        # and generation. An accepted replay does not re-answer the interaction.
+        return handler.app.submit(connection_id, sid, 'interaction.respond', session_id, body,
+            lambda: {**handler.app.sessions.respond(session_id, generation, interaction_id, revision, response),
+                     'kind': 'mutation-applied', 'submissionId': sid})
     if path == ["v1", "requests", "respond"] and method == "POST":
         key, sid = required(body, "key", 1024), required(body, "submissionId")
         response = body.get("response")
         if not isinstance(response, dict):
             raise ApiError(400, "invalid_request", "response must be an object")
         return handler.app.submit(connection_id, sid, "request.respond", key, body,
-            lambda: codex.respond(key, response))
+            lambda: handler.app.sessions.respond_legacy(key, response))
     if len(path) == 4 and path[:2] == ["v1", "submissions"] and path[3] == "reconcile" and method == "POST":
         handler.app.submissions.reconcile(path[2], connection_id)
-        return public_submission(handler.app.submissions.recover_native(path[2], connection_id, codex))
+        return public_submission(handler.app.submissions.recover_native(path[2], connection_id, handler.app.backend))
     if len(path) == 3 and path[:2] == ["v1", "submissions"] and method == "GET":
-        return public_submission(handler.app.submissions.recover_native(path[2], connection_id, codex))
+        return public_submission(handler.app.submissions.recover_native(path[2], connection_id, handler.app.backend))
     raise ApiError(404, "not_found", "Unknown endpoint")

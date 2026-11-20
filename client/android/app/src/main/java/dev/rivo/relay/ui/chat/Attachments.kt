@@ -93,8 +93,21 @@ internal fun nativeFilePath(target: String, cwd: String): String? {
 
 internal data class PreparedFile(val name: String, val file: java.io.File)
 
-internal suspend fun prepareFile(context: Context, uri: Uri): PreparedFile = withContext(Dispatchers.IO) {
+internal suspend fun prepareFile(context: Context, uri: Uri, maxBytes: Long = 1024L * 1024 * 1024): PreparedFile = withContext(Dispatchers.IO) {
+    require(maxBytes > 0) { "节点未提供有效的附件大小限制" }
     val resolver = context.contentResolver
+    val limitMessage = "当前节点单个附件最大支持 ${maxBytes / (1024 * 1024)} MiB"
+    val declaredSize = try {
+        resolver.query(uri, arrayOf(android.provider.OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+            val column = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
+            if (column >= 0 && cursor.moveToFirst() && !cursor.isNull(column)) cursor.getLong(column).takeIf { it >= 0 } else null
+        }
+    } catch (error: kotlinx.coroutines.CancellationException) {
+        throw error
+    } catch (_: Exception) {
+        null // Some document providers cannot supply metadata; the streaming limit remains authoritative.
+    }
+    require(declaredSize == null || declaredSize <= maxBytes) { limitMessage }
     val name = resolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
         if (it.moveToFirst()) it.getString(0) else null
     }?.takeIf { it.isNotBlank() } ?: "attachment"
@@ -110,7 +123,7 @@ internal suspend fun prepareFile(context: Context, uri: Uri): PreparedFile = wit
                     val count = input.read(buffer)
                     if (count < 0) break
                     size += count
-                    require(size <= 1024L * 1024 * 1024) { "手机文件最大支持 1 GiB" }
+                    require(size <= maxBytes) { limitMessage }
                     output.write(buffer, 0, count)
                 }
             }

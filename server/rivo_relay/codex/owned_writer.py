@@ -582,8 +582,10 @@ class SessionWriters:
             with self._lock:
                 self._writers.pop(thread_id, None)
 
-    def respond(self, request_id, result):
+    def respond(self, request_id, result, *, expected_generation=None):
         with self._lock:
+            if expected_generation is not None and expected_generation != self.generation:
+                raise CodexError('原生交互连接已变化', code='interaction_expired', http_status=409)
             entry = self._requests.get(request_id)
             tid = next((tid for tid, writer in self._writers.items()
                         if entry and writer is entry[0]), None)
@@ -597,7 +599,7 @@ class SessionWriters:
                         or not entry[0].status().get('connected')):
                     raise CodexError('原生交互已失效', code='interaction_expired', http_status=409)
             try:
-                return entry[0].respond(entry[2], result)
+                return entry[0].respond(entry[2], result, expected_generation=entry[1])
             except CodexError as error:
                 with self._lock:
                     if (error.definite and not self._closed and entry[0].generation == entry[1]

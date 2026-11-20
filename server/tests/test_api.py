@@ -794,7 +794,8 @@ class ApiTests(RelayHTTPFixture, unittest.TestCase):
             status, result, _ = self.request('GET', '/v1/submissions/lost-reply', token=self.token)
         self.assertEqual(200, status)
         self.assertEqual('accepted', result['status'])
-        self.assertEqual({'threadId': 'thread-1', 'turnId': 'original-turn'}, result['receipt'])
+        self.assertEqual({'kind': 'execution-started', 'submissionId': 'lost-reply', 'executionId': 'original-turn',
+                          'threadId': 'thread-1', 'turnId': 'original-turn'}, result['receipt'])
         self.assertEqual(result, self.request('POST', '/v1/threads/thread-1/turns', body, token=self.token)[1])
         self.assertEqual([], self.native.sent)
 

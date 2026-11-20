@@ -547,6 +547,32 @@ class SessionControllerTest {
         } finally { releaseFresh.countDown(); controller.close(); scope.cancel(); server.shutdown() }
     }
 
+    @Test fun neutralInteractionInvalidationClearsApprovalBeforeAuthoritativeRefresh() = runBlocking {
+        val server = MockWebServer()
+        val releaseFresh = CountDownLatch(1)
+        val reads = AtomicInteger()
+        val event = "event: native\ndata: {\"method\":\"session/invalidated\",\"params\":{\"sessionId\":\"t\",\"runtimeGeneration\":\"g\",\"scope\":\"interactions\"}}\n\n"
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path!!.startsWith("/v1/events")) return MockResponse().setHeader("Content-Type", "text/event-stream")
+                    .setBodyDelay(600, TimeUnit.MILLISECONDS).setBody(event + ":".repeat(4096))
+                    .throttleBody(event.toByteArray().size.toLong(), 3, TimeUnit.SECONDS)
+                if (reads.incrementAndGet() > 1) releaseFresh.await(5, TimeUnit.SECONDS)
+                return MockResponse().setBody("""{"thread":{"id":"t","name":"head","turns":[]},"requests":[{"key":"old","method":"approval"}],"settings":{},"status":"idle"}""")
+            }
+        }
+        server.start()
+        val scope = CoroutineScope(coroutineContext + SupervisorJob())
+        val controller = SessionController(api(server), scope) { fail(it.message) }
+        try {
+            controller.open("t")
+            withTimeout(5000) { controller.state.first { it.snapshot?.requests?.isNotEmpty() == true && !it.stale } }
+            val disconnected = withTimeout(5000) { controller.state.first { it.controlNotice?.contains("会话状态已变化") == true } }
+            assertFalse(disconnected.control().canOperate)
+            assertTrue(disconnected.snapshot!!.requests.isEmpty())
+        } finally { releaseFresh.countDown(); controller.close(); scope.cancel(); server.shutdown() }
+    }
+
     @Test fun otherWriterAndMetadataDisconnectDoNotInvalidateOrRefreshCurrentThread() = runBlocking {
         for (targets in listOf("[\"other\"]", "[]")) {
             val server = MockWebServer()

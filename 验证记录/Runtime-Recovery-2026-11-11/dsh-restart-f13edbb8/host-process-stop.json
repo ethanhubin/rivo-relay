@@ -1,0 +1,8 @@
+{
+  "command": "am force-stop dev.rivo.relay",
+  "previousPid": "13879",
+  "pidAfterForceStop": "",
+  "runId": "dsh-restart-f13edbb8",
+  "startedPendingTaskBeforeStop": true,
+  "launchOutput": "Starting: Intent { act=dev.rivo.relay.OPEN_TASK flg=0x24000000 cmp=dev.rivo.relay/.MainActivity (has extras) }\nStatus: ok\nLaunchState: COLD\nActivity: dev.rivo.relay/.MainActivity\nTotalTime: 5644\nWaitTime: 5656\nComplete"
+}

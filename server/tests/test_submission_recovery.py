@@ -9,11 +9,22 @@ from unittest.mock import Mock, patch
 from rivo_relay.app import RelayApp
 from rivo_relay.codex.connection import CodexError
 from rivo_relay.codex.sessions import CodexService
+from rivo_relay.codex.receipts import HistoryReceiptRecovery
 from rivo_relay.database import Database
 from rivo_relay.pairing import PairingStore
 from rivo_relay.submissions import SubmissionStore, SubmissionConflict
 from rivo_relay.submission_recovery import inspect, recover, stopped
 from relay_test_support.native import FakeNative
+
+
+class CodexRecoveryFixture:
+    """Use the real Codex evidence adapter with a controllable history carrier."""
+    recover_submission = CodexService.recover_submission
+
+    def __init__(self):
+        self.history = Mock()
+        self.send = Mock()
+        self.receipt_recovery = HistoryReceiptRecovery()
 
 
 class RecoveryTests(unittest.TestCase):
@@ -27,6 +38,8 @@ class RecoveryTests(unittest.TestCase):
         self.app = RelayApp.__new__(RelayApp)
         self.app.submissions = self.store; self.app.events = Mock()
         self.native = FakeNative(); self.service = CodexService(connection=self.native)
+        self.app.codex = self.service
+        self.app.backend = self.service
 
     def submit(self, sid='request', action=None, operation='thread.turns'):
         return self.app.submit(self.owner, sid, operation, 'thread', {'text': 'message'},
@@ -79,7 +92,8 @@ class RecoveryTests(unittest.TestCase):
         with patch.object(self.service, '_observe', side_effect=RuntimeError('derived state failed')):
             self.submit()
         self.assertEqual('accepted', self.store.get('request')['status'])
-        self.assertEqual({'threadId': 'thread', 'turnId': 'turn'}, self.store.get('request')['receipt'])
+        self.assertEqual({'kind': 'execution-started', 'submissionId': 'request', 'executionId': 'turn',
+                          'threadId': 'thread', 'turnId': 'turn'}, self.store.get('request')['receipt'])
 
     def test_dispatch_marker_write_failure_prevents_send(self):
         original = self.store.record_dispatch
@@ -226,18 +240,19 @@ class RecoveryTests(unittest.TestCase):
     def test_lost_turn_receipt_recovers_by_exact_client_id_without_replay(self):
         self.claim(); self.store.record_dispatch('request', 'preparing')
         self.store.record_dispatch('request', 'dispatching'); self.store.mark_unknown('request')
-        native = Mock()
+        native = CodexRecoveryFixture()
         native.history.return_value = {'threadId': 'thread', 'turns': [
             {'id': 'original-turn', 'items': [{'type': 'userMessage', 'clientId': 'request'}]}]}
         recovered = self.store.recover_native('request', self.owner, native)
         self.assertEqual('accepted', recovered['status'])
-        self.assertEqual({'threadId': 'thread', 'turnId': 'original-turn'}, recovered['receipt'])
+        self.assertEqual({'kind': 'execution-started', 'submissionId': 'request', 'executionId': 'original-turn',
+                          'threadId': 'thread', 'turnId': 'original-turn'}, recovered['receipt'])
         self.assertFalse(self.claim()['should_dispatch'])
         native.send.assert_not_called()
 
     def test_history_absence_or_failure_never_authorizes_resend(self):
         self.claim(); self.store.mark_unknown('request')
-        native = Mock()
+        native = CodexRecoveryFixture()
         native.history.return_value = {'threadId': 'thread', 'turns': [
             {'id': 'unrelated', 'items': [{'type': 'userMessage', 'clientId': 'other', 'text': 'message'}]}]}
         self.assertEqual('unknown', self.store.recover_native('request', self.owner, native)['status'])
@@ -247,7 +262,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_old_turn_recovery_continues_past_first_history_batch(self):
         self.claim(); self.store.mark_unknown('request')
-        native = Mock()
+        native = CodexRecoveryFixture()
         def page(thread, cursor=None, **kwargs):
             if cursor is None:
                 return {'turns': [], 'nativeRevision': 'r', 'nextCursor': '1'}
@@ -261,7 +276,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_receipt_query_does_not_finalize_a_live_dispatch(self):
         self.claim(); self.store.record_dispatch('request', 'preparing')
-        native = Mock()
+        native = CodexRecoveryFixture()
         self.assertEqual('pending', self.store.recover_native('request', self.owner, native)['status'])
         native.history.assert_not_called()
         self.store.record_dispatch('request', 'dispatching')
@@ -293,7 +308,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_recovery_checks_receipt_owner_before_native_reads(self):
         self.claim(); self.store.mark_unknown('request')
-        native = Mock()
+        native = CodexRecoveryFixture()
         from rivo_relay.submissions import SubmissionNotFound
         with self.assertRaises(SubmissionNotFound):
             self.store.recover_native('request', 'someone-else', native)
@@ -358,12 +373,12 @@ class RecoveryTests(unittest.TestCase):
 
     def test_failed_history_cursor_is_reset_for_next_automatic_poll(self):
         self.claim(); self.store.mark_unknown('request')
-        native = Mock()
+        native = CodexRecoveryFixture()
         head = {'turns': [], 'nativeRevision': 'r', 'nextCursor': 'first'}
-        self.store._history_cursors['request'] = ('r', 'expired')
+        native.receipt_recovery.cursors['request'] = ('r', 'expired')
         native.history.side_effect = [head, ValueError('cursor expired')]
         self.assertEqual('unknown', self.store.recover_native('request', self.owner, native)['status'])
-        self.assertNotIn('request', self.store._history_cursors)
+        self.assertNotIn('request', native.receipt_recovery.cursors)
         native.history.side_effect = [head, {'turns': [{'id': 'turn', 'items': [{'type': 'userMessage', 'clientId': 'request'}]}]}]
         self.assertEqual('accepted', self.store.recover_native('request', self.owner, native)['status'])
         self.assertEqual('first', native.history.call_args.kwargs['cursor'])
@@ -380,20 +395,21 @@ class RecoveryTests(unittest.TestCase):
         self.store.claim('steer-request', self.owner, 'thread.queue.steer', 'thread', {})
         self.store.checkpoint('steer-request', {'threadId': 'thread', 'itemId': 'original-item'})
         self.store.mark_unknown('steer-request')
-        native = Mock()
+        native = CodexRecoveryFixture()
         native.history.return_value = {'turns': [{'id': 'active-turn', 'items': [
             {'type': 'userMessage', 'clientId': 'original-item'}]}]}
         result = self.store.recover_native('steer-request', self.owner, native)
         self.assertEqual('accepted', result['status'])
-        self.assertEqual({'threadId': 'thread', 'itemId': 'original-item', 'turnId': 'active-turn'}, result['receipt'])
+        self.assertEqual({'kind': 'execution-started', 'submissionId': 'steer-request', 'executionId': 'active-turn',
+                          'threadId': 'thread', 'itemId': 'original-item', 'turnId': 'active-turn'}, result['receipt'])
 
     def test_history_timeout_keeps_progress_without_replaying_mutation(self):
         self.claim(); self.store.mark_unknown('request')
-        native = Mock()
+        native = CodexRecoveryFixture()
         head = {'turns': [], 'nativeRevision': 'r', 'nextCursor': 'first'}
         native.history.side_effect = [head, {'turns': [], 'nextCursor': 'second'}, TimeoutError()]
         self.assertEqual('unknown', self.store.recover_native('request', self.owner, native)['status'])
-        self.assertEqual(('r', 'second'), self.store._history_cursors['request'])
+        self.assertEqual(('r', 'second'), native.receipt_recovery.cursors['request'])
         native.history.side_effect = [head, {'turns': [{'id': 'turn', 'items': [{'type': 'userMessage', 'clientId': 'request'}]}]}]
         self.assertEqual('accepted', self.store.recover_native('request', self.owner, native)['status'])
         self.assertEqual('second', native.history.call_args.kwargs['cursor'])
@@ -405,13 +421,13 @@ class RecoveryTests(unittest.TestCase):
         for sid in ('slow', 'fast'):
             self.claim(sid); self.store.mark_unknown(sid)
         entered, release = threading.Event(), threading.Event()
-        slow = Mock()
+        slow = CodexRecoveryFixture()
         def blocked_history(*args, **kwargs):
             entered.set()
             if not release.wait(5): raise TimeoutError()
             return {'turns': []}
         slow.history.side_effect = blocked_history
-        fast = Mock()
+        fast = CodexRecoveryFixture()
         fast.history.return_value = {'turns': [{'id': 'fast-turn', 'items': [{'type': 'userMessage', 'clientId': 'fast'}]}]}
         with ThreadPoolExecutor(max_workers=2) as pool:
             task = pool.submit(self.store.recover_native, 'slow', self.owner, slow)

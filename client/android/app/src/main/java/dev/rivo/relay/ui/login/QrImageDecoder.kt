@@ -9,12 +9,17 @@ import com.google.zxing.qrcode.QRCodeReader
 /** Decode only QR codes, including light codes on dark backgrounds. */
 internal fun decodeQrPixels(width: Int, height: Int, pixels: IntArray): String? {
     val source = RGBLuminanceSource(width, height, pixels)
+    val candidates = listOf(source, source.invert())
     val hints = mapOf(DecodeHintType.TRY_HARDER to true)
-    for (candidate in listOf(source, source.invert())) {
-        try {
-            return QRCodeReader().decode(BinaryBitmap(HybridBinarizer(candidate)), hints).text
-        } catch (_: com.google.zxing.ReaderException) {
-            // Try the opposite polarity before reporting that no QR code was found.
+    // Preserve detection for camera screenshots and surrounding content first.
+    // A clean single-code image can decode even when finder-pattern detection fails.
+    for (options in listOf(hints, hints + (DecodeHintType.PURE_BARCODE to true))) {
+        for (candidate in candidates) {
+            try {
+                return QRCodeReader().decode(BinaryBitmap(HybridBinarizer(candidate)), options).text
+            } catch (_: com.google.zxing.ReaderException) {
+                // Try the opposite polarity, then the clean-image fallback.
+            }
         }
     }
     return null

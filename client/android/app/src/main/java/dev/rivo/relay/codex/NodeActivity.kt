@@ -20,13 +20,13 @@ data class NodeActivity(val tasks: Map<String, ThreadSummary> = emptyMap(), val 
 }
 
 /** Old HTTP responses cannot roll back a newer node snapshot from a detail read. */
-internal fun NodeActivity.accept(response: org.json.JSONObject): NodeActivity {
+internal fun NodeActivity.accept(response: org.json.JSONObject, allowSameVersionReconfirmation: Boolean = false): NodeActivity {
     require(response.optBoolean("complete", false) && response.string("generation").isNotBlank())
     require(response.optJSONArray("tasks") != null && response.optJSONArray("knownThreadIds") != null &&
         response.optJSONArray("unknownThreadIds") != null)
     if (response.string("generation") in retiredGenerations) return this
     val nextVersion = response.optLong("version", -1)
-    if (generation == response.string("generation") && version >= 0 && nextVersion <= version) return this
+    if (generation == response.string("generation") && version >= 0 && (nextVersion < version || nextVersion == version && !allowSameVersionReconfirmation)) return this
     fun ids(key: String) = response.getJSONArray(key).let { values ->
         (0 until values.length()).map { values.getString(it) }.toSet()
     }
@@ -52,7 +52,7 @@ internal fun activityInvalidatedThreads(event: RelayEvent): Set<String>? {
     params.optJSONArray("threadIds")?.let { ids ->
         return (0 until ids.length()).map { ids.optString(it) }.filter(String::isNotBlank).toSet()
     }
-    val id = params.string("threadId").ifBlank { params.string("conversationId") }
+    val id = params.string("sessionId").ifBlank { params.string("threadId") }.ifBlank { params.string("conversationId") }
         .ifBlank { params.optJSONObject("thread")?.string("id").orEmpty() }
     return id.takeIf(String::isNotBlank)?.let { setOf(it) }
 }
@@ -108,7 +108,7 @@ fun nodeActivity(api: RelayApi, sync: NodeSessionSync, scope: CoroutineScope,
                     lock.withLock {
                         val current = sync.filterActivity(ActivityObservation(response, readEpoch))
                         if (current != null && current.optBoolean("complete", false)) {
-                            previous = previous.accept(current)
+                            previous = previous.accept(current, allowSameVersionReconfirmation = true)
                         } else if (current != null) previous = previous.copy(confirmed = false)
                         send(previous)
                     }
@@ -120,7 +120,7 @@ fun nodeActivity(api: RelayApi, sync: NodeSessionSync, scope: CoroutineScope,
                 } catch (e: Exception) {
                     failed = true
                     if (e is ApiException && e.status in setOf(401, 403)) lock.withLock {
-                        previous = previous.copy(confirmed = false)
+                        if (readEpoch == sync.activityReadToken()) previous = previous.copy(confirmed = false)
                         send(previous)
                     }
                 }
