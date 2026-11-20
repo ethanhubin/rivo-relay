@@ -125,6 +125,9 @@ class Database:
                     connection.execute("ALTER TABLE submissions ADD COLUMN recovery_json TEXT")
                 if 'intent_json' not in columns:
                     connection.execute("ALTER TABLE submissions ADD COLUMN intent_json TEXT")
+                pair_columns = {row[1] for row in connection.execute("PRAGMA table_info(pairing_codes)")}
+                if 'route_binding' not in pair_columns:
+                    connection.execute("ALTER TABLE pairing_codes ADD COLUMN route_binding TEXT")
                 # Ensure indexes also exist on current-version databases created
                 # before these query optimizations were introduced.
                 for statement in (

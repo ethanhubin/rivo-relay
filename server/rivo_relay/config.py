@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -31,6 +32,7 @@ class Config:
     codex_executable: Path | None = None
     runtime: str = 'codex'
     dsh_bridge_socket: Path | None = None
+    dsh_admin_socket: Path | None = None
 
     def validate(self) -> None:
         if self.runtime not in {'codex', 'dsh'}:
@@ -42,6 +44,13 @@ class Config:
                 raise ValueError('DSH cannot use Codex runtime options')
         elif self.dsh_bridge_socket:
             raise ValueError('--dsh-bridge-socket requires --runtime dsh')
+        if self.dsh_admin_socket is not None:
+            if self.runtime != 'dsh':
+                raise ValueError('--dsh-admin-socket requires --runtime dsh')
+            if not self.dsh_admin_socket.is_absolute() or len(os.fsencode(self.dsh_admin_socket)) > 100:
+                raise ValueError('--dsh-admin-socket requires an absolute Unix socket path of at most 100 bytes')
+            if self.dsh_admin_socket.resolve() == self.dsh_bridge_socket.resolve():
+                raise ValueError('DSH bridge and admin sockets must have different paths')
         if self.codex_runtime not in {'auto', 'desktop', 'app_server', 'stdio'}:
             raise ValueError('codex_runtime must be auto, desktop, app_server or stdio')
         if self.codex_runtime == 'stdio' and (not self.codex_executable or not self.codex_executable.is_absolute() or not self.codex_executable.is_file()):

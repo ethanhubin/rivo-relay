@@ -11,11 +11,10 @@ import ssl
 import sys
 import threading
 from pathlib import Path
-from urllib.parse import urlencode
 
 from .config import Config
 from .database import Database
-from .pairing import PairingStore
+from .pairing import PairingStore, direct_pairing_link
 
 
 def parser():
@@ -37,6 +36,8 @@ def parser():
             sub.add_argument('--runtime', choices=('codex', 'dsh'), default='codex')
             sub.add_argument('--dsh-bridge-socket', type=Path,
                              help='Unix socket of the Rivo plugin in an existing DSH runtime')
+            sub.add_argument('--dsh-admin-socket', type=Path,
+                             help='Enable local DSH configuration and direct pairing on this private Unix socket')
             sub.add_argument("--codex-home", type=Path, default=Path.home() / ".codex")
             sub.add_argument('--codex-runtime', choices=('auto', 'desktop', 'app_server', 'stdio'),
                              default=os.environ.get('RIVO_CODEX_RUNTIME', 'auto'))
@@ -74,7 +75,8 @@ def main(argv=None):
         desktop_bridge_dir=getattr(args, 'desktop_bridge_dir', None),
         codex_executable=getattr(args, 'codex_executable', None),
         runtime=getattr(args, 'runtime', 'codex'),
-        dsh_bridge_socket=getattr(args, 'dsh_bridge_socket', None))
+        dsh_bridge_socket=getattr(args, 'dsh_bridge_socket', None),
+        dsh_admin_socket=getattr(args, 'dsh_admin_socket', None))
     try:
         config.prepare()
         if args.command == "serve":
@@ -86,8 +88,7 @@ def main(argv=None):
             if args.command == "pair":
                 import qrcode
                 result = pairing.create(args.ttl)
-                link = args.url.rstrip("/") + "/pair#" + urlencode({"v": "2", "code": result["code"], "node": config.node_id,
-                    "direct": args.url.rstrip("/"), "relay": "", "pin": ""})
+                link = direct_pairing_link(config.node_id, args.url, result['code'])
                 result["url"] = link
                 image = qrcode.make(link).convert("RGB")
                 if args.output:
@@ -144,6 +145,7 @@ def serve(config: Config, native_socket: Path | None):
                                   runtime_mode=config.codex_runtime, desktop_bridge_dir=config.desktop_bridge_dir, codex_executable=config.codex_executable)
         app = RelayApp(config, native, bus)
         server = None
+        admin = None
         try:
             try:
                 native.start()
@@ -158,15 +160,22 @@ def serve(config: Config, native_socket: Path | None):
                 tls.minimum_version = ssl.TLSVersion.TLSv1_2
                 tls.load_cert_chain(config.cert, config.key)
             server = BoundedHTTPServer((config.host, config.port), Handler, app=app, tls_context=tls)
+            if config.dsh_admin_socket:
+                from .dsh.admin import serve_local_admin
+                admin = serve_local_admin(app, config.dsh_admin_socket)
             signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown, daemon=True).start())
             print(json.dumps({"time": datetime.datetime.now(datetime.timezone.utc).isoformat(), "event": "service_started", "pid": os.getpid(), "port": config.port}), flush=True)
             server.serve_forever(poll_interval=0.2)
         except KeyboardInterrupt:
             pass
         finally:
-            if server:
-                server.server_close()
-            app.close()
+            try:
+                if admin:
+                    admin()
+            finally:
+                if server:
+                    server.server_close()
+                app.close()
             print(json.dumps({"time": datetime.datetime.now(datetime.timezone.utc).isoformat(), "event": "service_stopped", "pid": os.getpid()}), flush=True)
 
 
