@@ -31,6 +31,20 @@ class SettingsNodeSelectionTest {
         assertEquals("", repository().restore()?.runtime)
     }
 
+    @Test fun refreshingUnselectedLegacyNodePersistsIdentityWithoutSwitching() {
+        val active = NodeConnection("https://a.example", "A", "a", "device-a", "secret-a", runtime = "dsh")
+        val legacy = NodeConnection("https://b.example", "B", "b", "device-b", "secret-b")
+        val values = mutableMapOf("connection" to active.serialized(),
+            "nodes" to JSONArray().put(org.json.JSONObject(active.serialized())).put(org.json.JSONObject(legacy.serialized())).toString())
+        val repository = PairingRepository(values::get, { key, value -> values[key] = value }, { values.remove(it) })
+        repository.updateName(legacy.withNodeInfo(org.json.JSONObject().put("id", "b")
+            .put("runtime", org.json.JSONObject().put("runtime", "existing-codex-daemon"))))
+        assertEquals(active.serialized(), values["connection"])
+        assertEquals("codex", repository.saved().single { it.base == legacy.base }.runtime)
+        assertEquals("codex", repository.boundNodes().single { it.base == legacy.base }.runtime)
+        assertEquals("codex", repository.select(legacy.base)?.runtime)
+    }
+
     @Test fun inspectingAndEditingAnotherNodeDoesNotSwitchActiveNode() {
         val a = NodeConnection("https://a.example", "A", "a", "device-a", "secret-a")
         val b = NodeConnection("https://b.example", "B", "b", "device-b", "secret-b",

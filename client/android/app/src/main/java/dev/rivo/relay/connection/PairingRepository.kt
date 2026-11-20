@@ -6,9 +6,17 @@ import dev.rivo.relay.data.string
 import org.json.JSONObject
 
 /** Runtime identity is supplied by authenticated node metadata, never inferred from a display name. */
-internal fun nodeRuntimeIdentity(info: JSONObject): String? =
-    (info.opt("runtime") as? String)?.trim()?.takeIf(String::isNotBlank)
-        ?: (info.optJSONObject("capabilities")?.opt("runtime") as? String)?.trim()?.takeIf(String::isNotBlank)
+internal fun nodeRuntimeIdentity(info: JSONObject): String? {
+    (info.opt("runtime") as? String)?.trim()?.takeIf(String::isNotBlank)?.let { return it }
+    (info.optJSONObject("capabilities")?.opt("runtime") as? String)?.trim()
+        ?.takeIf(String::isNotBlank)?.let { return it }
+    // Older Codex-only nodes reported the transport in a nested status object.
+    // Recognize explicit backend identifiers, never the machine name or connectivity.
+    return when (info.optJSONObject("runtime")?.optString("runtime")) {
+        "existing-codex-daemon", "desktop", "relay-session-writer", "relay-stdio-metadata" -> "codex"
+        else -> null
+    }
+}
 
 fun runtimeDisplayName(runtime: String): String = when (runtime) {
     "codex" -> "Codex"
@@ -60,7 +68,7 @@ class PairingRepository internal constructor(
         val all = records()
         return (0 until all.length()).map { all.getJSONObject(it) }
             .filter { it.string("nodeId").isNotBlank() }
-            .map { SavedNode(it.string("base"), it.string("name"), it.string("token").isNotBlank()) }
+            .map { SavedNode(it.string("base"), it.string("name"), it.string("token").isNotBlank(), it.string("runtime")) }
     }
     fun connection(base: String): NodeConnection? {
         val all = records()

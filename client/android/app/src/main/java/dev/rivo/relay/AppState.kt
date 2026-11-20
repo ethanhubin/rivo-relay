@@ -195,16 +195,33 @@ class AppViewModel(application: Application): AndroidViewModel(application) {
         }
     }
     private fun syncNodeName(node: NodeRuntime, scope: CoroutineScope) {
-        scope.launch {
-            try {
-                val info = node.api.call("/v1/node")
-                val updated = node.connection.withNodeInfo(info)
-                if (mutable.value.node !== node || updated === node.connection) return@launch
-                pairing.updateName(updated)
-                node.updateName(updated)
-                mutable.update { it.copy(savedNodes = pairing.saved()) }
-            } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { /* Cosmetic metadata must not block offline use or reconnect. */ }
+        // Refresh the whole switcher, including nodes never selected since upgrading.
+        pairing.saved().filter { it.authorized }.forEach { saved ->
+            scope.launch {
+                while (isActive) {
+                    val connection = pairing.connection(saved.base) ?: return@launch
+                    try {
+                        val info = withTimeout(15_000) {
+                            (if (connection.base == node.connection.base) node.api else connection.api()).call("/v1/node")
+                        }
+                        if (mutable.value.node !== node) return@launch
+                        // Use current settings; a route edit during the request must survive.
+                        val current = pairing.connection(saved.base) ?: return@launch
+                        if (current.nodeId != connection.nodeId || current.deviceId != connection.deviceId) return@launch
+                        val updated = current.withNodeInfo(info)
+                        if (updated !== current) {
+                            pairing.updateName(updated)
+                            if (current.base == node.connection.base) node.updateName(updated)
+                            mutable.update { it.copy(savedNodes = pairing.saved()) }
+                        }
+                        if (updated.runtime.isNotBlank()) return@launch
+                    } catch (_: TimeoutCancellationException) {
+                        // Retry unreachable nodes without delaying the active node.
+                    } catch (e: CancellationException) { throw e }
+                    catch (_: Exception) { /* Keep cached metadata while offline. */ }
+                    delay(30_000)
+                }
+            }
         }
     }
     fun pair(input: String, code: String) {
