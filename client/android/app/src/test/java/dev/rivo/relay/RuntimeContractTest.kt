@@ -6,6 +6,21 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RuntimeContractTest {
+    @Test fun createEntryStaysVisibleWhileLoadingOrTemporarilyUnavailable() {
+        val pending = RuntimeCapabilities.Pending
+        assertTrue(pending.shows("session.create"))
+        assertFalse(pending.allows("session.create"))
+        val available = JSONObject("""{"schemaVersion":1,"operations":{"session.create":{"supported":true,"available":true}}}""")
+        assertFalse(pending.withOverrides(available).allows("session.create"))
+        val busy = RuntimeCapabilities.from(JSONObject("""{"schemaVersion":1,"operations":{"session.create":{"supported":true,"available":false}}}"""))
+        assertTrue(busy.shows("session.create"))
+        assertFalse(busy.allows("session.create"))
+        assertTrue(RuntimeCapabilities.from(available).allows("session.create"))
+        assertFalse(RuntimeCapabilities.from(JSONObject("""{"schemaVersion":1,"operations":{}}""")).shows("session.create"))
+        assertFalse(RuntimeCapabilities.Unavailable.shows("session.create"))
+        assertTrue(RuntimeCapabilities.from(null).allows("session.create"))
+    }
+
     @Test fun attachmentLimitsAreConservativeAcrossNodeAndSession() {
         fun declaration(limit: Any? = null) = JSONObject().put("schemaVersion", 1).put("operations", JSONObject())
             .apply { if (limit != null) put("limits", JSONObject().put("maxAttachmentBytes", limit)) }

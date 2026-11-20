@@ -8,6 +8,24 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RelayCompatibilityTest {
+    @Test fun implicitNodeReadUpdatesCapabilitiesWithoutPairingAndStaysNodeScoped() = runBlocking {
+        MockWebServer().use { server ->
+            val api = RelayApi(server.url("/").toString().trimEnd('/'), "token", nodeId="n")
+            val other = RelayApi(server.url("/").toString().trimEnd('/'), "other", nodeId="other")
+            assertTrue(api.runtimeCapabilities.value.shows("session.create"))
+            assertFalse(api.runtimeCapabilities.value.allows("session.create"))
+            server.enqueue(MockResponse().setBody("""{"id":"n","capabilities":{"schemaVersion":1,"operations":{"session.create":{"supported":true,"available":true}}}}"""))
+            server.enqueue(MockResponse().setBody("{projects:[]}"))
+            api.call("/v1/projects")
+            assertTrue(api.runtimeCapabilities.value.allows("session.create"))
+            assertSame(RuntimeCapabilities.Pending, other.runtimeCapabilities.value)
+            server.enqueue(MockResponse().setBody("""{"id":"n","capabilities":{"schemaVersion":1,"operations":{"session.create":{"supported":true,"available":false}}}}"""))
+            api.call("/v1/node")
+            assertTrue(api.runtimeCapabilities.value.shows("session.create"))
+            assertFalse(api.runtimeCapabilities.value.allows("session.create"))
+        }
+    }
+
     @Test fun incompatibleNodeBlocksWriteBeforeTransportAndCanRecoverAfterUpgrade() = runBlocking {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setBody("{id:n,compatibility:{apiVersions:[2]}}"))
@@ -33,6 +51,7 @@ class RelayCompatibilityTest {
             server.enqueue(MockResponse().setBody("{projects:[]}"))
             val api = RelayApi(server.url("/").toString().trimEnd('/'), "token", nodeId="n")
             assertEquals(0, api.call("/v1/projects").getJSONArray("projects").length())
+            assertTrue(api.runtimeCapabilities.value.allows("session.create"))
             assertNull(api.compatibility)
             assertTrue(api.compatibilityMessage.contains("未知"))
             assertEquals(2, server.requestCount)
@@ -44,6 +63,7 @@ class RelayCompatibilityTest {
             val api = RelayApi(server.url("/").toString().trimEnd('/'), "token", nodeId="n")
             try { api.call("/v1/threads/t/turns", "POST"); fail() }
             catch (e: ApiException) { assertEquals("node_identity_mismatch", e.code) }
+            assertSame(RuntimeCapabilities.Pending, api.runtimeCapabilities.value)
             assertEquals(1, server.requestCount)
         }
     }
