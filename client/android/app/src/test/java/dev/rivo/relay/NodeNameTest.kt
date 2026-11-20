@@ -20,6 +20,20 @@ class NodeNameTest {
         assertEquals("运行时待识别", dev.rivo.relay.connection.runtimeDisplayName(""))
     }
 
+    @Test fun legacyCodexStatusIdentifiesBackendEvenWhenDisconnected() {
+        for (transport in listOf("existing-codex-daemon", "desktop", "relay-session-writer", "relay-stdio-metadata")) {
+            val info = JSONObject().put("id", "node-id").put("runtime",
+                JSONObject().put("runtime", transport).put("connected", false))
+            assertEquals("codex", original.withNodeInfo(info).runtime)
+            info.put("capabilities", JSONObject().put("runtime", "dsh"))
+            assertEquals("dsh", original.withNodeInfo(info).runtime)
+        }
+        for (transport in listOf("unknown", "future-backend", "")) {
+            assertSame(original, original.withNodeInfo(JSONObject().put("id", "node-id")
+                .put("runtime", JSONObject().put("runtime", transport).put("connected", true))))
+        }
+    }
+
     @Test fun renamePreservesPairingAndLocalDataScope() {
         val updated = original.withNodeInfo(JSONObject().put("id", "node-id").put("name", "tailnet-machine"))
         assertEquals("tailnet-machine", updated.name)

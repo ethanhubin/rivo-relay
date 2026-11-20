@@ -95,7 +95,7 @@ fun ProjectsScreen(projects: List<ProjectSummary>, nodeName: String, loading: Bo
                             modifier = Modifier.widthIn(max = 320.dp).testTag("node_switch_menu")) {
                             savedNodes.filter { it.authorized }.forEach { saved ->
                                 val selected = saved.base == currentBase
-                                DropdownMenuItem(text = { Text(saved.name + " · " + dev.rivo.relay.connection.runtimeDisplayName(saved.runtime), maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                                DropdownMenuItem(text = { Text(saved.name + " · " + dev.rivo.relay.connection.runtimeDisplayName(saved.runtime), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                     leadingIcon = { dev.rivo.relay.ui.common.RuntimeIcon(saved.runtime) },
                                     trailingIcon = { if (selected) Text("✓") },
                                     onClick = { nodeMenuOpen = false; if (!selected) onSelectNode(saved.base) },
