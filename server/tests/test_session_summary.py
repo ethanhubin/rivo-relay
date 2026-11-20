@@ -42,6 +42,26 @@ class SessionSummaryTests(unittest.TestCase):
         self.assertEqual(['recent'], [r['id'] for r in service.list_sessions(RECENT_PROJECT_ID, archived=True, summary=True)])
         self.assertTrue(all(p['archived'] is True for m,p in native.calls if m == 'thread/list'))
 
+    def test_waiting_flags_are_classified_and_archived_hints_hidden(self):
+        native, service = self.service()
+        original = native.request
+        flags = ['waitingOnUserInput', 'waitingOnApproval']
+        def request(method, params=None, **kwargs):
+            result = original(method, params, **kwargs)
+            if method == 'thread/list':
+                for row in result['data']:
+                    row['status'] = {'type': 'active', 'activeFlags': list(flags)}
+            return result
+        native.request = request
+        self.assertTrue(all(row['responseKinds'] == ['question', 'approval']
+                            for row in service.list_sessions('project', summary=True)))
+        flags.clear()
+        self.assertTrue(all(row['responseKinds'] == []
+                            for row in service.list_sessions('project', summary=True)))
+        flags.append('waitingOnApproval')
+        self.assertTrue(all(row['responseKinds'] == []
+                            for row in service.list_sessions('project', archived=True, summary=True)))
+
     def test_runtime_switch_rejects_mixed_summary(self):
         native, service = self.service()
         original = native.request

@@ -300,7 +300,9 @@ class HandoffTests(unittest.TestCase):
 
     def test_release_does_not_resume(self):
         service, native, writers = self.service()
+        service._unmaterialized.update({TID, OTHER})
         service.handoff(TID, 'release', owner='phone', ticket='ticket', confirmed=True)
+        self.assertFalse(service._unmaterialized)
         self.assertTrue(service.observations_for(TID)[('ownership', '')]['released'])
         self.assertNotIn('thread/resume', [m for m, _ in native.calls])
 
@@ -435,10 +437,12 @@ class HandoffTests(unittest.TestCase):
 
     def test_release_cannot_succeed_when_writer_lock_remains(self):
         service, native, writers = self.service()
+        service._unmaterialized.add(TID)
         writers.busy.return_value = True
         with self.assertRaises(CodexError) as caught:
             service.handoff(TID, 'release', owner='phone', ticket='ticket', confirmed=True)
         self.assertEqual('writer_still_held', caught.exception.code)
+        self.assertIn(TID, service._unmaterialized)
 
     def test_shared_desktop_releases_owned_subscription_without_process_signals(self):
         service, native, writers = self.service()
@@ -453,6 +457,44 @@ class HandoffTests(unittest.TestCase):
         self.assertTrue(service.observations_for(TID)[('ownership', '')]['released'])
         writers.terminate.assert_not_called()
         writers.preview.assert_not_called()
+
+    def test_subscription_release_retires_update_blockers_without_stopping_external_work(self):
+        service, native, writers = self.service()
+        native.status = lambda: {'connected': True, 'runtime': 'desktop', 'desktopShared': True}
+        service._joined.add(TID)
+        service._unmaterialized.add(TID)
+        service._active[TID] = 'old-turn'
+        service._live[(TID, 'old-turn')] = {'id': 'old-turn', 'status': 'inProgress'}
+        service._pending_terminal.add((TID, 'old-turn'))
+        service.read_goal = Mock(return_value={'goal': None})
+        preview = service.preview_handoff(TID, 'release', 'phone')
+        service.handoff(TID, 'release', owner='phone', ticket=preview['ticket'])
+        self.assertTrue(service.idle_for_update())
+        self.assertNotIn(TID, service._unmaterialized)
+        self.assertNotIn(TID, service._active)
+        self.assertFalse(any(key[0] == TID for key in service._live))
+        self.assertNotIn((TID, 'old-turn'), service._pending_terminal)
+        self.assertFalse(any(method in {'turn/interrupt', 'thread/resume', 'thread/read'} for method, _ in native.calls))
+        writers.terminate.assert_not_called()
+
+    def test_uncertain_unsubscribe_keeps_update_fence(self):
+        service, native, writers = self.service()
+        native.status = lambda: {'connected': True, 'runtime': 'desktop', 'desktopShared': True}
+        service._joined.add(TID)
+        service._unmaterialized.add(TID)
+        preview = service.preview_handoff(TID, 'release', 'phone')
+        original = native.request
+        def request(method, params, **kwargs):
+            if method == 'thread/unsubscribe':
+                raise CodexError('timeout', request_sent=True)
+            return original(method, params, **kwargs)
+        native.request = request
+        with self.assertRaises(CodexError):
+            service.handoff(TID, 'release', owner='phone', ticket=preview['ticket'])
+        self.assertIn(TID, service._unmaterialized)
+        self.assertIn(TID, service._joined)
+        self.assertFalse(service.idle_for_update())
+        writers.terminate.assert_not_called()
 
     def test_subscription_release_ticket_is_bound_to_writer_generation(self):
         service, native, writers = self.service()

@@ -82,6 +82,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     pendingReceiptUnresolved: Boolean = false, onReconcilePending: (() -> Unit)? = null,
     readGoalCapability: (suspend () -> Boolean)? = null, onOpenPendingThread: (() -> Unit)? = null, pendingPermissionsEditable: Boolean = true,
     pendingWorkspace: (@Composable () -> Unit)? = null,
+    attachmentsEnabled: Boolean = true,
     onConfiguredSend: ((JSONArray, String?, String?, String?, String?, JSONObject, () -> Unit) -> Unit)? = null,
     onSettingsChange: ((JSONObject) -> Unit)? = null,
     recoveryState: RecoveryState? = null, takeoverBlockedReason: String? = null, nodeName: String = "当前节点", writerBusy: Boolean = false, onWriterAction: ((String) -> Unit)? = null,
@@ -644,12 +645,33 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                             onFork = { forkTurn = message.turnId },
                             historicalTiming = inlineHistoricalTiming[message.turnId].takeIf { isLastReply })
                     }
-                    else if (message.type == "imageGeneration" && (message.raw.string("savedPath").isNotBlank() || message.raw.string("result").isNotBlank())) {
-                        val source = generatedImageSource(message, mediaIndex)
-                        if (source != null) NativeImage(source, readFile, downloadFile = downloadFile, identity = "${message.turnId}:${message.id}")
-                        else if (message.raw.optBoolean("mediaRef")) {
-                            val failed = mediaIndex[NativeMediaIdentity(message.turnId, message.id)]?.string("status") in setOf("failed", "deleted")
-                            Text(if (failed) "图片暂时无法读取" else "图片正在准备…", style = MaterialTheme.typography.bodySmall)
+                    else if (message.type.equals("imageGeneration", ignoreCase = true)) {
+                        val source = remember(message, mediaIndex) { generatedImageSource(message, mediaIndex) }
+                        val status = message.raw.string("status")
+                        val generating = status in setOf("in_progress", "inProgress")
+                        val active = snapshot?.activeTurnId == message.turnId
+                        val awaitingMedia = message.raw.optBoolean("mediaRef")
+                        val mediaFailed = mediaIndex[NativeMediaIdentity(message.turnId, message.id)]?.string("status") in setOf("failed", "deleted")
+                        var sawPlaceholder by remember { mutableStateOf(false) }
+                        val showPlaceholder = source == null && when {
+                            generating -> active
+                            status == "failed" || status in setOf("interrupted", "cancelled", "canceled") -> false
+                            else -> awaitingMedia && !mediaFailed
+                        }
+                        SideEffect {
+                            if (showPlaceholder || (source != null && active)) sawPlaceholder = true
+                        }
+                        when {
+                            source != null -> NativeImage(source, readFile, downloadFile = downloadFile,
+                                identity = "${message.turnId}:${message.id}", fadeIn = sawPlaceholder || active,
+                                loadingContent = {
+                                    ImageGenerationPlaceholder(generating = false, animate = !state.stale)
+                                })
+                            showPlaceholder -> ImageGenerationPlaceholder(generating, animate = !state.stale)
+                            generating || status in setOf("interrupted", "cancelled", "canceled") ->
+                                Text("图片生成已停止", style = MaterialTheme.typography.bodySmall)
+                            status == "failed" -> Text("图片生成失败", style = MaterialTheme.typography.bodySmall)
+                            else -> Text("图片暂时无法读取", style = MaterialTheme.typography.bodySmall)
                         }
                     }
                     else Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = MaterialTheme.shapes.small) {
@@ -733,6 +755,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         if (goalAvailable) key(state.id) {
             NativeGoalPanel(displayedGoal, goalEnabled, { action ->
                 if (action.string("operation") == "clear") goalModeSelected = false
+                if (action.string("operation") == "set") { selectedMode = "default"; goalModeSelected = true }
                 if (pendingTitle != null) pendingGoal = if (action.string("operation") == "clear") null else action.toString()
                 else onGoal(action)
             }, goalEditing, pending = pendingTitle != null) { goalEditing = it }
@@ -792,12 +815,6 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 onApproval = { selectedApproval = it ?: "inherit" }, workspace = pendingWorkspace.takeIf { (capabilities.allows("workspace.manage") && capabilities.allows("project.git")) },
                 serviceTier = selectedServiceTier, defaultSettings = defaultSettings, onSaveDefaults = onSaveDefaults)
         }
-        if (goalMode && goalAvailable) TextButton(onClick = { goalEditing = true }, enabled = goalEnabled,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("edit_goal")) {
-            TaskModeIcon("goal")
-            Spacer(Modifier.width(8.dp))
-            Text(if (displayedGoal == null) "设置持续目标" else "编辑持续目标")
-        }
         MessageComposer(
             tokenUsage = snapshot?.tokenUsage, contextThreadId = state.id,
             text = if (hideSubmitted) "" else draft, onTextChange = { if (textEditable) draft = it }, images = if (hideSubmitted) emptyList() else images,
@@ -806,9 +823,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             files = if (hideSubmitted) emptyList() else files, onRemoveFile = { reference -> files = files.filterNot { it === reference } },
             onOpenFile = { reference -> nativeFilePath(reference.string("path"), cwd)?.let(::openFile) },
             preparing = preparing, error = attachmentError, enabled = !busy && !inputLocked && draftLoaded,
-            textEditable = textEditable,
+            textEditable = textEditable, attachmentsEnabled = attachmentsEnabled,
             prediction = visiblePrediction,
-            canSend = capabilities.allows("session.send") && (snapshot?.shouldQueueInput != true || capabilities.allows("session.queue")) && (images.isEmpty() || capabilities.allows("attachments.images")) && (files.isEmpty() || capabilities.allows("files.upload")) && !(goalMode && displayedGoal == null) && !pendingReceiptUnresolved && !pendingFirstTurnSent && (pendingGoal == null || goalCapability == true) && (sendText.isNotBlank() || images.isNotEmpty() || files.isNotEmpty() || pendingGoal != null) && !state.stale && (snapshot != null || pendingTitle != null && pendingReady),
+            canSend = (attachmentsEnabled || images.isEmpty() && files.isEmpty()) && capabilities.allows("session.send") && (snapshot?.shouldQueueInput != true || capabilities.allows("session.queue")) && (images.isEmpty() || capabilities.allows("attachments.images")) && (files.isEmpty() || capabilities.allows("files.upload")) && !(goalMode && displayedGoal == null) && !pendingReceiptUnresolved && !pendingFirstTurnSent && (pendingGoal == null || goalCapability == true) && (sendText.isNotBlank() || images.isNotEmpty() || files.isNotEmpty() || pendingGoal != null) && !state.stale && (snapshot != null || pendingTitle != null && pendingReady),
             canContinue = capabilities.allows("session.continue") && state.canContinueTask() && !blocked && !submissionInFlight, onContinue = onContinue,
             isRunning = snapshot?.activeTurnId?.isNotBlank() == true, canStop = capabilities.allows("session.interrupt") && !busy && !blocked && !state.stale && canOperate, busy = busy,
             onAddImage = { focus.clearFocus(); keyboard?.hide(); imagePickerTarget = state.id; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
@@ -819,7 +836,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             goalMode = goalMode, goalModeEnabled = goalAvailable && goalEnabled,
             onSelectMode = { mode ->
                 if (mode == "goal") {
-                    selectedMode = "default"; goalModeSelected = true
+                    goalEditing = true
                 } else {
                     goalModeSelected = false
                     selectedMode = mode
@@ -828,7 +845,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
                 }
             },
             focusRequest = inputFocusRequest, onPasteImages = { uris ->
-                pendingImageUris = ArrayList((pendingImageUris + uris.map { it.toString() }).take(10))
+                if (attachmentsEnabled) pendingImageUris = ArrayList((pendingImageUris + uris.map { it.toString() }).take(10))
             },
             settingsExpanded = settingsOpen, onDismissSettings = { settingsOpen = false }, settingsContent = {
                 NativeComposerSettings(snapshot?.settings, models, effectiveModel, effectiveEffort, selectedMode, !pendingReceiptUnresolved && !pendingFirstTurnSent && !busy && !blocked && !state.stale && (state.canCompose() || pendingTitle != null && pendingReady) && draftLoaded,

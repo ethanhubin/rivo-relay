@@ -61,7 +61,14 @@ class NodeActivitySyncTest {
         } finally { scope.cancel(); server.shutdown() }
     }
 
-    private suspend fun verifyEvent(event: String, targetUnknown: Boolean, fixedVersion: Boolean = false) = coroutineScope {
+    @Test fun activityNoticeWakesIdleFallbackButCoveredNoticeDoesNotReadAgain() = runBlocking {
+        val newer = """{"method":"relay/activityChanged","params":{"threadIds":["t"],"generation":"g","revision":2}}"""
+        assertFalse(catalogLifecycleEvent(dev.rivo.relay.data.RelayEvent("native", org.json.JSONObject(newer))))
+        verifyEvent(newer, targetUnknown = true, initialIdle = true)
+        verifyEvent(newer.replace("revision\":2", "revision\":1"), targetUnknown = false, noRefresh = true)
+    }
+
+    private suspend fun verifyEvent(event: String, targetUnknown: Boolean, noRefresh: Boolean = false, initialIdle: Boolean = false, fixedVersion: Boolean = false) = coroutineScope {
         val server = MockWebServer()
         val refreshing = CountDownLatch(1)
         val release = CountDownLatch(1)
@@ -77,8 +84,10 @@ class NodeActivitySyncTest {
                 val read = reads.incrementAndGet()
                 val version = if (fixedVersion) 1 else read
                 if (read > 1) { refreshing.countDown(); release.await(5, TimeUnit.SECONDS) }
-                return MockResponse().setBody("""{"complete":true,"generation":"g","version":$version,
-                    "tasks":[{"threadId":"t","projectId":"p","status":"running","nativeExecution":"running"}],
+                val tasks = if (initialIdle && version == 1) "[]" else
+                    """[{"threadId":"t","projectId":"p","status":"running","nativeExecution":"running"}]"""
+                return MockResponse().setBody("""{"complete":true,"generation":"g","version":$version,"revision":$version,
+                    "tasks":$tasks,
                     "knownThreadIds":["t","other"],"unknownThreadIds":[]}""")
             }
         }
@@ -97,8 +106,8 @@ class NodeActivitySyncTest {
             }
             withTimeout(5000) { connected.await() }
             val collecting = scope.launch { sync.activity.collect {} }
-            withTimeout(5000) { sync.activity.first { it.status("t") == "running" } }
-            val ignored = event.contains("project/updated") || event.contains("\"threadIds\":[]")
+            withTimeout(5000) { sync.activity.first { it.status("t") == if (initialIdle) "idle" else "running" } }
+            val ignored = noRefresh || event.contains("project/updated") || event.contains("\"threadIds\":[]")
             if (ignored) {
                 withTimeout(5000) { delivered.await() }; delay(100)
                 assertEquals(1, reads.get())

@@ -1,7 +1,7 @@
 """Explicit node filesystem/Git operations, separate from model turn tools.
 
-Windows stdio nodes use the native host process API. No command/exec fallback or
-turn permission overrides: callers are fixed Relay features, never model output.
+Windows stdio nodes and macOS worktree writes use the native host process API.
+Callers are fixed Relay features, never model output.
 """
 from contextlib import nullcontext
 import base64
@@ -11,9 +11,11 @@ import uuid
 from .connection import CodexError
 
 
-def node_command(connection, params, *, timeout=None):
+def node_command(connection, params, *, timeout=None, workspace_write=False):
     status = connection.status() if callable(getattr(connection, 'status', None)) else {}
-    if status.get('hostCommands') != 'native-process':
+    use_process = status.get('hostCommands') == 'native-process' or (
+        workspace_write and status.get('workspaceWrites') == 'native-process')
+    if not use_process:
         return connection.request('command/exec', params, timeout=timeout)
     lease = getattr(connection, 'auxiliary_connection', None)
     with lease() if lease else nullcontext(connection) as helper:

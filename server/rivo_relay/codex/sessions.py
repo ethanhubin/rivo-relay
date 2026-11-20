@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from .writers import WriterProcesses
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 
 from ..operation_gates import ThreadGates
 from ..runtime_state import session_state, invalidated
@@ -28,7 +30,7 @@ from .files import read_file, read_directory, upload_attachment_stream, stream_d
 from .developer import (project_directory, project_git, review_context, workspace_diff,
                         diff_summary, validate_review, Workspaces)
 from .observations import Observations
-from .projection import execution_projection, control_projection
+from .projection import execution_projection, control_projection, response_kinds, response_waiting
 from .models import ModelCatalog
 from .attachment_context import attachment_context
 from .image_inputs import needs_image_staging, prepare_image_inputs
@@ -126,7 +128,8 @@ class CodexService(SessionHandoffMixin):
         self.native_journal = NativeJournal(self.connection, self.history_adapter, self._history_repaired)
         from .activity import ActivityRegistry
         self._activity_discovery = None
-        self.activity = ActivityRegistry(self._load_activity, lambda: str(self.connection.generation))
+        self.activity = ActivityRegistry(self._load_activity, lambda: str(self.connection.generation),
+            self.on_event, interactions=self.interactions)
         self.model_catalog = ModelCatalog(self._load_models, lambda: str(self.connection.generation))
 
     def _history_repaired(self, thread_id, result):
@@ -208,30 +211,83 @@ class CodexService(SessionHandoffMixin):
         self.connection.close()
 
     def idle_for_update(self):
-        # Metadata only: never resume a writer or repair history to decide whether
-        # an update may stop Relay. All reads share one short budget.
-        from ..read_budget import read_budget, read_lock
+        return self.update_blocker() is None
+
+    def update_blocker(self):
+        # Metadata only: never resume a writer or repair history to authorize a stop.
+        from ..read_budget import ReadStopped, read_budget, read_lock
         try:
-            with read_budget(seconds=2):
+            with read_budget(seconds=4):
                 if not self.status().get('connected'):
-                    return False
+                    return 'native_state_unknown'
                 with read_lock(self._lock):
-                    if self._unmaterialized:
-                        return False
-                    threads = set(self._joined) | set(self._active) | {tid for tid, _ in self._live}
+                    live = {tid for tid, _ in self._live}
+                    threads = set(self._joined) | set(self._active) | live | self._unmaterialized
+                    unmaterialized = set(self._unmaterialized)
+                    empty = unmaterialized.intersection(self._created) - self._active.keys() - live
                 threads.update(getattr(self.connection, 'update_threads', lambda: [])())
-                for thread_id in threads:
-                    if self.interactions.list(thread_id):
-                        return False
-                    thread = self.connection.request('thread/read',
-                        {'threadId': thread_id, 'includeTurns': False}, timeout=2)['thread']
-                    if thread_status(thread) != 'idle' or thread_waiting(thread):
-                        return False
-                    if (self.read_goal(thread_id).get('goal') or {}).get('status') == 'active':
-                        return False
-                return True
+                if not threads:
+                    return None
+                # Each worker inherits the same deadline. Independent sessions can
+                # inspect their own writer without serial round trips across writers.
+                with ThreadPoolExecutor(max_workers=8) as executor:
+                    checks = [executor.submit(copy_context().run, self._thread_update_blocker,
+                                              tid, tid in empty, tid in unmaterialized)
+                              for tid in threads]
+                    blockers = {check.result() for check in checks}
+                for reason in ('native_waiting_user', 'native_running', 'native_check_timeout', 'native_state_unknown'):
+                    if reason in blockers:
+                        return reason
+        except (ReadStopped, TimeoutError):
+            return 'native_check_timeout'
         except Exception:
-            return False
+            return 'native_state_unknown'
+        return None
+
+    def _thread_update_blocker(self, thread_id, empty, unmaterialized):
+        from ..read_budget import ReadStopped
+        try:
+            if self.interactions.list(thread_id):
+                return 'native_waiting_user'
+            try:
+                thread = self.connection.request('thread/read',
+                    {'threadId': thread_id, 'includeTurns': False}, timeout=2)['thread']
+            except CodexError as error:
+                if not (empty and awaiting_rollout(error)):
+                    raise
+                # A just-created thread can lack a rollout until its first turn.
+                thread = None
+            if thread is not None:
+                if thread_waiting(thread):
+                    return 'native_waiting_user'
+                status = thread_status(thread)
+                if status == 'running':
+                    return 'native_running'
+                if unmaterialized and not empty:
+                    ownership = self.observations_for(thread_id).get(('ownership', ''), {})
+                    if ownership.get('released') and ownership.get('releaseState') in (None, 'pending', 'failed'):
+                        return 'native_state_unknown'
+                if status != 'idle':
+                    native_status = thread.get('status')
+                    if isinstance(native_status, dict):
+                        native_status = native_status.get('type')
+                    if native_status != 'notLoaded':
+                        return 'native_state_unknown'
+                    status = self._external_execution([{'id': thread_id, 'status': native_status}]).get(thread_id)
+                    return {'idle': None, 'running': 'native_running'}.get(status, 'native_state_unknown')
+            try:
+                goal = self.read_goal(thread_id).get('goal')
+            except CodexError as error:
+                if thread is None and awaiting_rollout(error):
+                    return None
+                raise
+            return 'native_running' if (goal or {}).get('status') == 'active' else None
+        except (ReadStopped, TimeoutError):
+            return 'native_check_timeout'
+        except CodexError as error:
+            return 'native_check_timeout' if error.code == 'native_timeout' else 'native_state_unknown'
+        except Exception:
+            return 'native_state_unknown'
 
     def status(self):
         return self.connection.status()
@@ -333,16 +389,30 @@ class CodexService(SessionHandoffMixin):
             # for every historical conversation before publishing live activity.
             goal = (self.read_goal(tid).get('goal') if thread_status(thread) != 'unknown'
                     or external.get(tid) == 'running' else None)
-            status = ('waiting' if self.interactions.list(tid) or thread_waiting(thread) else
+            requests = self.interactions.list(tid)
+            status = ('waiting' if response_waiting(requests, thread.get('status')) else
                       'running' if goal_running(thread, goal, external) else
                       external.get(tid, thread_status(thread)))
-            projection = execution_projection(status, queues.get(tid, []))
+            projection = execution_projection(status, queues.get(tid, []),
+                requests=requests, native_status=thread.get('status'))
             if status == 'unknown':
                 unknown.append(tid)
             if projection['hasOutstandingWork']:
                 tasks.append({'threadId': tid, 'projectId': associations.get(tid, {}).get('projectId') or
                               thread.get('projectId') or roots.get(thread.get('cwd'), RECENT_PROJECT_ID),
                               'status': status, 'goalActive': (goal or {}).get('status') == 'active', **projection})
+        if hasattr(self, 'history_adapter'):
+            from ..read_budget import read_budget
+            for tid in self.activity.question_candidates(threads):
+                try:
+                    with read_budget(seconds=2):
+                        page = self.history_adapter.read_head(self.connection, tid)
+                        self.activity.observe_questions(tid, page.turns, token=activity_token,
+                            answer_states=self.question_claims.states(tid))
+                except Exception:
+                    # Missing/unavailable history never changes execution. Retry
+                    # via bounded background refresh or the next detail read.
+                    pass
         if generation != str(self.connection.generation):
             raise CodexError('原生运行时已变化，请重新同步任务', code='native_unavailable')
         self._activity_discovery = (generation, time.monotonic() + 60 if full else discovered[1], projects)
@@ -426,6 +496,9 @@ class CodexService(SessionHandoffMixin):
                 "sortKey": "updated_at", "sortDirection": "desc",
             }):
                 by_id[thread["id"]] = thread
+        if not archived:
+            self.activity.prioritize_questions([t['id'] for t in sorted(by_id.values(),
+                key=lambda t: t.get('updatedAt', 0), reverse=True)])
         queues = self.execution_queue.by_thread() if hasattr(self, 'execution_queue') else {}
         managed = {}
         if self.workspaces:
@@ -439,8 +512,8 @@ class CodexService(SessionHandoffMixin):
         external = {} if summary or shared else self._external_execution(list(by_id.values()))
         statuses = {t["id"]: ('unknown' if shared and (t['id'] in unknown or t['id'] not in shared.get('knownThreadIds', [])) else
                     active[t['id']]['status'] if t['id'] in active else 'idle' if shared else
-                    "waiting" if self.interactions.list(t["id"]) or thread_waiting(t) else
-                    "running" if goal_running(t, None if summary else self.read_goal(t["id"]).get("goal"), external)
+                    "waiting" if response_waiting(self.interactions.list(t["id"]), t.get("status")) else
+                    "running" if goal_running(t, None if summary or (thread_status(t) == "unknown" and external.get(t["id"]) == "idle") else self.read_goal(t["id"]).get("goal"), external)
                     else external.get(t['id'], thread_status(t))) for t in by_id.values()}
         return [{"id": t["id"], "name": t.get("name") or t.get("preview") or "新会话",
                  "preview": t.get("preview", ""), "status": statuses[t["id"]],
@@ -453,7 +526,10 @@ class CodexService(SessionHandoffMixin):
                  "workspace": ({'id': managed[t['id']]['id'], 'path': managed[t['id']]['path'],
                      'commit': managed[t['id']]['commit_id'], 'status': managed[t['id']]['status']}
                      if t['id'] in managed else None),
-                 **execution_projection(statuses[t["id"]], queues.get(t['id'], []))}
+                 **execution_projection(statuses[t["id"]], queues.get(t['id'], [])),
+                 'responseKinds': (active[t['id']].get('responseKinds', []) if shared and t['id'] in active
+                     else response_kinds(self.interactions.list(t['id']), t.get('status')))
+                     if not archived else []}
                 for t in sorted(by_id.values(), key=lambda t: t.get("updatedAt", 0), reverse=True)]
 
     def pin_session(self, thread_id, pinned):
@@ -579,6 +655,9 @@ class CodexService(SessionHandoffMixin):
         # Reconcile the idle persisted history before resume takes a writer lock.
         # A live Desktop/CLI writer remains authoritative and is never released.
         history = self.history(thread_id, cursor=cursor, limit=limit, native_revision=native_revision)
+        # History can take longer than a background activity scan. Fresh native
+        # execution evidence below must not inherit the history read's old fence.
+        execution_token = self.activity.read_token()
         # Join once per connection, then read metadata without new notifications.
         # No cwd/model/permission values are supplied.
         read_only = False
@@ -626,7 +705,7 @@ class CodexService(SessionHandoffMixin):
         goal_state = self.read_goal(thread_id)
         external = self._external_execution([thread]) if not active else {}
         goal_active = goal_running(thread, goal_state.get("goal"), external)
-        status = "waiting" if requests or thread_waiting(thread) else ("running" if active or goal_active else external.get(thread_id, thread_status(thread)))
+        status = "waiting" if response_waiting(requests, thread.get("status")) else ("running" if active or goal_active else external.get(thread_id, thread_status(thread)))
         observations = self.observations_for(thread_id)
         latest_turn = thread['turns'][-1] if thread['turns'] else {}
         plan = observations.get(('plan', active or latest_turn.get('id', '')))
@@ -636,6 +715,26 @@ class CodexService(SessionHandoffMixin):
         changes = [{'turnId': turn_id, **value} for (kind, turn_id), value in observations.items() if kind == 'changes']
         turn_settings = [{'turnId': turn_id, **value} for (kind, turn_id), value in observations.items() if kind == 'turnSettings']
         queue = self.execution_queue.list(thread_id) if hasattr(self, 'execution_queue') else []
+        history_ready = history['nativeSync'].get('historyReady') or history['nativeSync'].get('state') == 'ready'
+        # Current metadata/journal/goal evidence is independent of historical
+        # projection convergence. History-only evidence retains its original fence
+        # so an old completed/in-progress turn cannot overwrite a newer event.
+        fresh_running = thread_status(thread) == 'running' or external.get(thread_id) == 'running' or goal_active
+        if cursor is None:
+            if history_ready:
+                self.activity.observe_questions(thread_id, thread['turns'], token=activity_token,
+                    answer_states=self.question_claims.states(thread_id))
+            published = history_ready and self.activity.observe_execution(thread_id, status, token=activity_token,
+                project_id=thread.get('projectId'), turn_id=active,
+                settled_turn_id=latest_turn.get('id') if latest_turn.get('status') in
+                    ('completed', 'failed', 'interrupted', 'canceled') else None,
+                goal_active=goal_active, queue=queue, requests=requests, native_status=thread.get("status"))
+            if not published and fresh_running and execution_token.epoch == activity_token.epoch:
+                # The fresh proof establishes execution, not the identity of a
+                # turn from older/unready history. Do not resurrect that turn or
+                # retire one using history that predates this checkpoint.
+                self.activity.observe_execution(thread_id, status, token=execution_token,
+                    project_id=thread.get('projectId'), goal_active=goal_active, queue=queue, requests=requests, native_status=thread.get("status"))
         review_diagnostics = self.review_guard.diagnostics(thread_id, thread['turns'])
         rebind = None
         if workspace_unavailable:
@@ -684,12 +783,6 @@ class CodexService(SessionHandoffMixin):
                 question_reply_available = getattr(self.connection, 'can_answer_questions', lambda _: False)(thread_id)
             except CodexError:
                 pass
-        if cursor is None and (history['nativeSync'].get('historyReady') or history['nativeSync'].get('state') == 'ready'):
-            self.activity.observe_execution(thread_id, status, token=activity_token,
-                project_id=thread.get('projectId'), turn_id=active,
-                settled_turn_id=latest_turn.get('id') if latest_turn.get('status') in
-                    ('completed', 'failed', 'interrupted', 'canceled') else None,
-                goal_active=goal_active, queue=queue)
         result = {"activity": self.activity.snapshot(), "thread": thread, "requests": requests, "settings": settings, 'control': control, 'plan': plan,
                 'canAnswerQuestions': question_reply_available, 'questionAnswerStates': answer_states,
                 **goal_state,
@@ -1111,15 +1204,22 @@ class CodexService(SessionHandoffMixin):
                 params.pop('expectedTurnId')
             ids = [answer['questionItemId'] for answer in answers]
             self.question_claims.claim(thread_id, ids, client_message_id)
+            self._event({'method': 'relay/questionsAnswerState', 'params': {
+                'threadId': thread_id, 'questionIds': ids, 'state': 'pending'}})
             try:
                 result = self.connection.answer_questions(params, start_turn=start_turn)
                 turn_id = result.get('turn', {}).get('id') if start_turn else result.get('turnId')
                 if not isinstance(turn_id, str) or not turn_id or (not start_turn and turn_id != expected_turn_id):
                     raise CodexError('回答结果待核对', code='native_protocol', request_sent=True)
             except Exception as error:
-                self.question_claims.finish(thread_id, ids, client_message_id, None if getattr(error, 'definite', False) else 'unknown')
+                state = None if getattr(error, 'definite', False) else 'unknown'
+                self.question_claims.finish(thread_id, ids, client_message_id, state)
+                self._event({'method': 'relay/questionsAnswerState', 'params': {
+                    'threadId': thread_id, 'questionIds': ids, 'state': state}})
                 raise
             self.question_claims.finish(thread_id, ids, client_message_id, 'accepted')
+            self._event({'method': 'relay/questionsAnswered', 'params': {'threadId': thread_id,
+                'questionIds': ids}})
             return {'threadId': thread_id, 'turnId': turn_id}
 
     def steer(self, thread_id, text, expected_turn_id, client_message_id=None, *, input_items=None):
@@ -1155,7 +1255,7 @@ class CodexService(SessionHandoffMixin):
             result = self.interactions.respond(key, response)
         finally:
             self._interaction_invalidated(thread_id)
-        self.on_event({"method": "relay/interactionAnswered", "params": {"key": key}})
+        self._event({"method": "relay/interactionAnswered", "params": {"key": key, "threadId": thread_id}})
         return result
 
     def respond_interaction(self, session_id, generation, interaction_id, revision, response):
@@ -1181,7 +1281,36 @@ class CodexService(SessionHandoffMixin):
     def usage(self):
         self.start()
         result = self.connection.request('account/rateLimits/read', {})
-        return {key: result[key] for key in ('rateLimits', 'rateLimitsByLimitId', 'ordinaryUsageAllowed') if key in result}
+        return {**{key: result[key] for key in ('rateLimits', 'rateLimitsByLimitId', 'ordinaryUsageAllowed', 'rateLimitResetCredits') if key in result},
+                'resetSupported': isinstance(result.get('rateLimitResetCredits'), dict),
+                'resetCreditSelectionSupported': True}
+
+    def usage_reset_scope(self):
+        """Bind recovery to the native account without exposing its identity to phones."""
+        self.start()
+        account = self.connection.request('account/read', {'refreshToken': False}).get('account')
+        if (not isinstance(account, dict) or account.get('type') not in ('chatgpt', 'chatgptAuthTokens')
+                or not isinstance(account.get('email'), str) or not account['email'].strip()):
+            raise CodexError('无法确认当前 ChatGPT 账户，未重置额度', code='usage_reset_account_unverified', http_status=409)
+        identity = {key: account[key] for key in ('email', 'id', 'accountId', 'organizationId', 'workspaceId') if key in account}
+        return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+    def reset_usage(self, submission_id, account_scope, credit_id=None):
+        if self.usage_reset_scope() != account_scope:
+            raise CodexError('登录账户已变化，请核对原操作', code='usage_reset_account_changed', http_status=409)
+        try:
+            params = {'idempotencyKey': submission_id}
+            if credit_id is not None:
+                params['creditId'] = credit_id
+            result = self.connection.request('account/rateLimitResetCredit/consume', params)
+        except CodexError as error:
+            if error.code == 'native_method_unsupported' or error.native_code == -32601:
+                raise CodexError('此节点不支持额度重置，请更新节点', code='usage_reset_unsupported', http_status=409) from error
+            raise
+        outcome = result.get('outcome')
+        if outcome not in {'reset', 'alreadyRedeemed', 'nothingToReset', 'noCredit'}:
+            raise CodexError('重置结果待核对', code='usage_reset_unknown', request_sent=True)
+        return {'requestId': submission_id, 'resetOutcome': outcome}
 
     def project_directory(self, path=None):
         self.start()
@@ -1318,6 +1447,8 @@ class CodexService(SessionHandoffMixin):
             params["status"] = "paused" if operation == "pause" else "active"
         with self.operation_gate(thread_id):
             self._resume(thread_id)
+            from ..submission_dispatch import creation_phase
+            creation_phase(thread_id, 'dispatching')
             self.connection.request("thread/goal/clear" if operation == "clear" else "thread/goal/set", params)
         # Submission receipts contain identities only. Goal contents are read
         # through the session snapshot, never persisted as receipt fields.
@@ -1369,7 +1500,10 @@ class CodexService(SessionHandoffMixin):
             return
         if event.get("connectionId", self.connection.generation) != self.connection.generation:
             return
-        affected_interactions = self.interactions.receive(event) or set()
+        affected_interactions = self.interactions.receive(event)
+        if affected_interactions is False:
+            return
+        affected_interactions = affected_interactions or set()
         method, params = event.get("method"), event.get("params", {})
         thread_id, turn_id = params.get("threadId", params.get('conversationId')), params.get("turnId")
         if (thread_id is not None and not isinstance(thread_id, str)) or (turn_id is not None and not isinstance(turn_id, str)):

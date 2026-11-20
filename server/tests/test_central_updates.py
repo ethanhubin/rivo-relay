@@ -14,14 +14,15 @@ from aiohttp import ClientSession, web
 from rivo_relay.gateway.config import encode_key
 from rivo_relay.gateway.server import Gateway
 from rivo_relay.gateway.publish import install, collect, GRACE
-from rivo_relay.gateway.update_store import manifest
+from rivo_relay.gateway.update_store import manifest, app_publication, require_app_endpoint, PUBLICATION_CAPABILITIES
 from rivo_relay.gateway.updater import Supervisor, unpack
+from rivo_relay.release_management.central import _fetch
 from rivo_relay.update_gate import UpdateGate
 
 
 def release(directory, code):
     directory.mkdir(parents=True, exist_ok=True)
-    item = {'schema': 1, 'version': f'1.0.{code}', 'versionCode': code, 'notes': 'test'}
+    item = {'schema': 1, 'version': f'1.0.{code}', 'versionCode': code, 'notes': 'test', 'compatibility': {'apiVersions': [1, 3]}}
     for kind, suffix in [('app', 'apk'), ('node', 'zip')]:
         raw = f'{kind}-{code}'.encode()
         digest = hashlib.sha256(raw).hexdigest()
@@ -49,6 +50,35 @@ class StoreTests(unittest.TestCase):
             (self.root / 'in/latest.json').write_text(json.dumps(changed))
             with self.assertRaises(ValueError): install(self.root / 'in', self.workspace)
         self.assertEqual(manifest(self.workspace), item)
+
+    def test_release_gate_requires_client_endpoint_to_deliver_compatibility(self):
+        item = release(self.root / 'in', 2)
+        item['compatibility'] = {'apiVersions': [1]}
+        expected = app_publication(item)
+        require_app_endpoint(item, expected)
+        old_endpoint = dict(expected)
+        old_endpoint.pop('compatibility')
+        with self.assertRaisesRegex(ValueError, '客户端更新接口与统一清单不一致'):
+            require_app_endpoint(item, old_endpoint)
+        item.pop('compatibility')
+        with self.assertRaisesRegex(ValueError, '缺少客户端兼容声明'):
+            require_app_endpoint(item, app_publication(item))
+
+
+    def test_node_only_release_preserves_app_and_rejects_same_code_replacement(self):
+        old = release(self.root / 'in', 2)
+        install(self.root / 'in', self.workspace)
+        current = release(self.root / 'in', 3)
+        current['app'] = dict(old['app'], version=old['version'], versionCode=old['versionCode'], notes=old['notes'])
+        (self.root / 'in/latest.json').write_text(json.dumps(current))
+        (self.root / 'in' / old['app']['path'].rsplit('/', 1)[-1]).unlink()
+        install(self.root / 'in', self.workspace)
+        self.assertEqual(old['app']['sha256'], manifest(self.workspace)['app']['sha256'])
+        changed = release(self.root / 'in', 4)
+        changed['app'].update(version=old['version'], versionCode=old['versionCode'], notes=old['notes'])
+        (self.root / 'in/latest.json').write_text(json.dumps(changed))
+        with self.assertRaisesRegex(ValueError, 'app downgrade or replacement'):
+            install(self.root / 'in', self.workspace)
 
     def test_corrupt_or_low_space_never_changes_manifest(self):
         item = release(self.root / 'in', 1); install(self.root / 'in', self.workspace)
@@ -90,11 +120,63 @@ class StoreTests(unittest.TestCase):
         self.assertFalse((self.root / 'escape').exists())
 
 
+class ReleaseBaselineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_live_app_declaration_stops_before_baseline_is_written(self):
+        class Response:
+            status = 200
+            def __init__(self, value): self.value = value
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): pass
+            async def json(self): return self.value
+
+        class Session:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): pass
+            def get(self, url, **kwargs):
+                return Response(old_endpoint if url.endswith('/v1/app-updates/latest') else item)
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            item = release(root / 'in', 2)
+            item['compatibility'] = {'apiVersions': [1]}
+            old_endpoint = app_publication(item)
+            old_endpoint.pop('compatibility')
+            with patch('aiohttp.TCPConnector'), patch('aiohttp.ClientSession', return_value=Session()):
+                with self.assertRaisesRegex(ValueError, '客户端更新接口与统一清单不一致'):
+                    await _fetch(root, {'gatewayPin': 'a' * 64, 'gatewayUrl': 'https://gateway.invalid'}, True)
+            self.assertFalse((root / 'workspace/local-node/updates/latest.json').exists())
+
+    async def test_node_only_requires_running_gateway_capability(self):
+        class Response:
+            status = 200
+            def __init__(self, value): self.value = value
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): pass
+            async def json(self): return self.value
+
+        class Session:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): pass
+            def get(self, url, **kwargs):
+                return Response(app_publication(item) if url.endswith('/v1/app-updates/latest') else item)
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            item = release(root / 'in', 2)
+            with patch('aiohttp.TCPConnector'), patch('aiohttp.ClientSession', return_value=Session()):
+                with self.assertRaisesRegex(RuntimeError, '尚不支持独立客户端版本'):
+                    await _fetch(root, {'gatewayPin': 'a' * 64, 'gatewayUrl': 'https://gateway.invalid'}, True, True)
+            self.assertFalse((root / 'workspace/local-node/updates/latest.json').exists())
+
+
 class GatewayStoreTests(unittest.IsolatedAsyncioTestCase):
     async def test_updates_available_with_all_nodes_offline_and_range(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            item = release(root / 'in', 1); install(root / 'in', root)
+            item = release(root / 'in', 1)
+            item['app'].update(version='0.9.9', versionCode=1, notes='app notes')
+            (root / 'in/latest.json').write_text(json.dumps(item))
+            install(root / 'in', root)
             (root / 'keys.json').write_text('{}')
             runner = web.AppRunner(Gateway(root / 'keys.json').application()); await runner.setup()
             site = web.TCPSite(runner, '127.0.0.1', 0); await site.start()
@@ -104,8 +186,14 @@ class GatewayStoreTests(unittest.IsolatedAsyncioTestCase):
                     async with client.get(base + '/v1/releases/latest') as response:
                         self.assertEqual(await response.json(), item)
                         self.assertEqual(response.headers['Cache-Control'], 'no-store')
+                    async with client.get(base + '/v1/releases/capabilities') as response:
+                        self.assertEqual(await response.json(), PUBLICATION_CAPABILITIES)
                     async with client.get(base + '/v1/app-updates/latest') as response:
                         app = await response.json()
+                        self.assertEqual(item['compatibility'], app['compatibility'])
+                        self.assertEqual('0.9.9', app['version'])
+                        self.assertEqual(1, app['versionCode'])
+                        self.assertEqual('app notes', app['notes'])
                     async with client.get(base + app['apkPath'], headers={'Range': 'bytes=0-2'}) as response:
                         self.assertEqual(response.status, 206)
                         self.assertEqual(await response.read(), b'app')
@@ -172,23 +260,76 @@ class GateTests(unittest.TestCase):
         db = Mock(); db.execute.return_value.fetchone.return_value = None
         app = SimpleNamespace(queue=SimpleNamespace(_tick_lock=threading.Lock()),
                               db=SimpleNamespace(read=lambda: nullcontext(db)),
-                              codex=SimpleNamespace(idle_for_update=lambda: True))
+                              codex=SimpleNamespace(update_blocker=lambda: None))
         gate = UpdateGate()
         self.assertTrue(gate.enter()); self.assertFalse(gate.acquire(app)); gate.leave()
-        app.codex.idle_for_update = lambda: False
+        app.codex.update_blocker = lambda: 'native_running'
         self.assertFalse(gate.acquire(app)); self.assertTrue(gate.enter()); gate.leave()
-        app.codex.idle_for_update = lambda: True
+        app.codex.update_blocker = lambda: None
         self.assertTrue(gate.acquire(app)); self.assertFalse(gate.enter())
         gate.until = 0
         self.assertTrue(gate.enter()); gate.leave()
 
 class NativeIdleTests(unittest.TestCase):
+    def test_empty_unloaded_and_parallel_native_checks(self):
+        import threading
+        from rivo_relay.codex.connection import CodexError
+        from rivo_relay.codex.sessions import CodexService
+        service = CodexService.__new__(CodexService)
+        service._lock = threading.RLock()
+        service._joined = {'empty', 'unloaded'}
+        service._active = {}
+        service._live = {}
+        service._created = {'empty': {}}
+        service._unmaterialized = {'empty'}
+        service.interactions = SimpleNamespace(list=lambda _: [])
+        service.read_goal = Mock(return_value={'goal': None})
+        service._external_execution = Mock(return_value={'unloaded': 'idle'})
+        barrier = threading.Barrier(2)
+
+        def request(method, params, **kwargs):
+            barrier.wait(timeout=1)
+            if params['threadId'] == 'empty':
+                raise CodexError('thread not materialized', code='native_rejected')
+            return {'thread': {'status': {'type': 'notLoaded'}}}
+
+        service.connection = SimpleNamespace(status=lambda: {'connected': True}, request=request)
+        self.assertIsNone(service.update_blocker())
+        service.read_goal.assert_called_once_with('empty')
+        service._external_execution.return_value = {}
+        self.assertEqual('native_state_unknown', service.update_blocker())
+        service._external_execution.return_value = {'unloaded': 'running'}
+        self.assertEqual('native_running', service.update_blocker())
+
+    def test_native_waiting_running_unknown_and_timeout_are_distinct(self):
+        import threading
+        from rivo_relay.codex.sessions import CodexService
+        from rivo_relay.read_budget import ReadStopped
+        service = CodexService.__new__(CodexService)
+        service._lock = threading.RLock()
+        service._joined = {'thread'}
+        service._active = {}
+        service._live = {}
+        service._created = {}
+        service._unmaterialized = set()
+        service.interactions = SimpleNamespace(list=lambda _: [])
+        service.connection = SimpleNamespace(status=lambda: {'connected': True}, request=Mock())
+        for native, expected in (
+            ({'type': 'active', 'activeFlags': ['waitingOnUserInput']}, 'native_waiting_user'),
+            ({'type': 'active'}, 'native_running'),
+            ({'type': 'unknown'}, 'native_state_unknown'),
+        ):
+            service.connection.request.return_value = {'thread': {'status': native}}
+            self.assertEqual(expected, service.update_blocker())
+        service.connection.request.side_effect = ReadStopped('deadline')
+        self.assertEqual('native_check_timeout', service.update_blocker())
+
     def test_live_turn_keys_are_thread_ids_and_owned_writers_survive_metadata_reset(self):
         import threading
         from rivo_relay.codex.sessions import CodexService
         service = CodexService.__new__(CodexService)
         service._lock = threading.RLock()
-        service._joined = set(); service._active = {}; service._unmaterialized = set()
+        service._joined = set(); service._active = {}; service._unmaterialized = set(); service._created = {}
         service._live = {('live-thread', 'turn-1'): {'status': 'completed'}}
         service.connection = SimpleNamespace(status=lambda: {'connected': True}, update_threads=lambda: {'owned-thread'})
         service.interactions = SimpleNamespace(list=lambda _: [])

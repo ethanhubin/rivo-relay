@@ -20,11 +20,11 @@ import androidx.compose.ui.res.painterResource
 
 @Composable
 internal fun SpeechSettings(onEdit: () -> Unit) {
-    SettingsEntry("语音输入", R.drawable.ic_microphone, "edit_speech_settings", onEdit)
+    SettingsEntry("语音输入", R.drawable.ic_microphone, "edit_speech_settings", onEdit = onEdit)
 }
 
 @Composable
-internal fun SettingsEntry(title: String, icon: Int, tag: String, onEdit: () -> Unit) {
+internal fun SettingsEntry(title: String, icon: Int, tag: String, actionLabel: String = "编辑", onEdit: () -> Unit) {
     OutlinedCard(onClick = onEdit, modifier = Modifier.fillMaxWidth().testTag(tag),
         shape = RoundedCornerShape(24.dp),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
@@ -33,7 +33,7 @@ internal fun SettingsEntry(title: String, icon: Int, tag: String, onEdit: () -> 
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             Icon(painterResource(icon), contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            Text("编辑", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(actionLabel, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("›", style = MaterialTheme.typography.headlineSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }

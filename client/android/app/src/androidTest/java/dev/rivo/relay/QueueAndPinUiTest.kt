@@ -64,7 +64,7 @@ class QueueAndPinUiTest {
         compose.setContent { RivoTheme { Surface { Column { ExecutionQueuePanel("thread", (1..5).map { task("$it") }, true, true,
             {}, {}, {}, { ids, before -> reordered = ids; expected = before }) } } } }
         compose.onNodeWithTag("queue_item_4").assertDoesNotExist()
-        compose.onNodeWithTag("queue_expand").performClick()
+        compose.onNodeWithTag("queue_item_3").performTouchInput { swipeUp() }
         compose.onNodeWithTag("queue_item_4").assertExists()
         compose.onNodeWithTag("queue_item_1").performTouchInput {
             down(Offset(12f, centerY)); advanceEventTime(700); moveBy(Offset(0f, 130f)); up()

@@ -140,7 +140,8 @@ class Supervisor:
                     reason = result.get('reason')
                     allowed = {'active_requests', 'queue_check_busy', 'database_busy', 'queue_pending_or_unknown',
                                'submission_pending_or_unknown', 'native_busy_or_unverified', 'native_check_timeout', 'native_checking', 'lease_expired'}
-                    raise UpdateDeferred(reason if reason in allowed else 'node_busy')
+                    from ..update_gate import NATIVE_UPDATE_BLOCKERS
+                    raise UpdateDeferred(reason if reason in allowed | NATIVE_UPDATE_BLOCKERS else 'node_busy')
                 if response.status != 200:
                     raise UpdateFailure('local_update_rejected')
                 return result

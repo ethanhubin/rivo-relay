@@ -1,14 +1,11 @@
 """Discover the local machine's name without changing its stable Relay identity."""
 from __future__ import annotations
 
-import json
 import platform
-import shutil
 import socket
 import subprocess
 import threading
 import time
-from pathlib import Path
 
 
 def _output(command: list[str]) -> str:
@@ -20,21 +17,6 @@ def _output(command: list[str]) -> str:
 
 
 def discover_name() -> str:
-    # LaunchAgents often lack /usr/local/bin in PATH. Read only Self, never peers.
-    executable = shutil.which('tailscale')
-    if not executable:
-        executable = next((p for p in ('/usr/local/bin/tailscale', '/opt/homebrew/bin/tailscale',
-            '/Applications/Tailscale.app/Contents/MacOS/Tailscale') if Path(p).is_file()), None)
-    if executable:
-        try:
-            status = json.loads(_output([executable, 'status', '--json']))
-            own = status.get('Self') if isinstance(status, dict) else None
-            if isinstance(own, dict):
-                dns = own.get('DNSName')
-                if isinstance(dns, str) and dns.strip().strip('.'):
-                    return dns.strip().rstrip('.').split('.')[0]
-        except (ValueError, TypeError):
-            pass
     if platform.system() == 'Darwin':
         name = _output(['/usr/sbin/scutil', '--get', 'ComputerName'])
         if name:
@@ -43,7 +25,7 @@ def discover_name() -> str:
 
 
 class NodeName:
-    """Bound discovery cost and re-read names after OS/Tailscale renames."""
+    """Bound discovery cost and re-read names after OS renames."""
     def __init__(self):
         self._lock = threading.Lock()
         self._expires = 0.0

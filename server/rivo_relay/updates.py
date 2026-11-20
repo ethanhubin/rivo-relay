@@ -20,6 +20,7 @@ def latest_update(workspace):
     if apk.stat().st_size != item.get('size'):
         raise ValueError('更新包长度不匹配')
     return {key: item[key] for key in ('version', 'versionCode', 'sha256', 'size')} | {
+        **({'compatibility': item['compatibility']} if 'compatibility' in item else {}),
         'notes': str(item.get('notes', ''))[:16000],
         'apkPath': '/v1/app-updates/apks/' + item['sha256'] + '.apk',
     }

@@ -102,8 +102,10 @@ class NativeSemanticsTests(unittest.TestCase):
         self.assertIsNone(result["goal"])
         self.assertTrue(result["goalSupported"])
         self.assertEqual(1, sum(method == "thread/resume" for method, _ in native.calls))
-        self.assertEqual(2, len([e for e in events if e['method'] != 'session/invalidated']))
-        self.assertEqual(2, len([e for e in events if e['method'] == 'session/invalidated']))
+        self.assertEqual(2, sum(e['method'] not in ('relay/activityChanged', 'session/invalidated') for e in events))
+        # Active goal -> idle produces two semantic activity notices; changing
+        # among idle goal states does not publish another notice per read.
+        self.assertEqual(2, sum(e['method'] == 'relay/activityChanged' for e in events))
 
     def test_session_list_keeps_active_goal_running_between_turns(self):
         native = FakeNative()
@@ -142,6 +144,123 @@ class NativeSemanticsTests(unittest.TestCase):
         self.assertEqual(result['activity']['tasks'], [])
         self.assertIn('thread', result['activity']['knownThreadIds'])
         self.assertNotIn('thread', service.activity.snapshot()['unknownThreadIds'])
+
+    def test_fresh_running_metadata_updates_activity_after_slow_history(self):
+        native = FakeNative()
+        native.thread.update(projectId='project', status={'type': 'active'})
+        service = CodexService(connection=native)
+        original = service.history
+
+        def history(*args, **kwargs):
+            result = original(*args, **kwargs)
+            # A background scan finishes while the expensive history read runs.
+            service.activity.load = lambda _token: {
+                'tasks': [], 'knownThreadIds': ['thread'], 'unknownThreadIds': []}
+            service.activity.reconcile()
+            return result
+
+        with patch.object(service, 'history', side_effect=history):
+            result = service.get_session('thread')
+        self.assertEqual('running', result['status'])
+        self.assertEqual('running', result['activity']['tasks'][0]['status'])
+        self.assertEqual('project', result['activity']['tasks'][0]['projectId'])
+        with patch.object(service.projects, 'get', return_value={'id': 'project', 'roots': []}), \
+             patch('rivo_relay.codex.sessions.thread_pages', return_value=[native.thread]):
+            self.assertEqual('running', service.list_sessions('project')[0]['status'])
+
+    def test_fresh_running_metadata_updates_activity_while_history_converges(self):
+        for status in ({'type': 'active'}, {'type': 'active', 'activeFlags': ['waitingOnUserInput']}):
+            with self.subTest(status=status):
+                native = FakeNative()
+                native.thread['status'] = status
+                service = CodexService(connection=native)
+                original = service.history
+
+                def history(*args, **kwargs):
+                    result = original(*args, **kwargs)
+                    result['nativeSync'] = {'state': 'syncing', 'historyReady': False}
+                    return result
+
+                with patch.object(service, 'history', side_effect=history):
+                    result = service.get_session('thread')
+                self.assertEqual(result['status'], result['activity']['tasks'][0]['status'])
+
+    def test_goal_detail_updates_activity_while_history_converges(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        original = service.history
+
+        def history(*args, **kwargs):
+            result = original(*args, **kwargs)
+            result['nativeSync'] = {'state': 'syncing', 'historyReady': False}
+            return result
+
+        with patch.object(service, 'history', side_effect=history), \
+             patch.object(service, 'read_goal', return_value={'goal': {'status': 'active'}}):
+            result = service.get_session('thread')
+        self.assertIsNone(result['activeTurnId'])
+        self.assertTrue(result['activity']['tasks'][0]['goalActive'])
+        self.assertEqual('running', result['activity']['tasks'][0]['status'])
+
+    def test_detail_does_not_publish_idle_from_unready_history(self):
+        native = FakeNative()
+        service = CodexService(connection=native)
+        service.activity.receive({'method': 'turn/started', 'params': {
+            'threadId': 'thread', 'turn': {'id': 'new'}}})
+        original = service.history
+
+        def history(*args, **kwargs):
+            result = original(*args, **kwargs)
+            result['nativeSync'] = {'state': 'syncing', 'historyReady': False}
+            return result
+
+        with patch.object(service, 'history', side_effect=history):
+            result = service.get_session('thread')
+        self.assertEqual('idle', result['status'])
+        self.assertEqual('new', result['activity']['tasks'][0]['turnId'])
+
+    def test_fresh_detail_still_respects_terminal_event_during_metadata_read(self):
+        native = FakeNative()
+        native.thread['status'] = {'type': 'active'}
+        service = CodexService(connection=native)
+        service.activity.receive({'method': 'turn/started', 'params': {
+            'threadId': 'thread', 'turn': {'id': 'turn'}}})
+        original = native.request
+
+        def request(method, params, **kwargs):
+            result = original(method, params, **kwargs)
+            if method in ('thread/read', 'thread/resume'):
+                service.activity.receive({'method': 'turn/completed', 'params': {
+                    'threadId': 'thread', 'turn': {'id': 'turn'}}})
+            return result
+
+        native.request = request
+        result = service.get_session('thread')
+        self.assertEqual('running', result['status'])
+        self.assertEqual([], result['activity']['tasks'])
+
+    def test_fresh_execution_does_not_restore_turn_identity_from_old_history(self):
+        native = FakeNative()
+        native.thread['status'] = {'type': 'active'}
+        service = CodexService(connection=native)
+        original = service.history
+
+        def history(*args, **kwargs):
+            result = original(*args, **kwargs)
+            result['turns'] = [{'id': 'old', 'status': 'inProgress', 'items': []}]
+            service.activity.receive({'method': 'turn/started', 'params': {
+                'threadId': 'thread', 'turn': {'id': 'new'}}})
+            return result
+
+        with patch.object(service, 'history', side_effect=history):
+            result = service.get_session('thread')
+        row = result['activity']['tasks'][0]
+        self.assertEqual('running', row['status'])
+        self.assertIsNone(row['turnId'])
+        service.activity.receive({'method': 'turn/completed', 'params': {
+            'threadId': 'thread', 'turn': {'id': 'old'}}})
+        # A late old terminal must reconcile identity, never finish newer work.
+        self.assertEqual('running', service.activity.snapshot()['tasks'][0]['status'])
 
     def test_external_execution_overrides_unloaded_metadata_in_list_and_detail(self):
         native = FakeNative()
@@ -447,7 +566,7 @@ class NativeSemanticsTests(unittest.TestCase):
         self.assertEqual(1, methods.count("thread/resume"))
         self.assertEqual(2, methods.count("thread/read") - reads_after_join)
         self.assertEqual(2, methods.count("thread/turns/list") - history_after_join)
-        self.assertEqual(1, len([e for e in events if e['method'] != 'session/invalidated']))
+        self.assertEqual(1, len([e for e in events if e['method'] not in ('relay/activityChanged', 'session/invalidated')]))
 
     def test_native_settings_event_refreshes_snapshot_without_rejoining(self):
         native = FakeNative()
@@ -529,6 +648,27 @@ class NativeSemanticsTests(unittest.TestCase):
         with self.assertRaises(CodexError):
             service.send("thread", "hello", client_message_id="stable")
         self.assertNotIn("thread", service._created)
+
+    def test_local_answer_invalidates_activity_without_native_resolution_event(self):
+        service = CodexService(connection=FakeNative())
+        service._event({'id': 'r', 'method': 'item/commandExecution/requestApproval',
+                        'params': {'threadId': 'thread', 'turnId': 'turn'}})
+        key = service.interactions.list('thread')[0]['key']
+        self.assertEqual(['approval'], service.activity.tasks['thread']['responseKinds'])
+        service.respond(key, {'decision': 'decline'})
+        self.assertEqual([], service.interactions.list('thread'))
+        self.assertIn('thread', service.activity.snapshot()['unknownThreadIds'])
+
+    def test_terminal_events_expire_only_matching_turn_requests(self):
+        for method in ('turn/completed', 'turn/failed', 'turn/interrupted'):
+            pending = Interactions(FakeNative())
+            for turn in ('older', 'newer'):
+                pending.receive({'id': turn, 'method': 'item/tool/requestUserInput',
+                                 'params': {'threadId': 'thread', 'turnId': turn}})
+            pending.receive({'method': method, 'params': {'threadId': 'thread', 'turnId': 'older'}})
+            self.assertEqual(['newer'], [r['id'] for r in pending.list('thread')])
+            pending.receive({'method': method, 'params': {'threadId': 'thread', 'turn': {'id': 'newer'}}})
+            self.assertEqual([], pending.list('thread'))
 
     def test_other_client_resolution_invalidates_pending_request(self):
         native = FakeNative()

@@ -10,6 +10,7 @@
 - [功能说明](feature-parity.md)
 - [Rivo Relay 当前架构](architecture.md)
 - [Rivo Relay HTTP API](API.md)
+- [App 与节点兼容协议](api-compatibility.md)
 - [Android 会话同步状态](session-synchronization.md)
 - [目标模式会话](goal-mode.md)
 - [Codex Desktop bridge](codex-desktop-bridge.md)

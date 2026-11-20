@@ -392,13 +392,21 @@ class Handler(BaseHTTPRequestHandler):
                 if self.client_address[0] not in ('127.0.0.1', '::1'):
                     raise ApiError(403, 'forbidden', 'Local monitor required')
                 from .gateway.update_status import public_status
+                from .update_gate import NATIVE_UPDATE_BLOCKERS
+                update = public_status(self.app.config.workspace)
+                # Older supervisor installations map unfamiliar reasons to node_busy.
+                if (update.get('phase') == 'waiting_idle' and update.get('reason') == 'node_busy'
+                        and not update.get('stale')):
+                    reason = self.app.update_gate.reason
+                    if reason in NATIVE_UPDATE_BLOCKERS:
+                        update['reason'] = reason
                 authorized = {c['connection_id'] for c in self.app.pairing.list_connections()}
                 self.send_json(200, {'kind': 'relay', 'nodeId': self.app.config.node_id,
                     'name': self.app.node_name.get(),
                     'releaseCode': int(os.environ.get('RIVO_RELEASE_CODE', '0')),
                     'nativeConnected': bool(self.app.codex.status().get('connected')),
                     'apps': self.app.presence.snapshot(authorized),
-                    'update': public_status(self.app.config.workspace)})
+                    'update': update})
                 return
             if self.command == "GET" and path == ["health"]:
                 self.send_json(200, {"status": "ok", "nodeId": self.app.config.node_id, "releaseCode": int(os.environ.get("RIVO_RELEASE_CODE", "0")), "nativeConnected": bool(self.app.codex.status().get("connected"))})
@@ -448,12 +456,6 @@ class Handler(BaseHTTPRequestHandler):
                 from .gateway.speech_access import issue
                 self.read_body(limit=4096)
                 self.send_json(200, issue(self.app.config.workspace, connection['connection_id']))
-                return
-
-            if self.command == 'GET' and path == ['v1', 'sites']:
-                self.app.require_capability('sites.read')
-                from .codex.sites import list_sites
-                self.send_json(200, list_sites(self.app.codex.connection, query.get('cursor', [None])[0]))
                 return
 
             if self.command == 'GET' and path == ['v1', 'node-updates', 'status']:
@@ -530,6 +532,15 @@ class Handler(BaseHTTPRequestHandler):
                 501: "当前节点版本暂不支持此功能",
                 413: "文件超过此操作的大小限制",
             }.get(status, "原生服务连接暂不可用，请检查节点服务")
+            message = {
+                'handoff_process_unverified': '无法核验持锁进程身份，请检查节点上的 Codex 进程',
+                'handoff_changed': '接管进程、会话锁或确认凭据已变化，请重新发起接管',
+                'writer_still_held': '会话写锁仍被占用，请在原客户端释放后重试',
+                'workspace_unavailable': '原工作目录不可用，且无法确认可恢复的项目目录',
+                'workspace_rebind_confirmation_required': '工作目录已变化，请重新接管并确认恢复到原项目目录',
+                'handoff_confirmation_required': '请先确认将结束的进程及受影响会话',
+                'thread_unmaterialized': '会话历史尚未保存，请等待首条消息保存后重试',
+            }.get(code, message)
             if code in ('native_host_unverified', 'handoff_host_unverified', 'handoff_host_mismatch', 'handoff_host_changed'):
                 message = '无法核验接管所需的原生主机身份，请检查节点运行时连接'
             if code == 'handoff_desktop_shared':

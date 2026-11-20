@@ -75,7 +75,7 @@ class SubmissionStore:
         self._recovering = set()
 
     def claim(self, submission_id: str, connection_id: str, operation: str,
-              target: Any, payload: Any) -> dict:
+              target: Any, payload: Any, *, preparing=False) -> dict:
         """Commit ownership before returning should_dispatch=True.
 
         Callers must never dispatch when false, including pending and unknown.
@@ -102,9 +102,9 @@ class SubmissionStore:
             if owner is None:
                 raise ValueError("Submission connection is missing or revoked")
             connection.execute(
-                """INSERT INTO submissions(id,connection_id,operation,target_json,payload_hash,status,created_at,updated_at)
-                   VALUES (?,?,?,?,?,'pending',?,?)""",
-                (submission_id, connection_id, operation, target_json, payload_hash, now, now),
+                """INSERT INTO submissions(id,connection_id,operation,target_json,payload_hash,status,created_at,updated_at,dispatch_phase)
+                   VALUES (?,?,?,?,?,'pending',?,?,?)""",
+                (submission_id, connection_id, operation, target_json, payload_hash, now, now, 'preparing' if preparing else None),
             )
             row = connection.execute("SELECT * FROM submissions WHERE id=?", (submission_id,)).fetchone()
             return {"should_dispatch": True, "submission": _public(row)}
@@ -156,6 +156,15 @@ class SubmissionStore:
             return [_public(row) for row in connection.execute(
                 "SELECT * FROM submissions WHERE operation=? AND target_json=? ORDER BY created_at DESC, id",
                 (operation, target_json),
+            )]
+
+    def find_usage_resets(self, account_scope: str) -> list[dict]:
+        """Coordinate selected-credit and legacy claims within the same account."""
+        with self.db.read() as connection:
+            return [_public(row) for row in connection.execute(
+                "SELECT * FROM submissions WHERE operation='usage.reset' AND "
+                "(target_json=? OR json_extract(target_json, '$.accountScope')=?) "
+                "ORDER BY created_at DESC, id", (_json(account_scope), account_scope),
             )]
 
     def checkpoint(self, submission_id: str, receipt: dict) -> dict:
@@ -220,7 +229,7 @@ class SubmissionStore:
         """Called synchronously at the actual turn boundary; failure prevents sending."""
         with self.db.transaction() as db:
             row = db.execute('SELECT * FROM submissions WHERE id=?', (submission_id,)).fetchone()
-            if row is None or row['status'] != 'pending' or row['operation'] not in {'thread.turns', 'thread.continue', 'thread.create', 'thread.fork'}:
+            if row is None or row['status'] != 'pending' or row['operation'] not in {'thread.turns', 'thread.continue', 'thread.create', 'thread.fork', 'thread.goal', 'thread.ownership'}:
                 raise SubmissionConflict('Submission cannot advance dispatch')
             expected = {'preparing': None, 'dispatching': 'preparing', 'received': 'dispatching'}
             if phase not in expected or row['dispatch_phase'] != expected[phase]:
@@ -239,7 +248,7 @@ class SubmissionStore:
         with self.db.transaction() as db:
             db.execute("UPDATE submissions SET dispatch_phase='local_transaction' WHERE id=? AND status='pending'", (submission_id,))
 
-    def resolve_dispatch(self, submission_id):
+    def resolve_dispatch(self, submission_id, *, preparation_error=None):
         """Only after action exit, or with the service stopped. Never resolve a live preparation."""
         with self.db.transaction() as db:
             row = db.execute('SELECT * FROM submissions WHERE id=?', (submission_id,)).fetchone()
@@ -247,10 +256,10 @@ class SubmissionStore:
                 return None
             if row['dispatch_phase'] == 'local_transaction' and row['receipt_json'] is None:
                 return self.mark_failed(submission_id, 'operation_not_dispatched')
-            if row['operation'] not in {'thread.turns', 'thread.continue', 'thread.create', 'thread.fork'}:
+            if row['operation'] not in {'thread.turns', 'thread.continue', 'thread.create', 'thread.fork', 'thread.goal', 'thread.ownership'}:
                 return None
             if row['dispatch_phase'] == 'preparing' and row['receipt_json'] is None:
-                return self.mark_failed(submission_id, 'turn_not_dispatched' if row['operation'] in {'thread.turns', 'thread.continue'} else 'operation_not_dispatched')
+                return self.mark_failed(submission_id, 'turn_not_dispatched' if row['operation'] in {'thread.turns', 'thread.continue'} else (preparation_error or 'operation_not_dispatched'))
             if row['dispatch_phase'] == 'received' and row['receipt_json']:
                 receipt = json.loads(row['receipt_json'])
                 if _validate_receipt(receipt, row, dispatched=True):

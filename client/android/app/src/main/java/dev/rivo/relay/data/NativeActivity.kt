@@ -233,8 +233,8 @@ fun nativeActivityGroupLabel(messages: List<NativeMessage>): String {
         val running = commands.count { it.status == "running" }
         val failed = commands.count { it.status != "running" && (it.status == "failed" || (it.exitCode != null && it.exitCode != 0)) }
         val unknown = commands.count { it.status == "unknown" && (it.exitCode == null || it.exitCode == 0) }
-        val succeeded = commands.size - running - failed - unknown
-        "运行了 ${commands.size} 条命令 · 成功 $succeeded · 失败 $failed" +
+        "运行了 ${commands.size} 条命令" +
+            (if (failed > 0) " · 失败 $failed" else "") +
             (if (running > 0) " · 进行中 $running" else "") + (if (unknown > 0) " · 状态未知 $unknown" else "")
     }
     if (commands.size == activities.size) return commandLabel!!

@@ -72,6 +72,15 @@ def install(incoming, workspace):
         (root / 'history').mkdir(exist_ok=True)
         if (root / 'latest.json').exists():
             old = manifest(workspace)
+            old_app = old['app']; new_app = item['app']
+            old_app_code = old_app.get('versionCode', old['versionCode'])
+            new_app_code = new_app.get('versionCode', item['versionCode'])
+            if (new_app_code < old_app_code or new_app_code == old_app_code and
+                    (new_app['sha256'], new_app['size'], new_app.get('version', item['version']),
+                     new_app.get('notes', item['notes'])) !=
+                    (old_app['sha256'], old_app['size'], old_app.get('version', old['version']),
+                     old_app.get('notes', old['notes']))):
+                raise ValueError('Refusing app downgrade or replacement at the same version')
             if (old['versionCode'] > item['versionCode']
                     or tuple(map(int, old['version'].split('.'))) > tuple(map(int, item['version'].split('.')))
                     or (old['versionCode'] == item['versionCode'] and old != item)):
@@ -82,13 +91,14 @@ def install(incoming, workspace):
             asset = item[kind]
             name = asset['path'].rsplit('/', 1)[-1]
             source = incoming / name
-            if source.is_symlink() or source.stat().st_size != asset['size'] or sha256(source) != asset['sha256']:
-                raise ValueError('Uploaded asset integrity mismatch')
             destination = root / 'files' / name
             if destination.exists():
-                if destination.is_symlink() or sha256(destination) != asset['sha256']:
+                if (destination.is_symlink() or destination.stat().st_size != asset['size']
+                        or sha256(destination) != asset['sha256']):
                     raise ValueError('Stored asset is corrupt')
             else:
+                if source.is_symlink() or source.stat().st_size != asset['size'] or sha256(source) != asset['sha256']:
+                    raise ValueError('Uploaded asset integrity mismatch')
                 missing.append((source, destination))
         required = sum(source.stat().st_size for source, _ in missing)
         occupied = sum(p.stat().st_size for p in (root / 'files').iterdir() if p.is_file())

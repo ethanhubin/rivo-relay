@@ -26,6 +26,20 @@ class NodeAppUpdatesTest {
     private val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     private fun manifest() = JSONObject().put("version", "0.2.13").put("versionCode", 25).put("sha256", hash)
         .put("size", bytes.size).put("apkPath", "/v1/app-updates/apks/$hash.apk").put("notes", "node update")
+    @Test fun candidateDeclarationIsReadButLegacyAndMalformedStayUnknown() = runBlocking {
+        MockWebServer().use { server ->
+            val updates = NodeAppUpdates(server.url("/").toString().trimEnd('/'))
+            for ((declaration, expected) in listOf(
+                JSONObject("{apiVersions:[1,3]}") to setOf(1,3),
+                JSONObject("{apiVersions:['1']}") to null,
+                JSONObject() to null)) {
+                server.enqueue(MockResponse().setBody(manifest().put("compatibility", declaration).toString()))
+                assertEquals(expected, updates.check("0.2.12")!!.apiVersions)
+            }
+            server.enqueue(MockResponse().setBody(manifest().toString()))
+            assertNull(updates.check("0.2.12")!!.apiVersions)
+        }
+    }
     @Test fun gatewayUpdatesUseOriginWithoutNodeProbeOrCredentials() = runBlocking {
         val store = java.security.KeyStore.getInstance("PKCS12").apply {
             load(NodeAppUpdatesTest::class.java.getResourceAsStream("/gateway-test.p12"), "test-only".toCharArray())

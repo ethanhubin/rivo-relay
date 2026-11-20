@@ -50,7 +50,7 @@ fun RelayApp(vm: AppViewModel = viewModel()) {
     val updates: dev.rivo.relay.ui.settings.UpdateViewModel = viewModel()
     val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
     LaunchedEffect(app.node != null) {
-        updates.onLogin(app.node != null) { NodeAppUpdates.configured(context).check(BuildConfig.VERSION_NAME) }
+        updates.onLogin(app.node != null, assess = { UpdateCompatibilityChecker.check(context, it) }) { NodeAppUpdates.configured(context).check(BuildConfig.VERSION_NAME) }
     }
     dev.rivo.relay.ui.settings.LoginUpdatePrompt(updates)
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -72,7 +72,9 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     savedNodes: List<dev.rivo.relay.connection.SavedNode>, selectNode: (String) -> Unit, settingsConnection: (String) -> dev.rivo.relay.connection.NodeConnection?,
     setNodeConnectionMode: (String, dev.rivo.relay.connection.ConnectionMode) -> dev.rivo.relay.connection.NodeConnection?) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    var route by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastRoute")?.let { if (it == "new") "sessions" else it }?.takeIf { it in setOf("projects", "sessions", "chat", "sites", "todos", "settings") } ?: "projects") }
+    val compatibility by node.api.compatibilityState.collectAsStateWithLifecycle()
+    val attachmentsSupported = compatibility?.supports("attachments") != false
+    var route by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastRoute")?.let { if (it == "new") "sessions" else it }?.takeIf { it in setOf("projects", "sessions", "chat", "todos", "settings") } ?: "projects") }
     var threadId by rememberSaveable { mutableStateOf(node.conversations.getMetadata("lastThreadId")) }
     var agentParents by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var chatParent by rememberSaveable { mutableStateOf("sessions") }
@@ -284,18 +286,18 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             try { awaitCancellation() } finally { node.session.pause() }
         } else node.session.close()
     }
-    val showBottomNavigation = route in setOf("projects", "sites", "todos", "settings")
+    val showBottomNavigation = route in setOf("projects", "todos", "settings")
     // NavigationBar draws behind the system gesture area and applies its own insets.
     Column(Modifier.fillMaxSize()
         .then(if (showBottomNavigation) Modifier else Modifier.navigationBarsPadding())
         .imePadding()) {
-        CompositionLocalProvider(dev.rivo.relay.ui.sites.LocalSitesApi provides node.api, LocalRuntimeCapabilities provides node.capabilities) {
+        CompositionLocalProvider(LocalRuntimeCapabilities provides node.capabilities) {
         Box(Modifier.weight(1f)) {
             when (route) {
-                "sites" -> if (node.capabilities.allows("sites.read")) dev.rivo.relay.ui.sites.SitesScreen(node.api, node.connection.name)
                 "settings" -> SettingsScreen(connection = node.connection, api = node.api,
                     resolveConnection = settingsConnection, setNodeConnectionMode = setNodeConnectionMode,
                     savedNodes = savedNodes,
+                    activeNode = node,
                     onAddNode = { setError(null); addNode = true }, canAddNode = !submission.busy && !handoffLoading)
                 "projects" -> ProjectsScreen(catalog.projects, node.connection.name, catalog.loading, { project -> node.catalog.project(project); route = "sessions"; setError(null) },
                     { route = "settings"; setError(null) }, { node.catalog.refreshProjects() }, { if (node.capabilities.allows("project.create") && node.catalog.state.value.projectsFresh) addProject = true },
@@ -352,7 +354,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         pendingFirstTurnSent = node.conversations.pendingGoalContinuation(localId) != null,
                         pendingReceiptUnresolved = node.conversations.pendingHasUnresolvedSubmission(localId),
                         onReconcilePending = node::reconcilePendingReceipts,
-                        readGoalCapability = { node.api.call("/v1/goals/capabilities").getBoolean("goalSupported") },
+                        attachmentsEnabled = attachmentsSupported,
+                        readGoalCapability = { node.api.supportsFeature("session.goals") && node.api.call("/v1/goals/capabilities").getBoolean("goalSupported") },
                         onOpenPendingThread = { node.conversations.pendingThreadId(localId)?.let { openChat(it, "sessions") } },
                         pendingPermissionsEditable = createdThread == null && node.conversations.pendingThreadId(localId) == null, draftStore = node.conversations, pendingCwd = project.path,
                         readDirectory = { path -> node.api.call("/v1/directories?path=" + encoded(path)) },
@@ -557,6 +560,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         }
                     }, onRefresh = node.session::refresh, onLoadModels = { node.catalog.loadModels() }, onEarlier = node.session::loadEarlier,
                     predictMessage = { id, turn -> node.api.call("/v1/threads/${encoded(id)}/prediction", "POST", JSONObject().put("expectedTurnId", turn), background = true) },
+                    attachmentsEnabled = attachmentsSupported,
                     readFile = { path -> node.api.readFile(path) },
                     readDirectory = { path -> node.api.call("/v1/directories?path=" + encoded(path)) },
                     uploadFile = { id, name, file -> node.api.uploadFile(id, name, file) },
@@ -614,7 +618,9 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             if (route == "chat" && threadId == id) node.session.refresh()
                         }
                     })
-                "todos" -> TodosScreen(todos, catalog.projects.filterNot { it.id == "__rivo_recent__" }, projectsWritable && node.capabilities.allows("todo.dispatch"), node.catalog::threadsFor,
+                "todos" -> if (compatibility?.supports("todos") == false) {
+                    Text("此节点不支持待办，请升级节点。普通聊天仍可使用。", Modifier.padding(24.dp))
+                } else TodosScreen(todos, catalog.projects.filterNot { it.id == "__rivo_recent__" }, projectsWritable && node.capabilities.allows("todo.dispatch"), node.catalog::threadsFor,
                     node.todos::save, node.todos::toggle, node.todos::delete,
                     onDispatch = dispatch@{ todo, projectId, selectedThread, accepted ->
                         if (!node.capabilities.allows("todo.dispatch") || !node.catalog.state.value.projectsFresh) return@dispatch
@@ -649,12 +655,9 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             }
         }
 
-        }
         if (showBottomNavigation) NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
             NavigationBarItem(selected = route == "projects", onClick = { route = "projects"; setError(null); node.catalog.refreshProjects() },
                 icon = { Text("⌘") }, label = { Text("会话") }, modifier = Modifier.testTag("nav_codex"))
-            if (node.capabilities.allows("sites.read")) NavigationBarItem(selected = route == "sites", onClick = { route = "sites"; setError(null) },
-                icon = { dev.rivo.relay.ui.sites.ConnectorIcon("appgarden") }, label = { Text("Sites") }, modifier = Modifier.testTag("nav_sites"))
             NavigationBarItem(selected = route == "todos", onClick = { route = "todos"; setError(null); node.todos.refresh(); node.catalog.refreshProjects() },
                 icon = { Text("✓") }, label = { Text("待办") }, modifier = Modifier.testTag("nav_todos"))
             NavigationBarItem(selected = route == "settings", onClick = { route = "settings"; setError(null) },

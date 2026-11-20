@@ -251,10 +251,6 @@ class Gateway:
         self.speech = speech_routes(app, self)
         app.router.add_get('/gateway/control/{slot}', self.control)
         app.router.add_get('/gateway/data/{slot}', self.data)
-        from .sites_tunnel import SitesTunnel
-        sites = SitesTunnel(self)
-        app.router.add_get('/relay/{slot}/v1/sites/tunnel', sites.handle)
-        app.on_shutdown.append(sites.shutdown)
         app.router.add_route('*', '/relay/{slot}/{path:.*}', self.proxy)
         async def health(_):
             return web.json_response({'status': 'ok', 'service': 'rivo-gateway'})

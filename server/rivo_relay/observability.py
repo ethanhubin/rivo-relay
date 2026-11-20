@@ -12,11 +12,12 @@ _request_trace = ContextVar('request_trace', default=None)
 _ERROR_CODES = frozenset('''read_deadline native_timeout native_unavailable native_rejected
 native_history_unavailable native_response_too_large native_protocol native_method_unsupported node_updating
 workspace_busy workspace_changed workspace_dirty thread_busy writer_unavailable
+workspace_unavailable workspace_rebind_confirmation_required handoff_process_unverified
 writer_still_held handoff_changed handoff_host_changed handoff_host_mismatch
 handoff_host_unverified native_host_unverified interaction_expired interaction_changed
 history_changed project_trust_unconfirmed not_managed_worktree invalid_worktree_ref
 git_operation_failed not_git_repository invalid_project review_fingerprint_unavailable
-unauthorized invalid_request forbidden sites_unavailable sites_invalid_response'''.split())
+unauthorized invalid_request forbidden'''.split())
 
 
 def error_code(value):
@@ -39,7 +40,7 @@ def route_kind(path):
         return 'health'
     if len(parts) >= 2 and parts[0] == 'v1' and parts[1] in {
         'threads', 'projects', 'events', 'files', 'media', 'app-updates',
-        'sites', 'download-links', 'todos', 'submissions', 'models', 'usage', 'speech', 'pair',
+        'download-links', 'todos', 'submissions', 'models', 'usage', 'speech', 'pair',
     }:
         return parts[1]
     return 'other'

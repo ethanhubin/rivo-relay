@@ -15,7 +15,7 @@ data class CatalogState(
     val selectedProject: ProjectSummary? = null, val projectsLoading: Boolean = false, val threadsLoading: Boolean = false,
     val models: List<JSONObject> = emptyList(), val archived: Boolean = false,
     val unreadThreadIds: Set<String> = emptySet(), val usage: CodexUsage? = null,
-    val usageLoading: Boolean = false, val usageError: String? = null,
+    val usageLoading: Boolean = false, val usageError: String? = null, val usageResetNotice: String? = null,
     val projectsFresh: Boolean = false, val threadsFresh: Boolean = false, val threadsComplete: Boolean = true, val threadsSummaryFresh: Boolean = false,
     val modelsSource: String = "", val modelsStale: Boolean = false, val modelsError: String? = null,
     val pinnedProjectIds: List<String> = emptyList(),
@@ -35,7 +35,7 @@ internal fun CatalogState.withNodeActivity(activity: NodeActivity): CatalogState
             if (archived) thread else thread.copy(status = task.status,
                 nativeExecution = task.nativeExecution, hasOutstandingWork = task.hasOutstandingWork,
                 queueDepth = task.queueDepth, deliveryState = task.deliveryState,
-                displayState = task.displayState, recoveryRequired = task.recoveryRequired)
+                displayState = task.displayState, recoveryRequired = task.recoveryRequired, responseKinds = task.responseKinds)
         })
 
 /** Separate catalog/list owner; stale requests cannot overwrite another project or archive filter. */
@@ -244,6 +244,7 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
                             .put("deliveryState", live.deliveryState).put("displayState", live.displayState)
                             .put("queueDepth", live.queueDepth).put("recoveryRequired", live.recoveryRequired)
                             .put("hasOutstandingWork", live.hasOutstandingWork).put("writerOwner", live.writerOwner)
+                            .put("responseKinds", JSONArray(live.responseKinds.toList()))
                     } }
                     mutable.update { it.copy(threadsFresh = !listReadDirty, threadsComplete = !listReadDirty, threadsSummaryFresh = listReadDirty) }
                 }
@@ -455,6 +456,27 @@ class CatalogController(private val api: RelayApi, private val scope: CoroutineS
         return response.objects("threads").map(::threadSummary)
     }
 
+    fun clearUsageResetNotice() { mutable.update { it.copy(usageResetNotice = null) } }
+
+    suspend fun usageResetResolved(response: JSONObject) {
+        if (response.string("status") != "accepted") {
+            if (response.string("errorCode") == "usage_reset_recovery_only") {
+                usageJob?.cancelAndJoin()
+                usageUpdatedAt = 0
+                refreshUsage(true)?.join()
+            }
+            if (response.string("errorCode") == "usage_reset_unsupported") mutable.update {
+                it.copy(usage = it.usage?.copy(resetSupported = false), usageResetNotice = "此节点不支持额度重置，请更新节点")
+            }
+            return
+        }
+        mutable.update { it.copy(usageResetNotice = usageResetMessage(response.optJSONObject("receipt")?.string("resetOutcome").orEmpty())) }
+        // Discard reads started before redemption; never synthesize fresh windows.
+        usageJob?.cancelAndJoin()
+        usageUpdatedAt = 0
+        refreshUsage(true)?.join()
+    }
+
     fun refreshUsage(force: Boolean = false): Job? {
         usageJob?.takeUnless { it.isCompleted }?.let { return it }
         if (!force && usageUpdatedAt > 0 && System.currentTimeMillis() - usageUpdatedAt < 300_000) return null
@@ -529,7 +551,7 @@ private fun catalogRows(response: JSONObject, key: String): List<JSONObject> {
 private fun ThreadSummary.withExecution(state: ThreadSummary): ThreadSummary = copy(
     status = state.status, nativeExecution = state.nativeExecution, deliveryState = state.deliveryState,
     displayState = state.displayState, queueDepth = state.queueDepth, recoveryRequired = state.recoveryRequired,
-    hasOutstandingWork = state.hasOutstandingWork, writerOwner = state.writerOwner)
+    hasOutstandingWork = state.hasOutstandingWork, writerOwner = state.writerOwner, responseKinds = state.responseKinds)
 
 internal fun threadCatalogNeedsFastRefresh(state: CatalogState): Boolean =
     !state.threadsFresh || !state.threadsComplete || state.threads.any { threadIsActive(it) || it.status == "unknown" || it.nativeExecution == "unknown" }
@@ -539,9 +561,14 @@ internal fun catalogLifecycleEvent(event: RelayEvent): Boolean {
     if (event.type in setOf("reset", "connected", "revoked", "queue", "submission")) return true
     if (event.type != "native") return false
     val method = event.payload.string("method")
+    val item = event.payload.optJSONObject("params")?.optJSONObject("item")
+    if (method in setOf("item/started", "item/completed") &&
+        (item?.string("type") in setOf("userMessage", "steeringUserMessage") ||
+            item?.string("type") == "agentMessage" && item.has("questions"))) return true
     return (method.startsWith("thread/") && method != "thread/tokenUsage/updated" && !method.endsWith("/delta")) ||
         method.startsWith("project/") || method.startsWith("goal/") || method.startsWith("queue/") ||
-        method in setOf("session/invalidated", "turn/started", "turn/completed", "turn/failed", "turn/interrupted", "serverRequest/resolved",
+        method in setOf("session/invalidated", "turn/started", "turn/completed", "turn/failed", "turn/interrupted", "serverRequest/resolved", "serverRequest/completed",
+            "execCommandApproval", "applyPatchApproval", "mcpServer/elicitation/request", "relay/interactionAnswered", "relay/questionsAnswered", "relay/questionsAnswerState",
             "relay/queueUpdated", "relay/queueChanged", "relay/historyInvalidated", "relay/ownershipChanged", "relay/writerDisconnected", "relay/nativeDisconnected") ||
         (method.startsWith("item/") && (method.endsWith("/requestApproval") || method.endsWith("/requestUserInput")))
 }

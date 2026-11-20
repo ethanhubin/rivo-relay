@@ -16,7 +16,7 @@
 
 ## 运维
 
-VPS 快照 `/opt/rivo-relay/deployments/shared-asr-20261111`，保留此前 `sites-tunnel-20261110` 快照供回退。配置 `/var/lib/rivo-gateway/speech-backend.json` 权限 0600。首次上线因新增源码文件权限导致服务账户无法读取，健康检查自动回滚；修正为 0644 并使用实际服务账户完成预检后重新部署，健康与真实识别均通过。未重启其他 VPS 服务。
+VPS 快照 `/opt/rivo-relay/deployments/shared-asr-20261111`。配置 `/var/lib/rivo-gateway/speech-backend.json` 权限 0600。首次上线因新增源码文件权限导致服务账户无法读取，健康检查自动回滚；修正为 0644 并使用实际服务账户完成预检后重新部署，健康与真实识别均通过。未重启其他 VPS 服务。
 
 本机兼容入口的原实现备份为系统管理目录 `local-llm-provider/mac_agent.py.before-e2-asr`；当前不导入本地模型 worker。未删除权重，未重启 Codex 原生运行时。
 

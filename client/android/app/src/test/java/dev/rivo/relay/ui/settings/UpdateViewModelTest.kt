@@ -1,6 +1,6 @@
 package dev.rivo.relay.ui.settings
 
-import dev.rivo.relay.data.AppRelease
+import dev.rivo.relay.data.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.*
@@ -56,5 +56,14 @@ class UpdateViewModelTest {
         model.onLogin(false) { null }
         runCurrent()
         assertFalse(model.promptVisible)
+    }
+
+    @Test fun installBlocksUncertainCurrentNodeWithoutCrossNodeConfirmation() = runTest {
+        val model = UpdateViewModel()
+        val good = NodeCompatibility(CompatibilityState.COMPATIBLE, "兼容")
+        val bad = NodeCompatibility(CompatibilityState.INCOMPATIBLE, "等待节点升级")
+        assertTrue(model.installationAllowed { UpdateCompatibility(good) })
+        assertFalse(model.installationAllowed { UpdateCompatibility(bad) })
+        assertEquals(UpdateCompatibility(bad).summary, model.error)
     }
 }

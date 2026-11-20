@@ -6,7 +6,9 @@ import android.os.Handler
 import android.os.Looper
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
@@ -122,10 +124,11 @@ fun MessageComposer(
     capabilities: dev.rivo.relay.data.RuntimeCapabilities = dev.rivo.relay.data.RuntimeCapabilities.Legacy,
     goalMode: Boolean = false,
     goalModeEnabled: Boolean = false,
+    attachmentsEnabled: Boolean = true,
     onSelectMode: ((String) -> Unit)? = null,
 ) {
     var attachmentsOpen by remember { mutableStateOf(false) }
-    LaunchedEffect(enabled) { if (!enabled) attachmentsOpen = false }
+    LaunchedEffect(enabled, attachmentsEnabled) { if (!enabled || !attachmentsEnabled) attachmentsOpen = false }
     val context = LocalContext.current
     val launchCamera = rememberAttachmentCamera({ onPasteImages(listOf(it)) }) { message ->
         android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
@@ -179,7 +182,13 @@ fun MessageComposer(
         // The permission dialog ends the original tap. Never start capture from its callback.
         permissionNotice = if (granted) "麦克风权限已开启，请再次点击开始录音" else "需要麦克风权限才能语音输入"
     }
-    LaunchedEffect(repository) {
+    val capabilityEpoch = api?.capabilityEpoch?.collectAsState()?.value
+    val connectionRecovery = api?.recovery?.state?.collectAsState()?.value
+    LaunchedEffect(repository, capabilityEpoch, connectionRecovery) {
+        if (connectionRecovery != null && connectionRecovery != dev.rivo.relay.data.RecoveryState.CONNECTED) {
+            capability = SpeechCapability(false, "节点未连接")
+            return@LaunchedEffect
+        }
         if (repository != null) try { capability = repository.capability() }
         catch (error: Exception) {
             if (error is CancellationException) throw error
@@ -302,6 +311,15 @@ fun MessageComposer(
                             enabled = textEditable,
                             modifier = Modifier.weight(1f).pasteImageAttachments(context, enabled && !preparing && capabilities.allows("attachments.images"), onPasteImages)
                                 .focusRequester(focusRequester).onFocusChanged { inputFocused = it.isFocused }
+                                .predictionTaps(prediction, target, textEditable && text.isEmpty()) {
+                                    if (inputValue.text.isEmpty() && !prediction.isNullOrBlank()) {
+                                        cancelVoice()
+                                        inputValue = TextFieldValue(prediction, TextRange(prediction.length))
+                                        latestOnTextChange(prediction)
+                                        focusRequester.requestFocus()
+                                        keyboard?.show()
+                                    }
+                                }
                                 .padding(horizontal = 16.dp).heightIn(min = visibleTextHeight).testTag("message_input"),
                             textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (textEditable) 1f else 0.38f)),
                             cursorBrush = SolidColor(MaterialTheme.colorScheme.onSurface),
@@ -318,24 +336,6 @@ fun MessageComposer(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                     inner()
-                                    // Only intercept the empty prediction placeholder; normal
-                                    // cursor placement and selection remain owned by the field.
-                                    if (textEditable && text.isEmpty() && !prediction.isNullOrBlank()) {
-                                        Box(Modifier.matchParentSize().pointerInput(prediction, target) {
-                                            detectTapGestures(
-                                                onTap = { focusRequester.requestFocus(); keyboard?.show() },
-                                                onDoubleTap = {
-                                                    if (inputValue.text.isEmpty()) {
-                                                        cancelVoice()
-                                                        inputValue = TextFieldValue(prediction, TextRange(prediction.length))
-                                                        latestOnTextChange(prediction)
-                                                        focusRequester.requestFocus()
-                                                        keyboard?.show()
-                                                    }
-                                                },
-                                            )
-                                        })
-                                    }
                                 }
                             },
                         )
@@ -352,7 +352,7 @@ fun MessageComposer(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         Box {
-                            ComposerToolButton({ attachmentsOpen = !attachmentsOpen }, enabled && !preparing && (capabilities.allows("attachments.images") || capabilities.allows("files.upload") || capabilities.allows("files.browse")),
+                            ComposerToolButton({ attachmentsOpen = !attachmentsOpen }, enabled && attachmentsEnabled && !preparing && (capabilities.allows("attachments.images") || capabilities.allows("files.upload") || capabilities.allows("files.browse")),
                                 "添加附件", "add_attachment") { ComposerAddIcon() }
                             AttachmentSourceMenu(attachmentsOpen, if (capabilities.allows("attachments.images")) 10 - images.size else 0, 16 - files.size,
                                 onDismiss = { attachmentsOpen = false },
@@ -439,5 +439,40 @@ internal fun ComposerAddIcon() {
         val center = Offset(size.width / 2f, size.height / 2f)
         drawLine(color, Offset(inset, center.y), Offset(size.width - inset, center.y), stroke, StrokeCap.Round)
         drawLine(color, Offset(center.x, inset), Offset(center.x, size.height - inset), stroke, StrokeCap.Round)
+    }
+}
+
+// Observe without consuming: BasicTextField retains long press and paste.
+private fun Modifier.predictionTaps(prediction: String?, target: Any?, enabled: Boolean,
+    accept: () -> Unit): Modifier = pointerInput(prediction, target, enabled) {
+    if (!enabled || prediction.isNullOrBlank()) return@pointerInput
+    var previousUp: Long? = null
+    var previousPosition = androidx.compose.ui.geometry.Offset.Zero
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        var valid = true
+        var upTime = down.uptimeMillis
+        var position = down.position
+        do {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            val change = event.changes.firstOrNull { it.id == down.id }
+            if (event.changes.size != 1 || change == null) valid = false
+            if (change != null) {
+                upTime = change.uptimeMillis
+                position = change.position
+                if ((position - down.position).getDistance() > viewConfiguration.touchSlop) valid = false
+            }
+        } while (event.changes.any { it.pressed })
+        if (upTime - down.uptimeMillis >= viewConfiguration.longPressTimeoutMillis) valid = false
+        val gap = previousUp?.let { down.uptimeMillis - it }
+        if (valid && gap != null && gap >= viewConfiguration.doubleTapMinTimeMillis &&
+            gap <= viewConfiguration.doubleTapTimeoutMillis &&
+            (down.position - previousPosition).getDistance() <= viewConfiguration.touchSlop * 2) {
+            previousUp = null
+            accept()
+        } else {
+            previousUp = if (valid) upTime else null
+            previousPosition = position
+        }
     }
 }

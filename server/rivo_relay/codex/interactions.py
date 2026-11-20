@@ -1,6 +1,7 @@
 """Connection-bound native requests. Never invent or automatically approve answers."""
 from __future__ import annotations
 
+from collections import OrderedDict
 import copy
 import threading
 from contextlib import contextmanager
@@ -18,78 +19,125 @@ class Interactions:
         self._revision = 0
         self._request_revisions = {}
         self._claims = {}
+        self._generation = connection.generation
+        self._resolved = OrderedDict()
+        self._terminal = OrderedDict()
+        self._turns = {}
+        self._excluded = set()
+
+    @staticmethod
+    def _remember(values, key):
+        values[key] = True
+        values.move_to_end(key)
+        while len(values) > 4096:
+            values.popitem(last=False)
+
+    def _sync_generation(self):
+        if self._generation != self.connection.generation:
+            self._generation = self.connection.generation
+            self._pending.clear()
+            self._claims.clear()
+            self._request_revisions.clear()
+            self._revision += 1
+            self._resolved.clear()
+            self._terminal.clear()
+            self._turns.clear()
+            self._excluded.clear()
+
+    def _drop(self, predicate):
+        for key, request in list({**self._pending, **{k: c['request'] for k, c in self._claims.items()}}.items()):
+            if predicate(request):
+                self._remember(self._resolved, key)
+                self._pending.pop(key, None)
+                self._claims.pop(key, None)
+                self._request_revisions.pop(key, None)
+                self._revision += 1
+
+    def _key(self, request_id):
+        return f"{self._generation}:{type(request_id).__name__}:{request_id}"
+
+    @staticmethod
+    def _thread(params):
+        return params.get('threadId') or params.get('conversationId')
+
 
     def receive(self, event):
         with self._lock:
             if event.get('connectionId', self.connection.generation) != self.connection.generation:
                 return
-            method = event.get("method", "")
-            before = set(self._pending)
+            before = copy.deepcopy(self._pending)
             before_claims = set(self._claims)
-            before_revision = self._revision
-            previous_sessions = {r['params'].get('threadId', r['params'].get('conversationId'))
-                for r in [*self._pending.values(), *(c['request'] for c in self._claims.values())]}
+            previous_sessions = {self._thread(r['params']) for r in [*self._pending.values(), *(c['request'] for c in self._claims.values())]}
+            self._sync_generation()
+            method = event.get("method", "")
+            params = event.get('params') or {}
+            thread_id = self._thread(params)
+            turn_id = params.get('turnId') or (params.get('turn') or {}).get('id')
             if method == "relay/nativeDisconnected":
-                self._pending.clear()
-                self._claims.clear()
+                self._drop(lambda _: True)
+                self._turns.clear()
             elif method == 'relay/writerDisconnected':
-                expired = set(event.get('params', {}).get('requestIds', []))
-                self._pending = {key: value for key, value in self._pending.items()
-                                 if value['id'] not in expired}
-                self._claims = {key: value for key, value in self._claims.items()
-                                if value['request']['id'] not in expired}
+                expired = {self._key(value) for value in params.get('requestIds', [])}
+                threads = set(params.get('threadIds', []))
+                self._drop(lambda r: r['key'] in expired or self._thread(r['params']) in threads)
             elif method == "item/tool/call":
-                # Desktop executes dynamic tools. This RPC is not a human
-                # approval/question and Relay must neither display it as one
-                # nor answer it on behalf of the tool's owning client.
-                return
+                return False
             elif "id" in event:
-                generation = event.get("connectionId", self.connection.generation)
-                request_id = event["id"]
-                key = f"{generation}:{type(request_id).__name__}:{request_id}"
-                self._claims.pop(key, None)
-                self._pending[key] = {"key": key, "id": request_id, "method": method,
-                                      "params": copy.deepcopy(event.get("params", {})),
-                                      "connectionId": generation}
-                self._revision += 1
-                self._request_revisions[key] = revision_of(str(generation), self._revision, self._pending[key])
+                key = self._key(event['id'])
+                if (key in self._resolved or key in self._claims or thread_id in self._excluded or
+                        (thread_id, turn_id) in self._terminal or
+                        turn_id and self._turns.get(thread_id) not in (None, turn_id) and
+                        (thread_id, self._turns[thread_id]) not in self._terminal):
+                    return False
+                self._pending[key] = {"key": key, "id": event['id'], "method": method,
+                                      "params": copy.deepcopy(params), "connectionId": self._generation}
             elif method in {"serverRequest/resolved", "serverRequest/completed"}:
-                request_id = event.get("params", {}).get("requestId")
-                self._pending = {k: v for k, v in self._pending.items()
-                                 if type(v['id']) is not type(request_id) or v['id'] != request_id}
-                self._claims = {k: c for k, c in self._claims.items()
-                                if type(c['request']['id']) is not type(request_id) or c['request']['id'] != request_id}
-            elif method == "turn/completed":
-                params = event.get("params", {})
-                turn_id = params.get("turn", {}).get("id")
-                thread_id = params.get("threadId", params.get('conversationId'))
-                self._pending = {k: v for k, v in self._pending.items()
-                                 if not (v["params"].get("threadId", v['params'].get('conversationId')) == thread_id and
-                                         (not turn_id or not v["params"].get("turnId") or v["params"].get("turnId") == turn_id))}
-                self._claims = {k: c for k, c in self._claims.items()
-                    if not (c['request']['params'].get('threadId', c['request']['params'].get('conversationId')) == thread_id and
-                            (not turn_id or not c['request']['params'].get('turnId') or c['request']['params'].get('turnId') == turn_id))}
-            if before != set(self._pending) or before_claims != set(self._claims):
+                key = self._key(params.get('requestId'))
+                self._remember(self._resolved, key)
+                self._pending.pop(key, None)
+                self._claims.pop(key, None)
+            elif method == 'turn/started' and thread_id and turn_id:
+                if (thread_id, turn_id) in self._terminal:
+                    return False
+                previous = self._turns.get(thread_id)
+                if previous and previous != turn_id:
+                    self._remember(self._terminal, (thread_id, previous))
+                self._turns[thread_id] = turn_id
+                self._drop(lambda r: self._thread(r['params']) == thread_id and
+                           r['params'].get('turnId') != turn_id)
+            elif method in ("turn/completed", "turn/failed", "turn/interrupted"):
+                if thread_id and turn_id:
+                    self._remember(self._terminal, (thread_id, turn_id))
+                self._drop(lambda r: self._thread(r['params']) == thread_id and
+                           (not turn_id or not r['params'].get('turnId') or r['params']['turnId'] == turn_id))
+            elif method == 'thread/closed':
+                # Closing a subscription does not resolve the native request.
+                # A later resume can replay its original ID on this connection.
+                self._pending = {k: r for k, r in self._pending.items()
+                                 if self._thread(r['params']) != thread_id}
+            elif method in ('thread/archived', 'thread/deleted'):
+                self._excluded.add(thread_id)
+                self._drop(lambda r: self._thread(r['params']) == thread_id)
+            elif method in ('thread/unarchived', 'thread/started'):
+                self._excluded.discard(thread_id or (params.get('thread') or {}).get('id'))
+            if before != self._pending or before_claims != set(self._claims):
                 self._revision += 1
+            for key, request in self._pending.items():
+                if before.get(key) != request or key not in self._request_revisions:
+                    self._request_revisions[key] = revision_of(str(self._generation), self._revision, request)
             self._request_revisions = {key: value for key, value in self._request_revisions.items() if key in self._pending}
-            current_sessions = {r['params'].get('threadId', r['params'].get('conversationId')) for r in self._pending.values()}
-            return {sid for sid in previous_sessions | current_sessions if isinstance(sid, str) and sid} if before_revision != self._revision else set()
+            current_sessions = {self._thread(r['params']) for r in self._pending.values()}
+            return {sid for sid in previous_sessions | current_sessions if isinstance(sid, str) and sid} if before != self._pending or before_claims != set(self._claims) else set()
 
     def discard_thread(self, thread_id):
         """Expire requests after the owning writer has stopped; never answer them."""
         with self._lock:
-            before = set(self._pending)
-            before_claims = set(self._claims)
-            self._pending = {key: value for key, value in self._pending.items()
-                if value['params'].get('threadId', value['params'].get('conversationId')) != thread_id}
-            self._claims = {key: value for key, value in self._claims.items()
-                if value['request']['params'].get('threadId', value['request']['params'].get('conversationId')) != thread_id}
-            if before != set(self._pending) or before_claims != set(self._claims):
-                self._revision += 1
-            self._request_revisions = {key: value for key, value in self._request_revisions.items() if key in self._pending}
+            self._sync_generation()
+            self._drop(lambda r: self._thread(r['params']) == thread_id)
 
     def list(self, thread_id):
         with self._lock:
+            self._sync_generation()
             return [copy.deepcopy(v) for v in self._pending.values()
                     if v["connectionId"] == self.connection.generation and
                     v["params"].get("threadId", v["params"].get("conversationId")) == thread_id]
@@ -136,6 +184,7 @@ class Interactions:
         if not isinstance(result, dict):
             raise CodexError("原生交互响应必须是对象", code="invalid_response", http_status=400)
         with self._lock:
+            self._sync_generation()
             request = self._pending.get(key)
             if request is None or request["connectionId"] != self.connection.generation:
                 raise CodexError("此原生请求已失效，请刷新会话", code="interaction_expired", http_status=409)
@@ -151,7 +200,9 @@ class Interactions:
                     if (not isinstance(values, list) or not values or len(values) > 20
                             or any(not isinstance(value, str) or not value.strip() or len(value) > 200000 for value in values)):
                         raise CodexError('问题答案无效', code='invalid_response', http_status=400)
-            # Remove before sending. A lost send must not be automatically repeated.
+            # In-flight requests cannot be replayed or answered twice. Do not hold
+            # the state lock across transport IO: events must still resolve/cancel
+            # requests while an answer is being sent.
             del self._pending[key]
             self._revision += 1
             claim = {'request': request, 'revision': self._request_revisions.pop(key)}
@@ -165,14 +216,20 @@ class Interactions:
         # The transport checks this generation again under its final send lock.
         try:
             self.connection.respond(request['id'], result, expected_generation=request['connectionId'])
-        except CodexError as error:
+        except Exception as error:
             with self._lock:
-                if (error.definite and self._claims.get(key) is claim
-                        and request['connectionId'] == self.connection.generation and key not in self._pending):
+                if (getattr(error, 'definite', False) and self._claims.get(key) is claim
+                        and request['connectionId'] == self.connection.generation and key not in self._resolved
+                        and (self._thread(request['params']), request['params'].get('turnId')) not in self._terminal):
                     self._pending[key] = request
                     self._request_revisions[key] = claim['revision']
                     self._revision += 1
+                else:
+                    self._remember(self._resolved, key)
             raise
+        else:
+            with self._lock:
+                self._remember(self._resolved, key)
         finally:
             with self._lock:
                 if self._claims.get(key) is claim:

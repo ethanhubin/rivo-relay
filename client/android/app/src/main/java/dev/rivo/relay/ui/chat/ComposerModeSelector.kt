@@ -42,7 +42,8 @@ internal fun ComposerModeSelector(mode: String, enabled: Boolean, goalEnabled: B
     val labels = listOf("default" to "普通模式", "plan" to "计划模式", "goal" to "目标模式")
     val gap = with(LocalDensity.current) { 10.dp.roundToPx() }
     Box {
-        TextButton(onClick = { expanded = !expanded }, enabled = enabled,
+        TextButton(onClick = { if (mode == "goal") onSelect("goal") else expanded = !expanded },
+            enabled = enabled && (mode != "goal" || goalEnabled),
             modifier = Modifier.height(40.dp).testTag("codex_task_mode"), contentPadding = PaddingValues(horizontal = 10.dp)) {
             TaskModeIcon(mode)
             Spacer(Modifier.width(6.dp))

@@ -25,6 +25,7 @@ def parser():
     doctor.add_argument('--online', action='store_true', help='额外检查 VPS 与 ASR SSH 连接')
     planning = commands.add_parser('prepare', help='递增版本并生成发布计划；不会构建、提交或上线')
     planning.add_argument('--version', help='默认递增 patch 版本；versionCode 自动递增')
+    planning.add_argument('--node-only', action='store_true', help='仅发布节点程序，复用已验证的 APK 与客户端版本')
     planning.add_argument('--notes', help='仓库内已有发布说明；省略则生成含 TODO 的模板')
     planning.add_argument('--android-test', action='append', default=[], help='相关 JUnit 类；可重复')
     planning.add_argument('--server-test', action='append', default=[], help='相关 unittest 模块；可重复')

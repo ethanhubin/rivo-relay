@@ -62,6 +62,40 @@ class IncrementalJournalTests(unittest.TestCase):
         self.assertNotIn('private body', json.dumps(result))
         self.assertEqual(len(self.records) + 1, result['scan']['records'])
 
+    def test_inspection_can_exceed_repair_budget(self):
+        from rivo_relay.codex.native_reprojection import MAX_ROLLOUT_BYTES
+        self.assertGreater(native_history_host.MAX_INSPECTION_BYTES, MAX_ROLLOUT_BYTES)
+        self.append()
+        # Scale the repair budget down rather than allocating a 256 MiB fixture.
+        with patch('rivo_relay.codex.native_reprojection.MAX_ROLLOUT_BYTES', 128):
+            result = inspect_journal(self.home, THREAD)
+            cached = inspect_journal(self.home, THREAD, result)
+        self.assertGreater(result['scan']['offset'], 128)
+        self.assertEqual('completed', result['journal']['status'])
+        self.assertEqual(result, cached)
+
+    def test_inspection_rejects_files_above_its_own_budget(self):
+        with patch.object(native_history_host, 'MAX_INSPECTION_BYTES', self.path.stat().st_size - 1):
+            with self.assertRaisesRegex(NativeHistoryReprojectionError, '大小限制'):
+                inspect_journal(self.home, THREAD)
+
+    def test_inspection_limits_decoded_bytes_too(self):
+        import io
+        from contextlib import contextmanager
+
+        @contextmanager
+        def decoded(_path):
+            yield io.BytesIO(raw)
+
+        raw = self.path.read_bytes()
+        compressed = self.path.with_suffix('.jsonl.zst')
+        compressed.write_bytes(b'compressed')
+        self.path.unlink()
+        with patch.object(native_history_host, '_rollout_reader', decoded), patch.object(
+                native_history_host, 'MAX_INSPECTION_BYTES', len(raw) - 1):
+            with self.assertRaisesRegex(NativeHistoryReprojectionError, '大小限制'):
+                inspect_journal(self.home, THREAD)
+
     def test_middle_rewrite_plus_append_cannot_reuse_stale_watermark(self):
         known = inspect_journal(self.home, THREAD)
         # Same inode, intact first/last bytes and larger size: a tail sample

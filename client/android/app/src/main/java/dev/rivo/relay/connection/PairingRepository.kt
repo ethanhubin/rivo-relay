@@ -42,6 +42,14 @@ class PairingRepository internal constructor(
         val all = records()
         return (0 until all.length()).map { all.getJSONObject(it) }.map { SavedNode(it.string("base"), it.string("name"), it.string("token").isNotBlank()) }
     }
+    /** Includes previously paired nodes whose token was revoked, but not address-only bookmarks. */
+    fun boundNodes(): List<SavedNode> {
+        restore()?.let { remember(it.base, it) }
+        val all = records()
+        return (0 until all.length()).map { all.getJSONObject(it) }
+            .filter { it.string("nodeId").isNotBlank() }
+            .map { SavedNode(it.string("base"), it.string("name"), it.string("token").isNotBlank()) }
+    }
     fun connection(base: String): NodeConnection? {
         val all = records()
         val item = (0 until all.length()).map { all.getJSONObject(it) }.firstOrNull { it.string("base") == base && it.string("token").isNotBlank() } ?: return null

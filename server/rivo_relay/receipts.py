@@ -31,6 +31,12 @@ def merge_receipts(existing, incoming):
     merged = dict(existing or {})
     identities = {}
     for key, value in [*merged.items(), *(incoming or {}).items()]:
+        if key == 'resetOutcome':
+            if value not in ('reset', 'alreadyRedeemed', 'nothingToReset', 'noCredit'):
+                raise ValueError('Invalid quota reset outcome')
+            if key in merged and merged[key] != value:
+                raise ReceiptConflict('A recorded quota reset outcome cannot be replaced')
+            continue
         field = _IDENTITIES.get(key, 'metadata:' + key if key in ('kind', 'runtime', 'acceptance', 'runtimeGeneration', 'revision') else None)
         if field is None or not isinstance(value, str) or not value or len(value) > 2048:
             raise ValueError('Receipts must contain only bounded nonempty identity fields')
@@ -105,6 +111,8 @@ def dispatch_receipt_matches(receipt, submission_id, operation, target):
     decoded = validate_receipt(receipt, submission_id, operation, target, accepted=True)
     if operation in ('thread.create', 'thread.fork'):
         return bool(receipt and identity(receipt, 'thread'))
+    if operation in ('thread.goal', 'thread.ownership'):
+        return bool(receipt and identity(receipt, 'thread') == target)
     return decoded is not None
 
 

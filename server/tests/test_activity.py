@@ -13,12 +13,98 @@ def snapshot(tasks=()):
 
 
 def event(method, turn='one', **params):
-    return {'method': method, 'params': {'threadId': 't', 'turn': {'id': turn}, **params}}
+    result = {'method': method, 'params': {'threadId': 't', 'turn': {'id': turn}, **params}}
+    if method.endswith(('/requestApproval', '/requestUserInput')):
+        result['id'] = method + ':' + turn
+        result['params']['turnId'] = turn
+    return result
 
 
 class ActivityTests(unittest.TestCase):
     def registry(self, loader=lambda _token: snapshot()):
         return ActivityRegistry(loader, lambda: 'g')
+
+    def test_response_kinds_follow_pending_requests_and_active_flags(self):
+        from rivo_relay.codex.projection import response_kinds
+        self.assertEqual(['question', 'approval'], response_kinds([
+            {'method': 'item/tool/requestUserInput'}, {'method': 'execCommandApproval'}]))
+        self.assertEqual(['approval'], response_kinds(native_status={
+            'type': 'active', 'activeFlags': ['waitingOnApproval']}))
+        self.assertEqual([], response_kinds(native_status={
+            'type': 'idle', 'activeFlags': ['waitingOnApproval']}))
+        registry = self.registry()
+        registry.receive(event('turn/started'))
+        registry.receive(event('item/tool/requestUserInput'))
+        registry.receive(event('item/permissions/requestApproval'))
+        self.assertEqual({'question', 'approval'}, set(registry.tasks['t']['responseKinds']))
+        old = registry.read_token()
+        registry.receive(event('serverRequest/resolved'))
+        self.assertIn('t', registry.snapshot()['unknownThreadIds'])
+        self.assertFalse(registry.observe_execution('t', 'waiting', token=old,
+            requests=[{'method': 'item/tool/requestUserInput'}]))
+        registry.observe_execution('t', 'waiting', token=registry.read_token(),
+            requests=[{'method': 'item/permissions/requestApproval'}])
+        self.assertEqual(['approval'], registry.tasks['t']['responseKinds'])
+        registry.observe_execution('t', 'running', token=registry.read_token())
+        self.assertEqual([], registry.tasks['t']['responseKinds'])
+
+    def test_resolution_without_thread_id_invalidates_pending_rows(self):
+        for method in ('serverRequest/resolved', 'serverRequest/completed', 'relay/writerDisconnected'):
+            registry = self.registry()
+            registry.receive(event('item/tool/requestUserInput'))
+            token = registry.read_token()
+            registry.receive({'method': method, 'params': {'requestId': 'r'}})
+            self.assertIn('t', registry.snapshot()['unknownThreadIds'])
+            self.assertFalse(registry.observe_execution('t', 'waiting', token=token))
+
+    def test_terminal_clears_hints_even_with_goal_or_queue(self):
+        for extra in ({'goal_active': True}, {'queue': [{'status': 'waiting'}]}):
+            registry = self.registry()
+            registry.observe_execution('t', 'waiting', token=registry.read_token(), turn_id='one',
+                requests=[{'method': 'item/tool/requestUserInput'}], **extra)
+            registry.receive(event('turn/completed'))
+            self.assertEqual([], registry.tasks['t']['responseKinds'])
+            registry.receive(event('item/permissions/requestApproval'))
+            self.assertEqual([], registry.tasks['t']['responseKinds'])
+
+    def test_discovered_changes_notify_once_without_native_events_or_read_loops(self):
+        changes = []
+        result = snapshot()
+        registry = ActivityRegistry(lambda _: result, lambda: 'g', changes.append)
+        registry.reconcile()
+        changes.clear()
+        registry.observe_execution('t', 'running', token=registry.read_token(), project_id='p', turn_id='one')
+        self.assertEqual(len(changes), 1)
+        notice = changes[-1]
+        self.assertEqual(notice['method'], 'relay/activityChanged')
+        self.assertEqual(notice['params']['threadIds'], ['t'])
+        self.assertEqual(notice['params']['generation'], registry.snapshot()['generation'])
+        self.assertLessEqual(notice['params']['revision'], registry.snapshot()['revision'])
+        result['tasks'] = registry.snapshot()['tasks']
+        result['tasks'][0].pop('turnId')
+        for _ in range(5):
+            registry.reconcile()
+            registry.observe_execution('t', 'running', token=registry.read_token(), project_id='p', turn_id='one')
+        self.assertEqual(len(changes), 1)
+        result['tasks'] = []
+        registry.reconcile()
+        self.assertEqual(len(changes), 2)
+        registry.reconcile()
+        self.assertEqual(len(changes), 2)
+
+    def test_change_sink_can_read_table_and_failed_scan_notifies_uncertainty(self):
+        changes = []
+        registry = ActivityRegistry(lambda _: snapshot(), lambda: 'g')
+        registry.on_change = lambda event: changes.append((event, registry.snapshot()))
+        registry.reconcile()
+        registry.load = Mock(side_effect=RuntimeError('probe failed'))
+        with self.assertRaises(RuntimeError):
+            registry.reconcile()
+        self.assertEqual(changes[-1][1]['unknownThreadIds'], ['t'])
+        before = len(changes)
+        with self.assertRaises(RuntimeError):
+            registry.reconcile()
+        self.assertEqual(len(changes), before)
 
     def test_global_snapshot_does_not_repeat_recovery_attachment(self):
         import json
@@ -327,6 +413,21 @@ class ActivityDiscoveryTests(unittest.TestCase):
         service.interactions.list.return_value = []
         service.activity = ActivityRegistry(service._load_activity, lambda: 'g')
         return service
+
+    def test_cold_list_skips_goal_only_for_confirmed_idle_unloaded_threads(self):
+        for native_status, evidence, expected, calls in (
+                ('notLoaded', 'idle', 'idle', 0),
+                ('notLoaded', 'running', 'running', 1),
+                ('notLoaded', None, 'running', 1),
+                ('idle', 'idle', 'running', 1)):
+            with self.subTest(native_status=native_status, evidence=evidence):
+                service = self.service()
+                service.projects.thread_catalog.list.return_value = [
+                    {'id': 't', 'projectId': 'p', 'status': {'type': native_status}}]
+                service._external_execution.return_value = {'t': evidence} if evidence else {}
+                service.read_goal.return_value = {'goal': {'status': 'active'}}
+                self.assertEqual(service.list_sessions('p')[0]['status'], expected)
+                self.assertEqual(service.read_goal.call_count, calls)
 
     def test_unknown_cached_task_is_not_published_as_running_in_list(self):
         service = self.service()

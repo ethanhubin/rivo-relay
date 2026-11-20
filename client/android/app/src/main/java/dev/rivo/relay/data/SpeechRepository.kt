@@ -17,13 +17,13 @@ internal interface SpeechTransport {
 
 internal class SpeechRepository(private val api: RelayApi) : SpeechTransport {
     suspend fun capability(): SpeechCapability = capabilityLock.withLock {
-        capabilities[api] ?: withTimeout(8_000) {
+        capabilities[api]?.takeIf { it.first == api.capabilityEpoch.value }?.second ?: withTimeout(8_000) {
             val speech = api.speechCapability().optJSONObject("speech")
             val compatible = speech?.optBoolean("streaming") == true &&
                 speech.optInt("sampleRate") == 16_000 && speech.string("encoding") == "pcm_s16le"
             SpeechCapability(compatible, if (compatible) null else if (speech?.string("state") == "unconfigured")
                 "此节点尚未配置语音识别服务" else "此节点暂不支持实时语音输入")
-        }.also { capabilities[api] = it }
+        }.also { capabilities[api] = api.capabilityEpoch.value to it }
     }
     override suspend fun start(context: String?): String = api.speechStart(context).string("stream_id").also {
         require(it.matches(Regex("[A-Za-z0-9_-]{1,128}"))) { "节点返回了无效的语音会话" }
@@ -36,7 +36,7 @@ internal class SpeechRepository(private val api: RelayApi) : SpeechTransport {
         return response.string("text").also { require(it.length <= 100_000) { "语音转写内容过长" } }
     }
     companion object {
-        private val capabilities = WeakHashMap<RelayApi, SpeechCapability>()
+        private val capabilities = WeakHashMap<RelayApi, Pair<Long, SpeechCapability>>()
         private val capabilityLock = Mutex()
     }
 }

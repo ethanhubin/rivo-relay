@@ -20,17 +20,24 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'server'))
 from rivo_relay.release_management.configuration import gateway_connection
 from rivo_relay.gateway.config import decode_key
-from rivo_relay.gateway.update_store import sha256, validate
+from rivo_relay.compatibility import apk_compatibility
+from rivo_relay.gateway.update_store import sha256, validate, require_app_endpoint, PUBLICATION_CAPABILITIES
 
 
-def bundle(root, commit, apk, manifest, destination):
+def bundle(root, commit, apk, manifest, destination, node_version=None, node_code=None, node_notes=None):
+    node_only = node_version is not None
     if sha256(apk) != manifest['sha256'] or apk.stat().st_size != manifest['size']:
         raise ValueError('APK differs from verified local publication')
     # Export exactly the release commit, not credentials, workspace or working edits.
     build = subprocess.check_output(['git', '-C', str(root), 'show', commit + ':client/android/app/build.gradle.kts'], text=True)
-    if (re.search(r'versionCode\s*=\s*(\d+)', build)[1] != str(manifest['versionCode'])
+    if node_version is None and (re.search(r'versionCode\s*=\s*(\d+)', build)[1] != str(manifest['versionCode'])
             or re.search(r'versionName\s*=\s*"([^"]+)"', build)[1] != manifest['version']):
         raise ValueError('Commit version differs from published APK')
+    node_version = node_version or manifest['version']
+    node_code = node_code or manifest['versionCode']
+    node_notes = node_notes if node_notes is not None else manifest['notes']
+    if node_code < manifest['versionCode']:
+        raise ValueError('Node code cannot precede the app code')
     raw = subprocess.check_output(['git', '-C', str(root), 'archive', '--format=zip', commit, 'server'])
     package = destination / 'node.zip'
     with zipfile.ZipFile(io.BytesIO(raw)) as source, zipfile.ZipFile(package, 'w', zipfile.ZIP_DEFLATED) as output:
@@ -40,14 +47,20 @@ def bundle(root, commit, apk, manifest, destination):
                 info.compress_type = zipfile.ZIP_DEFLATED
                 output.writestr(info, source.read(name))
         info = zipfile.ZipInfo('release.json', (2020, 1, 1, 0, 0, 0))
-        output.writestr(info, json.dumps({k: manifest[k] for k in ('version', 'versionCode')}, sort_keys=True))
-    item = {k: manifest[k] for k in ('version', 'versionCode', 'notes')} | {'schema': 1}
+        output.writestr(info, json.dumps({'version': node_version, 'versionCode': node_code}, sort_keys=True))
+    compatibility = apk_compatibility(apk)
+    if compatibility != manifest.get('compatibility'):
+        raise ValueError('APK compatibility differs from publication')
+    item = {'version': node_version, 'versionCode': node_code, 'notes': node_notes,
+            'schema': 1, 'compatibility': compatibility}
     for kind, path, suffix in [('app', apk, 'apk'), ('node', package, 'zip')]:
         digest = sha256(path)
         name = digest + '.' + suffix
-        shutil.copyfile(path, destination / name)
+        if kind != 'app' or not node_only:
+            shutil.copyfile(path, destination / name)
         item[kind] = {'sha256': digest, 'size': path.stat().st_size, 'path': '/v1/releases/files/' + name}
     item['node']['agentProtocol'] = 1
+    item['app'].update({k: manifest[k] for k in ('version', 'versionCode', 'notes')})
     validate(item)
     (destination / 'latest.json').write_text(json.dumps(item, ensure_ascii=False))
     package.unlink()
@@ -61,6 +74,10 @@ async def verify(item, key):
         async with client.get(key['gateway'] + '/v1/releases/latest', allow_redirects=False) as response:
             if response.status != 200 or await response.json() != item:
                 raise ValueError('VPS release manifest mismatch')
+        async with client.get(key['gateway'] + '/v1/app-updates/latest', allow_redirects=False) as response:
+            if response.status != 200:
+                raise ValueError('VPS App update endpoint unavailable')
+            require_app_endpoint(item, await response.json())
         for kind in ('app', 'node'):
             asset = item[kind]
             digest, size = hashlib.sha256(), 0
@@ -73,10 +90,31 @@ async def verify(item, key):
                 raise ValueError('VPS download integrity mismatch')
 
 
+async def preflight_gateway(key, node_only):
+    import aiohttp
+    connector = aiohttp.TCPConnector(ssl=aiohttp.Fingerprint(bytes.fromhex(key['pin'])))
+    async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=20)) as client:
+        async with client.get(key['gateway'] + '/v1/releases/latest', allow_redirects=False) as response:
+            if response.status != 200:
+                raise ValueError('VPS release manifest unavailable before publication')
+            item = await response.json()
+        async with client.get(key['gateway'] + '/v1/app-updates/latest', allow_redirects=False) as response:
+            if response.status != 200:
+                raise ValueError('VPS App update endpoint unavailable before publication')
+            require_app_endpoint(item, await response.json())
+        if node_only:
+            async with client.get(key['gateway'] + '/v1/releases/capabilities', allow_redirects=False) as response:
+                if response.status != 200 or await response.json() != PUBLICATION_CAPABILITIES:
+                    raise ValueError('Running gateway does not support independent app versions')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--workspace', type=Path, default=ROOT / 'workspace/local-node')
     parser.add_argument('--commit', required=True)
+    parser.add_argument('--node-version')
+    parser.add_argument('--node-code', type=int)
+    parser.add_argument('--node-notes', type=Path)
     default_host, default_identity = gateway_connection(ROOT)
     parser.add_argument('--host', default=default_host)
     parser.add_argument('--identity', type=Path, default=default_identity)
@@ -86,6 +124,9 @@ def main():
     parser.add_argument('--remote-python', default='/opt/rivo-relay/.venv/bin/python')
     parser.add_argument('--remote-source', default='/opt/rivo-relay/current/server')
     args = parser.parse_args()
+    if any(value is not None for value in (args.node_version, args.node_code, args.node_notes)) and not all(
+            value is not None for value in (args.node_version, args.node_code, args.node_notes)):
+        parser.error('节点版本、版本码和说明必须同时提供')
     manifest = json.loads((args.workspace / 'updates/latest.json').read_text())
     apk = args.workspace / 'updates/apks' / (manifest['sha256'] + '.apk')
     if args.gateway_url or args.gateway_pin:
@@ -95,6 +136,7 @@ def main():
         key = {'gateway': gateway_url(args.gateway_url), 'pin': args.gateway_pin}
     else:
         key = decode_key(json.loads((args.workspace / 'gateway-client.json').read_text())['key'])
+    asyncio.run(preflight_gateway(key, args.node_version is not None))
     identity = ['-i', str(args.identity), '-o', 'IdentitiesOnly=yes'] if args.identity else []
     ssh = ['ssh', *identity, '-o', 'BatchMode=yes', args.host]
     remote = args.remote_workspace + '/incoming-' + uuid.uuid4().hex
@@ -102,7 +144,8 @@ def main():
         return subprocess.run(ssh + [shlex.join(parts)], check=True, **kwargs)
     with tempfile.TemporaryDirectory(prefix='rivo-release-') as temp:
         directory = Path(temp)
-        item = bundle(ROOT, args.commit, apk, manifest, directory)
+        item = bundle(ROOT, args.commit, apk, manifest, directory, args.node_version, args.node_code,
+                      args.node_notes.read_text() if args.node_notes else None)
         required = sum(p.stat().st_size for p in directory.iterdir()) * 2 + 1024 ** 3
         # Check BEFORE upload: stage + immutable files + at least 1 GiB spare.
         check = 'import pathlib,shutil,sys,time,re; p=pathlib.Path(sys.argv[1]); [shutil.rmtree(d) for d in p.parent.glob("incoming-*") if re.fullmatch("incoming-[a-f0-9]{32}",d.name) and d.is_dir() and not d.is_symlink() and time.time()-d.stat().st_mtime>86400]; assert shutil.disk_usage(p.parent).free>=int(sys.argv[2]), "Insufficient VPS space"; p.mkdir(mode=0o700)'

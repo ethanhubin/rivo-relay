@@ -20,18 +20,18 @@ from .diff_projection import structured_diff
 CAP = 2 * 1024 * 1024
 
 
-def command(connection, argv, cwd=None, *, allowed=(0,), cap=CAP):
+def command(connection, argv, cwd=None, *, allowed=(0,), cap=CAP, workspace_write=False):
     result = node_command(connection, {'command': argv, 'cwd': cwd,
-        'timeoutMs': 120000, 'outputBytesCap': cap}, timeout=130)
+        'timeoutMs': 120000, 'outputBytesCap': cap}, timeout=130, workspace_write=workspace_write)
     if result.get('exitCode') not in allowed:
         raise CodexError((result.get('stderr') or '节点命令未完成')[:1000],
                          code='git_operation_failed', http_status=409)
     return result.get('stdout', '')
 
 
-def git(connection, cwd, *args, cap=CAP, allowed=(0,)):
+def git(connection, cwd, *args, cap=CAP, allowed=(0,), workspace_write=False):
     return command(connection, ['git', '-c', 'core.quotePath=false', '-c', 'color.ui=false',
-                   '-C', native_path(cwd), *args], cwd, cap=cap, allowed=allowed)
+                   '-C', native_path(cwd), *args], cwd, cap=cap, allowed=allowed, workspace_write=workspace_write)
 
 
 def diff_summary(patch):
@@ -225,7 +225,7 @@ class Workspaces:
             c.execute('INSERT INTO workspaces VALUES(?,?,NULL,?,?,?,?,NULL,?)',
                       (identity, project_id, root, path, ref, 'creating', time.time()))
         try:
-            git(self.service.connection, root, 'worktree', 'add', '--detach', '--', path, ref)
+            git(self.service.connection, root, 'worktree', 'add', '--detach', '--', path, ref, workspace_write=True)
             destination = paths.normpath(paths.join(path, relative))
             checkout, target = canonical_directories(self.service.connection, [path, destination], root)
             if not target['directory'] or not directory_contains(checkout['path'], target['path']):
@@ -280,7 +280,7 @@ class Workspaces:
                         head = git(self.service.connection, row['path'], 'rev-parse', '--verify', 'HEAD').strip()
                         if not dirty and head == row['commit_id']:
                             # Never use --force when rolling back creation.
-                            git(self.service.connection, row['source_path'], 'worktree', 'remove', '--', row['path'])
+                            git(self.service.connection, row['source_path'], 'worktree', 'remove', '--', row['path'], workspace_write=True)
                             status = 'removed'
                 except Exception:
                     # Leave any partial checkout/edits available for recovery.
@@ -387,7 +387,7 @@ class Workspaces:
         archive = None
         if current['dirty']:
             archive = row['path'] + '-archive-' + uuid.uuid4().hex + '.tar.gz'
-            command(self.service.connection, ['tar', '-czf', archive, '-C', row['path'], '.'], row['source_path'])
+            command(self.service.connection, ['tar', '-czf', archive, '-C', row['path'], '.'], row['source_path'], workspace_write=True)
             with self.db.transaction() as c:
                 c.execute('UPDATE workspaces SET archive_path=? WHERE id=?', (archive, row['id']))
         # Check again after archive creation. Never discard edits newer than consent.
@@ -397,7 +397,7 @@ class Workspaces:
         with self.db.transaction() as c:
             c.execute("UPDATE workspaces SET status='removing' WHERE id=?", (row['id'],))
         try:
-            git(self.service.connection, row['source_path'], *args)
+            git(self.service.connection, row['source_path'], *args, workspace_write=True)
         except CodexError as error:
             if error.definite:
                 with self.db.transaction() as c:

@@ -37,6 +37,7 @@ fun SettingsScreen(
     setNodeConnectionMode: ((String, dev.rivo.relay.connection.ConnectionMode) -> dev.rivo.relay.connection.NodeConnection?)? = null,
     onAddNode: () -> Unit = {},
     canAddNode: Boolean = true,
+    activeNode: dev.rivo.relay.NodeRuntime? = null,
     checkUpdate: (suspend () -> AppRelease?)? = null,
     downloadAndInstall: (suspend (AppRelease) -> Unit)? = null,
     updates: UpdateViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
@@ -99,14 +100,21 @@ fun SettingsScreen(
         }
 
         inspectedConnection?.let { selected ->
-            key(selected) {
+            key(selected, inspectedApi) {
+                var usageRefresh by remember { mutableIntStateOf(0) }
                 ConnectionSettings(selected, inspectedApi, { mode ->
                     if (setNodeConnectionMode != null) {
                         setNodeConnectionMode(selected.base, mode)?.let { inspectedConnection = it }
                     } else setConnectionMode(mode)
                 }, savedNodes, { base ->
                     resolveConnection(base)?.let { inspectedConnection = it }
-                }, onAddNode, canAddNode)
+                }, onAddNode, canAddNode, onRefresh = { usageRefresh++ }) {
+                    inspectedApi?.let { selectedApi ->
+                        HorizontalDivider()
+                        SettingsNodeUsage(selected, selectedApi, usageRefresh,
+                            activeNode?.takeIf { it.api === selectedApi })
+                    }
+                }
             }
         }
         SettingsEntry("通知", dev.rivo.relay.R.drawable.ic_notifications, "edit_notification_settings") {
@@ -120,7 +128,8 @@ fun SettingsScreen(
                 Text("应用更新", style = MaterialTheme.typography.titleMedium)
                 Text("Rivo Relay ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyLarge)
                 Button(onClick = {
-                    updates.check(checkUpdate ?: { NodeAppUpdates.configured(context).check(BuildConfig.VERSION_NAME) })
+                    updates.check(checkUpdate ?: { NodeAppUpdates.configured(context).check(BuildConfig.VERSION_NAME) },
+                        assess = { dev.rivo.relay.data.UpdateCompatibilityChecker.check(context, it) })
                 }, enabled = !checking && !downloading, modifier = Modifier.testTag("check_updates")) {
                     if (checking) {
                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -141,6 +150,7 @@ fun SettingsScreen(
                             else "${(fraction * 100).toInt()}% · ${Formatter.formatFileSize(context, downloadedBytes)} / ${Formatter.formatFileSize(context, latest.size.coerceAtLeast(0))} · ${Formatter.formatFileSize(context, bytesPerSecond)}/s",
                             style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("update_download_status"))
                     }
+                    updates.compatibility?.takeIf { !it.allowed && it.summary != error }?.let { Text(it.summary) }
                     TextButton(onClick = { notesOpen = true }) { Text("查看更新说明") }
                 }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("update_error")) }

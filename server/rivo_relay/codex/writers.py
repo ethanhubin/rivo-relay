@@ -74,6 +74,14 @@ class WriterProcesses:
             buffer = ctypes.create_string_buffer(4096)
             size = ctypes.CDLL('/usr/lib/libproc.dylib').proc_pidpath(pid, buffer, len(buffer))
             executable = os.fsdecode(buffer.value) if size > 0 else ''
+            if not executable:
+                # Homebrew upgrades can unlink/rename a running executable so
+                # proc_pidpath fails. Inspect kernel text mappings, never argv.
+                mapped = self.run(['lsof', '-nP', '-a', '-p', str(pid), '-d', 'txt', '-Fn'])
+                candidates = {line[1:] for line in mapped.splitlines()
+                              if line.startswith('n/') and Path(line[1:]).name == 'codex'}
+                if len(candidates) == 1:
+                    executable = candidates.pop()
         if sys.platform.startswith('linux'):
             executable = os.path.realpath(f'/proc/{pid}/exe')
         if not start or not command or not executable:
@@ -115,7 +123,7 @@ class WriterProcesses:
         for pid in pids:
             identity = self.identity(pid)
             if identity is None:
-                raise conflict('持锁进程已变化，请重新操作')
+                raise conflict('无法核验持锁进程身份，请检查节点上的 Codex 进程', 'handoff_process_unverified')
             self.validate_executable(identity)
             threads = self.open_threads(pid)
             if thread_id not in threads:

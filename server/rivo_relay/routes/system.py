@@ -16,6 +16,14 @@ def route(handler, path, query, body, connection):
         return codex.capabilities(refresh=query.get('refresh', ['0'])[0] == '1')
     if path == ['v1', 'usage'] and method == 'GET':
         return {'usage': codex.usage()}
+    if path in (['v1', 'usage', 'reset'], ['v1', 'usage', 'reset', 'reconcile']) and method == 'POST':
+        reconcile = path[-1] == 'reconcile'
+        allowed = {'submissionId'} if reconcile else {'submissionId', 'creditId'}
+        if 'submissionId' not in body or set(body) - allowed:
+            raise ApiError(400, 'invalid_request', 'Expected submissionId and optional creditId')
+        credit_id = required(body, 'creditId', 2048) if 'creditId' in body else None
+        return handler.app.reset_usage(connection_id, required(body, 'submissionId'),
+                                       credit_id=credit_id, reconcile=reconcile)
     if path == ["v1", "activity"] and method == "GET":
         return handler.app.sessions.activity()
     if path == ["v1", "interactions", "respond"] and method == "POST":

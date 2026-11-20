@@ -20,11 +20,12 @@ data class ThreadSummary(val id: String, val name: String, val preview: String, 
     val queueDepth: Int = 0, val recoveryRequired: Boolean = false, val nativeExecution: String = "",
     val deliveryState: String = "", val displayState: String = "", val hasOutstandingWork: Boolean = false,
     val source: String = "", val executionMode: String = "", val gitInfo: JSONObject? = null, val writerOwner: String = "", val workspace: JSONObject? = null,
-    val externalWorkspace: JSONObject? = null)
+    val externalWorkspace: JSONObject? = null, val responseKinds: Set<String> = emptySet())
 fun threadSummary(json: JSONObject) = ThreadSummary(json.string("id"), sessionTitle(json), visibleSessionText(json.string("preview")), json.string("status"), json.string("cwd"), json.string("projectId"), json.optBoolean("pinned", false), json.optLong("updatedAt", 0),
     json.optInt("queueDepth").coerceAtLeast(0), json.optBoolean("recoveryRequired"), json.string("nativeExecution"),
     json.string("deliveryState"), json.string("displayState"), json.optBoolean("hasOutstandingWork"),
-    json.string("source"), json.string("executionMode"), json.optJSONObject("gitInfo"), json.string("writerOwner"), json.optJSONObject("workspace"), json.optJSONObject("externalWorkspace"))
+    json.string("source"), json.string("executionMode"), json.optJSONObject("gitInfo"), json.string("writerOwner"), json.optJSONObject("workspace"), json.optJSONObject("externalWorkspace"),
+    json.optJSONArray("responseKinds")?.let { values -> (0 until values.length()).map { values.optString(it) }.filter { it in setOf("question", "approval") }.toSet() }.orEmpty())
 data class Todo(val id: String, val title: String, val notes: String, val completed: Boolean, val projectId: String, val threadId: String, val details: JSONObject = JSONObject())
 fun todo(json: JSONObject) = Todo(json.string("id"), json.string("title"), json.string("notes"), json.optBoolean("completed"), json.string("projectId"), json.string("threadId"), json.optJSONObject("details") ?: JSONObject())
 data class NativeMessage(val id: String, val turnId: String, val type: String, val text: String, val raw: JSONObject,
