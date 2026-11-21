@@ -20,9 +20,18 @@ internal val LocalCodexLinkForwarder = staticCompositionLocalOf<((CodexLinkAttac
 
 @Composable
 internal fun ForwardLinkButton(source: String, name: String, onForwarded: () -> Unit = {}) {
-    val forward = LocalCodexLinkForwarder.current ?: return
-    if (source.startsWith("data:")) return
-    TextButton(onClick = { forward(CodexLinkAttachment(source, name)); onForwarded() }, modifier = Modifier.testTag("forward_link_to_codex")) { Text("发送到 Codex") }
+    val onClick = forwardLinkAction(source, name, onForwarded) ?: return
+    TextButton(onClick = onClick, modifier = Modifier.testTag("forward_link_to_codex")) { Text("发送到 Codex") }
+}
+
+@Composable
+internal fun forwardLinkAction(source: String, name: String, onForwarded: () -> Unit): (() -> Unit)? {
+    val forward = LocalCodexLinkForwarder.current ?: return null
+    if (source.startsWith("data:")) return null
+    return {
+        forward(CodexLinkAttachment(source, name))
+        onForwarded()
+    }
 }
 
 /** Destination reads and confirmation remain within the originating node; confirming only edits a draft. */

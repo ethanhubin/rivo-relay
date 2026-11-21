@@ -45,6 +45,7 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -52,6 +53,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import dev.rivo.relay.data.string
 import kotlinx.coroutines.*
 import org.json.JSONObject
@@ -232,6 +237,7 @@ internal fun FilePreviewDialog(path: String, readFile: suspend (String) -> JSONO
     val name = if (currentPath.startsWith("/v1/media/")) "image." + (mediaAsset?.string("mimeType")?.substringAfter('/') ?: "png") else fileDisplayName(currentPath)
     var file by remember(currentPath) { mutableStateOf<JSONObject?>(null) }
     val mime = fileMimeType(name, mediaAsset?.string("mimeType") ?: file?.string("mimeType").orEmpty())
+    val html = mime == "text/html"
     val kind = forceKind ?: fileOpenKind(currentPath, mime)
     val compact = kind in setOf(FileOpenKind.APK, FileOpenKind.EXTERNAL)
     val context = LocalContext.current
@@ -252,6 +258,7 @@ internal fun FilePreviewDialog(path: String, readFile: suspend (String) -> JSONO
     var previewAttempt by remember(currentPath) { mutableIntStateOf(0) }
     var media by remember(currentPath) { mutableStateOf<File?>(null) }
     var formatted by remember(currentPath) { mutableStateOf(currentLine == null) }
+    var htmlFullscreen by remember(currentPath) { mutableStateOf(false) }
 
     suspend fun cachedSource(source: String, progress: (Long, Long) -> Unit): File {
         val mediaKind = kind in setOf(FileOpenKind.IMAGE, FileOpenKind.VIDEO, FileOpenKind.AUDIO) || fileOpenKind(source) in setOf(FileOpenKind.IMAGE, FileOpenKind.VIDEO, FileOpenKind.AUDIO)
@@ -367,44 +374,86 @@ internal fun FilePreviewDialog(path: String, readFile: suspend (String) -> JSONO
         kind == FileOpenKind.IMAGE && bitmap != null -> ImageViewerDialog(bitmap!!, { performAction(FileAction.SAVE) }, { performAction(FileAction.SHARE) }, onDismiss, currentPath)
         kind == FileOpenKind.AUDIO || kind == FileOpenKind.VIDEO -> MediaFilePreview(name, kind == FileOpenKind.VIDEO, media, error,
             onRetry = { media = null; previewAttempt++ }, onAction = { performAction(it) }, onDismiss = onDismiss, source = currentPath)
-        else -> Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
- dev.rivo.relay.ui.chat.ThemedTextContextMenu {
-
-            Surface(Modifier.fillMaxSize()) {
-                Column(Modifier.fillMaxSize().systemBarsPadding().testTag("file_preview")) {
-                    FilePreviewToolbar(name, { performAction(FileAction.SAVE) }, { performAction(FileAction.SHARE) }, onDismiss, currentPath)
-                    when {
-                        error != null -> Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text(error!!, color = MaterialTheme.colorScheme.error)
-                            Row { TextButton(onClick = { previewAttempt++ }) { Text("重试") }; TextButton(onClick = { performAction(FileAction.OPEN) }) { Text("用其他应用打开") } }
-                        }
-                        file == null -> LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = dev.rivo.relay.ui.theme.RivoSpacing.Page))
-                        kind == FileOpenKind.PDF -> PdfFilePreview(Base64.decode(file!!.string("dataBase64"), Base64.DEFAULT), Modifier.weight(1f))
-                        else -> {
-                            val text = if (file!!.string("encoding") == "base64") Base64.decode(file!!.string("dataBase64"), Base64.DEFAULT).toString(Charsets.UTF_8) else file!!.string("text")
-                            val markdown = name.substringAfterLast('.').lowercase() in setOf("md", "mdx", "markdown")
-                            val html = mime == "text/html"
-                            if (markdown || html) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                TextButton(onClick = { formatted = !formatted }) { Text(if (formatted) "源码" else "预览") }
-                            }
-                            when {
-                                formatted && markdown -> Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
-                                    MessageContent(text.take(200_000), currentPath.substringBeforeLast('/'), onSaveFile = { selected -> performAction(FileAction.SAVE, selected) }) { selected ->
-                                        currentLine = Regex("(?::|#L)([0-9]+)(?::[0-9]+)?$").find(selected)?.groupValues?.get(1)?.toIntOrNull()?.takeIf { it > 0 }
-                                        currentPath = if (isHttpWebLink(selected)) selected.replace(Regex("#L[0-9]+$"), "") else nativeFilePath(selected, currentPath.substringBeforeLast('/')) ?: selected
-                                    }
-                                    if (text.length > 200_000) Text("预览已截断，保存文件可查看全部内容。")
+        else -> Dialog(
+            onDismissRequest = { if (htmlFullscreen) htmlFullscreen = false else onDismiss() },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            if (htmlFullscreen) {
+                val window = (LocalView.current.parent as DialogWindowProvider).window
+                DisposableEffect(window) {
+                    val controller = WindowCompat.getInsetsController(window, window.decorView)
+                    val previousBehavior = controller.systemBarsBehavior
+                    controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    controller.hide(WindowInsetsCompat.Type.systemBars())
+                    onDispose {
+                        controller.show(WindowInsetsCompat.Type.systemBars())
+                        controller.systemBarsBehavior = previousBehavior
+                    }
+                }
+            }
+            ThemedTextContextMenu {
+                Surface(Modifier.fillMaxSize()) {
+                    Column(Modifier.fillMaxSize().systemBarsPadding().testTag("file_preview")) {
+                        if (!htmlFullscreen) {
+                            val save = { performAction(FileAction.SAVE) }
+                            val share = { performAction(FileAction.SHARE) }
+                            FilePreviewToolbar(name, save, share, onDismiss, currentPath, actions = if (html) {
+                                {
+                                    HtmlPreviewActions(
+                                        path = currentPath,
+                                        name = name,
+                                        ready = file != null && error == null,
+                                        formatted = formatted,
+                                        onToggleSource = { formatted = !formatted },
+                                        onFullscreen = {
+                                            formatted = true
+                                            htmlFullscreen = true
+                                        },
+                                        onSave = save,
+                                        onShare = share,
+                                        onForwarded = onDismiss,
+                                    )
                                 }
-                                formatted && html -> HtmlFilePreview(text, Modifier.weight(1f))
-                                else -> SourceCodePreview(text, currentPath, Modifier.weight(1f).fillMaxWidth(), initialLine = currentLine)
+                            } else null)
+                        }
+                        when {
+                            error != null -> Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Text(error!!, color = MaterialTheme.colorScheme.error)
+                                Row { TextButton(onClick = { previewAttempt++ }) { Text("重试") }; TextButton(onClick = { performAction(FileAction.OPEN) }) { Text("用其他应用打开") } }
+                            }
+                            file == null -> LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = dev.rivo.relay.ui.theme.RivoSpacing.Page))
+                            kind == FileOpenKind.PDF -> PdfFilePreview(Base64.decode(file!!.string("dataBase64"), Base64.DEFAULT), Modifier.weight(1f))
+                            else -> {
+                                val text = if (file!!.string("encoding") == "base64") Base64.decode(file!!.string("dataBase64"), Base64.DEFAULT).toString(Charsets.UTF_8) else file!!.string("text")
+                                val markdown = name.substringAfterLast('.').lowercase() in setOf("md", "mdx", "markdown")
+                                if (markdown) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                    TextButton(onClick = { formatted = !formatted }) { Text(if (formatted) "源码" else "预览") }
+                                }
+                                when {
+                                    formatted && markdown -> Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
+                                        MessageContent(text.take(200_000), currentPath.substringBeforeLast('/'), onSaveFile = { selected -> performAction(FileAction.SAVE, selected) }) { selected ->
+                                            currentLine = Regex("(?::|#L)([0-9]+)(?::[0-9]+)?$").find(selected)?.groupValues?.get(1)?.toIntOrNull()?.takeIf { it > 0 }
+                                            currentPath = if (isHttpWebLink(selected)) selected.replace(Regex("#L[0-9]+$"), "") else nativeFilePath(selected, currentPath.substringBeforeLast('/')) ?: selected
+                                        }
+                                        if (text.length > 200_000) Text("预览已截断，保存文件可查看全部内容。")
+                                    }
+                                    formatted && html -> Box(Modifier.weight(1f).fillMaxWidth()) {
+                                        HtmlFilePreview(text, Modifier.matchParentSize())
+                                        if (htmlFullscreen) FilledTonalIconButton(
+                                            onClick = { htmlFullscreen = false },
+                                            modifier = Modifier.align(Alignment.TopEnd).padding(top = 4.dp, end = 8.dp),
+                                        ) {
+                                            Icon(FileIcons.FullscreenExit, "退出全屏")
+                                        }
+                                    }
+                                    else -> SourceCodePreview(text, currentPath, Modifier.weight(1f).fillMaxWidth(), initialLine = currentLine)
+                                }
                             }
                         }
                     }
                 }
             }
-
-}
-}
+        }
     }
     transfer?.let { state -> FileTransferDialog(state,
         onCancel = { transferGeneration.incrementAndGet(); transferJob?.cancel(); transfer = null; if (compact || initialAction != null) onDismiss() },
@@ -413,17 +462,89 @@ internal fun FilePreviewDialog(path: String, readFile: suspend (String) -> JSONO
 }
 
 @Composable
-internal fun FilePreviewToolbar(name: String, onSave: () -> Unit, onShare: () -> Unit, onDismiss: () -> Unit, source: String? = null) {
+internal fun FilePreviewToolbar(
+    name: String,
+    onSave: () -> Unit,
+    onShare: () -> Unit,
+    onDismiss: () -> Unit,
+    source: String? = null,
+    actions: (@Composable () -> Unit)? = null,
+) {
     Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
         Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onDismiss) { Icon(FileIcons.Close, "关闭") }
             Text(name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-            source?.let { ForwardLinkButton(it, name, onDismiss) }
-            IconButton(onShare, Modifier.testTag("share_file")) { Icon(FileIcons.Share, "分享") }
-            IconButton(onSave, Modifier.testTag("save_file")) { Icon(FileIcons.SaveAlt, "保存到本机") }
+            if (actions != null) {
+                actions()
+            } else {
+                source?.let { ForwardLinkButton(it, name, onDismiss) }
+                IconButton(onShare, Modifier.testTag("share_file")) { Icon(FileIcons.Share, "分享") }
+                IconButton(onSave, Modifier.testTag("save_file")) { Icon(FileIcons.SaveAlt, "保存到本机") }
+            }
         }
     }
 }
+
+@Composable
+private fun HtmlPreviewActions(
+    path: String,
+    name: String,
+    ready: Boolean,
+    formatted: Boolean,
+    onToggleSource: () -> Unit,
+    onFullscreen: () -> Unit,
+    onSave: () -> Unit,
+    onShare: () -> Unit,
+    onForwarded: () -> Unit,
+) {
+    val forward = forwardLinkAction(path, name, onForwarded)
+    var expanded by remember(path) { mutableStateOf(false) }
+    IconButton(onClick = onFullscreen, enabled = ready) {
+        Icon(FileIcons.Fullscreen, "全屏预览")
+    }
+    Box {
+        IconButton(onClick = { expanded = true }) { Icon(FileIcons.More, "更多") }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text(if (formatted) "源码" else "预览") },
+                leadingIcon = { Icon(if (formatted) FileIcons.Code else FileIcons.Preview, null) },
+                enabled = ready,
+                onClick = {
+                    expanded = false
+                    onToggleSource()
+                },
+            )
+            if (forward != null) DropdownMenuItem(
+                text = { Text("发送到 Codex") },
+                leadingIcon = { Icon(FileIcons.Send, null) },
+                modifier = Modifier.testTag("forward_link_to_codex"),
+                onClick = {
+                    expanded = false
+                    forward()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("分享") },
+                leadingIcon = { Icon(FileIcons.Share, null) },
+                modifier = Modifier.testTag("share_file"),
+                onClick = {
+                    expanded = false
+                    onShare()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("保存到本机") },
+                leadingIcon = { Icon(FileIcons.SaveAlt, null) },
+                modifier = Modifier.testTag("save_file"),
+                onClick = {
+                    expanded = false
+                    onSave()
+                },
+            )
+        }
+    }
+}
+
 @Composable
 private fun PdfFilePreview(bytes: ByteArray, modifier: Modifier = Modifier) {
     val context = LocalContext.current
