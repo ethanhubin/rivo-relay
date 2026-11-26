@@ -12,6 +12,7 @@ import hashlib
 import mimetypes
 import ntpath
 import posixpath
+import sys
 
 from .connection import CodexError
 from .host_commands import node_command
@@ -56,10 +57,30 @@ def read_file(connection, path, *, max_bytes=MAX_FILE_BYTES):
 
 
 def _command(connection, command, cwd, cap=6 * 1024 * 1024):
+    if command and command[0] == 'python3':
+        generation = getattr(connection, 'generation', None)
+        cached = getattr(connection, '_file_python', None)
+        if not cached or cached[0] != generation:
+            failures = []
+            for candidate in dict.fromkeys((sys.executable, 'python3', '/opt/homebrew/bin/python3', '/usr/local/bin/python3')):
+                try:
+                    probe = node_command(connection, {'command': [candidate, '-c', 'print("rivo-python-ok")'],
+                        'cwd': cwd, 'timeoutMs': 10000, 'outputBytesCap': 2048}, timeout=15)
+                except CodexError as error:
+                    failures.append(str(error)); continue
+                if probe.get('exitCode') == 0 and probe.get('stdout', '').strip() == 'rivo-python-ok':
+                    cached = (generation, candidate)
+                    connection._file_python = cached
+                    break
+                failures.append(f"{candidate}: exit={probe.get('exitCode')}: {probe.get('stderr', '')[:2048]}")
+            else:
+                raise CodexError('节点没有可用的 Python: ' + '\n'.join(failures), code='file_read_failed', http_status=409)
+        command = [cached[1], *command[1:]]
     result = node_command(connection, {'command': command, 'cwd': cwd,
         'timeoutMs': 120000, 'outputBytesCap': cap}, timeout=130)
     if result.get('exitCode') != 0:
-        raise CodexError('节点无法读取文件，请检查文件及权限', code='file_read_failed', http_status=409)
+        detail = (result.get('stderr') or result.get('stdout') or '无错误输出').strip()[:4096]
+        raise CodexError(f"节点文件命令失败 (exit={result.get('exitCode')}): {detail}", code='file_read_failed', http_status=409)
     return result.get('stdout', '')
 
 
