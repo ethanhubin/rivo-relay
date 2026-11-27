@@ -19,13 +19,15 @@ LAUNCH_DAEMONS = Path('/Library/LaunchDaemons')
 
 
 def main():
+    source = ROOT / 'server'
+    if str(source) not in sys.path:
+        sys.path.insert(0, str(source))
+    from rivo_relay.gateway.runtime_options import add_runtime_arguments, relay_config, runtime_arguments, runtime_settings
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--workspace', type=Path, required=True)
     parser.add_argument('--local-port', type=int, default=18765)
-    parser.add_argument('--codex-runtime', choices=['auto', 'desktop', 'app_server', 'stdio'])
-    parser.add_argument('--codex-executable', type=Path)
-    parser.add_argument('--codex-home', type=Path)
-    parser.add_argument('--native-socket', type=Path)
+    add_runtime_arguments(parser)
     phases = parser.add_mutually_exclusive_group()
     phases.add_argument('--prepare-only', action='store_true', help='Install bootstrap without stopping or registering services')
     phases.add_argument('--restore-bootstrap', action='store_true', help='Restore the previous stopped bootstrap after an interrupted/failed upgrade')
@@ -44,9 +46,9 @@ def main():
         account = pwd.getpwnam(args.service_user)
         if account.pw_uid == 0:
             parser.error('The service must run as a non-root user')
-        if args.codex_runtime != 'stdio' or not args.codex_executable or not args.codex_home:
+        if args.runtime in (None, 'codex') and (args.codex_runtime != 'stdio' or not args.codex_executable or not args.codex_home):
             parser.error('System services require explicit stdio runtime, executable and codex-home')
-        if not args.codex_executable.is_absolute() or not args.codex_home.is_absolute():
+        if args.runtime in (None, 'codex') and (not args.codex_executable.is_absolute() or not args.codex_home.is_absolute()):
             parser.error('System service executable and codex-home must be absolute paths')
         if args.native_socket:
             parser.error('System services cannot use a desktop native socket')
@@ -63,19 +65,29 @@ def main():
         parser.error('Stored native_socket conflicts with stdio; back up gateway-client.json and remove native_socket before migration')
     if not config.get('key') or config.get('mode') == 'direct':
         parser.error('Initialize this node with its VPS credential before installing the agent')
+    try:
+        runtime = runtime_settings(args, config)
+        native = relay_config(workspace, args.local_port, runtime)
+        if native.runtime != 'codex':
+            native.validate()
+    except ValueError as error:
+        parser.error(str(error))
+    desktop = native.runtime == 'antigravity' and native.antigravity_mode == 'desktop'
+    if account and (desktop or native.runtime == 'dsh'):
+        parser.error('This runtime attaches to a graphical session. Use a login-user service.')
+    if desktop and os.name == 'nt':
+        parser.error('Antigravity Desktop requires an interactive user session; this Windows installer registers background tasks')
     if not args.prepare_only:
         with socket.socket() as probe:
             probe.settimeout(2)
             if probe.connect_ex(('127.0.0.1', args.local_port)) == 0:
                 parser.error('Local port is in use. Wait for tasks to finish and stop the old Relay and connector services first')
     if args.restore_bootstrap:
-        sys.path.insert(0, str(ROOT / 'server'))
         from rivo_relay.gateway.agent_maintenance import restore_bootstrap
         restore_bootstrap(workspace)
         print('Previous bootstrap restored; start the existing service and verify status.')
         return
     if args.upgrade_bootstrap:
-        sys.path.insert(0, str(ROOT / 'server'))
         from rivo_relay.gateway.agent_maintenance import upgrade_bootstrap
         upgrade_bootstrap(workspace, ROOT / 'server')
         print('Bootstrap upgraded; service registration preserved. Start the existing service and verify status.')
@@ -94,10 +106,8 @@ def main():
         subprocess.run([str(python), '-m', 'pip', 'install', '--no-cache-dir', str(ROOT / 'server') + '[gateway]'], check=True)
         subprocess.run([str(python), '-c', 'import rivo_relay.gateway.updater, aiohttp'], check=True)
     # The stable bootstrap is an installed wheel, never an editable checkout.
-    arguments = ['managed-node', '--workspace', str(workspace), '--local-port', str(args.local_port), '--no-pair']
-    for option in ('codex_runtime', 'codex_executable', 'codex_home', 'native_socket'):
-        value = getattr(args, option)
-        if value is not None: arguments += ['--' + option.replace('_', '-'), str(value)]
+    arguments = ['managed-node', '--workspace', str(workspace), '--local-port', str(args.local_port), '--no-pair',
+                 *runtime_arguments(runtime)]
     if args.activate:
         if json.loads((bootstrap / 'prepared.json').read_text()) != arguments:
             parser.error('Activation arguments differ from prepared runtime; use the same workspace and runtime flags')

@@ -51,15 +51,13 @@ scripts/run-server.sh \
 
 此命令持续运行。`--dsh-admin-socket` 启用本机管理入口；若工作区路径较长，可将管理 socket 放到更短的同用户私有目录。DSH 节点只使用 DSH 运行时参数。
 
-真实手机使用可达的节点地址。普通局域网远程监听应配置受信任 HTTPS，例如启动参数改为 `--host 0.0.0.0 --cert /绝对路径/cert.pem --key /绝对路径/key.pem --url https://节点域名:18785`。证书应匹配域名并受手机信任。已有 Tailscale/VPS 路径按[节点部署](node-deployment.md)和[双通道指南](vps-gateway.md)单独配置；本次 DSH 验证不自动更改公网路由或发布服务。
+手机部署按[节点部署](node-deployment.md)为同一 DSH Relay 配置直连 HTTPS 和 VPS 中转，保留 DSH runtime、桥接路径、workspace 和端口。
 
-## 生成二维码并在 APP 配对
+## 手机配对二合一码
 
-在「插件 → 已安装插件 → Rivo Relay」打开详情，查看直连状态和地址。插件默认发现同一 DSH 用户目录下的 `rivo/relay-admin.sock`。已有节点使用自定义 socket 时，在「高级配置」中填写相应路径。点「生成配对二维码」，在 Rivo Relay APP 的连接管理中扫码。二维码 5 分钟有效、仅能兑换一次，页面会显示兑换结果。此入口使用直连地址。
+连接器就绪后，用该节点的 VPS 连接器命令加 `--attach --pair-only`，生成[配对二合一码](vps-gateway.md#手机配对二合一码)。在 Rivo 的连接设置中扫码。二维码 5 分钟有效，只能兑换一次。二维码和配对 JSON 留在 Git 忽略目录中。
 
-也可继续使用 `python -m rivo_relay pair` 在终端发码，`--workspace` 和 `--url` 与运行中的节点一致。二维码或配对 JSON 含短期凭据，输出应留在忽略目录中。
-
-需要包含本次适配的 Android APK。开发构建为：
+Android APK 使用 VPS HTTPS 直链交付。开发构建命令：
 
 ```sh
 cd client/android

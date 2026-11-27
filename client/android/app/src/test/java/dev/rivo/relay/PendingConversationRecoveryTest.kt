@@ -154,6 +154,38 @@ class PendingConversationRecoveryTest {
         } finally { directory.deleteRecursively() }
     }
 
+    @Test fun acceptedAsyncTextClearsAnOpenComposerAndItsRecoveryCopy() = runBlocking {
+        val directory = Files.createTempDirectory("rivo-open-async-draft").toFile()
+        try {
+            val store = ConversationStore(directory)
+            val submitted = ConversationDraft("first input")
+            val openDraft = submitted.copy(model = "local preference")
+            store.saveDraftOrdered("native", submitted)
+            store.checkpointSentDraft("send", "native", submitted, asyncTextInput = true)
+            store.saveDraftOrdered("native", openDraft)
+            assertEquals(openDraft, store.loadDraft("native"))
+            assertNull(store.acceptedTextDraft("send"))
+
+            val accepted = JSONObject("""{"status":"accepted","receipt":{"threadId":"native"}}""")
+            store.markSentDraftResolved("send", accepted)
+            val restarted = ConversationStore(directory)
+            val confirmation = requireNotNull(restarted.acceptedTextDraft("send"))
+            assertEquals("native", confirmation.threadId)
+            assertEquals(openDraft.copy(text = ""), confirmation.cleared(openDraft))
+            assertNull(confirmation.cleared(openDraft.copy(text = "newer input")))
+            assertEquals(openDraft.copy(text = ""), restarted.loadDraft("native"))
+            restarted.clearAcceptedSentDraft("send")
+            assertEquals(openDraft.copy(text = ""), ConversationStore(directory).loadDraft("native"))
+
+            val rejected = ConversationDraft("retry draft")
+            restarted.saveDraftOrdered("native", rejected)
+            restarted.checkpointSentDraft("rejected", "native", rejected, asyncTextInput = true)
+            restarted.markSentDraftResolved("rejected", JSONObject().put("status", "failed"))
+            assertNull(restarted.acceptedTextDraft("rejected"))
+            assertEquals(rejected, restarted.loadDraft("native"))
+        } finally { directory.deleteRecursively() }
+    }
+
     @Test fun turnPlacementAndRepeatedGuidanceAnchorsPreserveOrderBeforeNewerTurn() {
         val snapshot = sessionSnapshot(history())
         val turn = PendingNativeMessage("s0", "c0", "t", input("start"), nativeTurnId = "turn", createdAt = 1)

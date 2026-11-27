@@ -6,10 +6,11 @@ Windows、macOS 和 Linux 使用同一份 Python 服务端、VPS 连接器和 v2
 
 ## 准备
 
-- 使用包含本指南的 0.2.56 或更新源码。Android 安装当前发布版。
+- 使用包含本指南的 0.2.56 或更新源码。Android 从 [VPS HTTPS 地址下载 APK，再扫节点配对二合一码](vps-gateway.md#手机配对二合一码)。
 - 安装 Python 3.11+。Windows 已验证 Python 3.12.10、官方 Codex CLI 0.167.0。
 - 在实际运行节点的用户下安装、登录官方 Codex，并确认 `codex --version`、`codex login status` 正常。Windows 后台执行使用实际 `codex.exe`，不要传 npm 的 `codex.cmd`。
 - 由 VPS 管理员为每台电脑签发独立凭据，安全交给该电脑用户。不要把凭据放进 Git、截图或发布说明。
+- 为节点准备受手机信任的直连 HTTPS 入口，并将其保存为环境变量 `RIVO_NODE_DIRECT_HTTPS`，供首次配置使用。VPS 中转使用独立节点凭据。手机扫码一次保存两条路径。
 
 管理员在现有 VPS 执行：
 
@@ -33,10 +34,10 @@ Test-Path $codex
 .\.venv\Scripts\python.exe -m pip install -e './server[gateway]'
 ```
 
-默认创建 `Rivo Relay` 计划任务、`workspace\windows-node`。服务只监听 loopback，不需要开放局域网端口。若有已验证的 Tailscale Serve 入口，首次配置时把下方 `--mode relay` 换成 `--mode auto --direct-url https://你的节点.ts.net:端口`；没有 Tailscale 直接使用 VPS 即可。
+默认创建 `Rivo Relay` 计划任务、`workspace\windows-node`。服务只监听 loopback。首次配置时保存直连 HTTPS 地址与 VPS 中转凭据。
 
 ```powershell
-.\.venv\Scripts\python.exe -m rivo_relay.gateway node --workspace workspace\windows-node --attach --mode relay --pair-only
+.\.venv\Scripts\python.exe -m rivo_relay.gateway node --workspace workspace\windows-node --attach --mode auto --direct-url "$env:RIVO_NODE_DIRECT_HTTPS" --pair-only
 ```
 
 按提示粘贴该电脑的独立接入凭据。这一步保存 `gateway-client.json`，暂时生成的二维码要等后台连接器启动后重新生成。不要将这里的初始化终端当作常驻服务。
@@ -62,13 +63,13 @@ Start-ScheduledTask -TaskName 'Rivo Relay Gateway'
 Get-Content workspace\windows-gateway\node.log -Tail 10
 ```
 
-看到 `gateway_connected` 后生成正式二维码：
+看到 `gateway_connected` 后生成正式配对二合一码：
 
 ```powershell
 .\.venv\Scripts\python.exe -m rivo_relay.gateway node --workspace workspace\windows-node --attach --pair-only
 ```
 
-图片为 `workspace\windows-node\artifacts\pairing.png`。后续重生成仍用此命令，**不要改用旧版 `rivo_relay pair`**，后者不包含 VPS 路由及证书指纹。
+图片为 `workspace\windows-node\artifacts\pairing.png`。刷新时沿用此命令，并检查[两条路径及证书指纹](vps-gateway.md#手机配对二合一码)。
 
 这两项任务分别管理 Relay 和连接器；共用业务代码，没有 Windows 专用功能分支。运行时无控制台窗口，日志分别在两个 workspace 子目录的 `node.log`。任务已存在时先检查，不要盲目覆盖；服务升级只在节点空闲时安排。
 
@@ -78,10 +79,11 @@ Get-Content workspace\windows-gateway\node.log -Tail 10
 
 ```sh
 # 首次交互配置，输入本机独立接入凭据。
-./scripts/start-node.sh --mode relay --codex-runtime stdio --codex-executable /实际绝对路径/codex
+./scripts/start-node.sh --mode auto --direct-url "$RIVO_NODE_DIRECT_HTTPS" --no-pair \
+  --codex-runtime stdio --codex-executable /实际绝对路径/codex
 ```
 
-已有 Tailscale HTTPS 入口时改用 `--mode auto --direct-url https://你的节点.ts.net:端口`。默认 workspace 是 `workspace/local-node`。首次运行确认连接后 Ctrl+C，随后把同一命令交给系统后台管理器，并增加 `--no-pair`。已有 Relay 时使用其 workspace 和 `--attach`，不要重复监听端口。
+默认 workspace 是 `workspace/local-node`。首次运行确认连接后 Ctrl+C，随后把同一命令交给系统后台管理器。已有 Relay 时使用其 workspace 和 `--attach`，以复用正在运行的监听端口。
 
 macOS LaunchAgent 使用以下配置字段（路径均替换为绝对路径，不能用 `~`）：
 
@@ -94,7 +96,7 @@ macOS LaunchAgent 使用以下配置字段（路径均替换为绝对路径，�
 
 Linux 可使用用户 systemd 服务，`ExecStart` 使用上述绝对路径参数，设置 `WorkingDirectory`、`Restart=on-failure`、`RestartSec=5`，安装到 `~/.config/systemd/user/rivo-relay.service` 后执行 `systemctl --user daemon-reload`、`systemctl --user enable --now rivo-relay`。需要注销后保持运行时，由管理员配置该用户的 linger。不要以 root 运行用户的 Codex。
 
-后台就绪后生成二维码：
+后台就绪后生成配对二合一码：
 
 ```sh
 .venv/bin/python -m rivo_relay.gateway node --workspace workspace/local-node --attach --pair-only
@@ -102,7 +104,7 @@ Linux 可使用用户 systemd 服务，`ExecStart` 使用上述绝对路径参�
 
 ## 手机验收与维护
 
-1. 扫描当前机器生成的 v2 二维码，5 分钟内有效、只能使用一次。双通道共用一个码和节点身份；没有 Tailscale 时自动走 VPS。普通节点不要加 `--update-source`，避免覆盖主节点的 App 更新源。
+1. 用 VPS HTTPS 直链下载安装 APK，再扫描当前机器的二合一码。码 5 分钟内有效、只能使用一次。两条路径共用节点身份，App 自动选择可用通道。普通节点使用默认更新源配置。
 2. 查看项目，发起小型实际任务，检查结果和文件读取。Windows 完全访问编码已实机通过；同一主机 Session 0 的受限 workspace-write 沙箱仍存在已记录的启动失败。按实际需求显式选择会话权限，不自动放宽其他会话或全局配置。
 3. Windows 检查 `Get-Process pythonw | Select-Object Id,SessionId,MainWindowHandle`：本部署预期 Session 0、窗口句柄 0。计划任务启动和故障恢复已验证，整机重启后自启动需在新机器单独验收。
 4. `connection closed` 先检查二维码是否含 VPS 路由、连接器是否记录 `gateway_connected`。`node_offline` 检查电脑服务和连接器；配对码过期则重新生成。浏览器直接访问自签名 VPS 不等价于 App 的指纹校验测试，不要关闭 TLS 校验。

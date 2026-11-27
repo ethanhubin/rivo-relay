@@ -1,9 +1,14 @@
 """HTTP core contract using a backend without a connection, writer or turns."""
 import copy
+from http.client import HTTPConnection
+import json
+import threading
 import unittest
 
 from relay_test_support.http import RelayHTTPFixture, NativeFailure
+from rivo_relay.receipts import input_accepted
 from rivo_relay.runtime_capabilities import declare
+from rivo_relay.submission_dispatch import DeferredSubmission, defer_dispatch, dispatch_phase
 
 
 class NoTurnSessionBackend:
@@ -13,6 +18,8 @@ class NoTurnSessionBackend:
         self.generation = 'instance-1'
         self.answers = []
         self.bad_receipt = False
+        self.sent = []
+        self.dispatched = threading.Event()
 
     def runtime_capabilities(self, **kwargs):
         return declare({'session.send', 'session.create', 'interaction.respond'}, connected=self.connected)
@@ -38,6 +45,14 @@ class NoTurnSessionBackend:
             return {'threadId': session_id}
         return {'threadId': session_id, 'interactionId': interaction_id,
                 'runtimeGeneration': generation, 'revision': revision}
+
+    def send(self, session_id, text, *, client_message_id, **kwargs):
+        callbacks = defer_dispatch(client_message_id, session_id)
+        dispatch_phase(client_message_id, session_id, 'preparing')
+        dispatch_phase(client_message_id, session_id, 'dispatching')
+        self.sent.append((session_id, text, callbacks))
+        self.dispatched.set()
+        return DeferredSubmission()
 
     def recover_submission(self, record):
         return None
@@ -119,6 +134,42 @@ class RuntimeSessionHttpTests(RelayHTTPFixture, unittest.TestCase):
         _, result, _ = self.answer()
         self.assertEqual('failed', result['status'])
         self.assertEqual('runtime_unsupported', result['errorCode'])
+
+    def test_deferred_input_reconciles_a_lost_http_reply_after_live_approval(self):
+        cursor, _, _ = self.app.events.read(None)
+        body = {'submissionId': 'prompt-1', 'text': 'same input'}
+        path = '/v1/threads/session-1/turns'
+        client = HTTPConnection('127.0.0.1', self.port, timeout=2)
+        try:
+            client.request('POST', path, body=json.dumps(body), headers={
+                'Authorization': 'Bearer ' + self.token, 'Content-Type': 'application/json',
+            })
+            self.assertTrue(self.backend.dispatched.wait(2))
+        finally:
+            client.close()
+
+        self.assertEqual('pending', self.request('POST', path, body, token=self.token)[1]['status'])
+        self.assertEqual('accepted', self.answer()[1]['status'])
+        self.assertEqual(1, len(self.backend.sent))
+        accepted, _ = self.backend.sent[0][2]
+        receipt = input_accepted('prompt-1', 'session-1')
+        accepted(receipt)
+        _, result, _ = self.request('GET', '/v1/submissions/prompt-1', token=self.token)
+        self.assertEqual({'submissionId': 'prompt-1', 'status': 'accepted', 'receipt': receipt, 'errorCode': None}, result)
+        self.assertEqual(result, self.request('POST', path, body, token=self.token)[1])
+        self.assertEqual(1, len(self.backend.sent))
+        _, events, _ = self.app.events.read(cursor, timeout=0)
+        self.assertIn({'method': 'relay/submission', 'params': result}, events)
+
+    def test_deferred_native_connection_loss_keeps_result_unknown(self):
+        path = '/v1/threads/session-1/turns'
+        body = {'submissionId': 'lost-native', 'text': 'same input'}
+        self.assertEqual('pending', self.request('POST', path, body, token=self.token)[1]['status'])
+        _, failed = self.backend.sent[0][2]
+        failed(TimeoutError('lost native reply'))
+        result = self.request('POST', path, body, token=self.token)[1]
+        self.assertEqual('unknown', result['status'])
+        self.assertEqual(1, len(self.backend.sent))
 
 
 if __name__ == '__main__':

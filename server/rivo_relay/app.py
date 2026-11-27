@@ -14,6 +14,7 @@ from .events import EventBus
 from .client_projection import client_event
 from .pairing import PairingStore
 from .submissions import SubmissionStore, SubmissionConflict, SubmissionNotFound
+from .submission_dispatch import DeferredSubmission, observe_dispatch
 from .todos import TodoStore
 from .media import MediaService
 from .speech import SpeechService
@@ -114,7 +115,7 @@ class RelayApp:
                 'speech': self.speech.capabilities()}
 
     def submit(self, connection_id: str, submission_id: str, operation: str,
-               target, payload: dict, action: Callable[[], dict]) -> dict:
+               target, payload: dict, action: Callable[[], dict | DeferredSubmission]) -> dict:
         identity_mutation = operation in {'thread.goal', 'thread.ownership'}
         claim = self.submissions.claim(submission_id, connection_id, operation, target, payload,
                                        preparing=identity_mutation)
@@ -123,7 +124,6 @@ class RelayApp:
         try:
             for capability in sorted(submission_requirements(operation, payload)):
                 self.require_capability(capability)
-            from .submission_dispatch import observe_dispatch
             tracked = operation in {'thread.turns', 'thread.continue', 'thread.create', 'thread.fork'}
             local = operation in {'thread.queue.enqueue', 'thread.queue.remove', 'thread.queue.dismiss',
                                   'thread.queue.edit', 'thread.queue.reorder', 'thread.queue.recover'}
@@ -138,27 +138,56 @@ class RelayApp:
                     self.submissions.mark_accepted(submission_id, receipt)
                 elif operation == 'thread.queue.steer' and phase == 'checkpoint':
                     self.submissions.checkpoint(submission_id, receipt)
-            with observe_dispatch(submission_id, target, observe):
+            deferred = None
+            if operation == 'thread.turns':
+                deferred = (
+                    lambda receipt: self._complete_deferred(submission_id, receipt=receipt),
+                    lambda error: self._complete_deferred(submission_id, error=error),
+                )
+            with observe_dispatch(submission_id, target, observe, deferred=deferred):
                 receipt = action()
                 if identity_mutation and receipt:
                     observe('received', receipt)
+            if isinstance(receipt, DeferredSubmission):
+                record = self.submissions.get(submission_id)
+                if deferred is None or (record['status'] == 'pending'
+                                        and record['dispatch_phase'] not in {'dispatching', 'received'}):
+                    raise RuntimeError('Deferred submission has no native dispatch')
+                return public_submission(record)
             if not receipt:
                 raise RuntimeError("Missing native identity receipt; reconcile before retry")
             record = self.submissions.mark_accepted(submission_id, receipt)
         except Exception as error:
-            # Resolve a proven turn boundary first. For uninstrumented/sent
-            # requests only an explicit definite rejection is safe to fail.
-            current = self.submissions.get(submission_id)
-            failure_code = getattr(error, 'code', 'native_rejected') if getattr(error, 'definite', False) else None
-            proven = current if current['status'] in {'accepted', 'failed'} else self.submissions.resolve_dispatch(submission_id, failure_code=failure_code)
-            if proven is not None:
-                record = proven
-            elif getattr(error, "definite", False):
-                record = self.submissions.mark_failed(submission_id, getattr(error, "code", "native_rejected"))
+            record = self._submission_error(submission_id, error)
+        return self._publish_submission(record)
+
+    def _complete_deferred(self, submission_id, *, receipt=None, error=None):
+        try:
+            if error is None:
+                self.submissions.record_dispatch(submission_id, 'received', receipt)
+                record = self.submissions.mark_accepted(submission_id, receipt)
             else:
-                record = self.submissions.mark_unknown(submission_id)
-        self.events.publish({"method": "relay/submission", "params": public_submission(record)})
-        return public_submission(record)
+                record = self._submission_error(submission_id, error)
+        except Exception as completion_error:
+            record = self._submission_error(submission_id, completion_error)
+        self._publish_submission(record)
+
+    def _submission_error(self, submission_id, error):
+        current = self.submissions.get(submission_id)
+        if current['status'] in {'accepted', 'failed'}:
+            return current
+        failure_code = getattr(error, 'code', 'native_rejected') if getattr(error, 'definite', False) else None
+        proven = self.submissions.resolve_dispatch(submission_id, failure_code=failure_code)
+        if proven is not None:
+            return proven
+        if failure_code is not None:
+            return self.submissions.mark_failed(submission_id, failure_code)
+        return self.submissions.mark_unknown(submission_id)
+
+    def _publish_submission(self, record):
+        result = public_submission(record)
+        self.events.publish({'method': 'relay/submission', 'params': result})
+        return result
 
     def reset_usage(self, connection_id, submission_id, *, credit_id=None, reconcile=False):
         self.require_capability('usage.reset')

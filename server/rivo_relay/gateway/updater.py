@@ -22,6 +22,7 @@ import zipfile
 
 import aiohttp
 from .config import decode_key, save_private
+from .runtime_options import relay_config, replace_runtime_settings, runtime_arguments, runtime_matches, runtime_settings
 from .update_status import AGENT_REVISION, is_ready
 from .update_store import validate, MAX_PACKAGE
 from ..codex import native_history_support as locks
@@ -73,10 +74,25 @@ class Supervisor:
         self.state_file = self.root / 'state.json'
         self.state = json.loads(self.state_file.read_text()) if self.state_file.exists() else {
             'active': {'python': sys.executable, 'versionCode': 0}}
-        stored = json.loads((self.workspace / 'gateway-client.json').read_text())
+        self.gateway_file = self.workspace / 'gateway-client.json'
+        stored = json.loads(self.gateway_file.read_text())
         self.key = decode_key(stored['key'])
         if stored.get('mode') == 'direct' or args.attach or args.pair_only or args.configure:
             raise ValueError('Managed node requires an initialized VPS node and exclusive ownership')
+        rollback_runtime = self.state.get('rollbackRuntimeOptions') if self.state.get('pending') else None
+        self.runtime = (runtime_settings(None, rollback_runtime) if rollback_runtime is not None else
+                        runtime_settings(args, stored))
+        # Legacy relative Codex paths were interpreted in the child process's working directory.
+        for name in ('codex_home', 'desktop_bridge_dir'):
+            if name in self.runtime:
+                self.runtime[name] = str(self.root / self.runtime[name])
+        self.config = relay_config(self.workspace, args.local_port, self.runtime)
+        if self.config.runtime == 'antigravity' and self.config.antigravity_mode == 'desktop':
+            self.runtime['antigravity_profile_dir'] = str(self.config.antigravity_profile)
+            self.config = relay_config(self.workspace, args.local_port, self.runtime)
+        self.runtime_identity = self.config.runtime_identity
+        if self.state['active'].get('runtimeIdentity', self.runtime_identity) != self.runtime_identity:
+            raise ValueError('Configured provider differs from the managed node runtime identity')
         self.token = secrets.token_urlsafe(32)
         self.child = None
         self.output = None
@@ -148,8 +164,8 @@ class Supervisor:
 
     def start(self, release, trial=False):
         command = [release['python'], '-m', 'rivo_relay.gateway', 'node', '--workspace', str(self.workspace),
-                   '--local-port', str(self.args.local_port), '--no-pair']
-        for option in ('codex_runtime', 'codex_executable', 'codex_home', 'direct_url', 'mode', 'native_socket'):
+                   '--local-port', str(self.args.local_port), '--no-pair', *runtime_arguments(self.runtime)]
+        for option in ('direct_url', 'mode'):
             value = getattr(self.args, option, None)
             if value is not None:
                 command += ['--' + option.replace('_', '-'), str(value)]
@@ -170,21 +186,26 @@ class Supervisor:
             self.child = subprocess.Popen(command, **kwargs)
 
     async def healthy(self, release, *, require_gateway=True):
-        from ..config import Config
-        identity = Config(workspace=self.workspace).node_id
+        identity = self.config.node_id
+        allow_legacy = ('runtime' not in self.runtime and not self.state['active'].get('runtimeIdentity')
+                        and not release.get('runtimeIdentity'))
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             if self.child.poll() is not None:
                 raise UpdateFailure('candidate_exited', permanent=True)
             try:
                 result = await self.local()
+            except (OSError, aiohttp.ClientError, RuntimeError, TimeoutError, ValueError):
+                result = {}
+            if isinstance(result, dict) and result.get('nodeId') == identity and result.get('releaseCode') == release['versionCode']:
+                if not runtime_matches(result, self.config.runtime, self.runtime_identity, allow_legacy=allow_legacy):
+                    raise UpdateFailure('candidate_runtime_mismatch', permanent=True)
                 ready_path = self.root / 'connected.json'
                 ready = not require_gateway or is_ready(ready_path, self.token)
-                if (result.get('nodeId') == identity and result.get('releaseCode') == release['versionCode']
-                        and result.get('nativeConnected') and ready):
+                if result.get('nativeConnected') is True and ready:
+                    if 'runtimeIdentity' in result:
+                        release['runtimeIdentity'] = self.runtime_identity
                     return
-            except (OSError, aiohttp.ClientError, RuntimeError, TimeoutError, ValueError):
-                pass
             await asyncio.sleep(1)
         raise UpdateFailure('candidate_readiness_timeout')
 
@@ -212,6 +233,10 @@ class Supervisor:
             locks.flock(lock, locks.LOCK_EX | locks.LOCK_NB)
             with closing(sqlite3.connect(self.root / 'rollback.sqlite3')) as source, closing(sqlite3.connect(destination)) as db:
                 source.backup(db)
+            runtime = self.state.get('rollbackRuntimeOptions')
+            if runtime is not None:
+                stored = json.loads(self.gateway_file.read_text())
+                save_private(self.gateway_file, replace_runtime_settings(stored, runtime))
 
     async def prepare(self, client, item):
         asset = item['node']
@@ -276,6 +301,7 @@ class Supervisor:
         await self.exited()
         await asyncio.to_thread(self.backup)
         self.state['pending'] = candidate
+        self.state['rollbackRuntimeOptions'] = self.runtime.copy()
         self.save()  # Persist rollback intent before ever starting candidate code.
         try:
             self.report('trial')
@@ -288,11 +314,13 @@ class Supervisor:
         self.state['previous'] = old
         self.state['active'] = candidate
         self.state.pop('pending')
+        rollback_runtime = self.state.pop('rollbackRuntimeOptions')
         try:
             self.save()
         except Exception:
             self.state['active'] = old
             self.state['pending'] = candidate
+            self.state['rollbackRuntimeOptions'] = rollback_runtime
             await self.abort_trial()
             raise
         try:
@@ -329,12 +357,15 @@ class Supervisor:
         await self.exited()
         await asyncio.to_thread(self.restore)
         failed = self.state.pop('pending')
+        rollback_runtime = self.state.pop('rollbackRuntimeOptions', None)
         try:
             self.failed_candidate(failed, error or UpdateFailure('interrupted_trial'))
         except BaseException:
             # Keep recovery intent in memory too: the outer loop must never
             # resume business against a rollback whose state was not persisted.
             self.state['pending'] = failed
+            if rollback_runtime is not None:
+                self.state['rollbackRuntimeOptions'] = rollback_runtime
             raise
         self.start(self.state['active'])
         await self.healthy(self.state['active'], require_gateway=False)
@@ -368,6 +399,7 @@ class Supervisor:
         else:
             self.start(self.state['active'])
             await self.healthy(self.state['active'], require_gateway=False)
+            self.save()
         timeout = aiohttp.ClientTimeout(total=300)
         connector = aiohttp.TCPConnector(ssl=aiohttp.Fingerprint(bytes.fromhex(self.key['pin'])))
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as client:

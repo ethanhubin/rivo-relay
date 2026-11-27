@@ -1,7 +1,9 @@
 package dev.rivo.relay
 
-import dev.rivo.relay.codex.recoverPendingCheckpoints
+import dev.rivo.relay.codex.InteractionSubmissionSlot
 import dev.rivo.relay.codex.SubmissionCoordinator
+import dev.rivo.relay.codex.interactionSlot
+import dev.rivo.relay.codex.recoverPendingCheckpoints
 import dev.rivo.relay.connection.CredentialStorage
 import dev.rivo.relay.data.*
 import kotlinx.coroutines.*
@@ -14,6 +16,66 @@ import org.junit.Test
 import java.io.IOException
 
 class SubmissionCoordinatorTest {
+    @Test fun sameSessionApprovalCanSettleBeforePendingInputAfterProcessRecreation() = runBlocking {
+        val server = MockWebServer(); server.start()
+        val vault = object : CredentialStorage {
+            private val records = mutableMapOf<String, String>()
+            override fun read(name: String) = records[name]
+            override fun save(name: String, plaintext: String) { records[name] = plaintext }
+            override fun remove(name: String) { records.remove(name) }
+        }
+        val originalJob = SupervisorJob()
+        val restoredJob = SupervisorJob()
+        try {
+            val api = api(server)
+            fun coordinator(job: Job, key: String, canSubmit: () -> Boolean = { true }) = SubmissionCoordinator(
+                api, CoroutineScope(coroutineContext + job), vault, key, recoveryDelayMillis = 60_000,
+                canSubmit = canSubmit, failure = { fail(it.message) })
+            val original = coordinator(originalJob, "input")
+            val inputPath = "/v1/threads/native/turns"
+            server.enqueue(MockResponse().setBody("""{"status":"pending","submissionId":"send"}"""))
+            original.submit(inputPath, JSONObject(), "send", submissionId = "send")
+            idle(original)
+            originalJob.cancelAndJoin()
+
+            val scoped = coordinator(restoredJob, "interaction")
+            val primary = coordinator(restoredJob, "input") { !scoped.state.value.ownsMutation }
+            val identity = InteractionIdentity("native", "g", "i", "r")
+            fun slot(request: InteractionIdentity? = identity, allowed: Boolean = true) =
+                primary.state.value.interactionSlot(scoped.state.value, request, allowed)
+            assertFalse(RuntimeCapabilities.Legacy.explicitlyAllows(RESPOND_WHILE_INPUT_PENDING))
+            assertNull(slot(allowed = false))
+            assertNull(slot(request = null))
+            assertNull(slot(request = identity.copy(sessionId = "other")))
+            assertEquals(InteractionSubmissionSlot.SCOPED, slot())
+
+            server.enqueue(MockResponse().setBody("""{"status":"pending","submissionId":"answer"}"""))
+            scoped.submit("/v1/interactions/respond", identity.responseBody(JSONObject().put("choiceId", "allow")), "answer", submissionId = "answer")
+            idle(scoped)
+            assertNull(slot())
+            assertEquals("send", primary.state.value.pending?.id)
+            assertEquals("answer", scoped.state.value.pending?.id)
+            primary.reconcile("answer")
+            scoped.reconcile("send")
+
+            server.enqueue(MockResponse().setBody("""{"status":"accepted","submissionId":"answer","receipt":{"kind":"mutation-applied","submissionId":"answer","threadId":"native","interactionId":"i","runtimeGeneration":"g","revision":"r"}}"""))
+            scoped.reconcile("answer")
+            idle(scoped)
+            assertNull(vault.read("interaction"))
+            assertEquals("send", primary.state.value.pending?.id)
+
+            server.enqueue(MockResponse().setBody("""{"status":"accepted","submissionId":"send","receipt":{"kind":"input-accepted","submissionId":"send","threadId":"native"}}"""))
+            primary.reconcile("send")
+            idle(primary)
+            assertNull(vault.read("input"))
+            assertEquals(listOf(inputPath, "/v1/interactions/respond", "/v1/submissions/answer", "/v1/submissions/send"),
+                List(4) { server.takeRequest().path })
+            assertEquals(4, server.requestCount)
+        } finally {
+            originalJob.cancel(); restoredJob.cancel(); server.shutdown()
+        }
+    }
+
     @Test fun neutralInteractionReceiptChecksIdentityIncludingAfterRestart() = runBlocking {
         val server = MockWebServer(); server.start()
         val scope = CoroutineScope(coroutineContext + SupervisorJob())

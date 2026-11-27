@@ -17,6 +17,7 @@ class UpdateGate:
         self.until = float('inf') if os.environ.get('RIVO_UPDATE_TRIAL') == '1' else 0.0
         self.lease = None
         self.reason = 'not_checked'
+        self._rechecking_stop = None
 
     def enter(self):
         with self.lock:
@@ -97,12 +98,42 @@ class UpdateGate:
                     self.until = 0
                     self.lease = None
 
-    def consume(self, lease):
+    def consume(self, lease, *, recheck=None):
         with self.lock:
             if not lease or lease != self.lease or self.until <= time.monotonic() or self.requests:
                 self.reason = 'lease_expired'
                 return False
+            if recheck is None:
+                return self._stop()
+            if self._rechecking_stop == lease:
+                self.reason = 'native_checking'
+                return False
+            self._rechecking_stop = lease
+            deadline = self.until
+            self.reason = 'native_checking'
+
+        # The desktop can receive new work independently of Relay admission.
+        # Re-read its state just before accepting the stop request.
+        try:
+            blocker = recheck()
+        except Exception:
+            blocker = 'native_state_unknown'
+        with self.lock:
+            if self._rechecking_stop == lease:
+                self._rechecking_stop = None
+            if self.lease != lease or self.until != deadline:
+                return False
+            if time.monotonic() >= deadline or self.requests:
+                blocker = 'lease_expired'
+            if blocker is None:
+                return self._stop()
+            self.reason = blocker
             self.lease = None
-            self.until = float('inf')
-            self.reason = 'stopping'
-            return True
+            self.until = 0
+            return False
+
+    def _stop(self):
+        self.lease = None
+        self.until = float('inf')
+        self.reason = 'stopping'
+        return True

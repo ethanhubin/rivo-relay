@@ -20,6 +20,13 @@ data class PendingConversation(val id: String, val projectId: String, val draft:
     val draftKey get() = "pending:$id"
 }
 
+@ConsistentCopyVisibility
+data class AcceptedTextDraft internal constructor(val submissionId: String, val threadId: String, private val submittedText: String) {
+    internal fun cleared(draft: ConversationDraft): ConversationDraft? = draft.takeIf {
+        it.text == submittedText && it.images.isEmpty() && it.files.isEmpty() && it.pendingGoal == null
+    }?.copy(text = "")
+}
+
 class ConversationStore(private val directory: File, private val onWrite: (String) -> Unit = {}) {
     private val lock = directoryLocks.getOrPut(directory.absolutePath) { Any() }
     private val metadataLock = Any()
@@ -181,10 +188,12 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
             (current.empty || matchesFingerprint(current, recoverable.value.string("baselineFingerprint")))) synchronized(lock) {
             read("sent-input-${digest(recoverable.key)}", DRAFT_LIMIT)?.let(::decodeDraft) ?: current
         } else current
-        val accepted = sentDraftCheckpoints().values.firstOrNull { it.string("threadId") == threadId &&
-            it.string("status") == "accepted" && matchesFingerprint(draft, it.string("fingerprint")) }
         // A durable accepted receipt hides only the unchanged old draft while cleanup is pending.
-        (if (accepted == null) draft else decodeDraft(accepted.getJSONObject("settings"))).also { rememberDraft(threadId, it) }
+        val replacement = sentDraftCheckpoints().entries.firstNotNullOfOrNull { (id, saved) ->
+            if (saved.string("threadId") == threadId && saved.string("status") == "accepted") clearedAcceptedDraft(id, saved, draft)
+            else null
+        }
+        (replacement ?: draft).also { rememberDraft(threadId, it) }
     }
     private fun draftJson(draft: ConversationDraft) = JSONObject().put("text", draft.text).put("model", draft.model)
         .put("effort", draft.effort).put("mode", draft.mode).put("serviceTier", draft.serviceTier).put("sandbox", draft.sandbox).put("approvalPolicy", draft.approvalPolicy)
@@ -219,7 +228,8 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
         return writerScope.async { freezeDraft(queued ?: latestDraft(threadId)) }
     }
     fun captureDraft(threadId: String): ConversationDraft = freezeDraft(latestDraft(threadId))
-    suspend fun checkpointSentDraft(submissionId: String, threadId: String, draft: ConversationDraft? = null) = withContext(Dispatchers.IO) {
+    suspend fun checkpointSentDraft(submissionId: String, threadId: String, draft: ConversationDraft? = null,
+        asyncTextInput: Boolean = false) = withContext(Dispatchers.IO) {
         val frozenDraft = draft ?: captureDraft(threadId)
         val baseline = synchronized(lock) { read("draft-${digest(threadId)}", DRAFT_LIMIT)?.let(::decodeDraft) ?: ConversationDraft() }
         val latest = captureDraft(threadId)
@@ -236,6 +246,7 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
         putRecoveryMetadata("sent-draft:$submissionId", JSONObject().put("threadId", threadId)
             .put("fingerprint", fingerprint).put("baselineFingerprint", draftFingerprint(baseline))
             .put("preserveNewerDraft", preserveNewerDraft)
+            .put("asyncTextInput", asyncTextInput)
             .put("settings", settings).put("status", "pending").toString())
         // Keep any newer local edit; the immutable submitted bytes above remain recoverable.
         saveDraftOrdered(threadId, captureDraft(threadId))
@@ -267,6 +278,21 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
         }
         return response.string("status") == "accepted"
     }
+    private fun acceptedTextDraft(submissionId: String, saved: JSONObject): AcceptedTextDraft? {
+        if (!saved.optBoolean("asyncTextInput") || saved.string("status") != "accepted") return null
+        val frozen = synchronized(lock) { read("sent-input-${digest(submissionId)}", DRAFT_LIMIT)?.let(::decodeDraft) } ?: return null
+        if (frozen.text.isBlank() || frozen.images.isNotEmpty() || frozen.files.isNotEmpty() || frozen.pendingGoal != null) return null
+        return AcceptedTextDraft(submissionId, saved.getString("threadId"), frozen.text)
+    }
+
+    internal suspend fun acceptedTextDraft(submissionId: String): AcceptedTextDraft? = withContext(Dispatchers.IO) {
+        getMetadata("sent-draft:$submissionId")?.let { acceptedTextDraft(submissionId, JSONObject(it)) }
+    }
+
+    private fun clearedAcceptedDraft(submissionId: String, saved: JSONObject, draft: ConversationDraft): ConversationDraft? =
+        acceptedTextDraft(submissionId, saved)?.cleared(draft)
+            ?: if (matchesFingerprint(draft, saved.string("fingerprint"))) decodeDraft(saved.getJSONObject("settings")) else null
+
     suspend fun clearAcceptedSentDraft(submissionId: String) = withContext(Dispatchers.IO) {
         val saved = getMetadata("sent-draft:$submissionId")?.let(::JSONObject) ?: return@withContext
         if (saved.string("status") != "accepted") return@withContext
@@ -274,10 +300,10 @@ class ConversationStore(private val directory: File, private val onWrite: (Strin
         val threadId = saved.getString("threadId")
         val key = directory.absolutePath to threadId
         val version = synchronized(writerLock) { draftVersions[key] ?: 0 }
-        val unchanged = matchesFingerprint(latestDraft(threadId), saved.string("fingerprint"))
+        val replacement = clearedAcceptedDraft(submissionId, saved, latestDraft(threadId))
         synchronized(writerLock) {
-            if (unchanged && (draftVersions[key] ?: 0) == version) {
-                enqueueDraftWrite(threadId, decodeDraft(saved.getJSONObject("settings")), {}, completion)
+            if (replacement != null && (draftVersions[key] ?: 0) == version) {
+                enqueueDraftWrite(threadId, replacement, {}, completion)
             } else completion.complete(Unit) // A newer draft belongs to the user and must survive.
         }
         completion.await()

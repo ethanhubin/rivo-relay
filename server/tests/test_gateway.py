@@ -316,6 +316,110 @@ class GatewayCredentialTests(unittest.TestCase):
             self.assertEqual((path / 'access-key.json').stat().st_mode & 0o777, 0o600)
 
 class NodePairingCliTests(unittest.IsolatedAsyncioTestCase):
+    async def test_signal_during_connector_startup_reaps_owned_relay_before_returning(self):
+        import os
+        import signal
+        import subprocess
+        import sys
+        import textwrap
+
+        if os.name != 'posix':
+            self.skipTest('POSIX signals and workspace lock')
+        import fcntl
+
+        relay = textwrap.dedent("""
+            import fcntl
+            from pathlib import Path
+            import signal
+            import sys
+
+            path = Path(sys.argv[1])
+            with (path / 'data/serve.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                (path / 'relay-started').touch()
+                signal.pause()
+        """)
+        fixture = textwrap.dedent("""
+            from argparse import Namespace
+            import asyncio
+            from contextlib import asynccontextmanager
+            from pathlib import Path
+            import subprocess
+            import sys
+            from unittest.mock import patch
+
+            from rivo_relay.config import Config
+            from rivo_relay.gateway.__main__ import node
+
+            workspace = Path(sys.argv[1])
+            popen = subprocess.Popen
+            def start_child(_command, **options):
+                return popen([sys.executable, '-c', sys.argv[2], str(workspace)], **options)
+
+            class LocalResponse:
+                status = 200
+                async def json(self):
+                    return {'nodeId': Config(workspace=workspace).node_id}
+
+            probe = True
+            class LocalSession:
+                async def __aenter__(self):
+                    return self
+                async def __aexit__(self, *args):
+                    pass
+                @asynccontextmanager
+                async def get(self, *args, **kwargs):
+                    global probe
+                    if probe:
+                        probe = False
+                        raise OSError('Fixture has no pre-existing Relay')
+                    yield LocalResponse()
+
+            class WaitingConnector:
+                def __init__(self, *args, **kwargs):
+                    self.ready = asyncio.Event()
+                async def run(self):
+                    (workspace / 'connector-waiting').touch()
+                    await asyncio.Event().wait()
+
+            args = Namespace(workspace=workspace, local_port=18765, mode=None, direct_url=None,
+                             configure=False, attach=False, pair_only=False, no_pair=True, update_source=False)
+            with patch('aiohttp.ClientSession', LocalSession), \
+                    patch('rivo_relay.gateway.connector.Connector', WaitingConnector), \
+                    patch('rivo_relay.gateway.__main__.subprocess.Popen', start_child):
+                asyncio.run(node(args))
+        """)
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            key = encode_key({'v': 2, 'slot': 'a' * 32, 'secret': 's' * 32,
+                              'pin': 'b' * 64, 'gateway': 'https://127.0.0.1:80'})
+            (workspace / 'gateway-client.json').write_text(json.dumps({'mode': 'relay', 'key': key}))
+            env = dict(os.environ, RIVO_MANAGED_NODE='1', RIVO_UPDATE_TRIAL='1', RIVO_MANAGED_READY='')
+            log_path = workspace / 'connector.log'
+            with log_path.open('w') as log:
+                connector = subprocess.Popen([sys.executable, '-c', fixture, directory, relay], stdout=log, stderr=log,
+                                             env=env, start_new_session=True)
+
+                async def await_startup():
+                    while connector.poll() is None and not all((workspace / name).exists()
+                            for name in ('relay-started', 'connector-waiting')):
+                        await asyncio.sleep(.02)
+
+                try:
+                    await asyncio.wait_for(await_startup(), 8)
+                    self.assertIsNone(connector.poll(), log_path.read_text())
+                    connector.terminate()
+                    await asyncio.to_thread(connector.wait, 8)
+                    self.assertEqual(connector.returncode, 0, log_path.read_text())
+                    with (workspace / 'data/serve.lock').open('a') as lock:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    try:
+                        os.killpg(connector.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    await asyncio.to_thread(connector.wait, 8)
+
     async def test_pair_only_keeps_gateway_key_with_runtime_options(self):
         from argparse import Namespace
         from urllib.parse import urlsplit, parse_qs
@@ -349,6 +453,118 @@ class NodePairingCliTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(fields['direct'], ['https://example.ts.net'])
             finally:
                 await runner.cleanup()
+
+    async def test_legacy_attach_accepts_codex_stdio_without_connector_runtime_settings(self):
+        from argparse import Namespace
+        import sys
+        from rivo_relay.config import Config
+        from rivo_relay.gateway.__main__ import node
+
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            stdio = Config(workspace=workspace, codex_runtime='stdio', codex_executable=Path(sys.executable))
+            stdio.prepare()
+            health_payload = {'nodeId': stdio.node_id, 'runtime': 'codex',
+                              'runtimeIdentity': stdio.runtime_identity}
+            saved = workspace / 'gateway-client.json'
+            saved.write_text(json.dumps({'mode': 'direct', 'direct': 'https://example.ts.net'}))
+
+            async def health(_):
+                return web.json_response(health_payload)
+
+            app = web.Application()
+            app.router.add_get('/health', health)
+            runner = web.AppRunner(app)
+            await runner.setup()
+            try:
+                site = web.TCPSite(runner, '127.0.0.1', 0)
+                await site.start()
+                args = dict(workspace=workspace, mode=None, direct_url=None, configure=False,
+                            local_port=site._server.sockets[0].getsockname()[1], update_source=False,
+                            attach=True, pair_only=True, no_pair=False)
+                with patch.dict('os.environ', {'RIVO_CODEX_RUNTIME': '', 'RIVO_MANAGED_NODE': '0'}):
+                    await node(Namespace(**args))
+                    self.assertTrue((workspace / 'artifacts/pairing.png').is_file())
+                    self.assertNotIn('codex_runtime', json.loads(saved.read_text()))
+
+                    for runtime_arguments in ({'runtime': 'codex'}, {'codex_runtime': 'auto'}):
+                        with self.subTest(runtime_arguments=runtime_arguments):
+                            with self.assertRaisesRegex(ValueError, 'runtime identity mismatch'):
+                                await node(Namespace(**args, **runtime_arguments))
+
+                    desktop = Config(workspace=workspace, runtime='antigravity', antigravity_mode='desktop')
+                    health_payload.update(runtime=desktop.runtime, runtimeIdentity=desktop.runtime_identity)
+                    with self.assertRaisesRegex(ValueError, 'runtime identity mismatch'):
+                        await node(Namespace(**args))
+            finally:
+                await runner.cleanup()
+
+    async def test_gateway_node_persists_the_matching_desktop_profile_and_rejects_mismatch(self):
+        from argparse import Namespace
+        from rivo_relay.config import Config
+        from rivo_relay.gateway.__main__ import node
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            profile = workspace / 'desktop profile'; profile.mkdir()
+            project = workspace / 'project'; project.mkdir()
+            config = Config(workspace=workspace, runtime='antigravity', antigravity_mode='desktop',
+                            antigravity_profile_dir=profile)
+            app = web.Application()
+            async def health(request):
+                return web.json_response({'nodeId': config.node_id, 'runtime': config.runtime,
+                                          'runtimeIdentity': config.runtime_identity})
+            app.router.add_get('/health', health)
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, '127.0.0.1', 0)
+            await site.start()
+            port = site._server.sockets[0].getsockname()[1]
+            try:
+                args = Namespace(workspace=workspace, mode='direct', direct_url='https://example.ts.net',
+                                 configure=False, runtime='antigravity', antigravity_mode='desktop',
+                                 antigravity_profile_dir=profile, antigravity_project=[project],
+                                 local_port=port, update_source=False, attach=True, pair_only=True, no_pair=True)
+                await node(args)
+                path = workspace / 'gateway-client.json'
+                stored = json.loads(path.read_text())
+                self.assertEqual(stored['runtime'], 'antigravity')
+                self.assertEqual(stored['antigravity_mode'], 'desktop')
+                self.assertEqual(stored['antigravity_profile_dir'], str(profile))
+                self.assertEqual(stored['antigravity_project'], [str(project)])
+                args.antigravity_profile_dir = workspace / 'other profile'
+                with self.assertRaisesRegex(ValueError, 'runtime identity mismatch'):
+                    await node(args)
+                self.assertEqual(json.loads(path.read_text()), stored)
+            finally:
+                await runner.cleanup()
+
+    async def test_managed_trial_child_does_not_save_its_runtime_arguments_over_the_node(self):
+        from argparse import Namespace
+        import os
+        import socket
+        from rivo_relay.gateway.__main__ import node
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            key = encode_key({'v': 2, 'slot': 'a' * 32, 'secret': 's' * 32,
+                              'pin': 'b' * 64, 'gateway': 'https://127.0.0.1:80'})
+            path = workspace / 'gateway-client.json'
+            path.write_text(json.dumps({'key': key, 'mode': 'relay', 'runtime': 'antigravity', 'antigravity_mode': 'desktop'}))
+            before = path.read_bytes()
+            with socket.socket() as probe:
+                probe.bind(('127.0.0.1', 0))
+                port = probe.getsockname()[1]
+            other = workspace / 'wrong-profile'
+            args = Namespace(workspace=workspace, mode=None, direct_url=None, configure=False, runtime='antigravity',
+                             antigravity_mode='desktop', antigravity_profile_dir=other, local_port=port,
+                             update_source=False, attach=False, pair_only=False, no_pair=True)
+            spawn_name = ('rivo_relay.codex.windows_process.spawn_owned' if os.name == 'nt' else
+                          'rivo_relay.gateway.__main__.subprocess.Popen')
+            with patch.dict(os.environ, {'RIVO_MANAGED_NODE': '1', 'RIVO_UPDATE_TRIAL': '1', 'RIVO_MANAGED_READY': ''}), \
+                    patch(spawn_name, side_effect=RuntimeError('fixture start')) as spawn:
+                with self.assertRaisesRegex(RuntimeError, 'fixture start'):
+                    await node(args)
+                self.assertIn(str(other), spawn.call_args.args[0])
+            self.assertEqual(path.read_bytes(), before)
 
 
 class DataHandshakeRaceTests(unittest.IsolatedAsyncioTestCase):

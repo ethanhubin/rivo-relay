@@ -40,6 +40,62 @@ class ConfigTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 replace(self.config, **changes).validate()
 
+    def test_antigravity_requires_an_executable_and_isolates_runtime_options(self):
+        executable = Path(sys.executable).resolve()
+        antigravity = replace(self.config, runtime='antigravity', antigravity_executable=executable,
+                              antigravity_projects=(self.config.workspace,))
+        antigravity.validate()
+        for changes in ({'antigravity_executable': None},
+                        {'antigravity_executable': Path('agy')},
+                        {'antigravity_executable': self.config.workspace / 'missing'},
+                        {'antigravity_projects': (Path('project'),)},
+                        {'dsh_bridge_socket': Path('/tmp/bridge.sock')},
+                        {'codex_runtime': 'desktop'},
+                        {'runtime': 'codex'}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                replace(antigravity, **changes).validate()
+
+    def test_windows_rejects_antigravity_cli_mode(self):
+        antigravity = replace(self.config, runtime='antigravity',
+                              antigravity_executable=Path(sys.executable).resolve())
+        with patch('rivo_relay.config.sys.platform', 'win32'):
+            self.config.validate()
+            with self.assertRaisesRegex(ValueError, 'Antigravity CLI mode is unsupported on Windows'):
+                antigravity.validate()
+
+    def test_serve_passes_antigravity_executable_and_projects_without_inheriting_codex_environment(self):
+        from rivo_relay.__main__ import main
+
+        executable = Path(sys.executable).resolve()
+        projects = [self.config.workspace, self.config.workspace / 'project']
+        projects[1].mkdir()
+        with (patch.dict(os.environ, {'RIVO_CODEX_RUNTIME': 'desktop'}),
+              patch('rivo_relay.__main__.os.umask'), patch('rivo_relay.__main__.serve') as serve):
+            self.assertEqual(main(['serve', '--runtime', 'antigravity', '--workspace', str(self.config.workspace),
+                                  '--antigravity-executable', str(executable),
+                                  '--antigravity-project', str(projects[0]),
+                                  '--antigravity-project', str(projects[1])]), 0)
+        config, native_socket = serve.call_args.args
+        self.assertEqual(config.runtime, 'antigravity')
+        self.assertEqual(config.antigravity_executable, executable)
+        self.assertEqual(config.antigravity_projects, tuple(projects))
+        self.assertIsNone(native_socket)
+
+    def test_desktop_mode_has_a_stable_profile_identity_and_uses_no_cli_executable(self):
+        profile = self.config.workspace / 'desktop-profile'
+        desktop = replace(self.config, runtime='antigravity', antigravity_mode='desktop', antigravity_profile_dir=profile)
+        desktop.validate()
+        self.assertEqual(profile.resolve(), desktop.antigravity_profile)
+        self.assertEqual(desktop.runtime_identity, replace(desktop, port=18788).runtime_identity)
+        self.assertNotEqual(desktop.runtime_identity, replace(desktop, antigravity_profile_dir=profile / 'other').runtime_identity)
+        self.assertNotEqual(desktop.runtime_identity,
+                            replace(desktop, antigravity_mode='cli', antigravity_profile_dir=None).runtime_identity)
+        for changes in ({'antigravity_executable': Path(sys.executable).resolve()},
+                        {'antigravity_profile_dir': Path('relative')}, {'runtime': 'codex'},
+                        {'antigravity_mode': 'cli'}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                replace(desktop, **changes).validate()
+
     def test_serve_rejects_removed_name_override(self):
         import contextlib
         import io
@@ -141,6 +197,8 @@ with patch('rivo_relay.codex.CodexService', NoNative):
                 self.assertEqual(json.loads(response.read()), {
                     "status": "ok", "nodeId": self.config.node_id,
                     "releaseCode": 123, "nativeConnected": False,
+                    "runtime": "codex", "runtimeIdentity": replace(
+                        self.config, codex_home=self.config.workspace / "unused-codex-home").runtime_identity,
                 })
             finally:
                 client.close()
@@ -239,6 +297,7 @@ authorityKeyIdentifier=keyid:always,issuer
             self.assertEqual(self.request("localhost", self.ca), (200, {
                 "status": "ok", "nodeId": self.app.config.node_id,
                 "releaseCode": 123, "nativeConnected": False,
+            "runtime": "codex", "runtimeIdentity": self.app.config.runtime_identity,
             }))
 
     def test_wrong_hostname_is_rejected_without_disabling_verification(self):

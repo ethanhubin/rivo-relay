@@ -15,6 +15,7 @@
 - [目标模式会话](goal-mode.md)
 - [Codex Desktop bridge](codex-desktop-bridge.md)
 - [DSH 既有运行时接入](dsh-integration.md)
+- [Antigravity 桌面与 CLI 节点](antigravity-integration.md)
 - [多运行时接入架构与迁移方案](multi-runtime-architecture.md)
 - [Claude Code 接入边界核实](claude-code-integration-boundaries.md)
 - [Codex voice input](codex-voice-input.md)
@@ -25,6 +26,7 @@
 ## 部署与更新
 
 - [在其他电脑部署节点](node-deployment.md)
+- [手机配对二合一码与 APK 下载](vps-gateway.md#手机配对二合一码)
 - [VPS 中转与 Tailscale 双通道](vps-gateway.md)
 - [VPS 统一更新](central-updates.md)
 - [Tailscale 节点更新与发布](node-updates.md)

@@ -377,7 +377,10 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 gate = self.app.update_gate
                 if path[-1] == 'update-stop':
-                    ready = gate.consume(required(update_body, 'lease'))
+                    config = self.app.config
+                    recheck = (self.app.backend.update_blocker if config.runtime == 'antigravity'
+                               and config.antigravity_mode == 'desktop' else None)
+                    ready = gate.consume(required(update_body, 'lease'), recheck=recheck)
                 else:
                     ready = gate.acquire(self.app)
                 try:
@@ -409,12 +412,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {'kind': 'relay', 'nodeId': self.app.config.node_id,
                     'name': self.app.node_name.get(),
                     'releaseCode': int(os.environ.get('RIVO_RELEASE_CODE', '0')),
+                    'runtime': self.app.config.runtime, 'runtimeIdentity': self.app.config.runtime_identity,
                     'nativeConnected': bool(self.app.codex.status().get('connected')),
                     'apps': self.app.presence.snapshot(authorized),
                     'update': update})
                 return
             if self.command == "GET" and path == ["health"]:
-                self.send_json(200, {"status": "ok", "nodeId": self.app.config.node_id, "releaseCode": int(os.environ.get("RIVO_RELEASE_CODE", "0")), "nativeConnected": bool(self.app.codex.status().get("connected"))})
+                config = self.app.config
+                self.send_json(200, {'status': 'ok', 'nodeId': config.node_id,
+                    'releaseCode': int(os.environ.get('RIVO_RELEASE_CODE', '0')),
+                    'runtime': config.runtime, 'runtimeIdentity': config.runtime_identity,
+                    'nativeConnected': bool(self.app.backend.status().get('connected'))})
                 return
             if self.command == 'GET' and path == ['v1', 'app-updates', 'latest']:
                 try:

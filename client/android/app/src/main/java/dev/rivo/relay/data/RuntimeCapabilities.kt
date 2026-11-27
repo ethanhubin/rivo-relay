@@ -3,6 +3,8 @@ package dev.rivo.relay.data
 import androidx.compose.runtime.staticCompositionLocalOf
 import org.json.JSONObject
 
+internal const val RESPOND_WHILE_INPUT_PENDING = "interaction.respond_while_input_pending"
+
 /** Operations describe behavior, never a particular runtime implementation. */
 data class RuntimeOperation(val supported: Boolean, val available: Boolean, val reasonCode: String? = null)
 class RuntimeCapabilities private constructor(private val operations: Map<String, RuntimeOperation>?, val maxAttachmentBytes: Long = 1024L * 1024 * 1024, private val pending: Boolean = false) {
@@ -10,6 +12,7 @@ class RuntimeCapabilities private constructor(private val operations: Map<String
         ?: settingFallbacks[id]?.let { operation(it) }
         ?: if (operations == null) RuntimeOperation(true, true) else RuntimeOperation(false, false, "unsupported")
     fun allows(id: String) = operation(id).let { it.supported && it.available }
+    internal fun explicitlyAllows(id: String) = operations?.get(id)?.let { it.supported && it.available } == true
     fun supports(id: String) = operation(id).supported
     /** Keep entry points visible while loading, without granting execution. */
     fun shows(id: String) = pending || supports(id)

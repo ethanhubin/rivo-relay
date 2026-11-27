@@ -47,21 +47,14 @@ class SettingsNodeUsageUiTest {
         val a = server("a", { 20 }, resetsA)
         val b = server("b", { usedB.get() }, resetsB)
         try {
-            val ca = NodeConnection(a.url("/").toString().trimEnd('/'), "节点 A", "a", "fixture", "")
-            val cb = NodeConnection(b.url("/").toString().trimEnd('/'), "节点 B", "b", "fixture", "")
+            val ca = NodeConnection(a.url("/").toString().trimEnd('/'), "节点 A", "a", "fixture", "", runtime = "codex")
+            val cb = NodeConnection(b.url("/").toString().trimEnd('/'), "节点 B", "b", "fixture", "", runtime = "codex")
             val api = ca.api()
             compose.setContent { RivoTheme { Surface {
                 SettingsScreen(connection = ca, api = api,
-                    savedNodes = listOf(SavedNode(ca.base, ca.name, true), SavedNode(cb.base, cb.name, true)),
+                    savedNodes = listOf(ca, cb).map { SavedNode(it.base, it.name, true, it.runtime) },
                     resolveConnection = { if (it == ca.base) ca else cb })
             } } }
-            fun awaitText(text: String) = compose.waitUntil(10_000) {
-                compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty()
-            }
-            fun select(connection: NodeConnection) {
-                compose.onNodeWithTag("settings_node_selector").performScrollTo().performClick()
-                compose.onNodeWithTag("settings_switch_node_${connection.base}").performClick()
-            }
             awaitText("周额度剩余 80%")
             select(cb)
             compose.onNodeWithText("周额度剩余 80%").assertDoesNotExist()
@@ -84,5 +77,63 @@ class SettingsNodeUsageUiTest {
             compose.waitUntil(10_000) { resetsB.get() == 1 }
             assertEquals(0, resetsA.get())
         } finally { a.shutdown(); b.shutdown() }
+    }
+
+    @Test fun onlyCodexShowsAndRequestsUsageForInspectedNode() {
+        val nonCodexUsageRequests = AtomicInteger()
+        val runtimes = listOf("codex", "dsh", "antigravity", "")
+        val servers = runtimes.mapIndexed { index, runtime ->
+            MockWebServer().apply {
+                dispatcher = object : Dispatcher() {
+                    override fun dispatch(request: RecordedRequest): MockResponse {
+                        return when (request.requestUrl?.encodedPath) {
+                            "/v1/usage", "/v1/usage/reset" -> {
+                                if (runtime != "codex") nonCodexUsageRequests.incrementAndGet()
+                                MockResponse().setBody("""{"rateLimits":{"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1794672000}}}""")
+                            }
+                            else -> MockResponse().setBody("""{"id":"node-$index","releaseCode":${140 + index}}""")
+                        }
+                    }
+                }
+                start()
+            }
+        }
+        try {
+            val connections = servers.mapIndexed { index, server ->
+                NodeConnection(server.url("/").toString().trimEnd('/'), "节点 $index", "node-$index",
+                    "fixture", "", runtime = runtimes[index])
+            }
+            val codex = connections.first()
+            val api = codex.api()
+            compose.setContent { RivoTheme { Surface {
+                SettingsScreen(connection = codex, api = api,
+                    savedNodes = connections.map { SavedNode(it.base, it.name, true, it.runtime) },
+                    resolveConnection = { base -> connections.firstOrNull { it.base == base } })
+            } } }
+
+            awaitText("周额度剩余 80%")
+            connections.drop(1).forEachIndexed { index, connection ->
+                select(connection)
+                awaitText("节点版本：${141 + index}", substring = true)
+                compose.onNodeWithTag("settings_connection_status").assertExists()
+                compose.onNodeWithTag("settings_weekly_usage").assertDoesNotExist()
+                compose.onNodeWithTag("open_usage_details").assertDoesNotExist()
+            }
+            select(codex)
+            awaitText("周额度剩余 80%")
+            compose.onNodeWithTag("open_usage_details").assertExists()
+            assertEquals(0, nonCodexUsageRequests.get())
+        } finally {
+            servers.forEach { it.shutdown() }
+        }
+    }
+
+    private fun awaitText(text: String, substring: Boolean = false) = compose.waitUntil(10_000) {
+        compose.onAllNodesWithText(text, substring = substring).fetchSemanticsNodes().isNotEmpty()
+    }
+
+    private fun select(connection: NodeConnection) {
+        compose.onNodeWithTag("settings_node_selector").performScrollTo().performClick()
+        compose.onNodeWithTag("settings_switch_node_${connection.base}").performClick()
     }
 }

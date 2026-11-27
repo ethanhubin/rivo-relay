@@ -8,6 +8,7 @@ import tempfile
 
 from ..codex import native_history_support as locks
 from .config import save_private
+from .update_status import AGENT_REVISION
 from .updater import python_at
 
 
@@ -74,7 +75,9 @@ def upgrade_bootstrap(workspace, source):
             probe = temp / 'probe'
             run([python, '-m', 'venv', probe])
             install = ['-m', 'pip', 'install', '--no-index', '--find-links', str(wheels), '--force-reinstall', 'rivo-relay[gateway]']
-            verify = ['-c', 'from rivo_relay.gateway.update_status import AGENT_REVISION; from rivo_relay.gateway.updater import Supervisor; assert AGENT_REVISION >= 2']
+            verify = ['-c', 'from rivo_relay.gateway.update_status import AGENT_REVISION; '
+                      'from rivo_relay.gateway.updater import Supervisor; '
+                      f'assert AGENT_REVISION >= {AGENT_REVISION}']
             run([python_at(probe), *install]); run([python_at(probe), *verify])
             save_private(bootstrap / 'upgrade-state.json', {'phase': 'preparing_backup'})
             try:

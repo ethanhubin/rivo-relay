@@ -40,7 +40,12 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
     val session = SessionController(api, scope, conversations, notifications::observe, notifications::setVisibleThread, sync = sync, failure = failure)
     private val pendingRevisionMutable = MutableStateFlow(0L)
     val pendingRevision = pendingRevisionMutable.asStateFlow()
-    val submissions = SubmissionCoordinator(api, scope, vault, "pending:${connection.nodeId}:${connection.deviceId}:${connection.storageBase}",
+    private val acceptedTextDraftMutable = MutableStateFlow<AcceptedTextDraft?>(null)
+    val acceptedTextDraft = acceptedTextDraftMutable.asStateFlow()
+    private val submissionStorageKey = "pending:${connection.nodeId}:${connection.deviceId}:${connection.storageBase}"
+    internal val interactionSubmissions = SubmissionCoordinator(api, scope, vault, "$submissionStorageKey:interaction",
+        onResolved = { pending, _ -> session.invalidateControlFor(setOfNotNull(pending.threadId)) }, failure = failure)
+    val submissions = SubmissionCoordinator(api, scope, vault, submissionStorageKey,
         onResolved = resolved@{ pending, response ->
             if (pending.path == USAGE_RESET_PATH) {
                 catalog.usageResetResolved(response)
@@ -60,12 +65,15 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
                 val changed = conversations.resolvePendingSubmission(pending.id, response)
                 conversations.markSentDraftResolved(pending.id, response) to changed
             }
-            if (acceptedDraft) scope.launch {
-                try { conversations.clearAcceptedSentDraft(pending.id) }
-                catch (e: CancellationException) { throw e }
-                catch (e: Exception) {
-                    failure(e)
-                    reconcilePendingReceipts()
+            if (acceptedDraft) {
+                publishAcceptedTextDraft(pending.id)
+                scope.launch {
+                    try { conversations.clearAcceptedSentDraft(pending.id) }
+                    catch (e: CancellationException) { throw e }
+                    catch (e: Exception) {
+                        failure(e)
+                        reconcilePendingReceipts()
+                    }
                 }
             }
             if (pendingChanged != null) {
@@ -73,13 +81,14 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
                     catalog.recordCreatedThread(pendingChanged, response.optJSONObject("receipt")?.string("threadId").orEmpty())
                 pendingRevisionMutable.value++
             }
-        }, failure = failure)
+        }, canSubmit = { !interactionSubmissions.state.value.ownsMutation }, failure = failure)
     private var pendingRecoveryJob: Job? = null
     fun reconcilePendingReceipts() {
-        if (pendingRecoveryJob?.isActive == true) return
         // The coordinator owns its callback and durable ID; do not resolve only
         // the draft checkpoint and leave its global submission lock behind.
         submissions.reconcile()
+        interactionSubmissions.reconcile()
+        if (pendingRecoveryJob?.isActive == true) return
         // Never repeat native mutations; missing receipts are fenced by the node.
         pendingRecoveryJob = scope.launch {
             recoverPendingCheckpoints(
@@ -103,11 +112,46 @@ class NodeRuntime(connection: NodeConnection, private val scope: CoroutineScope,
                         }
                         acceptedDraft
                     }
-                    if (accepted) conversations.clearAcceptedSentDraft(id)
+                    if (accepted) {
+                        publishAcceptedTextDraft(id)
+                        conversations.clearAcceptedSentDraft(id)
+                    }
                 }, failure = failure)
         }
     }
-    init { reconcilePendingReceipts() }
+    private suspend fun publishAcceptedTextDraft(id: String) {
+        conversations.acceptedTextDraft(id)?.let { acceptedTextDraftMutable.value = it }
+    }
+
+    internal fun observeAcceptedTextDraft(submissionId: String) {
+        acceptedTextDraftMutable.update { it?.takeUnless { draft -> draft.submissionId == submissionId } }
+    }
+
+    internal fun persistChatDraft(threadId: String, draft: ConversationDraft, observedAcceptanceId: String?) {
+        val accepted = acceptedTextDraft.value
+        // A departing composer may still hold the frozen text before it observes acceptance.
+        if (accepted?.threadId == threadId && accepted.submissionId != observedAcceptanceId && accepted.cleared(draft) != null) return
+        persistDraft(threadId, draft)
+    }
+    init {
+        reconcilePendingReceipts()
+        scope.launch {
+            combine(submissions.state, interactionSubmissions.state, api.runtimeCapabilities) { primary, scoped, capabilities ->
+                scoped.pending != null || primary.pending != null && capabilities.explicitlyAllows(RESPOND_WHILE_INPUT_PENDING)
+            }.distinctUntilChanged().collectLatest { pending ->
+                if (!pending) return@collectLatest
+                sync.events(onInterrupted = {}).collect { event ->
+                    if (event.payload.string("method") != "relay/submission") return@collect
+                    val result = event.payload.optJSONObject("params") ?: return@collect
+                    val id = result.string("submissionId")
+                    if (id.isNotBlank() && result.string("status") in setOf("accepted", "failed")) {
+                        submissions.reconcile(id)
+                        interactionSubmissions.reconcile(id)
+                    }
+                }
+            }
+        }
+    }
     private val todoReminders = TodoReminderScheduler(context.applicationContext, "${connection.nodeId}:${connection.deviceId}:${connection.storageBase}", connection.base)
     val todos = TodosController(api, scope, failure, store = conversations, onChanged = { items ->
         todoReminders.update(items)
