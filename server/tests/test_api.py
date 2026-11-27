@@ -141,6 +141,24 @@ class ApiTests(RelayHTTPFixture, unittest.TestCase):
                 stop.assert_not_called()
             self.assertEqual(self.request('GET', '/health')[0], 200)
 
+    def test_desktop_runtime_rechecks_native_state_when_consuming_lease(self):
+        from dataclasses import replace
+        config = self.app.config = replace(self.config, runtime='antigravity', antigravity_mode='desktop')
+        self.app.backend.update_blocker = Mock(side_effect=[None, 'native_waiting_user'])
+        _, health, _ = self.request('GET', '/health')
+        self.assertEqual('antigravity', health['runtime'])
+        self.assertEqual(config.runtime_identity, health['runtimeIdentity'])
+        with patch.dict('os.environ', {'RIVO_UPDATE_TOKEN': 'test-agent-only'}):
+            status, permit, _ = self.request('POST', '/internal/update-lease', {}, token='test-agent-only')
+            self.assertEqual(200, status)
+            with patch.object(self.server, 'shutdown') as stop:
+                status, result, _ = self.request('POST', '/internal/update-stop',
+                    {'lease': permit['lease']}, token='test-agent-only')
+                self.assertEqual((409, 'native_waiting_user'), (status, result['reason']))
+                stop.assert_not_called()
+            self.assertEqual(2, self.app.backend.update_blocker.call_count)
+            self.assertEqual(200, self.request('GET', '/v1/node', token=self.token)[0])
+
     def test_node_rename_preserves_existing_authorization(self):
         self.assertEqual('test-machine', self.paired['node']['name'])
         with patch('rivo_relay.node_name.discover_name', return_value='renamed-tailnet-node'):

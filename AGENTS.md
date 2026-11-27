@@ -24,6 +24,7 @@
 
 # 设备管理入口
 
+- 手机部署默认直接交付系统信任的 VPS HTTPS APK 下载地址，并提供包含直连与 VPS 中转的节点配对二合一码。交付验收见 [手机配对二合一码](docs/vps-gateway.md#手机配对二合一码)。
 - 远程操作前先读取 `/Users/ethan/Documents/系统管理/家庭局域网设备清单.md` 和对应设备详情；不要重复向用户询问已有连接信息。
 - 当前 VPS：`root@134.175.156.219`，SSH 密钥 `/Users/ethan/Documents/QiGuangBot.pem`，使用 `-o IdentitiesOnly=yes`。详情见 `/Users/ethan/Documents/系统管理/设备详情/网络与路由.md`。
 - 实时磁盘用量写入本项目验证记录，不写入设备身份清单；只清理 Rivo 自己的可回收更新文件，不清理其他服务。

@@ -16,7 +16,7 @@ OPERATIONS = frozenset({
     'session.queue', 'session.ownership', 'session.review', 'session.prediction',
     'session.plan', 'files.read', 'files.upload', 'files.browse',
     'attachments.images', 'media.read', 'session.service_tier', 'session.permissions',
-    'workspace.manage', 'interaction.respond',
+    'workspace.manage', 'interaction.respond', 'interaction.respond_while_input_pending',
     'todo.dispatch', 'sites.read', 'usage.reset',
 })
 
@@ -57,7 +57,8 @@ def session_restrictions(snapshot):
     stale = not history_usable(snapshot)
     guarded = {'session.send', 'session.interrupt', 'session.continue', 'session.steer',
                'session.settings', 'session.goal', 'session.review', 'session.prediction',
-               'session.plan', 'session.service_tier', 'session.permissions', 'interaction.respond'}
+               'session.plan', 'session.service_tier', 'session.permissions', 'interaction.respond',
+               'interaction.respond_while_input_pending'}
     reason = 'session_stale' if stale else 'session_read_only' if blocked else None
     return {name: reason for name in guarded} if reason else {}
 

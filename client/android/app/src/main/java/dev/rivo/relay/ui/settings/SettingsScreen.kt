@@ -100,6 +100,10 @@ fun SettingsScreen(
         }
 
         inspectedConnection?.let { selected ->
+            val selectedRuntime = if (connection != null && selected.base == connection.base) connection.runtime else {
+                savedNodes.firstOrNull { it.base == selected.base }?.runtime
+                    ?.takeIf(String::isNotBlank) ?: selected.runtime
+            }
             key(selected, inspectedApi) {
                 var usageRefresh by remember { mutableIntStateOf(0) }
                 ConnectionSettings(selected, inspectedApi, { mode ->
@@ -109,10 +113,10 @@ fun SettingsScreen(
                 }, savedNodes, { base ->
                     resolveConnection(base)?.let { inspectedConnection = it }
                 }, onAddNode, canAddNode, onRefresh = { usageRefresh++ }) {
-                    inspectedApi?.let { selectedApi ->
+                    if (selectedRuntime == "codex" && inspectedApi != null) {
                         HorizontalDivider()
-                        SettingsNodeUsage(selected, selectedApi, usageRefresh,
-                            activeNode?.takeIf { it.api === selectedApi })
+                        SettingsNodeUsage(selected, inspectedApi, usageRefresh,
+                            activeNode?.takeIf { it.api === inspectedApi })
                     }
                 }
             }

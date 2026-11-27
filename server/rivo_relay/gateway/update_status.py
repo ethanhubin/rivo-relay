@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from .config import save_private
 
-AGENT_REVISION = 2
+AGENT_REVISION = 3
 
 
 def write_ready(path, token, connected):

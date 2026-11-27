@@ -13,6 +13,7 @@ import sys
 from urllib.parse import urlencode
 
 from .config import initialize, issue_key, save_private, discover_direct_url, node_gateway
+from .runtime_options import add_runtime_arguments, relay_config, runtime_arguments, runtime_matches, runtime_settings
 
 
 def main():
@@ -30,10 +31,7 @@ def main():
     parser.add_argument('--attach', action='store_true', help='Connect an already-running local Relay')
     parser.add_argument('--pair-only', action='store_true', help='Generate a fresh QR for an already configured/running node')
     parser.add_argument('--configure', action='store_true', help='Replace the saved access credential interactively')
-    parser.add_argument('--codex-runtime', choices=['auto', 'desktop', 'app_server', 'stdio'], default=None)
-    parser.add_argument('--codex-executable', type=Path)
-    parser.add_argument('--codex-home', type=Path)
-    parser.add_argument('--native-socket', type=Path)
+    add_runtime_arguments(parser)
     parser.add_argument('--no-pair', action='store_true', help='Background reconnect without creating a new pairing code')
     args = parser.parse_args()
     if args.command == 'node' and args.ip is not None:
@@ -91,6 +89,7 @@ async def node(args):
     workspace = args.workspace.resolve()
     path = workspace / 'gateway-client.json'
     stored = json.loads(path.read_text()) if path.exists() else {}
+    managed = os.environ.get('RIVO_MANAGED_NODE') == '1'
     mode = args.mode or stored.get('mode') or 'auto'
     if mode not in ('auto', 'direct', 'relay'):
         raise ValueError('Invalid connection mode')
@@ -109,23 +108,51 @@ async def node(args):
         stored.update(gateway=base, key=credential)
     if mode == 'direct' and not direct:
         raise ValueError('Direct mode requires a Tailscale URL')
-    for option in ('codex_runtime', 'codex_executable', 'codex_home', 'native_socket'):
-        value = getattr(args, option, None)
-        if value is not None:
-            stored[option] = str(value)
+    runtime = runtime_settings(args, stored)
+    stored.update(runtime)
     stored.update(mode=mode, direct=direct or '', updates=args.update_source or stored.get('updates', False))
-    save_private(path, stored)
     relay = base + '/relay/' + key['slot'] if key else ''
     public = direct or relay
-    config = Config(workspace=workspace, port=args.local_port, public_url=public)
-    config.prepare()
+    config = relay_config(workspace, args.local_port, runtime, public_url=public)
+    runtime_identity = config.runtime_identity
+    allow_legacy = 'runtime' not in runtime
+    # Legacy connect-only deployments configured the Codex transport on the
+    # already running Relay, so the connector cannot know that transport.
+    allow_unconfigured_codex_attach = not managed and not runtime and not os.environ.get('RIVO_CODEX_RUNTIME')
+
+    def matches_runtime(health, *, attached):
+        if runtime_matches(health, config.runtime, runtime_identity, allow_legacy=allow_legacy):
+            return True
+        identity = health.get('runtimeIdentity')
+        return (attached and allow_unconfigured_codex_attach and health.get('runtime') == 'codex'
+                and isinstance(identity, str) and bool(identity))
+
     child = None
     connector_task = None
     previous_signals = {}
+    loop = asyncio.get_running_loop()
+    owner = asyncio.current_task()
+    stopping = False
+
+    def request_stop():
+        nonlocal stopping
+        if not stopping:
+            stopping = True
+            owner.cancel()
+
     from .update_status import ReadinessPublisher
     readiness = (ReadinessPublisher(os.environ['RIVO_MANAGED_READY'], os.environ['RIVO_UPDATE_TOKEN'])
                  if os.environ.get('RIVO_MANAGED_READY') else None)
     try:
+        if not args.pair_only:
+            # The supervisor can reject a trial as soon as its Relay exposes health.
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                previous = signal.getsignal(sig)
+                if os.name == 'nt':
+                    signal.signal(sig, lambda *_: loop.call_soon_threadsafe(request_stop))
+                else:
+                    loop.add_signal_handler(sig, request_stop)
+                previous_signals[sig] = previous
         import aiohttp
         async with aiohttp.ClientSession() as session:
             try:
@@ -133,8 +160,10 @@ async def node(args):
                     identity = await response.json()
                     if identity.get('nodeId') != config.node_id:
                         raise ValueError('Local port belongs to another/older Relay; use its workspace or update that service first')
-                    if os.environ.get('RIVO_MANAGED_NODE') == '1':
+                    if managed:
                         raise ValueError('Managed node requires exclusive ownership; stop the old Relay service first')
+                    if not matches_runtime(identity, attached=True):
+                        raise ValueError('Local Relay runtime identity mismatch')
                     args.attach = True
             except (OSError, asyncio.TimeoutError):
                 if args.attach:
@@ -142,11 +171,14 @@ async def node(args):
         if args.pair_only and not args.attach:
             raise RuntimeError('Start the node before generating a new pairing QR')
         if not args.attach:
+            config.prepare()
+        # A release trial uses the parent's launch configuration until it is committed.
+        if not (managed and os.environ.get('RIVO_UPDATE_TRIAL') == '1'):
+            save_private(path, stored)
+        if not args.attach:
             command = [sys.executable, '-m', 'rivo_relay', 'serve', '--workspace', str(workspace),
-                       '--host', '127.0.0.1', '--port', str(args.local_port), '--url', public]
-            for option in ('codex_runtime', 'codex_executable', 'codex_home', 'native_socket'):
-                if stored.get(option):
-                    command.extend(['--' + option.replace('_', '-'), stored[option]])
+                       '--host', '127.0.0.1', '--port', str(args.local_port), '--url', public,
+                       *runtime_arguments(runtime)]
             if os.name == 'nt':
                 from ..codex.windows_process import spawn_owned
                 child = spawn_owned(command)
@@ -164,6 +196,8 @@ async def node(args):
                             identity = await response.json()
                             if identity.get('nodeId') != config.node_id:
                                 raise ValueError('Local Relay workspace identity mismatch')
+                            if not matches_runtime(identity, attached=args.attach):
+                                raise ValueError('Local Relay runtime identity mismatch')
                             break
                 except (OSError, asyncio.TimeoutError):
                     pass
@@ -203,38 +237,36 @@ async def node(args):
             print('扫码配对，有效期 5 分钟。二维码：', output, flush=True)
         if args.pair_only:
             return
-        stop = asyncio.Event()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            loop = asyncio.get_running_loop()
-            if os.name == 'nt':
-                previous_signals[sig] = signal.signal(sig, lambda *_: loop.call_soon_threadsafe(stop.set))
-            else:
-                loop.add_signal_handler(sig, stop.set)
-        while not stop.is_set():
+        while True:
             publish_readiness()
             if child and child.poll() is not None:
                 raise RuntimeError('Local Relay exited')
-            try:
-                await asyncio.wait_for(stop.wait(), 1)
-            except TimeoutError:
-                pass
+            await asyncio.sleep(1)
+    except asyncio.CancelledError:
+        if not stopping:
+            raise
     finally:
-        if readiness:
-            readiness.publish(False)
-        for sig, previous in previous_signals.items():
-            signal.signal(sig, previous)
-        if connector_task:
-            connector_task.cancel()
-            await asyncio.gather(connector_task, return_exceptions=True)
-        if child and getattr(child, '_rivo_job', None):
-            try:
-                await asyncio.to_thread(child._rivo_job.terminate)
+        stopping = True
+        try:
+            if connector_task:
+                connector_task.cancel()
+                await asyncio.gather(connector_task, return_exceptions=True)
+            if child and getattr(child, '_rivo_job', None):
+                try:
+                    await asyncio.to_thread(child._rivo_job.terminate)
+                    await asyncio.to_thread(child.wait, 10)
+                finally:
+                    child._rivo_job.close()
+            elif child and child.poll() is None:
+                child.terminate()
                 await asyncio.to_thread(child.wait, 10)
-            finally:
-                child._rivo_job.close()
-        elif child and child.poll() is None:
-            child.terminate()
-            await asyncio.to_thread(child.wait, 10)
+        finally:
+            for sig, previous in previous_signals.items():
+                if os.name != 'nt':
+                    loop.remove_signal_handler(sig)
+                signal.signal(sig, previous)
+            if readiness:
+                readiness.publish(False)
 
 
 if __name__ == '__main__':

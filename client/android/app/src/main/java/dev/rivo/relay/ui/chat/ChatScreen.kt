@@ -90,6 +90,9 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
     onForwardLink: ((String, String?, String, String) -> Unit)? = null, draftReloadKey: Long = 0, pendingCwd: String = "",
     onOpenAgent: ((String) -> Unit)? = null,
     mediaApi: dev.rivo.relay.data.RelayApi? = null,
+    interactionWritable: (NativeRequest) -> Boolean = { !busy && !blocked },
+    acceptedTextDraft: AcceptedTextDraft? = null,
+    onAcceptedTextDraftObserved: (String) -> Unit = {},
     cachedFile: (suspend (String, (Long, Long) -> Unit) -> java.io.File)? = null) {
     val mediaContext = androidx.compose.ui.platform.LocalContext.current
     val mediaClient = remember(mediaApi, state.id) { mediaApi?.let { dev.rivo.relay.data.CodexMediaClient(it, state.id.orEmpty(), mediaContext) } }
@@ -296,11 +299,20 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         }
     }
     val visiblePrediction = prediction.takeIf { predictionEligible && !predictionConsumed && draft.isEmpty() && !busy }
-    val sendText = if (draft.isEmpty()) visiblePrediction ?: draft else draft
     val newSessionModels = if (pendingTitle != null) newSessionModelSettings(models, selectedModel, selectedEffort) else null
     val effectiveModel = if (pendingTitle != null) newSessionModels?.model else selectedModel
     val effectiveEffort = if (pendingTitle != null) newSessionModels?.effort else selectedEffort
-    val currentDraft = ConversationDraft(draft, images.map { StoredDraftImage(it.id, it.bytes) }, files, effectiveModel, effectiveEffort, selectedMode, selectedServiceTier, selectedSandbox, selectedApproval, pendingGoal)
+    val localDraft = ConversationDraft(draft, images.map { StoredDraftImage(it.id, it.bytes) }, files, effectiveModel, effectiveEffort, selectedMode, selectedServiceTier, selectedSandbox, selectedApproval, pendingGoal)
+    val newAcceptance = acceptedTextDraft?.takeIf { draftLoaded && it.threadId == state.id }
+    val clearedDraft = newAcceptance?.cleared(localDraft)
+    val currentDraft = clearedDraft ?: localDraft
+    val sendText = currentDraft.text.ifEmpty { visiblePrediction.orEmpty() }
+    LaunchedEffect(newAcceptance?.submissionId) {
+        if (newAcceptance != null) {
+            if (clearedDraft != null) draft = clearedDraft.text
+            onAcceptedTextDraftObserved(newAcceptance.submissionId)
+        }
+    }
     var submittedDraft by remember(state.id) { mutableStateOf<ConversationDraft?>(null) }
     val unchangedSubmission = submittedDraft != null && submittedDraft == currentDraft
     val composerInput = remember(draft, images, files, pendingGoal, unchangedSubmission, state.pendingMessages.isEmpty()) {
@@ -345,7 +357,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
             }
         }
     }
-    LaunchedEffect(state.id, draftLoaded, draft, images, files, effectiveModel, effectiveEffort, selectedMode, selectedServiceTier) {
+    LaunchedEffect(state.id, draftLoaded, currentDraft.text, images, files, effectiveModel, effectiveEffort, selectedMode, selectedServiceTier) {
         if (draftLoaded) state.id?.let { onPersistDraft(it, currentDraft) }
     }
     DisposableEffect(state.id, draftStore) {
@@ -749,7 +761,8 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         if (snapshot?.requests?.isNotEmpty() == true) Column(Modifier.fillMaxWidth().heightIn(max = 320.dp)
             .verticalScroll(rememberScrollState()).padding(horizontal = 12.dp).testTag("native_requests_panel")) {
             snapshot.requests.forEach { request -> key(request.rememberKey) {
-                NativeRequestPanel(request, capabilities.allows("interaction.respond") && !busy && !blocked && !state.stale && (canOperate || request.interaction?.kind == "questions" || request.method.endsWith("requestUserInput"))) { onRespond(request, it) }
+                NativeRequestPanel(request, capabilities.allows("interaction.respond") && interactionWritable(request) && !state.stale &&
+                    (canOperate || request.interaction?.kind == "questions" || request.method.endsWith("requestUserInput"))) { onRespond(request, it) }
             } }
         }
         var goalEditing by remember(state.id) { mutableStateOf(false) }
@@ -822,7 +835,7 @@ fun ChatScreen(state: SessionState, busy: Boolean, blocked: Boolean, models: Lis
         }
         MessageComposer(
             tokenUsage = snapshot?.tokenUsage, contextThreadId = state.id,
-            text = if (hideSubmitted) "" else draft, onTextChange = { if (textEditable) draft = it }, images = if (hideSubmitted) emptyList() else images,
+            text = if (hideSubmitted) "" else currentDraft.text, onTextChange = { if (textEditable) draft = it }, images = if (hideSubmitted) emptyList() else images,
             onEditImage = { focus.clearFocus(); keyboard?.hide(); editingImage = it },
             onRemoveImage = { image -> images = images.filterNot { it.id == image.id } },
             files = if (hideSubmitted) emptyList() else files, onRemoveFile = { reference -> files = files.filterNot { it === reference } },

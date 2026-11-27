@@ -1,6 +1,6 @@
 # VPS 中转与 Tailscale 双通道
 
-同一个桌面 Relay 可以同时接受 Tailscale 直连和 VPS 中转。Android 按节点 ID 保存一个节点，路径切换保留连接令牌、设备 ID、草稿和缓存。旧版 v1 二维码及原直连启动命令保持支持。
+同一个桌面 Relay 可以同时接受 Tailscale 直连和 VPS 中转。Android 按节点 ID 保存一个节点，路径切换保留连接令牌、设备 ID、草稿和缓存。手机配对默认使用[二合一码](#手机配对二合一码)，APK 使用 VPS HTTPS 直链下载。
 
 完整的新机器安装、后台启动和验收步骤见[跨平台节点部署指南](node-deployment.md)。
 
@@ -11,19 +11,17 @@
 ```sh
 git clone <仓库地址> Rivo-Relay
 cd Rivo-Relay
-./scripts/start-node.sh
+./scripts/start-node.sh --mode auto --direct-url "$RIVO_NODE_DIRECT_HTTPS" --no-pair
 ```
 
-首次只需粘贴一条 `rivo2.…` 节点接入凭证，已包含 VPS IP、端口、独立节点密钥和证书指纹，不再分别填写 IP 与密钥。脚本建立虚拟环境并安装依赖，保存配置、启动 Relay、连接 VPS，生成 `workspace/local-node/artifacts/pairing.png`。终端支持时同时显示二维码。手机使用支持 v2 配对的开发版 App 扫描；二维码有效期为 5 分钟，只能兑换一次。
+先将 `RIVO_NODE_DIRECT_HTTPS` 设为该节点已配置的直连 HTTPS 地址。首次粘贴一条 `rivo2.…` 节点接入凭证，已包含 VPS IP、端口、独立节点密钥和证书指纹。脚本建立虚拟环境并安装依赖，保存配置、启动 Relay、连接 VPS。连接器就绪后，用 `--pair-only` 生成配对二合一码。
 
-脚本会复用已有 Tailscale Serve HTTPS 映射，不自动修改 Tailscale 配置。没有映射时仍可仅通过 VPS 连接。已有明确入口可用 `--direct-url http://100.124.150.1:18767` 或目标节点 HTTPS 地址指定。监听本地端口默认 18765；与已有服务共享 workspace 时校验健康接口的节点 ID 后自动接入，不再启动第二个 Relay。
+自动模式可发现已有 Tailscale Serve HTTPS 映射，也可用 `--direct-url` 显式指定节点直连入口。确认直连与 VPS 均已配置，再生成二合一码。监听本地端口默认 18765；与已有服务共享 workspace 时校验健康接口的节点 ID 后自动接入。
 
-- `--mode direct`：仅直连，需要可用直连地址。
-- `--mode relay`：仅 VPS。
-- `--mode auto`：两条路径同时提供（默认）。
+- `--mode auto`：优先使用可用的直连，另提供 VPS 中转（默认）。
 - `--configure`：重新粘贴节点接入凭证。
 - `--workspace PATH --local-port PORT`：其他 workspace / 本地端口。
-- `--pair-only`：为已运行节点生成新二维码，不建立第二条控制连接。
+- `--pair-only`：复用运行中节点的配置生成新的配对二合一码。
 - `--update-source`：将此节点声明为 App 更新源。普通节点不覆盖手机已保存的更新源。
 - `--no-pair`：后台运行时不生成配对码。
 
@@ -32,6 +30,14 @@ cd Rivo-Relay
 仅支持 `rivo2.…` 完整接入凭证，其中包含 VPS 地址、端口、独立密钥和证书指纹，节点安装只需粘贴一次，不再接受旧凭证或单独输入 IP。升级旧节点前，管理员须将其凭证迁移为 v2（保留原槽位、secret 与证书指纹）。凭证是封装而非加密，须像密码一样保管。
 
 配置 `gateway-client.json` 包含密钥，权限为 0600；workspace 不进入 Git。每个桌面节点使用一份独立接入密钥。同一密钥同时连接第二个桌面时网关拒绝连接，不会替换在线节点。
+
+## 手机配对二合一码
+
+**扫描一次 → 保存同一节点的直连与 VPS 中转 → App 自动选择可用路径。** Codex、DSH 和 Antigravity 节点统一使用这套配对流程。手机离开直连网络后仍可走 VPS，无需重新扫码。
+
+1. **APK 下载。** 直接交付浏览器可访问的 VPS HTTPS 文件地址。当前公开受信任的 VPS 入口使用 `https://134.175.156.219:8443`。普通部署使用统一更新中心的已发布 APK。临时验收使用本次已验证的测试 APK。
+2. **生成配对码。** 连接器就绪后，使用相同的 workspace、端口和运行时配置执行 `--attach --pair-only`。检查 `artifacts/pairing.json` 中完整 v2 链接的 `direct`、`relay` 和 `pin` 均有值，再交付同目录的 `pairing.png`。码有效期为 5 分钟，只能兑换一次。
+3. **在 Rivo 配对。** 进入「设置 → 连接设置 → ＋」，扫二合一码或从相册识别。也可在「手动输入」中粘贴完整 v2 配对链接，以保留两条路径。首次打开 App 时直接在登录节点页扫码。
 
 ## VPS 部署
 
@@ -67,7 +73,7 @@ systemctl restart rivo-gateway
 
 ## Android 行为
 
-设置 → 节点连接提供自动、仅直连、仅 VPS。自动模式首先尝试直连，并持久保存最近成功路径；两条路径都不可用时显示错误。直连探测总超时 1.8 秒，单一路径/VPS 探测为 6 秒；短期复用探测结果，避免每次请求增加探测开销。
+设置 → 连接设置提供连接方式。自动模式首先尝试直连，并持久保存最近成功路径。直连探测总超时 1.8 秒，VPS 探测为 6 秒；短期复用探测结果，避免每次请求增加探测开销。
 
 v2 二维码包含节点 ID、两条访问地址、网关证书 SHA-256 指纹及一次性配对码。二维码不包含桌面接入密钥。已配对手机重新扫描同节点 v2 码时，通过绑定配对码、节点身份及访问地址的双向 HMAC 校验，服务端在同一事务里复用未撤销的连接令牌和设备 ID；旧 Bearer 不发送到新扫码地址；旧授权已撤销时创建新授权。
 
@@ -94,7 +100,7 @@ VPS 是可信中转端：手机到 VPS 为 HTTPS，桌面到 VPS 为固定证书
 
 ### Windows 节点接入验证（2026-11-08）
 
-Windows 节点已使用独立接入凭据连接现有 VPS。`Rivo Relay Gateway` 无窗口计划任务通过共用 `rivo_relay.gateway node --attach --no-pair` 接入既有 Relay，不重启原生运行时。配置位于 Windows workspace 的 `gateway-client.json`；后台包装配置及日志位于 `workspace/windows-gateway/`。使用同一命令加 `--pair-only` 生成包含直连、VPS 和证书指纹的 v2 二维码，不再使用仅直连的旧 `rivo_relay pair` 命令。
+Windows 节点已使用独立接入凭据连接现有 VPS。`Rivo Relay Gateway` 无窗口计划任务通过共用 `rivo_relay.gateway node --attach --no-pair` 接入既有 Relay。配置位于 Windows workspace 的 `gateway-client.json`；后台包装配置及日志位于 `workspace/windows-gateway/`。验收使用 `--pair-only` 生成了包含直连、VPS 和证书指纹的 v2 配对材料。
 
 验证：真实 VPS 配对及授权节点读取成功，临时手机令牌已撤销；进程 Session 0、窗口句柄为 0。网关原有 17 项测试及新增双通道二维码回归测试通过。用户随后确认 Android 真机扫描双通道二维码配对成功。
 

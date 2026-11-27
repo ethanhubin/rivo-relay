@@ -19,6 +19,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.rivo.relay.data.*
 import dev.rivo.relay.codex.BatchSubmission
+import dev.rivo.relay.codex.InteractionSubmissionSlot
 import dev.rivo.relay.codex.SessionSynchronization
 import dev.rivo.relay.codex.SessionSyncEvent
 import dev.rivo.relay.codex.SessionState
@@ -27,6 +28,7 @@ import dev.rivo.relay.codex.catalogCacheNoticeVisible
 import dev.rivo.relay.codex.canQueueOperation
 import dev.rivo.relay.codex.canContinueTask
 import dev.rivo.relay.codex.canCompose
+import dev.rivo.relay.codex.interactionSlot
 import dev.rivo.relay.codex.pinnedThreadsToObserve
 import dev.rivo.relay.ui.TransientNotice
 import dev.rivo.relay.ui.login.LoginScreen
@@ -94,6 +96,10 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     var defaultSettings by remember(node) { mutableStateOf(node.conversations.defaultSettings()) }
     fun canOperateRuntime(operation: String): Boolean = node.capabilities.withOverrides(
         node.session.state.value.snapshot?.takeIf { route == "chat" && it.id == threadId }?.capabilities).allows(operation)
+    fun allowsConcurrentInteraction() = node.capabilities.explicitlyAllows(RESPOND_WHILE_INPUT_PENDING) &&
+        canOperateRuntime(RESPOND_WHILE_INPUT_PENDING)
+    fun tracksAsyncText(input: org.json.JSONArray) = node.capabilities.explicitlyAllows(RESPOND_WHILE_INPUT_PENDING) &&
+        input.length() == 1 && input.optJSONObject(0)?.string("type") == "text"
     fun allowedSettings(settings: JSONObject): JSONObject = node.capabilities.withOverrides(
         node.session.state.value.snapshot?.takeIf { route == "chat" && it.id == threadId }?.capabilities).filterSettings(settings)
     fun saveDefaults(settings: JSONObject) {
@@ -164,6 +170,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     val network = transportNetwork.takeIf { recovery == RecoveryState.CONNECTED }
     val todos by node.todos.state.collectAsStateWithLifecycle()
     val submission by node.submissions.state.collectAsStateWithLifecycle()
+    val interactionSubmission by node.interactionSubmissions.state.collectAsStateWithLifecycle()
+    val acceptedTextDraft = node.acceptedTextDraft.collectAsStateWithLifecycle().value
     var announcedPendingId by remember(node) { mutableStateOf<String?>(null) }
     var recoveryToast by remember(node) { mutableStateOf<String?>(null) }
     LaunchedEffect(submission.pending?.id, submission.busy) {
@@ -177,7 +185,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
         }
     }
     val owner = LocalLifecycleOwner.current
-    val writable = network != null && !submission.busy && submission.pending == null && !handoffLoading
+    val writable = network != null && !submission.ownsMutation && !interactionSubmission.ownsMutation && !handoffLoading
     val projectsWritable = writable && catalog.projectsFresh
     val threadsWritable = writable && catalog.threadsFresh
     val visiblePending = listedPending.filter { it.projectId == catalog.selectedProject?.id }
@@ -243,7 +251,11 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
     LaunchedEffect(todoNavigation) { if (todoNavigation) { route = "todos"; node.todos.refresh(); node.consumeTodoNavigation() } }
     val notificationThread by node.navigation.collectAsStateWithLifecycle()
     LaunchedEffect(notificationThread) { notificationThread?.let { openChat(it, "projects"); node.consumeNavigation() } }
-    LaunchedEffect(route) { node.conversations.putMetadata("lastRoute", route); node.catalog.refreshUsage() }
+    LaunchedEffect(route) { node.conversations.putMetadata("lastRoute", route) }
+    val isCodexNode = node.connection.runtime == "codex"
+    val codexUsage = catalog.takeIf { isCodexNode }
+    val refreshCodexUsage: (() -> Unit)? = if (isCodexNode) { { node.catalog.refreshUsage(true) } } else null
+    LaunchedEffect(route, isCodexNode) { if (isCodexNode) node.catalog.refreshUsage() }
     LaunchedEffect(node, route, threadId, session.snapshot, session.stale) {
         if (route == "chat" && !session.stale && session.snapshot?.id == threadId) session.snapshot?.let {
             node.catalog.reconcileSession(it)
@@ -251,14 +263,20 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
         }
     }
 
-    LaunchedEffect(route, pendingId, pendingRevision) {
+    val showCreatedPendingInput = node.capabilities.explicitlyAllows(RESPOND_WHILE_INPUT_PENDING) && !submission.busy
+    LaunchedEffect(route, pendingId, pendingRevision, submission.pending?.id, showCreatedPendingInput) {
         val id = pendingId
         if (route == "new" && id != null) {
             if (node.conversations.pendingCompleted(id)) {
                 node.conversations.completedPendingThreadId(id)?.let { openChat(it, "sessions") }
             } else {
-                createdThread = node.conversations.pendingThreadId(id)
-                if (createdThread != null) pendingReady = true
+                val created = node.conversations.pendingThreadId(id)
+                createdThread = created
+                if (created != null) {
+                    pendingReady = true
+                    // The native run can be waiting for an answer before the first input settles.
+                    if (showCreatedPendingInput && submission.pending?.isInputFor(created) == true) openChat(created, "sessions")
+                }
             }
         }
     }
@@ -303,8 +321,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     onAddNode = { setError(null); addNode = true }, canAddNode = !submission.busy && !handoffLoading)
                 "projects" -> ProjectsScreen(catalog.projects, node.connection.name, catalog.loading, { project -> node.catalog.project(project); route = "sessions"; setError(null) },
                     { route = "settings"; setError(null) }, { node.catalog.refreshProjects() }, { if (node.capabilities.allows("project.create") && node.catalog.state.value.projectsFresh) addProject = true },
-                    usage = catalog.usage, usageLoading = catalog.usageLoading, usageError = catalog.usageError,
-                    onRefreshUsage = { node.catalog.refreshUsage(true) }, canAdd = projectsWritable && node.capabilities.allows("project.create"),
+                    usage = codexUsage?.usage, usageLoading = codexUsage?.usageLoading == true, usageError = codexUsage?.usageError,
+                    onRefreshUsage = refreshCodexUsage, canAdd = projectsWritable && node.capabilities.allows("project.create"),
                     savedNodes = savedNodes, currentBase = node.connection.base, nodeRuntime = node.connection.runtime,
                     pinnedProjectIds = catalog.pinnedProjectIds, onPinProject = node.catalog::setProjectPinned,
                     nodeConnected = when (connectionIndicator) {
@@ -328,8 +346,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         if (threadsWritable && node.catalog.state.value.threadsFresh) node.submissions.submitBatch(threads.map {
                             BatchSubmission("/v1/threads/${encoded(it.id)}/delete", JSONObject(), "永久删除会话")
                         })
-                    }, unreadThreadIds = catalog.unreadThreadIds, usage = catalog.usage, usageLoading = catalog.usageLoading,
-                    usageError = catalog.usageError, onRefreshUsage = { node.catalog.refreshUsage(true) }, projectKey = catalog.selectedProject?.id.orEmpty(),
+                    }, unreadThreadIds = catalog.unreadThreadIds, usage = codexUsage?.usage, usageLoading = codexUsage?.usageLoading == true,
+                    usageError = codexUsage?.usageError, onRefreshUsage = refreshCodexUsage, projectKey = catalog.selectedProject?.id.orEmpty(),
                     pendingConversations = visiblePending, canDiscardPending = writable,
                     onResumePending = { id -> node.catalog.state.value.selectedProject?.takeIf { selected -> visiblePending.any { it.id == id && it.projectId == selected.id } }?.let { openPending(it, id) } },
                     onDiscardPending = { id ->
@@ -434,7 +452,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                                             node.conversations.checkpointPendingSubmission(localId, pending.id,
                                                 if (goalAction == null) "send" else "sendWithGoal", goalAction?.toString())
                                         }
-                                        node.conversations.checkpointSentDraft(pending.id, id, draftForSubmission)
+                                        node.conversations.checkpointSentDraft(pending.id, id, draftForSubmission, asyncTextInput = tracksAsyncText(input))
                                         node.session.persistSubmission(pending.id)
                                     }) { receipt ->
                                     node.notifications.watch(id, requestPermission = true, turnId = receipt.string("turnId"))
@@ -474,7 +492,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             }
                         })
                 }
-                "chat" -> ChatScreen(session.takeIf { it.id == threadId }?.let { if (network == null) it.transition(SessionSyncEvent.RouteUnavailable) else it } ?: SessionState(id = threadId, synchronization = SessionSynchronization.opening()), submission.busy, submission.pending != null || handoffLoading || network == null, catalog.models, ::back,
+                "chat" -> ChatScreen(session.takeIf { it.id == threadId }?.let { if (network == null) it.transition(SessionSyncEvent.RouteUnavailable) else it } ?: SessionState(id = threadId, synchronization = SessionSynchronization.opening()),
+                    submission.busy || interactionSubmission.busy, submission.pending != null || interactionSubmission.pending != null || handoffLoading || network == null, catalog.models, ::back,
                     onOpenAgent = { child ->
                         threadId?.takeIf { it != child }?.let { parent ->
                             agentParents = agentParents + parent
@@ -502,6 +521,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         else -> null
                     },
                     defaultSettings = defaultSettings, onSaveDefaults = ::saveDefaults, onForwardLink = ::forwardLink, draftReloadKey = draftReloadKey,
+                    acceptedTextDraft = acceptedTextDraft, onAcceptedTextDraftObserved = node::observeAcceptedTextDraft,
                     modelCatalogNotice = catalog.modelsError ?: if (catalog.modelsStale) "模型目录暂未更新，当前使用最近可用选项" else null,
                     onDismissFailedMessage = { node.session.dismissFailedMessage(it) }, onSend = { _, _, _, _ -> }, onConfiguredSend = { input, model, effort, mode, serviceTier, _, accepted ->
                         val currentState = node.session.state.value
@@ -518,7 +538,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                             node.submissions.submit("/v1/threads/${encoded(id)}/" + if (queued) "queue" else "turns", body, if (queued) "加入队列" else "发送任务",
                                 prepared = { pending -> node.session.beginSubmission(id, pending.id, input, if (queued) "queue" else "turn") },
                                 beforeSend = { pending ->
-                                    node.conversations.checkpointSentDraft(pending.id, id, sentDraft.await())
+                                    node.conversations.checkpointSentDraft(pending.id, id, sentDraft.await(), asyncTextInput = tracksAsyncText(input))
                                     node.session.persistSubmission(pending.id)
                                 }) { receipt ->
                                 node.notifications.watch(id, requestPermission = true, turnId = receipt.string("turnId"))
@@ -555,11 +575,27 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                         node.session.state.value.let { current -> current.snapshot?.takeIf { canOperateRuntime("session.interrupt") && writable && current.control().canOperate && it.id == threadId && current.id == threadId } }?.let { snapshot ->
                             node.submissions.submit("/v1/threads/${encoded(snapshot.id)}/interrupt", JSONObject().put("turnId", snapshot.activeTurnId), "停止任务") { node.session.refresh() }
                         }
-                    }, onRespond = { request, response ->
+                    }, interactionWritable = { request ->
+                        network != null && !handoffLoading && submission.interactionSlot(
+                            interactionSubmission, request.interaction?.identity, allowsConcurrentInteraction()) != null
+                    }, onRespond = respond@{ request, response ->
                         val current = node.session.state.value
-                        if (canOperateRuntime("interaction.respond") && writable && !current.stale && (current.control().canOperate || request.interaction?.kind == "questions" || request.method.endsWith("requestUserInput")) && current.id == threadId && current.snapshot?.id == threadId && current.snapshot?.requests?.any { it.samePendingIdentity(request) } == true) {
-                            node.submissions.submit(if (request.interaction != null) "/v1/interactions/respond" else "/v1/requests/respond", request.interaction?.identity?.responseBody(response) ?: JSONObject().put("key", request.key).put("response", response), "回应请求") { node.session.refresh() }
+                        val interaction = request.interaction
+                        val canAnswer = current.control().canOperate || interaction?.kind == "questions" || request.method.endsWith("requestUserInput")
+                        val snapshot = current.snapshot
+                        if (!canOperateRuntime("interaction.respond") || node.network.value == null ||
+                            node.recovery.state.value != RecoveryState.CONNECTED || handoffLoading || current.stale || !canAnswer ||
+                            current.id != threadId || snapshot == null || snapshot.id != threadId ||
+                            snapshot.requests.none { it.samePendingIdentity(request) }) return@respond
+                        val coordinator = when (node.submissions.state.value.interactionSlot(
+                            node.interactionSubmissions.state.value, interaction?.identity, allowsConcurrentInteraction())) {
+                            InteractionSubmissionSlot.PRIMARY -> node.submissions
+                            InteractionSubmissionSlot.SCOPED -> node.interactionSubmissions
+                            null -> return@respond
                         }
+                        val path = if (interaction != null) "/v1/interactions/respond" else "/v1/requests/respond"
+                        val body = interaction?.identity?.responseBody(response) ?: JSONObject().put("key", request.key).put("response", response)
+                        coordinator.submit(path, body, "回应请求") { node.session.refresh() }
                     }, onRefresh = node.session::refresh, onLoadModels = { node.catalog.loadModels() }, onEarlier = node.session::loadEarlier,
                     predictMessage = { id, turn -> node.api.call("/v1/threads/${encoded(id)}/prediction", "POST", JSONObject().put("expectedTurnId", turn), background = true) },
                     attachmentsEnabled = attachmentsSupported,
@@ -569,7 +605,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                     downloadFile = { path, output, progress -> node.api.downloadFile(path, output, progress) },
                     mediaApi = node.api,
                     cachedFile = { path, progress -> node.api.cachedFile(context.cacheDir, path, progress) },
-                    draftStore = node.conversations, onPersistDraft = node::persistDraft, usage = catalog.usage, onFillHistory = node.session::ensureVisibleHistory,
+                    draftStore = node.conversations, onPersistDraft = { id, draft -> node.persistChatDraft(id, draft, acceptedTextDraft?.submissionId) },
+                    usage = codexUsage?.usage, onFillHistory = node.session::ensureVisibleHistory,
                     readTool = { path -> node.api.call(path) }, submitTool = submitTool@{ path, body, accepted ->
                         if (!writable || !node.session.state.value.control().canOperate) return@submitTool
                         val targetThreadId = threadId
@@ -642,7 +679,8 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
             }
         }
         val cached = network != null && catalogCacheNoticeVisible(route, catalog, true)
-        val resultNotice = submission.notice.takeIf { submission.pending == null }
+        val interactionNotice = interactionSubmission.notice
+        val resultNotice = interactionNotice ?: submission.notice.takeIf { submission.pending == null }
         val toastMessage = currentError?.let { "${node.connection.name}：$it" }
             ?: recoveryToast
             ?: resultNotice
@@ -654,6 +692,7 @@ private fun ConnectedApp(node: NodeRuntime, error: String?, setError: (String?) 
                 if (currentError != null) {
                     if (error != null) setError(null) else node.session.dismissReadError()
                 } else if (recoveryToast != null) recoveryToast = null
+                else if (interactionNotice != null) node.interactionSubmissions.clearNotice()
                 else if (resultNotice != null) node.submissions.clearNotice()
             }
         }

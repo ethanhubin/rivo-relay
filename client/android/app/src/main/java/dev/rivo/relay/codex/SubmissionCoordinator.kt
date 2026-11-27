@@ -7,9 +7,24 @@ import kotlinx.coroutines.flow.*
 import org.json.JSONObject
 import java.util.UUID
 
-data class PendingSubmission(val id: String, val path: String, val label: String, val threadId: String? = null, val interaction: InteractionIdentity? = null)
-data class SubmissionState(val busy: Boolean = false, val pending: PendingSubmission? = null, val notice: String? = null, val reconciling: Boolean = false, val resolvedRevision: Long = 0)
+data class PendingSubmission(val id: String, val path: String, val label: String, val threadId: String? = null, val interaction: InteractionIdentity? = null) {
+    internal fun isInputFor(sessionId: String?) = sessionId != null && threadId == sessionId &&
+        path == "/v1/threads/${encoded(sessionId)}/turns"
+}
+data class SubmissionState(val busy: Boolean = false, val pending: PendingSubmission? = null, val notice: String? = null, val reconciling: Boolean = false, val resolvedRevision: Long = 0) {
+    internal val ownsMutation get() = busy || pending != null
+}
 data class BatchSubmission(val path: String, val body: JSONObject, val label: String)
+
+internal enum class InteractionSubmissionSlot { PRIMARY, SCOPED }
+
+internal fun SubmissionState.interactionSlot(scoped: SubmissionState, identity: InteractionIdentity?,
+    allowsWhileInputPending: Boolean): InteractionSubmissionSlot? = when {
+    scoped.ownsMutation -> null
+    !ownsMutation -> InteractionSubmissionSlot.PRIMARY
+    allowsWhileInputPending && pending?.isInputFor(identity?.sessionId) == true -> InteractionSubmissionSlot.SCOPED
+    else -> null
+}
 
 /** Retain and retry orphaned durable checkpoints after temporary read/save failures. */
 internal suspend fun recoverPendingCheckpoints(
@@ -48,6 +63,7 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
     private val onResolved: suspend (PendingSubmission, JSONObject) -> Unit = { _, _ -> },
     private val recoveryDelayMillis: Long = 3_000,
     private val recoveryIntervalMillis: Long = 10_000,
+    private val canSubmit: () -> Boolean = { true },
     private val failure: (Throwable) -> Unit) {
     private val mutable = MutableStateFlow(SubmissionState(pending = vault.read(storageKey)?.let {
         try {
@@ -144,7 +160,7 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
         val frozenBody = copyJsonObject(body).put("submissionId", pending.id)
         while (true) {
             val current = mutable.value
-            if (current.busy || current.pending != null) return
+            if (current.ownsMutation || !canSubmit()) return
             // Publish ownership before prepared()/attachment staging can create
             // durable overlays. Orphan recovery must not fence this live ID.
             if (mutable.compareAndSet(current, current.copy(busy = true, pending = pending, notice = null))) break
@@ -208,12 +224,12 @@ class SubmissionCoordinator(private val api: RelayApi, private val scope: Corout
         }
         next(0)
     }
-    fun reconcile() {
+    fun reconcile(expectedId: String? = null) {
         val pending: PendingSubmission
         while (true) {
             val current = mutable.value
             val candidate = current.pending ?: return
-            if (current.busy) return
+            if (current.busy || expectedId != null && candidate.id != expectedId) return
             if (mutable.compareAndSet(current, current.copy(busy = true, reconciling = true))) {
                 pending = candidate
                 break

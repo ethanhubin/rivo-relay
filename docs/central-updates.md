@@ -8,7 +8,7 @@
 
 App 与节点独立升级，发布成功不表示所有绑定节点已升级。新版清单从实际 APK 提取 `compatibility.apiVersions`，App 按 [兼容协议](api-compatibility.md) 检查绑定节点后才进入安装流程；历史清单/节点缺少声明时显示未知，不按软件版本号推断兼容。
 
-- App 从当前配对节点的 VPS 路由提取网关地址，沿用二维码里已信任的证书指纹；检查和下载不携带手机配对令牌，也不访问节点 slot。已有 VPS 配对在安装新版 App 后直接生效，无需扫描主发布节点二维码。仅直连节点仍保留原更新源回退。
+- App 从配对码保存的 VPS 路由选择统一更新入口。当前共享 VPS 使用公开受信任的 HTTPS 下载入口。检查和下载独立于节点会话。首次安装按[手机配对二合一码](vps-gateway.md#手机配对二合一码)交付 VPS APK 直链。
 - 手机在“设置 → 检查更新”下载安装；系统安装确认仍由用户完成，不做静默安装。
 - `managed-node` 每分钟检查一次统一版本。程序包验证大小和 SHA-256，在独立虚拟环境安装依赖，之后才尝试切换。断网或依赖安装失败不停止旧节点。依赖首次安装需要访问 Python 包源。
 - 切换前原子关闭请求准入，检查队列、待确认提交、自有会话 writer、原生活动任务和目标；忙碌或状态不明就延后。不会中止任务来强制更新。
@@ -116,7 +116,7 @@ runuser -u rivo-gateway -- python3 -c 'import socket; s=socket.socket(); s.setso
 python scripts/install-managed-node.py --workspace /原workspace --upgrade-bootstrap
 ```
 
-命令拒绝仍占用节点端口/agent 或 serve 锁的环境；先下载构建 wheels、在隔离环境验证，再备份并离线更新原 bootstrap venv。原服务注册、参数、workspace 和节点身份保持不变。安装失败自动恢复原环境；成功后保留 `bootstrap/venv.before-upgrade`。用原服务管理器重新启动，检查诊断 `agentRevision=2`、健康与 VPS 通道。Windows 同样使用原用户并停止计划任务后运行；本轮未做 Windows 真机维护演练。
+命令要求节点端口、agent 锁和 serve 锁空闲。先构建 wheels 并在隔离环境验证，再备份并离线更新原 bootstrap venv。安装失败时恢复原环境，成功后保留 `bootstrap/venv.before-upgrade`。用原服务管理器重新启动并检查健康与 VPS 通道。Antigravity 托管节点要求 `agentRevision` 至少为 3，由代理在试运行和回滚时核对配置的运行时与实例身份。旧 Codex 节点可继续使用第 2 版代理。Windows 使用原用户并停止计划任务后运行。
 
 若维护过程中断电/进程被强制结束，保持服务停止，使用：
 

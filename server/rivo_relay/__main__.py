@@ -33,14 +33,21 @@ def parser():
             sub.add_argument("--cert", type=Path)
             sub.add_argument("--key", type=Path)
             sub.add_argument("--native-socket", type=Path)
-            sub.add_argument('--runtime', choices=('codex', 'dsh'), default='codex')
+            sub.add_argument('--runtime', choices=('codex', 'dsh', 'antigravity'), default='codex')
             sub.add_argument('--dsh-bridge-socket', type=Path,
                              help='Unix socket of the Rivo plugin in an existing DSH runtime')
             sub.add_argument('--dsh-admin-socket', type=Path,
                              help='Enable local DSH configuration and direct pairing on this private Unix socket')
+            sub.add_argument('--antigravity-executable', type=Path,
+                             help='Absolute path to the local agy executable')
+            sub.add_argument('--antigravity-mode', choices=('cli', 'desktop'), default='cli',
+                             help='Start local ACP or attach to Antigravity App')
+            sub.add_argument('--antigravity-profile-dir', type=Path,
+                             help='Absolute directory of the local Antigravity App profile')
+            sub.add_argument('--antigravity-project', type=Path, action='append', default=[],
+                             help='Scope Antigravity to this absolute project directory (repeatable)')
             sub.add_argument("--codex-home", type=Path, default=Path.home() / ".codex")
-            sub.add_argument('--codex-runtime', choices=('auto', 'desktop', 'app_server', 'stdio'),
-                             default=os.environ.get('RIVO_CODEX_RUNTIME', 'auto'))
+            sub.add_argument('--codex-runtime', choices=('auto', 'desktop', 'app_server', 'stdio'))
             sub.add_argument('--desktop-bridge-dir', type=Path)
             sub.add_argument('--codex-executable', type=Path, help='Explicit local Codex executable for stdio mode')
         if name == "pair":
@@ -66,17 +73,26 @@ def main(argv=None):
         except Exception as error:
             print(json.dumps({'error': str(error)}, ensure_ascii=False), file=sys.stderr)
             return 1
+    runtime = getattr(args, 'runtime', 'codex')
+    codex_runtime = getattr(args, 'codex_runtime', None)
+    if codex_runtime is None:
+        codex_runtime = (os.environ.get('RIVO_CODEX_RUNTIME', 'auto')
+                         if args.command == 'serve' and runtime != 'antigravity' else 'auto')
     config = Config(workspace=args.workspace.resolve(), host=getattr(args, "host", "127.0.0.1"),
         port=getattr(args, "port", 8765),
         public_url=getattr(args, "url", "http://10.0.2.2:8765"),
         cert=getattr(args, "cert", None), key=getattr(args, "key", None),
         codex_home=getattr(args, "codex_home", Path.home() / ".codex"),
-        codex_runtime=getattr(args, 'codex_runtime', 'auto'),
+        codex_runtime=codex_runtime,
         desktop_bridge_dir=getattr(args, 'desktop_bridge_dir', None),
         codex_executable=getattr(args, 'codex_executable', None),
-        runtime=getattr(args, 'runtime', 'codex'),
+        runtime=runtime,
         dsh_bridge_socket=getattr(args, 'dsh_bridge_socket', None),
-        dsh_admin_socket=getattr(args, 'dsh_admin_socket', None))
+        dsh_admin_socket=getattr(args, 'dsh_admin_socket', None),
+        antigravity_executable=getattr(args, 'antigravity_executable', None),
+        antigravity_mode=getattr(args, 'antigravity_mode', 'cli'),
+        antigravity_profile_dir=getattr(args, 'antigravity_profile_dir', None),
+        antigravity_projects=tuple(getattr(args, 'antigravity_project', ())))
     try:
         config.prepare()
         if args.command == "serve":
@@ -129,6 +145,8 @@ def serve(config: Config, native_socket: Path | None):
     from .events import EventBus
     from .http_server import BoundedHTTPServer
 
+    if native_socket and config.runtime != 'codex':
+        raise ValueError('--native-socket is only supported by Codex')
     with (config.workspace / "data" / "serve.lock").open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -136,10 +154,17 @@ def serve(config: Config, native_socket: Path | None):
             raise ValueError("A Relay service already owns this workspace")
         bus = EventBus()
         if config.runtime == 'dsh':
-            if native_socket:
-                raise ValueError('--native-socket is only supported by Codex')
             from .dsh import DshService
             native = DshService(socket_path=config.dsh_bridge_socket, on_event=bus.publish)
+        elif config.runtime == 'antigravity':
+            if config.antigravity_mode == 'desktop':
+                from .antigravity.desktop_service import AntigravityDesktopService
+                native = AntigravityDesktopService(profile_dir=config.antigravity_profile, workspace=config.workspace,
+                                                   project_dirs=config.antigravity_projects, on_event=bus.publish)
+            else:
+                from .antigravity import AntigravityService
+                native = AntigravityService(executable=config.antigravity_executable, workspace=config.workspace,
+                                            project_dirs=config.antigravity_projects, on_event=bus.publish)
         else:
             native = CodexService(socket_path=native_socket, codex_home=config.codex_home, on_event=bus.publish,
                                   runtime_mode=config.codex_runtime, desktop_bridge_dir=config.desktop_bridge_dir, codex_executable=config.codex_executable)

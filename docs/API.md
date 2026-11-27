@@ -40,7 +40,7 @@
 
 额度对象保留原生 `rateLimits` / `rateLimitsByLimitId`、窗口 `usedPercent`、`windowDurationMins`、`resetsAt` 等字段。缺失值表示尚无数据，不能推断剩余 100%。账户额度与下述单会话 `tokenUsage` 是不同数据。
 
-额度重置：`rateLimitResetCredits` 保留原生 `availableCount` 和可选 `credits` 明细（包含有效期）；次数未知、明细未知与空明细分别保留，不根据明细条数推断次数。`resetSupported=true` 表示节点已读到重置能力数据；字段缺失或 false 时不开放客户端重置操作。额度重置统一从“设置 → 额度重置”进入，弹窗展示可用重置次数及机会明细（名称、说明、有效期）；客户端仅在 `resetCreditSelectionSupported=true` 时开放选择，必须主动选择一条可用且未过期的机会，再刷新并确认。次数已知但没有明细时不允许盲目兑换；刷新后所选明细变化或失效时需重新选择；离线、读取失败或有未确认提交时禁止再次提交。
+额度重置入口、次数、有效期及 Codex 周额度仅在 Codex 节点显示。`rateLimitResetCredits` 保留原生 `availableCount` 和可选 `credits` 明细（包含有效期）；次数未知、明细未知与空明细分别保留，不根据明细条数推断次数。`resetSupported=true` 表示节点已读到重置能力数据；字段缺失或 false 时不开放客户端重置操作。额度重置统一从“设置 → 额度重置”进入，弹窗展示可用重置次数及机会明细（名称、说明、有效期）；客户端仅在 `resetCreditSelectionSupported=true` 时开放选择，必须主动选择一条可用且未过期的机会，再刷新并确认。次数已知但没有明细时不允许盲目兑换；刷新后所选明细变化或失效时需重新选择；离线、读取失败或有未确认提交时禁止再次提交。
 
 重置调用原生 `account/rateLimitResetCredit/consume`，传入所选 `creditId`。旧客户端省略该字段时仍由原生选择；新客户端不会回退到自动选择。提交记录先于原生请求持久化，同时保存机会 ID；同 ID 的普通 POST 和 GET 只返回已知状态，不再次兑换。成功回执为 `{requestId:submissionId,resetOutcome}`，结果仅接受 `reset`、`alreadyRedeemed`、`nothingToReset`、`noCredit`。前两者表示兑换完成，后两者说明没有符合条件的窗口或没有可用次数；四者均为已确认的终态，`accepted` 不等同于一定恢复额度。
 
@@ -421,9 +421,9 @@ Android 输入框设置面板提供权限选择和“设为新会话默认”，
 
 ## VPS 双通道配对（v2）
 
-配对二维码统一使用 v2，客户端拒绝 v1 链接；普通 CLI 和 `scripts/start-node.sh` 均生成 v2。仅直连时 `relay`、`pin` 为空，手动地址和配对码输入仍受支持。二维码 fragment 包含 `node`（稳定节点 ID）、`direct`、`relay`、`pin`（网关完整 DER 证书 SHA-256），以及可选 `updates=1`。所有值使用 URL 编码；桌面注册密钥不进入二维码。`GET /health` 额外返回 `nodeId`，供本机启动器确认监听端口属于指定 workspace。
+节点配对使用 v2 二合一码。默认交付的二维码 fragment 包含 `node`（稳定节点 ID）、`direct`、`relay`、`pin`（网关完整 DER 证书 SHA-256），以及可选 `updates=1`。所有值使用 URL 编码，桌面注册密钥留在节点配置中。`GET /health` 返回 `nodeId`，供本机启动器确认监听端口属于指定 workspace。
 
-手机重新配对已保存的节点时，`POST /v1/pair` 可以增加 `resume:{deviceId,binding,proof}`，不携带旧 Bearer。`binding` 为 UTF-8 的 `direct + "\n" + relay + "\n" + pin` 的 SHA-256 小写十六进制；服务端必须与自身 `gateway-client.json` 配置计算的结果一致；没有该配置的独立直连服务使用自身 `public_url` 作为 direct，relay 和 pin 为空。
+手机重新配对已保存的节点时，`POST /v1/pair` 可以增加 `resume:{deviceId,binding,proof}`。`binding` 为 UTF-8 的 `direct + "\n" + relay + "\n" + pin` 的 SHA-256 小写十六进制。服务端与自身 `gateway-client.json` 配置计算的结果核对。
 
 请求 proof 为 `HMAC-SHA256(SHA256(token), "request\0" + code + "\0" + nodeId + "\0" + binding)`，结果为小写十六进制。有效一次性配对码和 proof 在同一事务里验证，只有未撤销的原连接可复用。复用响应返回原 `deviceId`、空 `token`，并提供相同算法、方向改为 `response` 的 `reuseProof`。手机校验响应 proof 后保留本地旧 token。正常新配对仍返回新 token；无效 proof 不会复用旧连接，也不会绕过配对码校验。
 

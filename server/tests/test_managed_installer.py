@@ -39,6 +39,34 @@ class InstallerTests(unittest.TestCase):
             self.assertIn('--native-socket', value['ProgramArguments'])
             self.assertIn('PATH', value['EnvironmentVariables'])
 
+    @unittest.skipIf(sys.platform == 'win32', 'launchd user service registration')
+    def test_prepares_and_registers_the_saved_desktop_runtime_for_the_login_user(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            workspace = home / 'workspace'; workspace.mkdir()
+            profile = home / 'desktop profile'; profile.mkdir()
+            project = home / 'project'; project.mkdir()
+            client = workspace / 'gateway-client.json'
+            client.write_text(json.dumps({'key': 'private-test-only', 'runtime': 'antigravity',
+                'antigravity_mode': 'desktop', 'antigravity_profile_dir': str(profile), 'antigravity_project': [str(project)]}))
+            original = client.read_bytes()
+            arguments = [str(SCRIPT), '--workspace', str(workspace)]
+            with patch.object(sys, 'argv', arguments + ['--prepare-only']), patch.object(installer.subprocess, 'run'):
+                installer.main()
+            prepared = json.loads((workspace / 'auto-update/bootstrap/prepared.json').read_text())
+            self.assertEqual(prepared[prepared.index('--no-pair') + 1:],
+                ['--runtime', 'antigravity', '--antigravity-mode', 'desktop', '--antigravity-profile-dir', str(profile),
+                 '--antigravity-project', str(project)])
+            self.assertEqual(client.read_bytes(), original)
+            with patch.object(sys, 'argv', arguments + ['--activate']), patch.object(sys, 'platform', 'darwin'), \
+                    patch.object(installer.Path, 'home', return_value=home), patch.object(installer.socket, 'socket') as probe, \
+                    patch.object(installer.subprocess, 'run') as run:
+                probe.return_value.__enter__.return_value.connect_ex.return_value = 1
+                installer.main()
+                self.assertEqual(run.call_args.args[0][1:3], ['bootstrap', f'gui/{installer.os.getuid()}'])
+            target = next((home / 'Library/LaunchAgents').glob('*.plist'))
+            self.assertEqual(plistlib.loads(target.read_bytes())['ProgramArguments'][3:], prepared)
+
     @unittest.skipIf(sys.platform == 'win32', 'macOS account validation')
     def test_system_service_rejects_desktop_runtime_before_install(self):
         import pwd

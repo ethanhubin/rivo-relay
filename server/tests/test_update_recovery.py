@@ -1,8 +1,10 @@
 import asyncio
+from contextlib import closing
 import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import tempfile
 import threading
 import time
@@ -12,6 +14,7 @@ import zipfile
 from unittest.mock import AsyncMock, Mock, patch
 
 from rivo_relay.gateway.config import encode_key
+from rivo_relay.gateway.runtime_options import runtime_arguments
 from rivo_relay.gateway.updater import Supervisor, UpdateFailure, UpdateDeferred, unpack
 from rivo_relay.gateway.update_status import write_ready, is_ready, public_status
 from rivo_relay.gateway.agent_maintenance import retry_candidate, upgrade_bootstrap, restore_bootstrap, python_at
@@ -164,6 +167,117 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
             'releaseCode': 96, 'nativeConnected': True})
         await self.agent.healthy(self.candidate, require_gateway=False)
         self.agent.local.assert_awaited_once()
+
+    def runtime_agent(self, **runtime):
+        path = self.workspace / 'gateway-client.json'
+        stored = json.loads(path.read_text())
+        path.write_text(json.dumps({'key': stored['key'], **runtime}))
+        return Supervisor(self.args)
+
+    def test_launcher_reuses_the_same_runtime_options_for_start_trial_and_rollback(self):
+        project = str(self.workspace / 'space in path')
+        cases = (
+            ({'runtime': 'dsh', 'dsh_bridge_socket': str(self.workspace / 'dsh.sock')},
+             ['--runtime', 'dsh', '--dsh-bridge-socket', str(self.workspace / 'dsh.sock')]),
+            ({'runtime': 'antigravity', 'antigravity_executable': str(self.workspace / 'agy'),
+              'antigravity_project': [project, str(self.workspace)]},
+             ['--runtime', 'antigravity', '--antigravity-mode', 'cli', '--antigravity-executable',
+              str(self.workspace / 'agy'), '--antigravity-project', project, '--antigravity-project', str(self.workspace)]),
+            ({'runtime': 'antigravity', 'antigravity_mode': 'desktop', 'antigravity_profile_dir': str(self.workspace)},
+             ['--runtime', 'antigravity', '--antigravity-mode', 'desktop', '--antigravity-profile-dir', str(self.workspace.resolve())]),
+        )
+        target = ('rivo_relay.codex.windows_process.spawn_owned' if os.name == 'nt' else
+                  'rivo_relay.gateway.updater.subprocess.Popen')
+        for settings, flags in cases:
+            with self.subTest(settings=settings):
+                agent = self.runtime_agent(**settings)
+                self.assertEqual(runtime_arguments(agent.runtime), flags)
+                with patch(target) as spawn:
+                    for release, trial in ((agent.state['active'], False), (self.candidate, True), (agent.state['active'], False)):
+                        agent.start(release, trial=trial)
+                        command, = spawn.call_args.args
+                        self.assertEqual(command[command.index('--no-pair') + 1:], flags)
+                        agent.output.close()
+
+    async def test_candidate_health_checks_runtime_and_profile_before_gateway_readiness(self):
+        agent = self.runtime_agent(runtime='antigravity', antigravity_mode='desktop',
+                                   antigravity_profile_dir=str(self.workspace / 'native-profile'))
+        agent.child = Mock(poll=Mock(return_value=None))
+        health = {'nodeId': agent.config.node_id, 'releaseCode': self.candidate['versionCode'], 'nativeConnected': True}
+        for runtime in ({}, {'runtime': 'dsh', 'runtimeIdentity': agent.runtime_identity},
+                        {'runtime': 'antigravity', 'runtimeIdentity': 'other-profile'}):
+            agent.local = AsyncMock(return_value={**health, **runtime})
+            with self.assertRaises(UpdateFailure) as caught:
+                await agent.healthy(self.candidate)
+            self.assertEqual(caught.exception.reason, 'candidate_runtime_mismatch')
+            agent.local.assert_awaited_once()
+        write_ready(agent.root / 'connected.json', agent.token, True)
+        agent.local.return_value = {**health, 'runtime': 'antigravity', 'runtimeIdentity': agent.runtime_identity}
+        await agent.healthy(self.candidate)
+        self.assertEqual(self.candidate['runtimeIdentity'], agent.runtime_identity)
+
+    async def test_codex_requires_runtime_health_once_its_active_release_reported_it(self):
+        agent = self.agent
+        agent.child = Mock(poll=Mock(return_value=None))
+        active = agent.state['active']
+        agent.local = AsyncMock(return_value={'nodeId': agent.config.node_id, 'releaseCode': active['versionCode'],
+            'nativeConnected': True, 'runtime': 'codex', 'runtimeIdentity': agent.runtime_identity})
+        await agent.healthy(active, require_gateway=False)
+        agent.save()
+        restored = Supervisor(self.args)
+        restored.child = agent.child
+        restored.local = AsyncMock(return_value={'nodeId': agent.config.node_id,
+            'releaseCode': self.candidate['versionCode'], 'nativeConnected': True})
+        with self.assertRaises(UpdateFailure) as caught:
+            await restored.healthy(self.candidate, require_gateway=False)
+        self.assertEqual(caught.exception.reason, 'candidate_runtime_mismatch')
+
+    def test_restart_rejects_a_changed_bound_profile(self):
+        agent = self.runtime_agent(runtime='antigravity', antigravity_mode='desktop',
+                                   antigravity_profile_dir=str(self.workspace / 'first'))
+        agent.state['active']['runtimeIdentity'] = agent.runtime_identity
+        agent.save()
+        with self.assertRaisesRegex(ValueError, 'differs from the managed node runtime identity'):
+            self.runtime_agent(runtime='antigravity', antigravity_mode='desktop',
+                               antigravity_profile_dir=str(self.workspace / 'second'))
+
+    async def test_interrupted_trial_restores_a_profile_rewritten_by_older_candidate(self):
+        agent = self.runtime_agent(runtime='antigravity', antigravity_mode='desktop')
+        effective_profile = str(agent.config.antigravity_profile)
+        self.assertEqual(agent.runtime['antigravity_profile_dir'], effective_profile)
+        agent.config.prepare()
+        with closing(sqlite3.connect(agent.config.database_path)) as db, db:
+            db.execute('CREATE TABLE rollback_marker (value TEXT)')
+            db.execute("INSERT INTO rollback_marker VALUES ('original')")
+        agent.state['active']['runtimeIdentity'] = agent.runtime_identity
+        agent.local = AsyncMock(return_value={'ready': True, 'lease': 'permit'})
+        agent.exited = AsyncMock()
+        config_file = self.workspace / 'gateway-client.json'
+
+        def start_older_candidate(_release, *, trial):
+            self.assertTrue(trial)
+            # Older gateway releases save merged argv into the workspace before health.
+            launch = json.loads(config_file.read_text())
+            launch['antigravity_profile_dir'] = str(self.workspace / 'wrong-profile')
+            config_file.write_text(json.dumps(launch))
+            with closing(sqlite3.connect(agent.config.database_path)) as db, db:
+                db.execute("UPDATE rollback_marker SET value='candidate'")
+
+        agent.start = start_older_candidate
+        agent.healthy = AsyncMock(side_effect=asyncio.CancelledError)
+        with self.assertRaises(asyncio.CancelledError):
+            await agent.switch(self.candidate)
+        self.assertNotEqual(json.loads(config_file.read_text())['antigravity_profile_dir'], effective_profile)
+        restarted = Supervisor(self.args)
+        self.assertEqual(restarted.runtime['antigravity_profile_dir'], effective_profile)
+        restarted.start = Mock()
+        restarted.healthy = AsyncMock()
+        await restarted.abort_trial()
+        self.assertEqual(json.loads(config_file.read_text())['antigravity_profile_dir'], effective_profile)
+        self.assertEqual(restarted.state['active']['runtimeIdentity'], agent.runtime_identity)
+        restarted.start.assert_called_once_with(restarted.state['active'])
+        with closing(sqlite3.connect(agent.config.database_path)) as db:
+            self.assertEqual(db.execute('SELECT value FROM rollback_marker').fetchone()[0], 'original')
 
     def test_retry_refuses_running_agent_lock(self):
         from rivo_relay.codex import native_history_support as locks
